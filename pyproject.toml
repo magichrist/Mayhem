@@ -1,0 +1,137 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tgondi"
+version = "0.1.0.dev0"
+description = "General-purpose chaos engineering and resilience-testing framework: a chaos experiment orchestration engine."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Tgondi Engineering" }]
+dependencies = [
+    "pydantic>=2.9",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+]
+
+[project.scripts]
+tgondi = "tgondi.controller.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.1",
+    "types-pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tgondi"]
+
+# --- Ruff -------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "A",           # builtins shadowing
+    "C4",          # comprehensions
+    "DTZ",         # datetime tz discipline
+    "T10",         # debugger calls
+    "EM",          # exception message hygiene
+    "ICN",         # import conventions
+    "PIE",         # misc
+    "RET",         # return discipline
+    "SIM",         # simplification
+    "TC",          # type-checking imports (TCH renamed)
+    "PTH",         # use pathlib
+    "PL",          # pylint subset
+    "RUF",         # ruff-specific
+]
+ignore = [
+    "PLR0913",  # many arguments allowed in domain constructors
+    "PLR2004",  # magic values in state-machine tables are intentional
+    "EM101",    # domain raises typed DomainError subclasses with short inline msgs
+    "EM102",
+]
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves model annotations at runtime; field types must stay
+# runtime-visible rather than hiding under TYPE_CHECKING.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0915", "SIM117"]
+
+# --- Mypy --------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# --- Pytest -------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "nightly: chaos-of-the-chaos tier (deselect with '-m \"not nightly\"')",
+]
+
+# --- import-linter -------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["tgondi"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain layer has zero IO and no upward imports"
+type = "forbidden"
+source_modules = ["tgondi.domain"]
+forbidden_modules = [
+    "tgondi.toolkit",
+    "tgondi.agents",
+    "tgondi.controller",
+    "tgondi.infra",
+    "asyncio",
+    "socket",
+    "subprocess",
+    "sqlite3",
+    "pathlib",
+    "os",
+]
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture: domain <- infra/toolkit/agents <- controller"
+type = "layers"
+containers = ["tgondi"]
+layers = [
+    "controller",
+    "agents | toolkit | infra",
+    "domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Agents never import controller modules"
+type = "forbidden"
+source_modules = ["tgondi.agents"]
+forbidden_modules = ["tgondi.controller"]

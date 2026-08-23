@@ -1,0 +1,163 @@
+"""Schema v1 — canonical DDL from docs/reference/sqlite-schema.md."""
+
+from tgondi.infra.migrator import Migration
+
+M0001_INITIAL = Migration(
+    version=1,
+    name="initial",
+    statements=(
+        """
+        CREATE TABLE config_snapshots (
+            id TEXT PRIMARY KEY,
+            resolved_json TEXT NOT NULL,
+            source_map TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE topology_snapshots (
+            id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES runs(id),
+            graph_json TEXT NOT NULL,
+            drift_report TEXT NOT NULL,
+            fingerprint TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            experiment_name TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('deterministic','random')),
+            spec_json TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            seed INTEGER,
+            status TEXT NOT NULL CHECK (status IN
+                ('created','planning','validated','running','recovering',
+                 'completed','failed','aborted')),
+            environment_fingerprint TEXT NOT NULL,
+            config_snapshot_id TEXT NOT NULL REFERENCES config_snapshots(id),
+            topology_snapshot_id TEXT REFERENCES topology_snapshots(id),
+            started_at TEXT,
+            ended_at TEXT,
+            summary_md TEXT
+        )
+        """,
+        "CREATE INDEX idx_runs_status ON runs(status)",
+        "CREATE INDEX idx_runs_started ON runs(started_at DESC)",
+        """
+        CREATE TABLE step_runs (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            parent_step_id TEXT REFERENCES step_runs(id),
+            action_type TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','running','completed','failed','skipped','cancelled')),
+            started_at TEXT,
+            ended_at TEXT,
+            error TEXT
+        )
+        """,
+        """
+        CREATE TABLE fault_leases (
+            id TEXT PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN
+                ('pending','active','releasing','released','expired','orphaned','dirty')),
+            owner_agent TEXT NOT NULL,
+            undo_json TEXT NOT NULL,
+            verify_json TEXT NOT NULL,
+            ttl_seconds REAL NOT NULL,
+            expires_at TEXT NOT NULL,
+            injected_at TEXT,
+            released_at TEXT,
+            release_mechanism TEXT,
+            escalation_notes TEXT
+        )
+        """,
+        "CREATE INDEX idx_leases_state ON fault_leases(state)",
+        """
+        CREATE TABLE fault_invocations (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            step_run_id TEXT NOT NULL REFERENCES step_runs(id),
+            fault_id TEXT NOT NULL,
+            targets_json TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            lease_id TEXT UNIQUE NOT NULL REFERENCES fault_leases(id)
+        )
+        """,
+        """
+        CREATE TABLE recovery_records (
+            id TEXT PRIMARY KEY,
+            lease_id TEXT NOT NULL REFERENCES fault_leases(id),
+            attempt INTEGER NOT NULL,
+            mechanism TEXT NOT NULL,
+            undo_results_json TEXT NOT NULL,
+            verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+            at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE tool_runs (
+            id TEXT PRIMARY KEY,
+            invocation_ref TEXT,
+            argv_digest TEXT NOT NULL,
+            argv_json TEXT NOT NULL,
+            env_digest TEXT NOT NULL,
+            host TEXT NOT NULL,
+            exit_code INTEGER,
+            duration_ms INTEGER,
+            truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+            stdout_ref TEXT,
+            stderr_ref TEXT
+        )
+        """,
+        """
+        CREATE TABLE agent_states (
+            id TEXT PRIMARY KEY,
+            host TEXT NOT NULL,
+            roles_json TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('ready','busy','dead','retired')),
+            last_heartbeat TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT REFERENCES runs(id),
+            ts TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_events_run_ts ON events(run_id, ts)",
+        """
+        CREATE TABLE steady_state_evaluations (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            check_id TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK (phase IN ('pre','during','post')),
+            passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+            measured_json TEXT NOT NULL,
+            expectation_json TEXT NOT NULL,
+            evaluated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE maniac_decisions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT UNIQUE REFERENCES runs(id),
+            candidates_json TEXT NOT NULL,
+            weights_json TEXT NOT NULL,
+            rng_state TEXT NOT NULL,
+            chosen_plan_json TEXT NOT NULL,
+            decided_at TEXT NOT NULL
+        )
+        """,
+    ),
+)
+
+ALL_MIGRATIONS: tuple[Migration, ...] = (M0001_INITIAL,)
