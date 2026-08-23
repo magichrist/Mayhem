@@ -1,0 +1,7 @@
+*/**.pyc
+tests/unit/__pycache__/
+src/tgondi/toolkit/__pycache__/
+src/tgondi/agents/__pycache__/
+src/tgondi/infra/__pycache__/
+src/tgondi/controller/__pycache__/
+src/tgondi/domain/__pycache__/
