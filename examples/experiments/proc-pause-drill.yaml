@@ -1,0 +1,19 @@
+# Deterministic drill: pause the api process briefly, then verify recovery.
+kind: deterministic
+name: proc-pause-drill
+hypothesis: a 10s pause of the api process is survivable without user impact
+labels:
+  team: platform
+constraints:
+  risk_ceiling: medium
+steps:
+  - id: pause
+    inject_fault:
+      fault: proc.pause
+      targets:
+        - kind: process
+          expr: "name=api"
+      duration: 10s
+    on_failure: abort_and_recover
+  - id: settle
+    wait: 2s
