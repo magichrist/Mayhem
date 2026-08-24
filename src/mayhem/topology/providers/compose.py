@@ -33,8 +33,7 @@ def _interpolate(value: str, env: dict[str, str]) -> str:
     def sub(match: re.Match[str]) -> str:
         expr = match.group(1)
         name, sep, default = expr.partition(":-")
-        resolved = env.get(name.strip(), default if sep else "")
-        return resolved
+        return env.get(name.strip(), default if sep else "")
 
     return re.sub(r"\$\{([^}]+)\}", sub, value)
 
@@ -43,8 +42,8 @@ def _load_env_file(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
     if not path.exists():
         return env
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
@@ -60,6 +59,30 @@ def _parse_ports(raw: Any) -> tuple[int, ...]:
         if host_part.isdigit():
             ports.append(int(host_part))
     return tuple(sorted(set(ports)))
+
+
+def _depends_pairs(depends: Any) -> list[tuple[str, float]]:
+    """Normalize depends_on (dict with conditions, or plain list) to weighted pairs."""
+    pairs: list[tuple[str, float]] = []
+    if isinstance(depends, dict):
+        for dep_name, cfg in depends.items():
+            condition = (cfg or {}).get("condition", "service_started")
+            weight = 2.0 if condition == "service_healthy" else 1.0
+            pairs.append((dep_name, weight))
+    elif isinstance(depends, list):
+        pairs.extend((dep_name, 1.0) for dep_name in depends)
+    return pairs
+
+
+def _env_dict(environment: Any) -> dict[str, str]:
+    """Compose allows environment as a mapping or a list of KEY=VALUE strings."""
+    if isinstance(environment, list):
+        return {
+            entry.split("=", 1)[0]: entry.split("=", 1)[1]
+            for entry in environment
+            if "=" in entry
+        }
+    return {str(k): str(v) for k, v in (environment or {}).items()}
 
 
 class ComposeFileProvider:
@@ -91,18 +114,10 @@ class ComposeFileProvider:
                 )
             )
             # EXPOSES is a self-edge carrying the declared port surface.
-            for port in _parse_ports(svc.get("ports")):
+            for _port in _parse_ports(svc.get("ports")):
                 edges.append(Edge(src=f"svc-{name}", dst=f"svc-{name}", kind=EdgeKind.EXPOSES))
 
-            depends = svc.get("depends_on") or {}
-            pairs: list[tuple[str, float]] = []
-            if isinstance(depends, dict):
-                for dep_name, cfg in depends.items():
-                    condition = (cfg or {}).get("condition", "service_started")
-                    weight = 2.0 if condition == "service_healthy" else 1.0
-                    pairs.append((dep_name, weight))
-            elif isinstance(depends, list):
-                pairs.extend((dep_name, 1.0) for dep_name in depends)
+            pairs = _depends_pairs(svc.get("depends_on"))
             for dep_name, weight in pairs:
                 edges.append(
                     Edge(
@@ -113,13 +128,7 @@ class ComposeFileProvider:
                     )
                 )
 
-            environment = svc.get("environment") or {}
-            if isinstance(environment, list):
-                environment = {
-                    entry.split("=", 1)[0]: entry.split("=", 1)[1]
-                    for entry in environment
-                    if "=" in entry
-                }
+            environment = _env_dict(svc.get("environment"))
             for key, raw_value in environment.items():
                 value = _interpolate(str(raw_value), env)
                 if not _URL_KEYS.match(key):

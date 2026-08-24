@@ -16,7 +16,9 @@ def _lease(state: LeaseState, *, age_s: float = 0.0, ttl: float = 60.0) -> Fault
             "owner_agent": "ag-j",
             "targets": ["n1"],
             "undo_ops": ({"op": "noop", "args": {}},),
-            "verify_probes": ({"probe": "exec", "args": {"cmd": ["true"]}, "expect_present": True},),
+            "verify_probes": (
+                {"probe": "exec", "args": {"cmd": ["true"]}, "expect_present": True},
+            ),
             "ttl_seconds": ttl,
             "state": state,
             "created_at": utc_now() - timedelta(seconds=age_s),
@@ -36,7 +38,7 @@ class TestSweep:
         janitor, sink = _janitor_with(_lease(LeaseState.PENDING), _lease(LeaseState.ACTIVE))
         result = janitor.sweep(now_epoch_s=utc_now().timestamp())
         assert result.quiet
-        states = {l.id: l.state for l in sink.active_leases()}
+        states = {ls.id: ls.state for ls in sink.active_leases()}
         assert len(states) == 2  # both still non-terminal
 
     def test_stale_pending_expires_without_undo(self) -> None:

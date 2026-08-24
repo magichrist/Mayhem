@@ -16,6 +16,9 @@ from mayhem.domain.experiments import (
     ExecutionPlan,
     ExperimentKind,
     InjectFault,
+    PlannedFault,
+    PlannedStep,
+    ResolvedTarget,
 )
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import (
@@ -108,16 +111,16 @@ def test_blast_radius_counts_dependents():
         budget=BlastRadiusBudget(max_services_pct=100.0),
         fingerprint="f",
     )
-    stats = check_blast_radius(graph, {"n-db"}, 10.0, (), "proc.pause", permissive)
+    stats = check_blast_radius(graph, {"n-db"}, 10.0, (), "proc.pause", ctx=permissive)
     assert stats["services_pct"] == 100.0  # api and web both depend on db
 
     tight = SafetyContext(
         policy=PolicyCfg(), budget=BlastRadiusBudget(max_services_pct=50.0), fingerprint="f"
     )
     with pytest.raises(SafetyRefusedError, match="blast radius"):
-        check_blast_radius(graph, {"n-db"}, 10.0, (), "proc.pause", tight)
+        check_blast_radius(graph, {"n-db"}, 10.0, (), "proc.pause", ctx=tight)
 
-    leaf_only = check_blast_radius(graph, {"n-web"}, 10.0, (), "proc.pause", tight)
+    leaf_only = check_blast_radius(graph, {"n-web"}, 10.0, (), "proc.pause", ctx=tight)
     assert leaf_only["services_pct"] == pytest.approx(33.3, abs=0.1)
 
 
@@ -128,7 +131,7 @@ def test_duration_cap_and_forbidden_pairs():
         fingerprint="f",
     )
     with pytest.raises(SafetyRefusedError, match="duration"):
-        check_blast_radius(graph, {"n-web"}, 10.0, (), "proc.cpu", ctx)
+        check_blast_radius(graph, {"n-web"}, 10.0, (), "proc.cpu", ctx=ctx)
 
     pair_ctx = SafetyContext(
         policy=PolicyCfg(),
@@ -136,7 +139,7 @@ def test_duration_cap_and_forbidden_pairs():
         fingerprint="f",
     )
     with pytest.raises(SafetyRefusedError, match="forbidden"):
-        check_blast_radius(graph, {"n-web"}, 1.0, ("a",), "b", pair_ctx)
+        check_blast_radius(graph, {"n-web"}, 1.0, ("a",), "b", ctx=pair_ctx)
 
 
 # -- fingerprint + G3 --------------------------------------------------------------
@@ -154,8 +157,6 @@ def test_fingerprint_is_order_insensitive_and_sensitive_to_env():
 
 
 def test_validate_plan_refuses_stale_fingerprint():
-    from mayhem.domain.experiments import PlannedFault, PlannedStep, ResolvedTarget
-
     selector = TargetSelector(kind=NodeKind.PROCESS, expr="api")
     plan = ExecutionPlan(
         run_id="r", kind=ExperimentKind.DETERMINISTIC,

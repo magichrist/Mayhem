@@ -26,8 +26,8 @@ def _ps(engine: str) -> list[dict[str, Any]]:
         timeout=15,
     )
     rows: list[dict[str, Any]] = []
-    for line in out.stdout.splitlines():
-        line = line.strip()
+    for raw_line in out.stdout.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         try:

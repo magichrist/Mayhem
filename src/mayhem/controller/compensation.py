@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.leases import UndoOp, VerifyProbe
+from mayhem.domain.topology import NodeKind, ProcessNode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,9 +22,9 @@ if TYPE_CHECKING:
 NO_UNDO = InvariantViolationError("undo_template_missing", "no compensation template")
 
 
-def _first_process(nodes: tuple[TopologyNode, ...]):
+def _first_process(nodes: tuple[TopologyNode, ...]) -> ProcessNode | None:
     for node in nodes:
-        if node.kind.value == "process":
+        if node.kind is NodeKind.PROCESS and isinstance(node, ProcessNode):
             return node
     return None
 
@@ -32,14 +33,14 @@ def _proc_pause_undo(nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     proc = _first_process(nodes)
     if proc is None:
         raise NO_UNDO
-    return (UndoOp(op="signal.cont", args={"pid": str(proc.pid)}),)  # type: ignore[union-attr]
+    return (UndoOp(op="signal.cont", args={"pid": str(proc.pid)}),)
 
 
 def _proc_pause_verify(nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
     proc = _first_process(nodes)
     if proc is None:
         raise NO_UNDO
-    pid = str(proc.pid)  # type: ignore[union-attr]
+    pid = str(proc.pid)
     return (
         VerifyProbe(
             probe="exec",

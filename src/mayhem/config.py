@@ -25,7 +25,7 @@ from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget
 from mayhem.domain.risks import RiskLevel
 
-API_VERSION = "mayhem/v1"
+API_VERSION: Literal["mayhem/v1"] = "mayhem/v1"
 ENV_PREFIX = "MAYHEM_"
 _ENV_ALLOWED = {
     "STORAGE_PATH": "storage.path",
@@ -109,7 +109,7 @@ def _read_document(path: Path) -> dict[str, Any]:
 
 
 def _apply_env(data: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
-    merged = json.loads(json.dumps(data))  # deep copy without aliasing defaults
+    merged: dict[str, Any] = json.loads(json.dumps(data))  # deep-copy defaults away
     for suffix, dotted in _ENV_ALLOWED.items():
         value = env.get(ENV_PREFIX + suffix)
         if value is None:
@@ -135,7 +135,10 @@ def load_config(
     provenance is part of the snapshot.
     """
     env = dict(os.environ if environ is None else environ)
-    sources: dict[str, str] = dict.fromkeys(("environment", "policy", "blast_radius", "storage", "toolkit", "log_level"), "defaults")
+    sources: dict[str, str] = dict.fromkeys(
+        ("environment", "policy", "blast_radius", "storage", "toolkit", "log_level"),
+        "defaults",
+    )
     merged: dict[str, Any] = {"api_version": API_VERSION}
 
     def absorb(layer_data: dict[str, Any], layer_name: str) -> None:

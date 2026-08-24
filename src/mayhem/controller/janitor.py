@@ -18,6 +18,7 @@ from mayhem.domain.leases import LeaseState
 
 if TYPE_CHECKING:
     from mayhem.agents.sinks import LeaseSink
+    from mayhem.domain.leases import FaultLease
 
 
 @dataclass(frozen=True)
@@ -76,11 +77,11 @@ class Janitor:
                     dirty.append(orphaned.id)
         return SweepResult(tuple(expired), tuple(recovered), tuple(dirty))
 
-    def _save_quietly(self, lease) -> None:
+    def _save_quietly(self, lease: FaultLease) -> None:
         with contextlib.suppress(Exception):  # sweep must survive sink flakiness
             self._sink.save(lease)
 
-    def _dirty_from(self, orphaned, exc: Exception) -> None:
+    def _dirty_from(self, orphaned: FaultLease, exc: Exception) -> None:
         try:
             stuck = orphaned.transition(
                 LeaseState.RELEASING, mechanism="janitor", now=utc_now()

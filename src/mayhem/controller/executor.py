@@ -7,32 +7,35 @@ go through the LeaseClient so no state transition bypasses the domain rules.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import signal
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from mayhem.agents.executors import executor_for
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
+from mayhem.domain.checks import ProbeType
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.leases import VerifyProbe
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import Path
 
     from mayhem.agents.sinks import LeaseSink
     from mayhem.controller.safety import SafetyContext
-    from mayhem.domain.checks import SteadyStateCheck
-    from mayhem.domain.experiments import ExecutionPlan, PlannedStep
+    from mayhem.domain.checks import Probe, SteadyStateCheck
+    from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
+    from mayhem.toolkit.tool_runner import ToolResult
 
 
 @dataclass(frozen=True)
@@ -121,7 +124,7 @@ class RunEngine:
                     status = "aborted"
                     break
         ended = utc_now().timestamp()
-        recovered = ()
+        recovered: tuple[str, ...] = ()
         if dirty or status in ("aborted", "failed"):
             try:
                 recovered = self.recover_run(plan.run_id)
@@ -392,7 +395,11 @@ class RunEngine:
             )
 
     def _record_invocation(
-        self, plan: ExecutionPlan, step: PlannedStep, fault, lease_id: str
+        self,
+        plan: ExecutionPlan,
+        step: PlannedStep,
+        fault: PlannedFault,
+        lease_id: str,
     ) -> None:
         with self._store.write() as conn:
             conn.execute(
@@ -433,7 +440,7 @@ class RunEngine:
                 ),
             )
 
-    def _record_tool_result(self, tool_result) -> None:
+    def _record_tool_result(self, tool_result: ToolResult | None) -> None:
         if tool_result is None:
             return
         with self._store.write() as conn:
@@ -468,38 +475,35 @@ class RunEngine:
             )
 
 
-def _domain_probe_to_verify(probe: object) -> VerifyProbe:
+def _domain_probe_to_verify(probe: Probe) -> VerifyProbe:
     """Map a domain checks.Probe onto the agents VerifyProbe runner."""
-    kind = getattr(probe, "type", None)
-    value = getattr(kind, "value", kind)
-    if value == "exec":
+    if probe.type is ProbeType.EXEC:
         return VerifyProbe(
             probe="exec",
-            args={"cmd": list(probe.cmd), "timeout_s": getattr(probe, "timeout", 10.0)},
+            args={"cmd": list(probe.cmd), "timeout_s": float(probe.timeout)},
             expect_present=True,
         )
-    if value == "tcp":
+    if probe.type is ProbeType.TCP:
         return VerifyProbe(
             probe="tcp",
             args={
                 "host": probe.host,
                 "port": int(probe.port),
-                "timeout_s": getattr(probe, "timeout", 3.0),
+                "timeout_s": float(probe.timeout),
             },
             expect_present=True,
         )
-    if value == "http":
+    if probe.type is ProbeType.HTTP:
         return VerifyProbe(
             probe="http",
             args={
                 "url": probe.url,
-                "expect_status": int(getattr(probe, "expected_status", 200)),
-                "timeout_s": getattr(probe, "timeout", 5.0),
+                "expect_status": int(probe.expected_status),
+                "timeout_s": float(probe.timeout),
             },
             expect_present=True,
         )
-    msg = f"unsupported probe type {probe!r}"
-    raise ValueError(msg)
+    assert_never(probe)  # exhaustive over the Probe union
 
 
 class _AbortMatrix:
@@ -512,18 +516,14 @@ class _AbortMatrix:
 
     def __enter__(self) -> _AbortMatrix:
         for signum, mode in ((signal.SIGINT, "graceful"), (signal.SIGUSR1, "immediate")):
-            try:
+            with contextlib.suppress(ValueError, OSError):  # non-main thread / unsupported platform
                 self._previous[signum] = signal.signal(signum, self._make_handler(mode))
-            except (ValueError, OSError):  # non-main thread / unsupported platform
-                pass
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         for signum, previous in self._previous.items():
-            try:
+            with contextlib.suppress(ValueError, OSError):
                 signal.signal(signum, previous)  # type: ignore[arg-type]
-            except (ValueError, OSError):
-                pass
         self._engine._abort_mode = None
 
     def _make_handler(self, mode: str) -> Callable[[int, object], None]:
@@ -536,7 +536,7 @@ class _AbortMatrix:
                     handler.seen_once = True  # type: ignore[attr-defined]
                 effective = mode
             self._engine._abort_mode = effective
-            try:
+            with contextlib.suppress(Exception):
                 self._engine._emit(
                     Event(
                         kind=EventKind.RUN_ABORT_REQUESTED,
@@ -544,7 +544,5 @@ class _AbortMatrix:
                         detail={"mode": effective},
                     )
                 )
-            except Exception:
-                pass
 
         return handler

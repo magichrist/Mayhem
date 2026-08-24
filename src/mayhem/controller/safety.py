@@ -15,7 +15,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
 from mayhem.domain.risks import RiskLevel
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from mayhem.config import PolicyCfg
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
-    from mayhem.domain.topology import TopologyGraph
+    from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
 
 class SafetyRefusedError(InvariantViolationError):
@@ -114,6 +114,7 @@ def check_blast_radius(
     duration_s: float,
     fault_ids_so_far: tuple[str, ...],
     new_fault_id: str,
+    *,
     ctx: SafetyContext,
 ) -> dict[str, float]:
     """G2 (budget half): topology-derived blast radius must fit; returns measured stats."""
@@ -181,15 +182,16 @@ def validate_plan(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext)
             float(fault.duration),
             tuple(seen_faults),
             fault.fault_id,
-            ctx,
+            ctx=ctx,
         )
         seen_faults.append(fault.fault_id)
 
 
-def pre_exec_assertion(target_selector_pairs, live_graph: TopologyGraph) -> None:
+def pre_exec_assertion(
+    target_selector_pairs: Iterable[tuple[TargetSelector, frozenset[str] | tuple[str, ...]]],
+    live_graph: TopologyGraph,
+) -> None:
     """G3: seconds before injection, re-check selectors against live topology."""
-    from mayhem.domain.topology import TargetResolutionError  # local: avoids cycle at import
-
     for selector, expected_ids in target_selector_pairs:
         try:
             live = live_graph.resolve(selector)
@@ -219,13 +221,13 @@ def _risk_of(fault_id: str) -> RiskLevel:
         return RiskLevel.LOW
 
 
-def _service_kind():
+def _service_kind() -> NodeKind:
     from mayhem.domain.topology import NodeKind
 
     return NodeKind.SERVICE
 
 
-def _host_kind():
+def _host_kind() -> NodeKind:
     from mayhem.domain.topology import NodeKind
 
     return NodeKind.HOST

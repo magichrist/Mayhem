@@ -6,6 +6,7 @@ import pytest
 from mayhem.controller.planner import PlanningError, plan_deterministic, plan_random
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import (
+    Constraints,
     DeterministicExperiment,
     ExperimentMetadata,
     InjectFault,
@@ -36,8 +37,6 @@ def _graph() -> TopologyGraph:
 
 
 def _exp(*steps: Step, risk_ceiling: RiskLevel | None = None) -> DeterministicExperiment:
-    from mayhem.domain.experiments import Constraints
-
     return DeterministicExperiment(
         metadata=ExperimentMetadata(name="proc-pause-drill"),
         constraints=Constraints(risk_ceiling=risk_ceiling),
@@ -45,7 +44,14 @@ def _exp(*steps: Step, risk_ceiling: RiskLevel | None = None) -> DeterministicEx
     )
 
 
-_PAUSE = Step(id="s1", action=InjectFault(fault="proc.pause", selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="name=api-pid"),), duration=10.0))
+_PAUSE = Step(
+    id="s1",
+    action=InjectFault(
+        fault="proc.pause",
+        selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="name=api-pid"),),
+        duration=10.0,
+    ),
+)
 
 
 class TestDeterministicPlanning:
@@ -143,6 +149,15 @@ class TestDeterministicPlanning:
             )
 
 
+def _fault_summaries(plan: object) -> list[tuple[str, list[str]]]:
+    """(fault_id, sorted target node ids) for every fault-bearing step."""
+    return [
+        (s.fault.fault_id, sorted(n for tgt in s.fault.targets for n in tgt.node_ids))
+        for s in getattr(plan, "steps", ())
+        if s.fault is not None
+    ]
+
+
 class TestRandomPlanning:
     def test_same_seed_same_plan(self) -> None:
         exp = RandomExperiment(
@@ -150,24 +165,34 @@ class TestRandomPlanning:
             seed=7,
             selection=SelectionPolicy(count=3),
         )
-        kwargs = dict(config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f")
-        a = plan_random("r-a", exp, _graph(), rng_factory=lambda seed: random.Random(seed), **kwargs)
-        b = plan_random("r-b", exp, _graph(), rng_factory=lambda seed: random.Random(seed), **kwargs)
-        faults_a = [(s.fault.fault_id, sorted(n for t in s.fault.targets for n in t.node_ids)) for s in a.steps if s.fault]
-        faults_b = [(s.fault.fault_id, sorted(n for t in s.fault.targets for n in t.node_ids)) for s in b.steps if s.fault]
-        assert faults_a == faults_b
+        kwargs = {
+            "config_snapshot_id": "c",
+            "topology_snapshot_id": "t",
+            "environment_fingerprint": "f",
+        }
+        a = plan_random("r-a", exp, _graph(), rng_factory=random.Random, **kwargs)
+        b = plan_random("r-b", exp, _graph(), rng_factory=random.Random, **kwargs)
+        assert _fault_summaries(a) == _fault_summaries(b)
 
     def test_only_compensatable_faults_enter_lottery(self) -> None:
         exp = RandomExperiment(metadata=ExperimentMetadata(name="maniac"), seed=1)
-        kwargs = dict(config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f")
-        plan = plan_random("r-1", exp, _graph(), rng_factory=lambda seed: random.Random(seed), **kwargs)
+        kwargs = {
+            "config_snapshot_id": "c",
+            "topology_snapshot_id": "t",
+            "environment_fingerprint": "f",
+        }
+        plan = plan_random("r-1", exp, _graph(), rng_factory=random.Random, **kwargs)
         for step in plan.steps:
             if step.fault is not None:
                 assert step.fault.undo_ops  # every chosen fault is compensatable
 
     def test_weights_skew_lottery(self) -> None:
-        kwargs = dict(config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
-                      rng_factory=lambda seed: random.Random(seed))
+        kwargs = {
+            "config_snapshot_id": "c",
+            "topology_snapshot_id": "t",
+            "environment_fingerprint": "f",
+            "rng_factory": random.Random,
+        }
         weighted = RandomExperiment(
             metadata=ExperimentMetadata(name="maniac"),
             seed=3,

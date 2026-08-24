@@ -6,9 +6,9 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from mayhem.cli import app
-from mayhem.spec import load_spec, parse_spec
 from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.experiments import RandomExperiment
+from mayhem.domain.experiments import DeterministicExperiment, RandomExperiment
+from mayhem.spec import load_spec, parse_spec
 
 runner = CliRunner()
 
@@ -41,8 +41,6 @@ selection:
 
 class TestSpecLoader:
     def test_deterministic_roundtrip(self, tmp_path: Path) -> None:
-        from mayhem.domain.experiments import DeterministicExperiment
-
         spec_file = tmp_path / "spec.yaml"
         spec_file.write_text(DETERMINISTIC_YAML)
         experiment = load_spec(spec_file)
@@ -99,7 +97,7 @@ class TestCli:
     def test_plan_prints_json(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, DETERMINISTIC_YAML)
         result = runner.invoke(
-            app, ["plan", spec, "--process", "api=%d" % 424242]
+            app, ["plan", spec, "--process", f"api={424242}"]
         )
         assert result.exit_code == 0, result.output
         assert '"proc.pause"' in result.output
@@ -115,7 +113,8 @@ class TestCli:
             stdout=subprocess.DEVNULL,
         )
         try:
-            spec_text = DETERMINISTIC_YAML.replace("expr: \"name=api\"", f"expr: \"sleeper-{proc.pid}\"")
+            needle = 'expr: "name=api"'
+            spec_text = DETERMINISTIC_YAML.replace(needle, f'expr: "sleeper-{proc.pid}"')
             spec = _write(tmp_path, spec_text)
             db = tmp_path / "cli.db"
             result = runner.invoke(

@@ -14,7 +14,10 @@ from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import NodeKind
 
 _S = ParamSpec(name="seconds", type=ParamType.DURATION)
-_PCT = lambda **kw: ParamSpec(name="percent", type=ParamType.PERCENT, **kw)  # noqa: E731
+def _pct(minimum: float, maximum: float) -> ParamSpec:
+    return ParamSpec(
+        name="percent", type=ParamType.PERCENT, minimum=minimum, maximum=maximum
+    )
 
 CATALOG: tuple[FaultDefinition, ...] = (
     FaultDefinition(
@@ -32,7 +35,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         risk=RiskLevel.MEDIUM,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST}),
         max_duration_s=300.0,
-        params_schema=(_PCT(minimum=1.0, maximum=100.0),),
+        params_schema=(_pct(minimum=1.0, maximum=100.0),),
     ),
     FaultDefinition(
         id="mem.exhaust",
@@ -40,7 +43,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         risk=RiskLevel.HIGH,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
         max_duration_s=120.0,
-        params_schema=(_PCT(minimum=1.0, maximum=99.0),),
+        params_schema=(_pct(minimum=1.0, maximum=99.0),),
     ),
     FaultDefinition(
         id="fs.fill",
@@ -49,7 +52,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         reversible=True,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
         max_duration_s=300.0,
-        params_schema=(_PCT(minimum=1.0, maximum=99.0),),
+        params_schema=(_pct(minimum=1.0, maximum=99.0),),
     ),
     FaultDefinition(
         id="net.latency",

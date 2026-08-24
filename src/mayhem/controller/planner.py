@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING
 
 from mayhem.controller.compensation import compensated, template_for
 from mayhem.domain.catalog import all_definitions, definition_for
-from mayhem.domain.errors import InvariantViolationError, SchemaValidationError
+from mayhem.domain.errors import (
+    InvariantViolationError,
+    SchemaValidationError,
+    TargetResolutionError,
+)
 from mayhem.domain.experiments import (
     DeterministicExperiment,
     ExecutionPlan,
@@ -23,13 +27,14 @@ from mayhem.domain.experiments import (
     RandomExperiment,
     ResolvedTarget,
 )
-from mayhem.domain.topology import TargetResolutionError, TargetSelector
+from mayhem.domain.topology import TargetSelector
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mayhem.domain.experiments import StepAction
-    from mayhem.domain.topology import TopologyGraph
+    from mayhem.domain.experiments import SelectionPolicy, StepAction
+    from mayhem.domain.risks import RiskLevel
+    from mayhem.domain.topology import TopologyGraph, TopologyNode
 
 
 class PlanningError(Exception):
@@ -63,6 +68,46 @@ def plan_deterministic(
     )
 
 
+def _admitted_candidates(
+    policy: SelectionPolicy, ceiling: RiskLevel | None
+) -> list[str]:
+    """Faults eligible for the random lottery: compensatable + policy-admitted."""
+    candidates: list[str] = []
+    for definition in all_definitions():
+        if template_for(definition.id) is None:
+            continue  # uncompensatable faults never enter the lottery
+        if definition.id in policy.exclude_faults:
+            continue
+        if policy.categories is not None and definition.category not in policy.categories:
+            continue
+        if ceiling is not None and definition.risk.at_least(ceiling.next_higher()):
+            continue
+        candidates.append(definition.id)
+    return candidates
+
+
+def _draw_chosen(
+    rng: random.Random,
+    policy: SelectionPolicy,
+    candidates: list[str],
+    weights: list[float],
+) -> list[str]:
+    """Weighted draw without repetition; forbidden pairs only bind when co-drawn."""
+    chosen: list[str] = []
+    attempts = 0
+    while len(chosen) < min(policy.count, len(candidates)) and attempts < 200:
+        attempts += 1
+        candidate = rng.choices(candidates, weights=weights, k=1)[0]
+        if any(
+            frozenset({candidate, other}) in policy.forbidden_pairs
+            for other in chosen
+        ):
+            continue
+        if candidate not in chosen:
+            chosen.append(candidate)
+    return chosen
+
+
 def plan_random(
     run_id: str,
     exp: RandomExperiment,
@@ -82,34 +127,12 @@ def plan_random(
     policy = exp.selection
     ceiling = exp.constraints.risk_ceiling
 
-    candidates: list[str] = []
-    for definition in all_definitions():
-        if template_for(definition.id) is None:
-            continue  # uncompensatable faults never enter the lottery
-        if definition.id in policy.exclude_faults:
-            continue
-        if policy.categories is not None and definition.category not in policy.categories:
-            continue
-        if ceiling is not None and definition.risk.at_least(ceiling.next_higher()):
-            continue
-        candidates.append(definition.id)
+    candidates = _admitted_candidates(policy, ceiling)
     if not candidates:
         raise PlanningError("selection policy admits zero compensatable faults")
     weight_map = policy.weights or {}
     weights = [float(weight_map.get(fault_id, 1.0)) for fault_id in candidates]
-
-    chosen: list[str] = []
-    attempts = 0
-    while len(chosen) < min(policy.count, len(candidates)) and attempts < 200:
-        attempts += 1
-        candidate = rng.choices(candidates, weights=weights, k=1)[0]
-        if any(
-            frozenset({candidate, other}) in policy.forbidden_pairs
-            for other in chosen
-        ):
-            continue  # a forbidden pair is violated only when both members coexist
-        if candidate not in chosen:
-            chosen.append(candidate)
+    chosen = _draw_chosen(rng, policy, candidates, weights)
 
     steps: list[PlannedStep] = []
     for offset, fault_id in enumerate(chosen):
@@ -120,7 +143,7 @@ def plan_random(
             fault=fault_id,
             selectors=selectors,
             params=_params_for(fault_id, rng),
-            duration="10s",
+            duration=10.0,
         )
         _plan_action(run_id, f"rnd-{offset}", offset, action, graph, steps)
     if not steps:
@@ -144,6 +167,25 @@ def plan_random(
         environment_fingerprint=environment_fingerprint,
         seed=seed,
     )
+
+
+def _resolve_targets(
+    action: InjectFault, step_id: str, graph: TopologyGraph
+) -> tuple[list[ResolvedTarget], list[TopologyNode]]:
+    """Resolve every selector of an inject_fault against the blueprint graph."""
+    resolved_targets: list[ResolvedTarget] = []
+    nodes: list[TopologyNode] = []
+    try:
+        for selector in action.selectors:
+            matched = graph.resolve(selector)
+            nodes.extend(matched)
+            resolved_targets.append(
+                ResolvedTarget(selector=selector, node_ids=frozenset(n.id for n in matched))
+            )
+    except TargetResolutionError as exc:
+        msg = f"selector {exc.selector!s} in step {step_id!r}: {exc}"
+        raise PlanningError(msg) from None
+    return resolved_targets, nodes
 
 
 def _plan_action(  # noqa: PLR0917 — internal flattener, positional by design
@@ -170,18 +212,7 @@ def _plan_action(  # noqa: PLR0917 — internal flattener, positional by design
         raise PlanningError(str(exc)) from None
     except LookupError as exc:
         raise PlanningError(str(exc)) from None
-    resolved_targets: list[ResolvedTarget] = []
-    nodes = []
-    try:
-        for selector in action.selectors:
-            matched = graph.resolve(selector)
-            nodes.extend(matched)
-            resolved_targets.append(
-                ResolvedTarget(selector=selector, node_ids=frozenset(n.id for n in matched))
-            )
-    except TargetResolutionError as exc:
-        msg = f"selector {exc.selector!s} in step {step_id!r}: {exc}"
-        raise PlanningError(msg) from None
+    resolved_targets, nodes = _resolve_targets(action, step_id, graph)
 
     for node in nodes:
         if node.kind not in definition.applicable_node_kinds:
@@ -218,7 +249,9 @@ def _plan_action(  # noqa: PLR0917 — internal flattener, positional by design
     out.append(PlannedStep(id=step_id, seq=seq, fault=planned, raw_action=action))
 
 
-def _selectors_for(graph: TopologyGraph, fault_id: str, rng: random.Random):
+def _selectors_for(
+    graph: TopologyGraph, fault_id: str, rng: random.Random
+) -> tuple[TargetSelector, ...] | None:
     definition = definition_for(fault_id)
     resolvable = [k for k in sorted(definition.applicable_node_kinds) if graph.of_kind(k)]
     if not resolvable:

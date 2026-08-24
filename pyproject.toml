@@ -79,6 +79,9 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # CLI commands keep heavy imports inside handlers so `--help` stays instant,
 # and typer's own API *is* Option(...) in argument defaults.
 "src/mayhem/cli.py" = ["B008", "PLC0415", "PLR0917"]
+# safety.py keeps catalog/topology imports inside helpers on purpose (see the
+# "local:" comments) — hoisting them would create import cycles.
+"src/mayhem/controller/safety.py" = ["PLC0415"]
 
 # --- Mypy --------------------------------------------------------------------
 [tool.mypy]

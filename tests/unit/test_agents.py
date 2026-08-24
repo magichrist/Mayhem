@@ -295,10 +295,11 @@ class TestProbes:
 
 
 def _process_state(pid: int) -> str:
+    """First letter of `ps` STAT — 'T' when SIGSTOPped ('+' suffix = fg group)."""
     out = subprocess.run(
         ["ps", "-o", "stat=", "-p", str(pid)],
         capture_output=True,
         text=True,
         check=False,
     )
-    return out.stdout.strip()
+    return out.stdout.strip()[:1]

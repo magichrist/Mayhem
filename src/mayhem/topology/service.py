@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from mayhem.domain.topology import ContainerNode, Edge, NodeKind
+from mayhem.domain.topology import ContainerNode, Edge, NodeKind, TopologyGraph
 
 if TYPE_CHECKING:
-    from mayhem.domain.topology import TopologyGraph, TopologyNode
-    from mayhem.topology.providers.base import TopologyProvider
+    from mayhem.domain.topology import TopologyNode
+    from mayhem.topology.providers.base import PartialGraph, TopologyProvider
 
 
 @dataclass(frozen=True)
@@ -55,8 +55,8 @@ class TopologyService:
 
     @staticmethod
     def _diff(
-        blueprint,  # type: ignore[no-untyped-def]
-        live_fragments,  # type: ignore[no-untyped-def]
+        blueprint: PartialGraph,
+        live_fragments: list[PartialGraph],
     ) -> dict[str, object]:
         services = {n.name: n for n in blueprint.nodes if n.kind is NodeKind.SERVICE}
         live_by_service: dict[str, list[ContainerNode]] = {}
@@ -77,7 +77,7 @@ class TopologyService:
         changed_images: list[dict[str, str]] = []
         for name, svc in services.items():
             expected = getattr(svc, "image", None)
-            for container in live_by_service.get(name, []):
+            for _container in live_by_service.get(name, []):
                 # engine ps does not carry image on all versions; absence ≠ drift.
                 if expected is None:
                     continue
@@ -91,7 +91,7 @@ class TopologyService:
         return {k: v for k, v in report.items() if v}
 
 
-def _graph(nodes: tuple, edges: tuple):  # type: ignore[no-untyped-def]
-    from mayhem.domain.topology import TopologyGraph
-
+def _graph(
+    nodes: tuple[TopologyNode, ...], edges: tuple[Edge, ...]
+) -> TopologyGraph:
     return TopologyGraph(nodes=nodes, edges=edges)

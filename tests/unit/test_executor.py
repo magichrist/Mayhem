@@ -3,9 +3,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mayhem.agents.lease_client import LeaseClient
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.planner import plan_deterministic
-from mayhem.domain.experiments import ExperimentMetadata, InjectFault, Step
+from mayhem.domain.experiments import (
+    DeterministicExperiment,
+    ExperimentMetadata,
+    InjectFault,
+    Step,
+)
 from mayhem.domain.topology import NodeKind, ProcessNode, ServiceNode, TargetSelector, TopologyGraph
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 from mayhem.infra.store import Store
@@ -37,8 +43,6 @@ def _plan(run_id: str, pid: int):
             duration=1.0,
         ),
     )
-    from mayhem.domain.experiments import DeterministicExperiment
-
     spec = DeterministicExperiment(
         metadata=ExperimentMetadata(name="engine-e2e"), steps=(exp_step,)
     )
@@ -73,7 +77,9 @@ class TestEndToEnd:
             rows = store.query("SELECT status FROM runs WHERE id = 'r-e2e'")
             assert rows[0]["status"] == "completed"
 
-            leases = store.query("SELECT state, release_mechanism FROM fault_leases WHERE run_id = 'r-e2e'")
+            leases = store.query(
+                "SELECT state, release_mechanism FROM fault_leases WHERE run_id = 'r-e2e'"
+            )
             assert len(leases) == 1
             assert leases[0]["state"] == "released"
 
@@ -104,8 +110,6 @@ class TestEndToEnd:
 
 class TestRecovery:
     def test_recover_run_releases_stranded_lease(self, tmp_path: Path) -> None:
-        from mayhem.agents.lease_client import LeaseClient
-
         engine, store = _engine(tmp_path)
         sink = SQLiteLeaseSink(store)
         client = LeaseClient(sink, agent_id="ag-crash")

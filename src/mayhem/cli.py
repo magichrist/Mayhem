@@ -21,7 +21,7 @@ from mayhem.controller.planner import plan_deterministic, plan_random
 from mayhem.controller.safety import SafetyContext, SafetyRefusedError, environment_fingerprint
 from mayhem.domain.catalog import all_definitions
 from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, RandomExperiment
-from mayhem.domain.topology import HostNode, ProcessNode, ServiceNode, TopologyGraph
+from mayhem.domain.topology import HostNode, NodeKind, ProcessNode, ServiceNode, TopologyGraph
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 from mayhem.infra.store import Store
 from mayhem.spec import load_spec
@@ -50,12 +50,20 @@ def _build_graph(
         from mayhem.topology.providers.docker_runtime import ContainerRuntimeProvider
         from mayhem.topology.service import TopologyService
 
-        return TopologyService().discover(
-            [
-                ComposeFileProvider(compose),
-                ContainerRuntimeProvider.best_effort(),
-            ]
-        ).graph
+        return (
+            TopologyService()
+            .discover(
+                [
+                    provider
+                    for provider in (
+                        ComposeFileProvider(compose),
+                        ContainerRuntimeProvider.best_effort(),
+                    )
+                    if provider is not None
+                ]
+            )
+            .graph
+        )
     nodes: list[Any] = [
         HostNode(id="h-local", name=host, transport="local"),
     ]
@@ -90,7 +98,7 @@ def _prepare(
     store: Store,
     graph: TopologyGraph,
     compose: str | None,
-):
+) -> tuple[str, str, str, SafetyContext]:
     cfg, sources = load_config(
         config_path=config_path, profile=profile, environ={"MAYHEM_LOG_LEVEL": "INFO"}
     )
@@ -120,7 +128,7 @@ def _prepare(
     return cfg_snapshot_id, topo_snapshot_id, fingerprint, ctx
 
 
-def _host_kind():
+def _host_kind() -> NodeKind:
     from mayhem.domain.topology import NodeKind
 
     return NodeKind.HOST
@@ -133,15 +141,15 @@ def _plan_from_spec(
     config_snapshot_id: str,
     topology_snapshot_id: str,
     environment_fingerprint_value: str,
-    store=None,  # SQLiteStore | None — receives the maniac decision audit row
+    store: Store | None = None,  # receives the maniac decision audit row
 ) -> tuple[str, ExecutionPlan]:
     experiment = load_spec(spec_path)
     run_id = f"r-{experiment.metadata.name}"
-    common: dict[str, str] = dict(
-        config_snapshot_id=config_snapshot_id,
-        topology_snapshot_id=topology_snapshot_id,
-        environment_fingerprint=environment_fingerprint_value,
-    )
+    common: dict[str, str] = {
+        "config_snapshot_id": config_snapshot_id,
+        "topology_snapshot_id": topology_snapshot_id,
+        "environment_fingerprint": environment_fingerprint_value,
+    }
 
     def _audit(row: dict[str, object]) -> None:
         if store is None:
@@ -167,7 +175,7 @@ def _plan_from_spec(
     if isinstance(experiment, RandomExperiment):
         plan = plan_random(run_id, experiment, graph, **common, audit_sink=_audit)  # type: ignore[arg-type]
     else:
-        plan = plan_deterministic(run_id, experiment, graph, **common)  # type: ignore[arg-type]
+        plan = plan_deterministic(run_id, experiment, graph, **common)
     return run_id, plan
 
 
@@ -189,7 +197,14 @@ def discover(
     from mayhem.topology.service import TopologyService
 
     result = TopologyService().discover(
-        [ComposeFileProvider(compose), ContainerRuntimeProvider.best_effort()]
+        [
+            provider
+            for provider in (
+                ComposeFileProvider(compose),
+                ContainerRuntimeProvider.best_effort(),
+            )
+            if provider is not None
+        ]
     )
     typer.echo(
         json.dumps(
@@ -205,14 +220,18 @@ def discover(
 @app.command()
 def plan(
     spec_path: str = typer.Argument(..., help="Path to the experiment spec YAML."),
-    process: list[str] = typer.Option([], "--process", "-p", help="Local process node as name=pid."),
+    process: list[str] = typer.Option(
+        [], "--process", "-p", help="Local process node as name=pid."
+    ),
     service: list[str] = typer.Option([], "--service", help="Logical service node name."),
     host: str = typer.Option("local", "--host", help="Host node name."),
     compose: str | None = typer.Option(None, "--compose", help="docker-compose.yaml blueprint."),
     db: str = typer.Option(DEFAULT_DB, "--db", help="SQLite database path (snapshots)."),
     config: str | None = typer.Option(None, "--config", help="mayhem.yaml path."),
     profile: str | None = typer.Option(None, "--profile", help="Profile overlay name."),
-    allow_critical: bool = typer.Option(False, "--allow-critical", help="CLI half of critical opt-in."),
+    allow_critical: bool = typer.Option(
+        False, "--allow-critical", help="CLI half of critical opt-in."
+    ),
 ) -> None:
     """Plan an experiment against a topology and print it as JSON."""
     graph = _build_graph(list(process), list(service), host, compose)
@@ -242,13 +261,17 @@ def plan(
 def run(
     spec_path: str = typer.Argument(..., help="Path to the experiment spec YAML."),
     db: str = typer.Option(DEFAULT_DB, "--db", help="SQLite database path."),
-    process: list[str] = typer.Option([], "--process", "-p", help="Local process node as name=pid."),
+    process: list[str] = typer.Option(
+        [], "--process", "-p", help="Local process node as name=pid."
+    ),
     service: list[str] = typer.Option([], "--service", help="Logical service node name."),
     host: str = typer.Option("local", "--host", help="Host node name."),
     compose: str | None = typer.Option(None, "--compose", help="docker-compose.yaml blueprint."),
     config: str | None = typer.Option(None, "--config", help="mayhem.yaml path."),
     profile: str | None = typer.Option(None, "--profile", help="Profile overlay name."),
-    allow_critical: bool = typer.Option(False, "--allow-critical", help="CLI half of critical opt-in."),
+    allow_critical: bool = typer.Option(
+        False, "--allow-critical", help="CLI half of critical opt-in."
+    ),
 ) -> None:
     """Plan then execute an experiment; prints the run summary."""
     graph = _build_graph(list(process), list(service), host, compose)
@@ -334,7 +357,12 @@ def janitor(
     store = _store(db)
     try:
         result = Janitor(SQLiteLeaseSink(store)).sweep()
-        typer.echo(f"expired={len(result.expired)} recovered={len(result.recovered)} dirty={len(result.dirty)}")
+        counts = (
+            f"expired={len(result.expired)}"
+            f" recovered={len(result.recovered)}"
+            f" dirty={len(result.dirty)}"
+        )
+        typer.echo(counts)
         raise typer.Exit(code=1 if result.dirty else 0)
     finally:
         store.close()
