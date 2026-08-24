@@ -4,11 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tgondi.domain.errors import (
+from mayhem.domain.errors import (
     InvalidTransitionError,
     InvariantViolationError,
 )
-from tgondi.domain.leases import (
+from mayhem.domain.leases import (
     FaultLease,
     LeaseState,
     UndoOp,

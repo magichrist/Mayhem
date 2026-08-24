@@ -2,11 +2,11 @@
 
 import pytest
 
-from tgondi.domain.capabilities import Capability
-from tgondi.domain.errors import SchemaValidationError
-from tgondi.domain.faults import FaultCategory, FaultDefinition, ParamSpec, ParamType
-from tgondi.domain.risks import RiskLevel
-from tgondi.domain.topology import NodeKind
+from mayhem.domain.capabilities import Capability
+from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.faults import FaultCategory, FaultDefinition, ParamSpec, ParamType
+from mayhem.domain.risks import RiskLevel
+from mayhem.domain.topology import NodeKind
 
 
 def _latency() -> FaultDefinition:

@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-from tgondi.toolkit.hashing import canonical_json, digest, digest_mapping
-from tgondi.toolkit.tool_runner import ToolError, ToolTimeoutError, run_tool
+from mayhem.toolkit.hashing import canonical_json, digest, digest_mapping
+from mayhem.toolkit.tool_runner import ToolError, ToolTimeoutError, run_tool
 
 
 class TestHashing:

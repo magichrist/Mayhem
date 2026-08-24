@@ -7,14 +7,14 @@ deviates from it, and that serialization round-trips preserve value equality.
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tgondi.domain.common import parse_duration
-from tgondi.domain.errors import InvalidTransitionError
-from tgondi.domain.leases import FaultLease, LeaseState
-from tgondi.domain.topology import Edge, EdgeKind, ServiceNode, TopologyGraph
+from mayhem.domain.common import parse_duration
+from mayhem.domain.errors import InvalidTransitionError
+from mayhem.domain.leases import FaultLease, LeaseState
+from mayhem.domain.topology import Edge, EdgeKind, ServiceNode, TopologyGraph
 
 _ALL_STATES = sorted(LeaseState, key=lambda s: s.value)
 _TRANSITION_TABLE: dict[LeaseState, frozenset[LeaseState]] = {
-    LeaseState.PENDING: frozenset({LeaseState.ACTIVE}),
+    LeaseState.PENDING: frozenset({LeaseState.ACTIVE, LeaseState.EXPIRED}),
     LeaseState.ACTIVE: frozenset({LeaseState.RELEASING, LeaseState.EXPIRED, LeaseState.ORPHANED}),
     LeaseState.RELEASING: frozenset({LeaseState.RELEASED, LeaseState.DIRTY}),
     LeaseState.RELEASED: frozenset(),

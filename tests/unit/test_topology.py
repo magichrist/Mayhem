@@ -2,11 +2,11 @@
 
 import pytest
 
-from tgondi.domain.errors import (
+from mayhem.domain.errors import (
     InvariantViolationError,
     TargetResolutionError,
 )
-from tgondi.domain.topology import (
+from mayhem.domain.topology import (
     ContainerNode,
     Edge,
     EdgeKind,

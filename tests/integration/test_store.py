@@ -5,22 +5,22 @@ from pathlib import Path
 
 import pytest
 
-from tgondi.infra.migrations import ALL_MIGRATIONS
-from tgondi.infra.migrator import Migration, MigrationError, current_version, run_migrations
-from tgondi.infra.store import Store
+from mayhem.infra.migrations import ALL_MIGRATIONS
+from mayhem.infra.migrator import Migration, MigrationError, current_version, run_migrations
+from mayhem.infra.store import Store
 
 
 class TestMigrator:
-    def test_fresh_database_reaches_v1(self, tmp_path: Path) -> None:
+    def test_fresh_database_reaches_head(self, tmp_path: Path) -> None:
         store = Store.open_migrated(tmp_path / "tg.db")
-        assert store.schema_version == 1
+        assert store.schema_version == ALL_MIGRATIONS[-1].version
         store.close()
 
     def test_idempotent(self, tmp_path: Path) -> None:
         path = tmp_path / "tg.db"
         first = Store.open_migrated(path)
         second = Store.open_migrated(path)
-        assert current_version(second._conn) == 1
+        assert current_version(second._conn) == ALL_MIGRATIONS[-1].version
         assert run_migrations(first._conn, ALL_MIGRATIONS) == []
         first.close()
         second.close()

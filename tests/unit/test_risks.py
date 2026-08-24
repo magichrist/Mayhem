@@ -2,7 +2,7 @@
 
 import pytest
 
-from tgondi.domain.risks import EnvironmentClass, RiskLevel
+from mayhem.domain.risks import EnvironmentClass, RiskLevel
 
 
 def test_ladder_is_totally_ordered() -> None:
