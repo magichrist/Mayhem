@@ -1,0 +1,113 @@
+"""LeaseClient — the only way an agent touches lease state.
+
+Every mutation is a legal state-machine transition (the domain module enforces
+it) followed by an immediate sink write, so a crash between inject and release
+still leaves a durable trail for the janitor.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from mayhem.domain.leases import FaultLease, LeaseState
+
+if TYPE_CHECKING:
+    from mayhem.agents.sinks import LeaseSink
+from mayhem.toolkit.fingerprint import interpreter_marker
+
+
+def _lease_id(sequence: int) -> str:
+    return f"l-{sequence:08d}"
+
+
+class LeaseConflictError(Exception):
+    """Two agents raced for the same target; the second one loses."""
+
+
+class LeaseClient:
+    def __init__(self, sink: LeaseSink, agent_id: str = f"ag-{interpreter_marker()}") -> None:
+        self._sink = sink
+        self._agent_id = agent_id
+        self._sequence = 0
+
+    @property
+    def agent_id(self) -> str:
+        return self._agent_id
+
+    def acquire(
+        self,
+        *,
+        run_id: str,
+        fault_id: str,
+        targets: frozenset[str] | set[str],
+        undo_ops: tuple[dict[str, Any], ...],
+        verify_probes: tuple[dict[str, Any], ...] = (),
+        ttl_seconds: float = 120.0,
+    ) -> FaultLease:
+        """Create a PENDING lease; the caller must activate() before injecting."""
+        self._sequence += 1
+        lease = FaultLease.model_validate(
+            {
+                "id": _lease_id(self._sequence),
+                "run_id": run_id,
+                "fault_id": fault_id,
+                "owner_agent": self._agent_id,
+                "targets": sorted(targets),
+                "undo_ops": list(undo_ops),
+                "verify_probes": list(verify_probes),
+                "ttl_seconds": ttl_seconds,
+            }
+        )
+        existing = [x for x in self._sink.active_leases() if x.targets & set(targets)]
+        if existing:
+            raise LeaseConflictError(
+                f"targets {sorted(targets)} already leased by "
+                f"{[(x.id, x.owner_agent) for x in existing]}"
+            )
+        self._sink.save(lease)
+        return lease
+
+    def activate(self, lease_id: str) -> FaultLease:
+        lease = self._require(lease_id)
+        activated = lease.transition(LeaseState.ACTIVE)
+        self._sink.save(activated)
+        return activated
+
+    def mark_releasing(self, lease_id: str) -> FaultLease:
+        lease = self._require(lease_id)
+        releasing = lease.transition(LeaseState.RELEASING)
+        self._sink.save(releasing)
+        return releasing
+
+    def confirm_release(self, lease_id: str, *, mechanism: str) -> FaultLease:
+        lease = self._require(lease_id)
+        released = lease.transition(LeaseState.RELEASED, mechanism=mechanism)
+        self._sink.save(released)
+        return released
+
+    def mark_dirty(self, lease_id: str, *, notes: str) -> FaultLease:
+        lease = self._require(lease_id)
+        dirty = lease.transition(LeaseState.DIRTY, escalation_notes=notes)
+        self._sink.save(dirty)
+        return dirty
+
+    def mark_orphaned(self, lease_id: str, *, notes: str | None = None) -> FaultLease:
+        lease = self._require(lease_id)
+        orphaned = lease.transition(
+            LeaseState.ORPHANED,
+            escalation_notes=notes or f"owner {lease.owner_agent} missed its heartbeat",
+        )
+        self._sink.save(orphaned)
+        return orphaned
+
+    def get(self, lease_id: str) -> FaultLease | None:
+        return self._sink.load(lease_id)
+
+    def active_leases(self) -> tuple[FaultLease, ...]:
+        return self._sink.active_leases()
+
+    def _require(self, lease_id: str) -> FaultLease:
+        lease = self._sink.load(lease_id)
+        if lease is None:
+            raise KeyError(f"unknown lease {lease_id!r}")
+        return lease

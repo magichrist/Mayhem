@@ -1,0 +1,11 @@
+tool: podman
+provides: [container.kill, container.pause, container.exec]
+probe:
+  cmd: [podman, --version]
+  version_regex: 'podman version (?P<v>[\d.]+)'
+privilege: none
+risk: high
+fallback_groups:
+  container.kill: primary
+  container.pause: primary
+  container.exec: fallback_1

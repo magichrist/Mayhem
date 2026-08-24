@@ -1,0 +1,11 @@
+tool: stress-ng
+provides: [cpu.pressure, mem.pressure, io.stress]
+probe:
+  cmd: [stress-ng, --version]
+  version_regex: 'version\s+(?P<v>[\d.]+)'
+privilege: none
+risk: medium
+fallback_groups:
+  cpu.pressure: primary
+  mem.pressure: primary
+  io.stress: primary

@@ -1,0 +1,10 @@
+tool: toxiproxy
+provides: [net.latency, net.partition]
+probe:
+  cmd: [toxiproxy-cli, --version]
+  version_regex: '(?P<v>\d+\.\d+\.\d+)'
+privilege: none
+risk: medium
+fallback_groups:
+  net.latency: fallback_1
+  net.partition: primary

@@ -1,0 +1,11 @@
+tool: tc
+provides: [net.latency, net.loss, net.partition]
+probe:
+  cmd: [tc, -Version]
+  version_regex: 'tc utility, iproute2-(?P<v>[\w.\-]+)'
+privilege: root
+risk: high
+fallback_groups:
+  net.latency: primary
+  net.loss: primary
+  net.partition: fallback_1

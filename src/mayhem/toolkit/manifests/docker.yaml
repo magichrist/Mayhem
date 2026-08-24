@@ -1,0 +1,11 @@
+tool: docker
+provides: [container.kill, container.pause, container.exec]
+probe:
+  cmd: [docker, --version]
+  version_regex: 'Docker version (?P<v>[\d.]+)'
+privilege: sudo_patterns
+risk: high
+fallback_groups:
+  container.kill: fallback_1
+  container.pause: fallback_1
+  container.exec: primary
