@@ -26,7 +26,7 @@ net.latency →  tc-netem (needs NET_ADMIN)  →  toxiproxy-latency (unprivilege
 
 ## 2. Tool manifests
 
-Declarative YAML shipped in-tree (`src/tgondi/toolkit/manifests/*.yaml`); adding a tool = adding a
+Declarative YAML shipped in-tree (`src/mayhem/toolkit/manifests/*.yaml`); adding a tool = adding a
 manifest + adapter ([ADR-0011](../adr/0011-toolkit-as-extension-point-no-plugin-system.md)).
 
 ```yaml

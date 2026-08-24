@@ -1,4 +1,4 @@
-# Tgondi
+# Mayhem
 
 A general-purpose chaos engineering and resilience-testing framework: a *chaos experiment
 orchestration engine* — not a collection of chaos commands.
@@ -8,16 +8,40 @@ DISCOVER → UNDERSTAND SYSTEM → SELECT TARGET → SELECT FAULT → SELECT TOO
         → EXECUTE → OBSERVE → EVALUATE → RECOVER → LEARN → NEXT EXPERIMENT
 ```
 
-Tgondi builds an understanding of your system (docker-compose topology today, Kubernetes-ready),
+Mayhem builds an understanding of your system (docker-compose topology today, Kubernetes-ready),
 plans experiments against that model, executes faults through per-host agents and a capability-
 oriented toolkit, observes effects with steady-state checks, guarantees recovery through leases +
 write-ahead undo + a janitor, and records honest evidence — journals, evaluations, and full audit.
 
 ## Status
 
-**Pre-implementation planning baseline.** The `docs/` tree is the contract the first
-implementation must satisfy. Start at [docs/README.md](docs/README.md) for the reading order;
-[docs/roadmap.md](docs/roadmap.md) defines the phased build from Phase 0 to v1.0.
+**Core implemented.** Domain models, lease/recovery machinery, deterministic + seeded-random
+planners, a durable run engine, and the `mayhem` CLI are working with unit and integration
+coverage (`pytest`). The `docs/` tree remains the architectural contract; see
+[docs/roadmap.md](docs/roadmap.md) for what is next.
+
+## Quickstart
+
+```console
+$ pip install -e .
+
+# What can the toolkit do?
+$ mayhem faults
+
+# Dry-run: plan an experiment against your topology, print the plan as JSON
+$ mayhem plan examples/experiments/proc-pause-drill.yaml --process api=4242
+
+# Execute it for real (SIGSTOP the process, verify, resume, journal everything)
+$ mayhem run examples/experiments/proc-pause-drill.yaml --process api=$(pgrep -f myapi)
+
+# Inspect history; repair anything left behind by a crashed controller
+$ mayhem status
+$ mayhem recover r-proc-pause-drill
+$ mayhem janitor
+```
+
+Experiment specs are YAML (see [examples/experiments](examples/experiments/)); durations accept
+`10s` / `5m`; targets select nodes from the topology graph you pass on the command line.
 
 ## Highlights
 

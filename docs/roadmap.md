@@ -31,7 +31,7 @@ criterion — no phase is "done" by declaration. MVP = end of Phase 6.
   ([topology-discovery](architecture/topology-discovery.md)).
 - Safety engine G1–G5, risk ladder, blast-radius computation, abort matrix
   ([safety](architecture/safety.md)).
-- **Exit:** `tgondi validate` refuses every unsafe plan in the adversarial test corpus.
+- **Exit:** `mayhem validate` refuses every unsafe plan in the adversarial test corpus.
 
 ## Phase 4 — Experiment engine
 
@@ -41,7 +41,7 @@ criterion — no phase is "done" by declaration. MVP = end of Phase 6.
 
 ## Phase 5 — Recovery machinery
 
-- Leases with write-ahead undo, verification probes, janitor reconciliation, `tgondi recover`.
+- Leases with write-ahead undo, verification probes, janitor reconciliation, `mayhem recover`.
 - **Exit:** chaos-of-the-chaos tier green: kill-controller/kill-agent scenarios converge to zero
   non-terminal leases ([testing-strategy](architecture/testing-strategy.md) §6).
 

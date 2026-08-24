@@ -1,6 +1,6 @@
 # Observation & Evidence
 
-Tgondi's credibility rests on honest observation: every claim in a run summary must be backed by
+Mayhem's credibility rests on honest observation: every claim in a run summary must be backed by
 recorded evidence. This document defines the event model, the journal, storage of history, and the
 seams for future sinks.
 
@@ -52,13 +52,13 @@ POST window: 5/5 checks passed · time-to-recover: 9.2s
 Hypothesis CONFIRMED with evidence refs [art-017, art-018]
 ```
 
-The journal lives at `.tgondi/journals/<run-id>.md`, is streamed to stdout in watch mode, and its
+The journal lives at `.mayhem/journals/<run-id>.md`, is streamed to stdout in watch mode, and its
 final block is persisted as the run row's summary.
 
 ## 3. Artifacts
 
 Raw evidence that doesn't fit a row — tool stdout/stderr full captures, probe bodies, k6 result
-files, discovery snapshots — is stored under `.tgondi/artifacts/<run-id>/…` and referenced by
+files, discovery snapshots — is stored under `.mayhem/artifacts/<run-id>/…` and referenced by
 `artifact_ref`. Rows never inline large payloads; truncation is always explicit
 ([toolkit.md](toolkit.md) §4).
 

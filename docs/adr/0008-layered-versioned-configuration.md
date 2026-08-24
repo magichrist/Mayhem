@@ -21,10 +21,10 @@ every run must record exactly what config produced it.
 
 ## Decision
 
-- Every YAML document carries `apiVersion: tgondi/v1`. Unknown versions rejected loudly; unknown
+- Every YAML document carries `apiVersion: mayhem/v1`. Unknown versions rejected loudly; unknown
   keys rejected strictly (typo = error, not silence).
-- **Layering order** (later wins): built-in defaults → `tgondi.yaml` (project root or `--config`)
-  → profile overlays (`--profile staging` loads `tgondi.{profile}.yaml`) → `TGONDI_*` environment
+- **Layering order** (later wins): built-in defaults → `mayhem.yaml` (project root or `--config`)
+  → profile overlays (`--profile staging` loads `mayhem.{profile}.yaml`) → `TGONDI_*` environment
   variables (limited allowlist: storage path, artifacts dir, log level) → CLI flags.
 - Pydantic v2 models mirror the schema; cross-field rules (e.g., `risk_ceiling: critical` requires
   explicit acknowledgement flag) validated in a policy pass, not scattered checks.
@@ -38,6 +38,6 @@ Full annotated schema: [reference/configuration-schema.md](../reference/configur
 
 - **Positive:** fail-fast on bad config before touching any system; profiles enable dev/staging
   variants of the same project; snapshots make historical runs fully explainable.
-- **Negative:** strictness can annoy early users (mitigated by `tgondi init` generating valid
+- **Negative:** strictness can annoy early users (mitigated by `mayhem init` generating valid
   starter config and precise error paths like `policy.blast_radius.max_services_pct`);
   pydantic models must be kept in sync with docs (docs reference generated schema).

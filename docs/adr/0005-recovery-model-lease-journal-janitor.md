@@ -7,7 +7,7 @@
 
 ## Context
 
-Tgondi intentionally breaks systems. The single most important architectural requirement is that
+Mayhem intentionally breaks systems. The single most important architectural requirement is that
 **a fault is never silently left behind** — including when:
 
 - the controller is SIGKILLed mid-injection,
@@ -46,7 +46,7 @@ Every fault invocation is governed by a **FaultLease**, persisted in SQLite befo
 ## Consequences
 
 - **Positive:** crash-safe under every failure combination we can construct; manual escape hatch
-  (`tgondi recover`) always has authoritative data to work from; auditable ownership of every
+  (`mayhem recover`) always has authoritative data to work from; auditable ownership of every
   active mutation.
 - **Negative / accepted trade-offs:** every fault implementation must author idempotent undo steps
   up front (more upfront work than try/finally — this is the point); leases add DB round-trips to

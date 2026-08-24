@@ -7,7 +7,7 @@
 
 ## Context
 
-Tgondi spans a controller, agent runtime, toolkit adapters, domain logic, persistence, and a CLI.
+Mayhem spans a controller, agent runtime, toolkit adapters, domain logic, persistence, and a CLI.
 We must choose how the codebase is packaged and what internal layering prevents rot. Constraints:
 
 - Entire initial framework is **Python ≥ 3.12**; no Rust/Go in core (external binaries are invoked
@@ -18,7 +18,7 @@ We must choose how the codebase is packaged and what internal layering prevents 
 
 ## Options considered
 
-1. **Multi-package workspace** (`tgondi-core`, `tgondi-agents`, `tgondi-toolkit`, …). Rejected for
+1. **Multi-package workspace** (`mayhem-core`, `mayhem-agents`, `mayhem-toolkit`, …). Rejected for
    MVP: version-sync overhead, publishing complexity, and boundaries not yet stable enough to be
    encoded as package seams.
 2. **Single flat package, conventions only.** Rejected: import rules would be aspirational, not
@@ -27,10 +27,10 @@ We must choose how the codebase is packaged and what internal layering prevents 
 
 ## Decision
 
-One installable distribution `tgondi` from a src-layout repository:
+One installable distribution `mayhem` from a src-layout repository:
 
 ```
-src/tgondi/{domain,config,topology,toolkit,protocol,agents,controller,maniac,
+src/mayhem/{domain,config,topology,toolkit,protocol,agents,controller,maniac,
             faults,recovery,observation,safety,persistence,reporting,api,cli}
 ```
 
@@ -43,8 +43,8 @@ Layering rules, enforced in CI with **import-linter** (fail the build, not lint-
    `topology/providers/*` **and** container-execution adapters under `agents/roles/container` /
    `faults/container`. This is the seam that keeps Kubernetes pluggable ([ADR-0013](0013-kubernetes-readiness-via-provider-seams.md)).
 4. `cli` is thin over `api` service interfaces; no business logic in commands.
-5. The agent process entrypoint is the same wheel: console script `tgondi-agent` (alias of
-   `tgondi agent serve`) — one artifact to ship locally and remotely.
+5. The agent process entrypoint is the same wheel: console script `mayhem-agent` (alias of
+   `mayhem agent serve`) — one artifact to ship locally and remotely.
 
 Core runtime dependencies kept deliberately small: `pydantic` (v2), `typer`, `structlog`,
 `pyyaml`. SSH uses the system OpenSSH client via subprocess (see [ADR-0003](0003-controller-agent-communication-jsonrpc-over-stdio-and-ssh.md));

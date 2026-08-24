@@ -156,4 +156,4 @@ CREATE TABLE maniac_decisions (
 | Writes | controller-only; single connection + WAL; busy_timeout 5s |
 | Migrations | forward-only numbered scripts; every migration tested against empty DB and all prior snapshots ([testing-strategy](../architecture/testing-strategy.md) §5) |
 | JSON | read paths validate via pydantic — corrupt rows fail loudly, not silently |
-| Retention | `tgondi db prune --older-than 90d` deletes artifacts first, then rows |
+| Retention | `mayhem db prune --older-than 90d` deletes artifacts first, then rows |

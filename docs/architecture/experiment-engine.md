@@ -59,7 +59,7 @@ DISCOVER → PLAN → VALIDATE → PREPARE → INJECT → OBSERVE → EVALUATE �
 
 single-fault · sequential multi-fault · parallel/concurrent faults · fault+load composition ·
 scheduled runs (external scheduler invokes CLI) · random (Maniac) · manual single faults
-(`tgondi run --fault net.latency …`) for development.
+(`mayhem run --fault net.latency …`) for development.
 
 ## 6. Failure semantics summary
 

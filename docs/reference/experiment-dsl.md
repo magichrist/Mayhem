@@ -10,7 +10,7 @@ point at the offending field.
 
 ```yaml
 kind: DeterministicExperiment
-apiVersion: tgondi.dev/v1
+apiVersion: mayhem.dev/v1
 metadata:
   name: db-partition-during-checkout
   labels: {team: payments, env: staging}
@@ -83,7 +83,7 @@ Resolved at validation and re-asserted at injection ([safety](../architecture/sa
 
 ```yaml
 kind: RandomExperiment
-apiVersion: tgondi.dev/v1
+apiVersion: mayhem.dev/v1
 metadata: {name: maniac-nightly-staging}
 seed: null                      # null = derive + record; integer = reproduce
 selection:

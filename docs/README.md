@@ -1,6 +1,6 @@
-# Tgondi Documentation
+# Mayhem Documentation
 
-**Tgondi** is a general-purpose chaos engineering and resilience-testing framework:
+**Mayhem** is a general-purpose chaos engineering and resilience-testing framework:
 a *chaos experiment orchestration engine* — not a collection of chaos commands.
 
 ```
@@ -33,7 +33,7 @@ must satisfy. Code exists nowhere yet; Phase 0 of [roadmap.md](roadmap.md) start
 | 5 | [architecture/toolkit.md](architecture/toolkit.md) | Toolkit arsenal design |
 | 6 | [architecture/experiment-engine.md](architecture/experiment-engine.md) | Lifecycle state machine |
 | 7 | [reference/experiment-dsl.md](reference/experiment-dsl.md) | Experiment YAML reference |
-| 8 | [reference/configuration-schema.md](reference/configuration-schema.md) | `tgondi.yaml` reference |
+| 8 | [reference/configuration-schema.md](reference/configuration-schema.md) | `mayhem.yaml` reference |
 | 9 | [architecture/maniac-engine.md](architecture/maniac-engine.md) | Random experiment planner |
 | 10 | [architecture/fault-taxonomy.md](architecture/fault-taxonomy.md) | Fault arsenal + coverage matrix |
 | 11 | [architecture/topology-discovery.md](architecture/topology-discovery.md) | Compose/Docker/Podman discovery |
@@ -61,7 +61,7 @@ docs/
 | Term | Meaning |
 |------|---------|
 | Controller | Central orchestrator process; single writer to storage; owns all connections |
-| Agent | Per-host worker process (`tgondi-agent`) executing tasks; never listens on ports |
+| Agent | Per-host worker process (`mayhem-agent`) executing tasks; never listens on ports |
 | Role | A set of fault capabilities bundled into one agent specialization (e.g. `network`) |
 | Toolkit / Arsenal | Capability registry + tool adapters agents invoke instead of raw binaries |
 | Fault | Declarative definition (`net.latency`) + lifecycle implementation (prepare/inject/recover) |

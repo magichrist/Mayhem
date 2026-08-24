@@ -4,13 +4,13 @@ Single Python package, layered monorepo ([ADR-0002](../adr/0002-python-single-pa
 Import direction is enforced downward only (`domain ← everything`; `infra ← services ← cli`).
 
 ```
-tgondi/
+mayhem/
 ├── docs/                          # this documentation tree
 │   ├── adr/
 │   ├── architecture/
 │   ├── reference/
 │   └── fault-catalog/             # generated coverage matrix (Phase 8+)
-├── src/tgondi/
+├── src/mayhem/
 │   ├── domain/                    # pure models, invariants, state machines — zero IO
 │   │   ├── topology.py            # Node union, Edge, TargetRef
 │   │   ├── faults.py              # FaultDefinition, FaultInvocation

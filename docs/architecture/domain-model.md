@@ -1,6 +1,6 @@
 # Domain Model
 
-Pure dataclasses/pydantic models in `src/tgondi/domain/` — **zero IO**, importable by every layer
+Pure dataclasses/pydantic models in `src/mayhem/domain/` — **zero IO**, importable by every layer
 ([ADR-0002](../adr/0002-python-single-package-layered-monorepo.md)). This page is the vocabulary
 contract: names here are used verbatim in code, storage, and protocol.
 

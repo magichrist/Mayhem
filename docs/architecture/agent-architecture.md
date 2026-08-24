@@ -1,6 +1,6 @@
 # Agent Architecture
 
-Agents are per-host worker processes (`tgondi-agent`) that execute fault capabilities. They are
+Agents are per-host worker processes (`mayhem-agent`) that execute fault capabilities. They are
 **not network services**: no listening ports anywhere ([ADR-0003](../adr/0003-controller-agent-communication-jsonrpc-over-stdio-and-ssh.md)).
 All connections belong to the controller.
 
@@ -53,15 +53,15 @@ be added behind the same transport interface if binary payloads ever matter.
 
 | Transport | Mechanism | Notes |
 |---|---|---|
-| `local_stdio` | controller spawns `tgondi-agent serve --roles …` as child process | default host = controller itself |
-| `ssh_exec` | persistent `ssh -o ControlMaster=auto <host> -- tgondi-agent serve` via asyncio subprocess wrapping OpenSSH client | reuses users' key management; ControlMaster multiplexes channels per host |
+| `local_stdio` | controller spawns `mayhem-agent serve --roles …` as child process | default host = controller itself |
+| `ssh_exec` | persistent `ssh -o ControlMaster=auto <host> -- mayhem-agent serve` via asyncio subprocess wrapping OpenSSH client | reuses users' key management; ControlMaster multiplexes channels per host |
 
 Reconnect: exponential backoff; in-flight faults survive channel loss via the watchdog TTL
 ([ADR-0005](../adr/0005-recovery-model-lease-journal-janitor.md)).
 
-**Bootstrap** (`tgondi agents install --host user@h`): verify Python ≥ 3.12 over SSH → create
-dedicated venv `/opt/tgondi/venv` → install the `tgondi` wheel → optional systemd template unit
-(`tgondi-agent.service`) for root-mode agents → print fingerprint for allowlist confirmation.
+**Bootstrap** (`mayhem agents install --host user@h`): verify Python ≥ 3.12 over SSH → create
+dedicated venv `/opt/mayhem/venv` → install the `mayhem` wheel → optional systemd template unit
+(`mayhem-agent.service`) for root-mode agents → print fingerprint for allowlist confirmation.
 Privilege modes: `root_via_systemd` (preferred for net/cgroup work) or pinned `sudo_patterns`
 (regex-allowlisted commands only).
 

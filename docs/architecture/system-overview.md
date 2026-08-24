@@ -1,6 +1,6 @@
 # System Overview
 
-Tgondi is a **chaos experiment orchestration engine**: it discovers a system's topology, plans and
+Mayhem is a **chaos experiment orchestration engine**: it discovers a system's topology, plans and
 executes controlled failure experiments through specialized agents, observes the effects, evaluates
 hypotheses, guarantees recovery, and records everything for learning and audit.
 
@@ -15,7 +15,7 @@ hypotheses, guarantees recovery, and records everything for learning and audit.
                         ┌───────────────────────────────────────────────────┐
                         │                   CONTROLLER                       │
                         │                                                   │
- tgondi.yaml ──► Config Loader ──► Policy Engine (allowlists, budgets, gates)
+ mayhem.yaml ──► Config Loader ──► Policy Engine (allowlists, budgets, gates)
                         │                                                   │
  experiments/*.yaml ──► DSL Compiler ──► ExecutionPlan                      │
                                           │                                  │
@@ -33,7 +33,7 @@ hypotheses, guarantees recovery, and records everything for learning and audit.
                  ┌──────▼─────┐ ┌──▼──────────┐                                 │
                  │ HOST A     │ │ HOST B      │   … N hosts (local or remote)   │
                  │ (local)    │ │ (SSH)       │                                 │
-                 │ tgondi-    │ │ tgondi-     │                                 │
+                 │ mayhem-    │ │ mayhem-     │                                 │
                  │ agent      │ │ agent       │                                 │
                  │  ├ roles   │ │  ├ roles    │                                 │
                  │  └ toolkit │ │  └ toolkit  │                                 │
@@ -57,7 +57,7 @@ Key structural facts ([ADR-0002](../adr/0002-python-single-package-layered-monor
 
 | Subsystem | Responsibility | Explicitly NOT responsible for |
 |---|---|---|
-| **Config Loader** | Parse, overlay, validate `tgondi/v1`; snapshot effective config per run | Runtime decisions |
+| **Config Loader** | Parse, overlay, validate `mayhem/v1`; snapshot effective config per run | Runtime decisions |
 | **Topology Service** | Build `TopologyGraph` from providers (compose/docker/podman/host); drift reports | Executing faults |
 | **Planner / DSL Compiler** | Compile experiment YAML → validated `ExecutionPlan` | Choosing tools (delegates to toolkit resolution) |
 | **Experiment Engine** | Drive lifecycle state machine, schedule steps, enforce timeouts/abort | Talking to the OS directly |
@@ -94,7 +94,7 @@ Compose stack. No SSH configuration required.
 
 ### Multi-host (MVP-supported)
 Controller on one machine; remote bare-metal hosts configured under `hosts:` with SSH details.
-Bootstrap via `tgondi agents install --host user@host`
+Bootstrap via `mayhem agents install --host user@host`
 ([agent-architecture.md §bootstrap](agent-architecture.md)). Blast-radius budgets span hosts;
 the janitor reconciles remote leases over SSH after crashes.
 
@@ -105,7 +105,7 @@ REST API/UI mounting existing `controller.api` services.
 ## 5. Walkthrough: one experiment end-to-end
 
 ```text
-tgondi run experiments/pg-degradation.yaml
+mayhem run experiments/pg-degradation.yaml
  1. Config Loader merges/snapshots effective config.
  2. Safety Engine computes environment fingerprint; refuses mismatch.
  3. Topology Service discovers devstack graph (compose blueprint ∩ docker runtime) + drift report.

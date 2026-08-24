@@ -40,7 +40,7 @@ pending ──inject──► active ──duration/abort──► releasing ─
 | 2. Task cancellation | Agent runtime | step timeout / `task.cancel` / SIGINT graceful path | inline compensate before returning |
 | 3. Watchdog self-heal | Agent lease-watchdog thread | TTL expiry | local compensation even if controller dead |
 | 4. Janitor reconciliation | Controller startup + periodic | leases not `released`/`expired` | queries owning agent or re-derives from undo_json |
-| 5. Manual escape | `tgondi recover` | operator command | full DB-driven sweep; dry-run mode lists residue first |
+| 5. Manual escape | `mayhem recover` | operator command | full DB-driven sweep; dry-run mode lists residue first |
 
 ## 3. Janitor algorithm
 

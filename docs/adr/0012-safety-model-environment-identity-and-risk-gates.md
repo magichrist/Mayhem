@@ -7,7 +7,7 @@
 
 ## Context
 
-Tgondi intentionally kills processes, exhausts resources, partitions networks, and generates
+Mayhem intentionally kills processes, exhausts resources, partitions networks, and generates
 overload traffic. The spec demands a serious safety model and forbids uncontrolled randomness,
 irreversible-by-default destruction, and surviving faults. It also mixes offensive vocabulary with
 resilience goals — which must be resolved into a hard scope boundary.
@@ -22,7 +22,7 @@ resilience goals — which must be resolved into a hard scope boundary.
 
 ## Decision
 
-1. **Scope charter:** Tgondi tests *authorized* systems only. No scanning or exploitation
+1. **Scope charter:** Mayhem tests *authorized* systems only. No scanning or exploitation
    primitives exist; "fuzzing" means schema-aware API fuzzing (Schemathesis) of owned services;
    saturation experiments are load-generation faults behind the risk ladder. This is a resilience
    tool, not a penetration-testing tool.
@@ -45,7 +45,7 @@ resilience goals — which must be resolved into a hard scope boundary.
 
 - **Positive:** destructive power requires deliberate configuration at multiple layers; random mode
   inherits every gate structurally (not by convention); post-incident review has complete evidence.
-- **Negative / accepted trade-offs:** setup friction for first-time users (mitigated by `tgondi
+- **Negative / accepted trade-offs:** setup friction for first-time users (mitigated by `mayhem
   init` generating safe defaults: dry-run-first, non-production environment class); determined
   operators can still configure unsafe policies — the model makes that loud and auditable, not
   impossible.

@@ -8,7 +8,7 @@ mechanically between planner and executor — never by convention.
 
 ## 1. Scope charter
 
-Tgondi tests **authorized systems**. It contains no scanning, exploitation, or credential
+Mayhem tests **authorized systems**. It contains no scanning, exploitation, or credential
 primitives:
 
 | In scope | Out of scope (forever) |
@@ -81,7 +81,7 @@ Dependency-aware scoring penalizes targeting nodes whose failure cascades beyond
 |---|---|
 | SIGINT | graceful: finish current step → recover all active leases → summarize |
 | SIGUSR1 | immediate: cancel tasks → recover all → summarize |
-| ABORT file `.tgondi/ABORT` | same as SIGUSR1; works for scheduled/headless runs |
+| ABORT file `.mayhem/ABORT` | same as SIGUSR1; works for scheduled/headless runs |
 | Steady-state breach (pre) | run skipped or aborted per check policy |
 | Violation (during) | default `abort_and_recover` |
 
