@@ -1,7 +1,16 @@
-*/**.pyc
-tests/unit/__pycache__/
-src/tgondi/toolkit/__pycache__/
-src/tgondi/agents/__pycache__/
-src/tgondi/infra/__pycache__/
-src/tgondi/controller/__pycache__/
-src/tgondi/domain/__pycache__/
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local artifacts
+*.db
+*.sqlite
+*.sqlite3
