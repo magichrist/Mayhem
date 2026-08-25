@@ -61,7 +61,7 @@ class ProcPauseExecutor(FaultExecutor):
             raw = op.args.get("pid")
             try:
                 return int(raw) if raw is not None else None
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         return None
 

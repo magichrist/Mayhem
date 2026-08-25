@@ -40,7 +40,7 @@ class CommandResolutionError(click.UsageError):
 
     def _render(self) -> str:
         if not self.candidates:
-            matches = difflib.get_close_matches(self.token, [], n=1)
+            difflib.get_close_matches(self.token, [], n=1)
             return f"No command matches {self.token!r}."
         lines = "\n".join(f"  - {name}" for name in self.candidates)
         return (
@@ -57,9 +57,7 @@ class PrefixGroup(click.Group):
         exact = super().get_command(ctx, cmd_name)
         if exact is not None:
             return exact
-        candidates = sorted(
-            name for name in self.list_commands(ctx) if name.startswith(cmd_name)
-        )
+        candidates = sorted(name for name in self.list_commands(ctx) if name.startswith(cmd_name))
         if len(candidates) == 1:
             return super().get_command(ctx, candidates[0])
         raise CommandResolutionError(cmd_name, tuple(candidates))

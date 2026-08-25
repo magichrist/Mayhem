@@ -66,13 +66,17 @@ class AgentServer:
         }.get(request.method)
         if handler is None:
             return rpc.error_response(
-                request.id, rpc.RpcErrorCode.METHOD_NOT_FOUND, f"no such method: {request.method}"
+                request.id,
+                rpc.RpcErrorCode.METHOD_NOT_FOUND,
+                f"no such method: {request.method}",
             )
         try:
             result = await handler(request.params)
         except Exception as exc:  # the wire must never see a traceback crash
             return rpc.error_response(
-                request.id, rpc.RpcErrorCode.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"
+                request.id,
+                rpc.RpcErrorCode.INTERNAL_ERROR,
+                f"{type(exc).__name__}: {exc}",
             )
         return rpc.result_response(request.id, result)
 
@@ -119,9 +123,11 @@ class AgentServer:
         self._tasks[task_id] = record
         phase = params.get("phase", "inject")
         try:
-            outcome = await asyncio.to_thread(executor.inject, lease) \
-                if phase == "inject" else \
-                await asyncio.to_thread(executor.undo, lease)
+            outcome = (
+                await asyncio.to_thread(executor.inject, lease)
+                if phase == "inject"
+                else await asyncio.to_thread(executor.undo, lease)
+            )
         except Exception as exc:
             record.state = "failed"
             record.detail = f"{type(exc).__name__}: {exc}"
@@ -136,7 +142,12 @@ class AgentServer:
             )
         record.state = "done"
         record.detail = outcome.detail
-        return {"task_id": task_id, "state": "done", "ok": outcome.ok, "detail": outcome.detail}
+        return {
+            "task_id": task_id,
+            "state": "done",
+            "ok": outcome.ok,
+            "detail": outcome.detail,
+        }
 
     async def _on_task_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         task_id = params.get("task_id")
@@ -204,7 +215,7 @@ def serve_sync(roles: tuple[str, ...], executors: tuple[FaultExecutor, ...]) -> 
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(_serve_async(server))
-    except (NotImplementedError, ValueError):
+    except NotImplementedError, ValueError:
         _serve_blocking(server, loop)
     finally:
         loop.close()
@@ -213,9 +224,7 @@ def serve_sync(roles: tuple[str, ...], executors: tuple[FaultExecutor, ...]) -> 
 async def _serve_async(server: AgentServer) -> None:
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
-    await loop.connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
-    )
+    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     transport, protocol = await loop.connect_write_pipe(
         asyncio.streams.FlowControlMixin, sys.stdout
     )
@@ -251,7 +260,9 @@ def _serve_blocking(server: AgentServer, loop: asyncio.AbstractEventLoop) -> Non
             )[0]
         except Exception as exc:  # session must survive handler bugs
             response = rpc.error_response(
-                frame.id, rpc.RpcErrorCode.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"
+                frame.id,
+                rpc.RpcErrorCode.INTERNAL_ERROR,
+                f"{type(exc).__name__}: {exc}",
             )
         _write_frame(response)
 

@@ -28,7 +28,10 @@ def _is_stopped(pid: int) -> bool:
     try:
         out = subprocess.run(
             ["ps", "-o", "stat=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
     except subprocess.SubprocessError:
         return False
@@ -40,7 +43,9 @@ def test_watchdog_expires_lease_and_resumes_process() -> None:
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", "mayhem.agent.cli", "serve", "--roles", "proc"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             env={**os.environ, "PYTHONPATH": "src"},
         )
         lease = {
@@ -56,8 +61,15 @@ def test_watchdog_expires_lease_and_resumes_process() -> None:
         hello = _recv(proc)
         assert hello is not None and hello["id"] == 1
 
-        _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "task.execute",
-                     "params": {**CTX, "fault_id": "proc.pause", "lease": lease}})
+        _send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "task.execute",
+                "params": {**CTX, "fault_id": "proc.pause", "lease": lease},
+            },
+        )
         resp = _recv(proc)
         assert resp is not None and resp["id"] == 2
         assert resp["result"]["ok"] is True
@@ -73,8 +85,10 @@ def test_watchdog_expires_lease_and_resumes_process() -> None:
             time.sleep(0.1)
         assert resumed, "watchdog did not resume the paused process"
 
-        _send(proc, {"jsonrpc": "2.0", "id": 3, "method": "task.status",
-                     "params": {**CTX}})
+        _send(
+            proc,
+            {"jsonrpc": "2.0", "id": 3, "method": "task.status", "params": {**CTX}},
+        )
         status = _recv(proc)
         assert status is not None and status["id"] == 3
         compensated = status["result"]["compensated"]

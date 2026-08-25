@@ -67,6 +67,14 @@ class ToolkitOverrides(BaseModel):
     binaries: dict[str, str] = Field(default_factory=dict)
 
 
+class TargetCfg(BaseModel):
+    """Explicit container targets when running without a compose file."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    containers: list[str] = Field(default_factory=list)
+
+
 class MayhemConfigBase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -76,6 +84,8 @@ class MayhemConfigBase(BaseModel):
     blast_radius: BlastRadiusBudget = Field(default_factory=BlastRadiusBudget)
     storage: StorageCfg = Field(default_factory=StorageCfg)
     toolkit: ToolkitOverrides = Field(default_factory=ToolkitOverrides)
+    runtime: Literal["docker", "podman"] = "docker"
+    target: TargetCfg = Field(default_factory=TargetCfg)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 

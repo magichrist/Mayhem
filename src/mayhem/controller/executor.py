@@ -145,11 +145,7 @@ class RunEngine:
             "UPDATE runs SET summary_md = ? WHERE id = ?",
             (result.summary_md(), plan.run_id),
         )
-        kind = (
-            EventKind.RUN_COMPLETED
-            if status == "completed"
-            else EventKind.RUN_FAILED
-        )
+        kind = EventKind.RUN_COMPLETED if status == "completed" else EventKind.RUN_FAILED
         self._emit(Event(kind=kind, run_id=plan.run_id))
         return result
 
@@ -192,7 +188,13 @@ class RunEngine:
     def _run_step(self, plan: ExecutionPlan, step: PlannedStep) -> tuple[StepReport, list[str]]:
         action_type = getattr(step.raw_action, "type", "unknown")
         self._insert_step(plan.run_id, step)
-        self._emit(Event(kind=EventKind.STEP_STARTED, run_id=plan.run_id, detail={"step": step.id}))
+        self._emit(
+            Event(
+                kind=EventKind.STEP_STARTED,
+                run_id=plan.run_id,
+                detail={"step": step.id},
+            )
+        )
         try:
             if step.fault is not None:
                 report, dirty = self._execute_fault(plan, step)
@@ -217,11 +219,7 @@ class RunEngine:
         self._finish_step(step, ok=report.ok)
         self._emit(
             Event(
-                kind=(
-                    EventKind.STEP_FINISHED
-                    if report.ok
-                    else EventKind.STEP_SKIPPED
-                ),
+                kind=(EventKind.STEP_FINISHED if report.ok else EventKind.STEP_SKIPPED),
                 run_id=plan.run_id,
                 detail={"step": step.id, "detail": report.detail},
             )
@@ -277,10 +275,17 @@ class RunEngine:
 
         report = verify_all(tuple(lease.verify_probes), lease.id)
         verified = report.all_satisfied
-        self._record_recovery(lease.id, mechanism="executor", undo_results_json=json.dumps(
-            {"inject": inject_outcome.detail if inject_outcome else "no-executor",
-             "undo": undo_outcome.detail if undo_outcome else "no-executor"}
-        ), verified=verified)
+        self._record_recovery(
+            lease.id,
+            mechanism="executor",
+            undo_results_json=json.dumps(
+                {
+                    "inject": (inject_outcome.detail if inject_outcome else "no-executor"),
+                    "undo": undo_outcome.detail if undo_outcome else "no-executor",
+                }
+            ),
+            verified=verified,
+        )
 
         if undo_ok and verified:
             self._client.confirm_release(lease.id, mechanism="normal")
@@ -515,7 +520,10 @@ class _AbortMatrix:
         self._previous: dict[int, object] = {}
 
     def __enter__(self) -> _AbortMatrix:
-        for signum, mode in ((signal.SIGINT, "graceful"), (signal.SIGUSR1, "immediate")):
+        for signum, mode in (
+            (signal.SIGINT, "graceful"),
+            (signal.SIGUSR1, "immediate"),
+        ):
             with contextlib.suppress(ValueError, OSError):  # non-main thread / unsupported platform
                 self._previous[signum] = signal.signal(signum, self._make_handler(mode))
         return self

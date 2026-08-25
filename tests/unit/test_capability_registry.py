@@ -90,7 +90,9 @@ class TestProbingAndResolution:
 
         monkeypatch.setattr(reg, "run_tool", lambda argv, timeout_s=None: FakeResult())
         primary = _manifest(
-            tool="tc", provides=("net.latency",), fallback_slots={"net.latency": "primary"}
+            tool="tc",
+            provides=("net.latency",),
+            fallback_slots={"net.latency": "primary"},
         )
         fallback = _manifest(
             tool="toxiproxy",

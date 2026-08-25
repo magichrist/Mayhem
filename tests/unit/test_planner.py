@@ -1,4 +1,5 @@
 """Planner: spec -> honest frozen plan. Refusals are part of the contract."""
+
 import random
 
 import pytest
@@ -57,8 +58,11 @@ _PAUSE = Step(
 class TestDeterministicPlanning:
     def test_compiles_fault_with_targets_and_undo_contract(self) -> None:
         plan = plan_deterministic(
-            "r-1", _exp(_PAUSE), _graph(),
-            config_snapshot_id="cfg-1", topology_snapshot_id="topo-1",
+            "r-1",
+            _exp(_PAUSE),
+            _graph(),
+            config_snapshot_id="cfg-1",
+            topology_snapshot_id="topo-1",
             environment_fingerprint="fp",
         )
         assert len(plan.steps) == 1
@@ -80,8 +84,12 @@ class TestDeterministicPlanning:
         )
         with pytest.raises(PlanningError, match="ghost"):
             plan_deterministic(
-                "r-1", _exp(bad), _graph(),
-                config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
+                "r-1",
+                _exp(bad),
+                _graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
             )
 
     def test_unknown_fault_refused_at_authoring(self) -> None:
@@ -107,8 +115,12 @@ class TestDeterministicPlanning:
         )
         with pytest.raises(PlanningError, match="unresolved"):
             plan_deterministic(
-                "r-1", _exp(bad), _graph(),
-                config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
+                "r-1",
+                _exp(bad),
+                _graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
             )
 
     def test_duration_over_cap_refused(self) -> None:
@@ -122,8 +134,12 @@ class TestDeterministicPlanning:
         )
         with pytest.raises(PlanningError, match="exceeds cap"):
             plan_deterministic(
-                "r-1", _exp(bad), _graph(),
-                config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
+                "r-1",
+                _exp(bad),
+                _graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
             )
 
     def test_parallel_flattens_branches(self) -> None:
@@ -133,8 +149,12 @@ class TestDeterministicPlanning:
             action=Parallel(branches=((wait.action,), (_PAUSE.action,))),
         )
         plan = plan_deterministic(
-            "r-1", _exp(par, wait), _graph(),
-            config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
+            "r-1",
+            _exp(par, wait),
+            _graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
         )
         planned_faults = [s for s in plan.steps if s.fault is not None]
         assert len(planned_faults) == 1
@@ -144,8 +164,12 @@ class TestDeterministicPlanning:
         only_wait = Step(id="w", action=Wait(duration="1s"))
         with pytest.raises(PlanningError, match="no fault injection"):
             plan_deterministic(
-                "r-1", _exp(only_wait), _graph(),
-                config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
+                "r-1",
+                _exp(only_wait),
+                _graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
             )
 
 
@@ -207,11 +231,20 @@ class TestRandomPlanning:
 
     def test_audit_sink_receives_decision(self) -> None:
         captured: list[dict] = []
-        exp = RandomExperiment(metadata=ExperimentMetadata(name="maniac"), seed=11,
-                               selection=SelectionPolicy(count=2))
-        plan_random("r-audit", exp, _graph(),
-                    config_snapshot_id="c", topology_snapshot_id="t", environment_fingerprint="f",
-                    audit_sink=captured.append)
+        exp = RandomExperiment(
+            metadata=ExperimentMetadata(name="maniac"),
+            seed=11,
+            selection=SelectionPolicy(count=2),
+        )
+        plan_random(
+            "r-audit",
+            exp,
+            _graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+            audit_sink=captured.append,
+        )
         row = captured[0]
         assert row["seed"] == 11
         assert len(row["candidates"]) >= 2

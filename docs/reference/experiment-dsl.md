@@ -43,7 +43,7 @@ steps:
 
   - inject_fault:
       fault: net.partition
-      targets: [{kind: service, expr: api}, {kind: external_dependency, expr: postgres}]
+      selectors: [{kind: service, expr: api}, {kind: external_dependency, expr: postgres}]
       params: {direction: bidirectional}
       duration: 30s
       backend: auto              # auto | explicit backend name (ADR-0010)
@@ -57,7 +57,7 @@ steps:
 
 | Step | Fields |
 |---|---|
-| `inject_fault` | `fault`, `targets[]`, `params` (fault schema), `duration`, `backend?`, `on_failure?` |
+| `inject_fault` | `fault`, `selectors[]`, `params` (fault schema), `duration`, `backend?`, `on_failure?` |
 | `start_load` / `stop_load` | `tool`, `script/profile`, `name` for later stop reference |
 | `wait` | `duration` or `until_check_passes {ref, timeout}` |
 | `check` | `ref` (evaluates in current phase context) |

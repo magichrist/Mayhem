@@ -229,7 +229,9 @@ class TestDispatchAndToolExecutors:
 class TestProbes:
     def test_exec_probe_success_and_failure(self) -> None:
         good = VerifyProbe(
-            probe="exec", args={"cmd": [sys.executable, "-c", "pass"]}, expect_present=True
+            probe="exec",
+            args={"cmd": [sys.executable, "-c", "pass"]},
+            expect_present=True,
         )
         bad = VerifyProbe(
             probe="exec",
@@ -289,7 +291,9 @@ class TestProbes:
 
     def test_verify_report_all_satisfied(self) -> None:
         good = VerifyProbe(
-            probe="exec", args={"cmd": [sys.executable, "-c", "pass"]}, expect_present=True
+            probe="exec",
+            args={"cmd": [sys.executable, "-c", "pass"]},
+            expect_present=True,
         )
         assert verify_all((good,), "l-x").all_satisfied
 

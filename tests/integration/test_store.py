@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from mayhem.infra.migrations import ALL_MIGRATIONS
-from mayhem.infra.migrator import Migration, MigrationError, current_version, run_migrations
+from mayhem.infra.migrator import (
+    Migration,
+    MigrationError,
+    current_version,
+    run_migrations,
+)
 from mayhem.infra.store import Store
 
 

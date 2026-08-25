@@ -66,9 +66,7 @@ class Janitor:
                         LeaseState.RELEASING, mechanism="janitor", now=now
                     )
                     self._sink.save(released)
-                    final = released.transition(
-                        LeaseState.RELEASED, mechanism="janitor", now=now
-                    )
+                    final = released.transition(LeaseState.RELEASED, mechanism="janitor", now=now)
                     self._sink.save(final)
                     recovered.append(orphaned.id)
                 except (DomainError, OSError) as exc:

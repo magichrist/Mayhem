@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mayhem = "mayhem.cli:app"
+mayhem = "mayhem.cli.app:main"
 mayhem-agent = "mayhem.agent.cli:app"
 
 [dependency-groups]
@@ -78,7 +78,8 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 "tests/**" = ["PLR0915", "SIM117"]
 # CLI commands keep heavy imports inside handlers so `--help` stays instant,
 # and typer's own API *is* Option(...) in argument defaults.
-"src/mayhem/cli.py" = ["B008", "PLC0415", "PLR0917"]
+"src/mayhem/cli/**" = ["PLC0415", "PLR0917"]
+"src/mayhem/cli/app.py" = ["PLR0911"]
 # safety.py keeps catalog/topology imports inside helpers on purpose (see the
 # "local:" comments) — hoisting them would create import cycles.
 "src/mayhem/controller/safety.py" = ["PLC0415"]

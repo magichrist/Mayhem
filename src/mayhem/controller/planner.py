@@ -68,9 +68,7 @@ def plan_deterministic(
     )
 
 
-def _admitted_candidates(
-    policy: SelectionPolicy, ceiling: RiskLevel | None
-) -> list[str]:
+def _admitted_candidates(policy: SelectionPolicy, ceiling: RiskLevel | None) -> list[str]:
     """Faults eligible for the random lottery: compensatable + policy-admitted."""
     candidates: list[str] = []
     for definition in all_definitions():
@@ -98,10 +96,7 @@ def _draw_chosen(
     while len(chosen) < min(policy.count, len(candidates)) and attempts < 200:
         attempts += 1
         candidate = rng.choices(candidates, weights=weights, k=1)[0]
-        if any(
-            frozenset({candidate, other}) in policy.forbidden_pairs
-            for other in chosen
-        ):
+        if any(frozenset({candidate, other}) in policy.forbidden_pairs for other in chosen):
             continue
         if candidate not in chosen:
             chosen.append(candidate)

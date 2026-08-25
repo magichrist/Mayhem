@@ -69,9 +69,7 @@ DEFAULT_DENY = frozenset({"node.reboot"})
 policy never grants them)."""
 
 
-def check_fault_admission(
-    fault_id: str, definition_risk: RiskLevel, ctx: SafetyContext
-) -> None:
+def check_fault_admission(fault_id: str, definition_risk: RiskLevel, ctx: SafetyContext) -> None:
     """G1: denylist → allowlist → risk ceiling → critical double-opt-in."""
     if fault_id in ctx.policy.deny_faults:
         raise SafetyRefusedError("safety.refused", f"{fault_id}: denied by policy denylist")
@@ -142,9 +140,7 @@ def check_blast_radius(
             f"blast radius: {new_fault_id} touches {hosts_hit} hosts > budget {budget.max_hosts}",
         )
     if len(fault_ids_so_far) + 1 > budget.max_concurrent_faults:
-        raise SafetyRefusedError(
-            "safety.refused", "blast radius: max_concurrent_faults exceeded"
-        )
+        raise SafetyRefusedError("safety.refused", "blast radius: max_concurrent_faults exceeded")
     if duration_s > budget.max_duration_per_fault_s:
         raise SafetyRefusedError(
             "safety.refused",
@@ -212,7 +208,9 @@ def pre_exec_assertion(
 
 
 def _risk_of(fault_id: str) -> RiskLevel:
-    from mayhem.domain.catalog import definition_for  # local: keep module import graph flat
+    from mayhem.domain.catalog import (
+        definition_for,
+    )  # local: keep module import graph flat
     from mayhem.domain.errors import SchemaValidationError
 
     try:

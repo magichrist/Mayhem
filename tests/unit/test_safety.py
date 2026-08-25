@@ -1,4 +1,5 @@
 """ADR-0012: triple-gated safety — G1 policy, G2 budgets, G3 drift."""
+
 import pytest
 
 from mayhem.config import PolicyCfg
@@ -81,8 +82,10 @@ def test_critical_requires_double_optin():
     with pytest.raises(SafetyRefusedError, match="--allow-critical"):
         check_fault_admission("x", RiskLevel.CRITICAL, ctx)
     ctx_cli = SafetyContext(
-        policy=PolicyCfg(allow_critical=True), budget=BlastRadiusBudget(),
-        fingerprint="f", allow_critical_cli=True,
+        policy=PolicyCfg(allow_critical=True),
+        budget=BlastRadiusBudget(),
+        fingerprint="f",
+        allow_critical_cli=True,
     )
     check_fault_admission("x", RiskLevel.CRITICAL, ctx_cli)  # both halves: ok
     with pytest.raises(SafetyRefusedError):
@@ -115,7 +118,9 @@ def test_blast_radius_counts_dependents():
     assert stats["services_pct"] == 100.0  # api and web both depend on db
 
     tight = SafetyContext(
-        policy=PolicyCfg(), budget=BlastRadiusBudget(max_services_pct=50.0), fingerprint="f"
+        policy=PolicyCfg(),
+        budget=BlastRadiusBudget(max_services_pct=50.0),
+        fingerprint="f",
     )
     with pytest.raises(SafetyRefusedError, match="blast radius"):
         check_blast_radius(graph, {"n-db"}, 10.0, (), "proc.pause", ctx=tight)
@@ -127,7 +132,8 @@ def test_blast_radius_counts_dependents():
 def test_duration_cap_and_forbidden_pairs():
     graph = _graph()
     ctx = SafetyContext(
-        policy=PolicyCfg(), budget=BlastRadiusBudget(max_duration_per_fault_s=5.0),
+        policy=PolicyCfg(),
+        budget=BlastRadiusBudget(max_duration_per_fault_s=5.0),
         fingerprint="f",
     )
     with pytest.raises(SafetyRefusedError, match="duration"):
@@ -146,12 +152,24 @@ def test_duration_cap_and_forbidden_pairs():
 
 
 def test_fingerprint_is_order_insensitive_and_sensitive_to_env():
-    a = environment_fingerprint(host_names=["h2", "h1"], compose_digest="d",
-                                environment_name="e", environment_class="staging")
-    b = environment_fingerprint(host_names=["h1", "h2"], compose_digest="d",
-                                environment_name="e", environment_class="staging")
-    c = environment_fingerprint(host_names=["h1", "h2"], compose_digest="d",
-                                environment_name="e", environment_class="production")
+    a = environment_fingerprint(
+        host_names=["h2", "h1"],
+        compose_digest="d",
+        environment_name="e",
+        environment_class="staging",
+    )
+    b = environment_fingerprint(
+        host_names=["h1", "h2"],
+        compose_digest="d",
+        environment_name="e",
+        environment_class="staging",
+    )
+    c = environment_fingerprint(
+        host_names=["h1", "h2"],
+        compose_digest="d",
+        environment_name="e",
+        environment_class="production",
+    )
     assert a == b
     assert a != c
 
@@ -159,10 +177,12 @@ def test_fingerprint_is_order_insensitive_and_sensitive_to_env():
 def test_validate_plan_refuses_stale_fingerprint():
     selector = TargetSelector(kind=NodeKind.PROCESS, expr="api")
     plan = ExecutionPlan(
-        run_id="r", kind=ExperimentKind.DETERMINISTIC,
+        run_id="r",
+        kind=ExperimentKind.DETERMINISTIC,
         steps=(
             PlannedStep(
-                id="s1", seq=0,
+                id="s1",
+                seq=0,
                 raw_action=InjectFault(fault="proc.cpu", selectors=(selector,), duration=5.0),
                 fault=PlannedFault(
                     fault_id="proc.cpu",
@@ -171,7 +191,8 @@ def test_validate_plan_refuses_stale_fingerprint():
                 ),
             ),
         ),
-        config_snapshot_id="c", topology_snapshot_id="t",
+        config_snapshot_id="c",
+        topology_snapshot_id="t",
         environment_fingerprint="other-fingerprint",
     )
     with pytest.raises(SafetyRefusedError, match="fingerprint"):
@@ -182,8 +203,6 @@ def test_g3_drift_refusal_when_target_vanishes():
     selector = TargetSelector(kind=NodeKind.SERVICE, expr="api")
     live = TopologyGraph(nodes=(ServiceNode(id="n-api", name="api"),))
     pre_exec_assertion([(selector, ("n-api",))], live)  # ok
-    empty = TopologyGraph(
-        nodes=(HostNode(id="h", name="local", transport="local"),), edges=()
-    )
+    empty = TopologyGraph(nodes=(HostNode(id="h", name="local", transport="local"),), edges=())
     with pytest.raises(SafetyRefusedError, match="drift"):
         pre_exec_assertion([(selector, ("n-api",))], empty)

@@ -36,8 +36,13 @@ async def test_expired_lease_is_compensated_locally() -> None:
     lease = FakeLease(id="l-1", pid=4242)
     wd = AgentWatchdog()
 
-    wd.register(lease_id="l-1", lease=lease, executor=executor,
-                ttl_seconds=0.0, now_epoch_s=100.0)
+    wd.register(
+        lease_id="l-1",
+        lease=lease,
+        executor=executor,
+        ttl_seconds=0.0,
+        now_epoch_s=100.0,
+    )
     expired = await wd.sweep(now_epoch_s=100.5)
 
     assert expired == ["l-1"]
@@ -50,8 +55,13 @@ async def test_live_lease_is_left_alone() -> None:
     executor = UndoTrackingExecutor()
     wd = AgentWatchdog()
     wd.clock = lambda: 101.0
-    wd.register(lease_id="l-1", lease=FakeLease(id="l-1", pid=7),
-                executor=executor, ttl_seconds=60.0, now_epoch_s=100.0)
+    wd.register(
+        lease_id="l-1",
+        lease=FakeLease(id="l-1", pid=7),
+        executor=executor,
+        ttl_seconds=60.0,
+        now_epoch_s=100.0,
+    )
 
     expired = await wd.sweep(now_epoch_s=101.0)
 
@@ -66,8 +76,13 @@ async def test_live_lease_is_left_alone() -> None:
 async def test_failed_undo_marks_dirty_not_retried() -> None:
     executor = UndoTrackingExecutor(undo_ok=False)
     wd = AgentWatchdog()
-    wd.register(lease_id="l-x", lease=FakeLease(id="l-x", pid=9),
-                executor=executor, ttl_seconds=0.0, now_epoch_s=0.0)
+    wd.register(
+        lease_id="l-x",
+        lease=FakeLease(id="l-x", pid=9),
+        executor=executor,
+        ttl_seconds=0.0,
+        now_epoch_s=0.0,
+    )
 
     await wd.sweep(now_epoch_s=1.0)
 
@@ -79,8 +94,13 @@ async def test_failed_undo_marks_dirty_not_retried() -> None:
 async def test_raising_undo_is_survived_and_marked_dirty() -> None:
     executor = UndoTrackingExecutor(raise_on_undo=True)
     wd = AgentWatchdog()
-    wd.register(lease_id="l-y", lease=FakeLease(id="l-y", pid=11),
-                executor=executor, ttl_seconds=0.0, now_epoch_s=0.0)
+    wd.register(
+        lease_id="l-y",
+        lease=FakeLease(id="l-y", pid=11),
+        executor=executor,
+        ttl_seconds=0.0,
+        now_epoch_s=0.0,
+    )
 
     expired = await wd.sweep(now_epoch_s=1.0)
 

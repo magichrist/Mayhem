@@ -78,9 +78,7 @@ def _env_dict(environment: Any) -> dict[str, str]:
     """Compose allows environment as a mapping or a list of KEY=VALUE strings."""
     if isinstance(environment, list):
         return {
-            entry.split("=", 1)[0]: entry.split("=", 1)[1]
-            for entry in environment
-            if "=" in entry
+            entry.split("=", 1)[0]: entry.split("=", 1)[1] for entry in environment if "=" in entry
         }
     return {str(k): str(v) for k, v in (environment or {}).items()}
 
@@ -93,6 +91,18 @@ class ComposeFileProvider:
 
     def is_available(self) -> bool:
         return self._path.exists()
+
+    @property
+    def project_name(self) -> str:
+        """Compose project name — explicit ``name:`` field or directory name."""
+        document: dict[str, Any] = yaml.safe_load(self._path.read_text()) or {}
+        return str(document.get("name") or self._path.parent.name)
+
+    @property
+    def service_names(self) -> tuple[str, ...]:
+        """Ordered service names declared in the compose file."""
+        document: dict[str, Any] = yaml.safe_load(self._path.read_text()) or {}
+        return tuple((document.get("services") or {}).keys())
 
     def discover(self) -> PartialGraph:
         document: dict[str, Any] = yaml.safe_load(self._path.read_text()) or {}
@@ -154,10 +164,7 @@ class ComposeFileProvider:
         kept: list[Edge] = []
         dropped_dep: list[str] = []
         for edge in edges:
-            if (
-                edge.kind is EdgeKind.DEPENDS_ON
-                and edge.dst not in known_service_ids
-            ):
+            if edge.kind is EdgeKind.DEPENDS_ON and edge.dst not in known_service_ids:
                 dropped_dep.append(edge.dst)
                 continue
             kept.append(edge)
@@ -167,8 +174,9 @@ class ComposeFileProvider:
                 + ", ".join(sorted(set(dropped_dep)))
             )
 
-        return PartialGraph(source=self.id, nodes=tuple(nodes), edges=tuple(kept),
-                            notes=tuple(notes))
+        return PartialGraph(
+            source=self.id, nodes=tuple(nodes), edges=tuple(kept), notes=tuple(notes)
+        )
 
 
 __all__ = ["ComposeFileProvider", "NodeKind"]

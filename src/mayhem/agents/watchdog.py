@@ -93,7 +93,10 @@ class AgentWatchdog:
                 continue
             entry.state = "expired" if outcome.ok else "dirty"
             self._final_states[lease_id] = entry.state
-            print(f"[watchdog] {entry.state} {lease_id}: {outcome.detail}", file=sys.stderr)
+            print(
+                f"[watchdog] {entry.state} {lease_id}: {outcome.detail}",
+                file=sys.stderr,
+            )
         return expired
 
     def final_state(self, lease_id: str) -> str | None:
@@ -102,9 +105,7 @@ class AgentWatchdog:
 
     def history(self) -> list[dict[str, Any]]:
         """Leases this agent already self-compensated (expired|dirty)."""
-        return [
-            {"lease_id": lid, "state": state} for lid, state in self._final_states.items()
-        ]
+        return [{"lease_id": lid, "state": state} for lid, state in self._final_states.items()]
 
     async def run_forever(self) -> None:
         while True:

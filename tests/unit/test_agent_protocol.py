@@ -90,12 +90,23 @@ class TestServeLoopOverPipes:
             writer = _FakeWriter()
             server = AgentServer(roles=("proc",), executors=(ProcPauseExecutor(),))
             requests = [
-                {"jsonrpc": "2.0", "id": 1, "method": "handshake",
-                 "params": {"run_id": "r-1", "agent_id": "c"}},
-                {"jsonrpc": "2.0", "method": "log.emit",
-                 "params": {"run_id": "r-1", "agent_id": "c", "line": "hello"}},
-                {"jsonrpc": "2.0", "id": 2, "method": "capabilities.query",
-                 "params": {"run_id": "r-1", "agent_id": "c"}},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "handshake",
+                    "params": {"run_id": "r-1", "agent_id": "c"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "log.emit",
+                    "params": {"run_id": "r-1", "agent_id": "c", "line": "hello"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "capabilities.query",
+                    "params": {"run_id": "r-1", "agent_id": "c"},
+                },
                 "{not json",
             ]
             for payload in requests:

@@ -44,7 +44,12 @@ class LocalStdioTransport(Transport):
         self._process: asyncio.subprocess.Process | None = None
 
     def _argv(self) -> list[str]:
-        return [self._spec.agent_command, "serve", "--roles", ",".join(self._spec.roles)]
+        return [
+            self._spec.agent_command,
+            "serve",
+            "--roles",
+            ",".join(self._spec.roles),
+        ]
 
     async def connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         self._process = await asyncio.create_subprocess_exec(

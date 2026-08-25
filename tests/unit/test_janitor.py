@@ -1,4 +1,5 @@
 """Janitor: TTL sweeps — expire stale pending, recover orphaned active faults."""
+
 from datetime import timedelta
 
 from mayhem.agents.sinks import InMemoryLeaseSink
@@ -42,9 +43,7 @@ class TestSweep:
         assert len(states) == 2  # both still non-terminal
 
     def test_stale_pending_expires_without_undo(self) -> None:
-        janitor, sink = _janitor_with(
-            _lease(LeaseState.PENDING, age_s=120.0, ttl=60.0)
-        )
+        janitor, sink = _janitor_with(_lease(LeaseState.PENDING, age_s=120.0, ttl=60.0))
         result = janitor.sweep()
         assert result.expired == ("l-pending-120",)
         assert not result.recovered

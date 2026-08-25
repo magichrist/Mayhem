@@ -70,9 +70,7 @@ class TopologyService:
             {"name": c.name, "engine": c.engine}
             for fragment in live_fragments
             for c in fragment.nodes
-            if isinstance(c, ContainerNode)
-            and c.service_name
-            and c.service_name not in services
+            if isinstance(c, ContainerNode) and c.service_name and c.service_name not in services
         ]
         changed_images: list[dict[str, str]] = []
         for name, svc in services.items():
@@ -91,7 +89,5 @@ class TopologyService:
         return {k: v for k, v in report.items() if v}
 
 
-def _graph(
-    nodes: tuple[TopologyNode, ...], edges: tuple[Edge, ...]
-) -> TopologyGraph:
+def _graph(nodes: tuple[TopologyNode, ...], edges: tuple[Edge, ...]) -> TopologyGraph:
     return TopologyGraph(nodes=nodes, edges=edges)

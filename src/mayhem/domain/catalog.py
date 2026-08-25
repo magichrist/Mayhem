@@ -14,10 +14,11 @@ from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import NodeKind
 
 _S = ParamSpec(name="seconds", type=ParamType.DURATION)
+
+
 def _pct(minimum: float, maximum: float) -> ParamSpec:
-    return ParamSpec(
-        name="percent", type=ParamType.PERCENT, minimum=minimum, maximum=maximum
-    )
+    return ParamSpec(name="percent", type=ParamType.PERCENT, minimum=minimum, maximum=maximum)
+
 
 CATALOG: tuple[FaultDefinition, ...] = (
     FaultDefinition(
@@ -82,9 +83,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.DOCKER_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.CONTAINER}),
         max_duration_s=60.0,
-        params_schema=(
-            ParamSpec(name="signal", type=ParamType.STRING, default="SIGKILL"),
-        ),
+        params_schema=(ParamSpec(name="signal", type=ParamType.STRING, default="SIGKILL"),),
     ),
     FaultDefinition(
         id="node.service_stop",

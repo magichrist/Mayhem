@@ -1,78 +1,179 @@
 # CLI Reference
 
-Single entrypoint `mayhem` (Typer). Every command honors `--config`, `--dry-run` where meaningful,
-and prints structured output (`--json` flag on read commands).
+The `mayhem` CLI is a Click application registered as a console-script entry point.
+Every command is a Click command or group; all groups use **unique-prefix resolution**,
+so `mayhem e v` resolves to `mayhem experiment validate` at every level of the tree.
+Exact names and `--help` always work.
 
 ---
 
-## Lifecycle
+## Global options
 
-```bash
-mayhem init                          # scaffold .mayhem/mayhem.yaml + sample experiment;
-                                     # safe defaults: dry-run-first, empty allowlist
-mayhem validate [EXPERIMENT]         # compile plan; run all safety gates G1–G2
-mayhem run EXPERIMENT.yaml           # execute; streams journal to stdout
-mayhem run --fault net.latency --target service:api \
-           --params '{"delay":"200ms"}' --duration 30s   # manual single fault (dev)
-mayhem watch RUN_ID                  # tail an active run
+```
+mayhem [OPTIONS] COMMAND [ARGS]
 ```
 
-Common `run` flags: `--seed N`, `--dry-run` (compile+validate+print plan only),
-`--allow-critical` (required for critical faults), `--yes` (skip approval prompts when policy
-allows).
+| Flag | Description |
+|---|---|
+| `--db` | SQLite database path (default: `mayhem.db`) |
+| `--config` | Path to `mayhem.yaml` |
+| `--profile` | Configuration profile name |
+| `--allow-critical` | Acknowledge critical-risk faults |
+| `--debug` | Re-raise raw exceptions instead of rendering them |
 
-## Agents
+---
+
+## Lifecycle commands
+
+### `mayhem validate EXPERIMENT`
+
+Compile an experiment and run every safety gate without executing it.
+
+**Topology options** (all lifecycle commands accept these):
+
+| Flag | Description |
+|---|---|
+| `-p, --process` | Local process node as `name=pid` (repeatable) |
+| `--service` | Logical service node name (repeatable) |
+| `--host` | Host node name (default: `local`) |
+| `--compose` | Path to `docker-compose.yaml` blueprint |
+
+### `mayhem plan EXPERIMENT`
+
+Plan an experiment against a topology and print the frozen plan as JSON.
+
+### `mayhem run EXPERIMENT`
+
+Plan then execute an experiment; prints a run summary on completion.
+Non-zero exit if the run status is not `completed`.
+
+---
+
+## Status & history
+
+### `mayhem status`
+
+List recent runs from the database.
+
+| Flag | Description |
+|---|---|
+| `--run` | Show one run in full detail (JSON) |
+| `--limit` | Rows to list (default: 20) |
+
+### `mayhem history RUN_ID`
+
+Print steps, events, and leases recorded for one run as JSON.
+
+---
+
+## Recovery
+
+### `mayhem recover RUN_ID`
+
+Recover every orphaned fault lease belonging to a run.
+
+### `mayhem janitor`
+
+Sweep leases past their TTL: expire pending leases and compensate active ones.
+
+---
+
+## Groups
+
+### `mayhem experiment`
+
+Inspect and validate authored experiments.
+
+| Subcommand | Description |
+|---|---|
+| `show EXPERIMENT` | Print the parsed experiment spec as JSON |
+| `validate EXPERIMENT` | Same as top-level `validate` |
+
+### `mayhem topology`
+
+Discover and inspect target-system topology.
+
+| Subcommand | Description |
+|---|---|
+| `discover --compose PATH` | Run the topology provider pipeline and print graph + drift JSON |
+
+### `mayhem toolkit`
+
+Inspect the fault catalog and local tool capabilities.
+
+| Subcommand | Description |
+|---|---|
+| `faults` | List the fault catalog with risk and compensatability |
+| `list` | Probe declared tool manifests on the host and report capabilities |
+
+`list` accepts `--host` and `--json` flags.
+
+### `mayhem config`
+
+Inspect the effective layered mayhem configuration.
+
+| Subcommand | Description |
+|---|---|
+| `show` | Print the effective configuration after all layers are merged |
+| `validate` | Load every configuration layer; refuse unknown keys or versions |
+
+`show` accepts `--json` to emit YAML→JSON instead of YAML.
+
+---
+
+## Prefix resolution
+
+Any unambiguous prefix of a command name is accepted at every level of the tree:
 
 ```bash
-mayhem agents install --host user@bm-1 [--host …]   # bootstrap over SSH (venv, systemd unit)
-mayhem agents status                 # table: host, roles, state, capabilities summary
-mayhem agents probe --host bm-1      # refresh CapabilityReport
+mayhem e v experiments.yaml     # resolves to mayhem experiment validate
+mayhem sta                      # resolves to mayhem status
+mayhem tk f                     # resolves to mayhem toolkit faults
+mayhem c s                      # resolves to mayhem config show
 ```
 
-## Topology
+If a prefix matches more than one command, the CLI exits with code **10** and prints
+the matching candidates.
 
-```bash
-mayhem topology show [--format graph|table|json]    # merged TopologyGraph
-mayhem topology drift                # blueprint vs live diff
-mayhem topology targets 'service:api'   # resolve a selector, show what it matches
-```
-
-## Recovery & ops
-
-```bash
-mayhem recover [--dry-run]           # sweep non-terminal leases (janitor escape hatch)
-mayhem abort RUN_ID                  # write ABORT signal (equivalent of SIGUSR1)
-mayhem db prune --older-than 90d
-```
-
-## Maniac
-
-```bash
-mayhem maniac generate               # produce a RandomExperiment plan (no execution)
-mayhem maniac explain RUN_ID         # candidates, scores, weights, RNG state — why this fault?
-mayhem maniac run                    # generate → gate → execute (respects approval policy)
-```
-
-## Introspection
-
-```bash
-mayhem faults list [--category net] [--risk medium]
-mayhem faults describe net.partition  # schema, backends, caps, risk ladder position
-mayhem tools status                  # per-host tool availability matrix
-mayhem config show | validate | migrate
-mayhem runs list | mayhem runs show RUN_ID [--timeline] [--evaluations]
-mayhem dev coverage-matrix           # regenerate docs/fault-catalog/matrix.md
-```
+---
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | success |
-| 1 | runtime failure (fault/step error) |
-| 2 | validation/safety refusal |
-| 3 | recovery incomplete (`dirty`) |
-| 130 | interrupted (SIGINT) — after graceful recovery |
+| Code | Constant | Meaning |
+|---|---|---|
+| 0 | `SUCCESS` | Command completed successfully |
+| 1 | `GENERAL_FAILURE` | Runtime failure not covered by a specific code |
+| 2 | `USAGE_ERROR` | Bad flags or arguments |
+| 3 | `CONFIG_ERROR` | Configuration layering or validation failed |
+| 4 | `VALIDATION_ERROR` | Experiment/spec/target validation failed |
+| 5 | `SAFETY_REFUSAL` | A safety gate refused the operation |
+| 6 | `EXPERIMENT_FAILURE` | Experiment ran and did not complete |
+| 7 | `RECOVERY_FAILURE` | Recovery/janitor left dirty state behind |
+| 8 | `AGENT_ERROR` | Agent transport/runtime failure |
+| 9 | `TOOLKIT_ERROR` | External tool invocation failed structurally |
+| 10 | `AMBIGUOUS_COMMAND` | Command prefix matched multiple commands |
 
-All refusals print the failing gate ([safety.md](../architecture/safety.md) §2) and the exact rule
-that refused.
+Exit codes are defined in `src/mayhem/cli/exit_codes.py` and are a stable public contract.
+
+---
+
+## Project layout
+
+```
+src/mayhem/cli/
+  __init__.py        # namespace only
+  app.py             # root group, main() entry, error→exit-code mapping
+  resolver.py        # PrefixGroup + unique-prefix resolution
+  context.py         # CliContext dataclass (parsed once, shared via ctx.obj)
+  services.py        # thin service layer (UI-framework-agnostic)
+  lifecycle.py       # validate, plan, run, status, history, recover, janitor
+  experiment.py      # experiment show/validate group
+  topology.py        # topology discover group
+  toolkit.py         # toolkit faults/list group
+  config_cmd.py      # config show/validate group
+  exit_codes.py      # ExitCode enum
+```
+
+Handlers are intentionally thin: they translate Click arguments into service calls
+and format results. `services.py` is the single place CLI touches Mayhem internals,
+making it reusable from a future REST or UI layer.

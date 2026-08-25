@@ -46,9 +46,7 @@ class SQLiteLeaseSink:
                     lease.state.value,
                     lease.owner_agent,
                     json.dumps([op.model_dump(mode="json") for op in lease.undo_ops]),
-                    json.dumps(
-                        [probe.model_dump(mode="json") for probe in lease.verify_probes]
-                    ),
+                    json.dumps([probe.model_dump(mode="json") for probe in lease.verify_probes]),
                     float(lease.ttl_seconds),
                     expires_at.isoformat(),
                     _iso_or_none(lease.injected_at),
@@ -100,9 +98,7 @@ def _row_to_lease(row: Mapping[str, object]) -> FaultLease:
             "run_id": str(row["run_id"] or ""),
             "fault_id": str(row["fault_id"] or ""),
             "targets": frozenset(json.loads(str(row["targets_json"]))),
-            "created_at": datetime.fromtimestamp(
-                float(str(row["created_epoch_s"])), tz=UTC
-            ),
+            "created_at": datetime.fromtimestamp(float(str(row["created_epoch_s"])), tz=UTC),
         }
     )
 

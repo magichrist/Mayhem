@@ -165,11 +165,7 @@ class ToolRegistry:
 def manifest_from_yaml(path: Path) -> CapabilityManifest:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     slots_raw = raw.pop("fallback_groups", {}) or {}
-    slots = {
-        capability: slot
-        for capability, slot in slots_raw.items()
-        if slot is not None
-    }
+    slots = {capability: slot for capability, slot in slots_raw.items() if slot is not None}
     return CapabilityManifest(
         tool=raw["tool"],
         provides=tuple(raw["provides"]),

@@ -35,15 +35,13 @@ class Migration:
 
 def run_migrations(conn: sqlite3.Connection, migrations: Sequence[Migration]) -> list[str]:
     """Apply all pending migrations; returns ids applied this call."""
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS _schema_migrations (
             version INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
-        """
-    )
+        """)
     applied = {int(row[0]) for row in conn.execute("SELECT version FROM _schema_migrations")}
     applied_now: list[str] = []
     previous = -1

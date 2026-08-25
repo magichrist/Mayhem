@@ -1,4 +1,5 @@
 """RunEngine: durable execution of a frozen plan, real executors, real SQLite."""
+
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,13 @@ from mayhem.domain.experiments import (
     InjectFault,
     Step,
 )
-from mayhem.domain.topology import NodeKind, ProcessNode, ServiceNode, TargetSelector, TopologyGraph
+from mayhem.domain.topology import (
+    NodeKind,
+    ProcessNode,
+    ServiceNode,
+    TargetSelector,
+    TopologyGraph,
+)
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 from mayhem.infra.store import Store
 

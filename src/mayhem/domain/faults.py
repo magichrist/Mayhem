@@ -131,7 +131,8 @@ class FaultDefinition(BaseModel):
             if spec.name not in params:
                 if spec.required and spec.default is None:
                     raise SchemaValidationError(
-                        f"params[{self.id}]", f"missing required parameter {spec.name!r}"
+                        f"params[{self.id}]",
+                        f"missing required parameter {spec.name!r}",
                     )
                 if spec.default is not None:
                     normalized[spec.name] = spec.default

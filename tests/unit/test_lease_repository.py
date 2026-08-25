@@ -1,4 +1,5 @@
 """SQLiteLeaseSink: durable lease protocol half — round trips and sweeps."""
+
 from datetime import timedelta
 from pathlib import Path
 
@@ -17,7 +18,11 @@ def _lease(state: LeaseState = LeaseState.PENDING, **over: object) -> FaultLease
         "targets": {"n-proc"},
         "undo_ops": (UndoOp(op="signal.cont", args={"pid": "42"}),),
         "verify_probes": (
-            VerifyProbe(probe="exec", args={"cmd": ["true"], "timeout_s": 5}, expect_present=True),
+            VerifyProbe(
+                probe="exec",
+                args={"cmd": ["true"], "timeout_s": 5},
+                expect_present=True,
+            ),
         ),
         "ttl_seconds": 30.0,
         "state": state,
@@ -51,7 +56,9 @@ class TestRoundTrip:
         sink = _sink(tmp_path)
         fresh = _lease(id="l-fresh")
         stale = _lease(
-            id="l-stale", created_at=utc_now() - timedelta(seconds=120), ttl_seconds=10.0
+            id="l-stale",
+            created_at=utc_now() - timedelta(seconds=120),
+            ttl_seconds=10.0,
         )
         sink.save(fresh)
         sink.save(stale)

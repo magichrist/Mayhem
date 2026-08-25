@@ -41,21 +41,36 @@ def _ask(proc: subprocess.Popen[bytes], payload: dict | str) -> dict | None:
     return _recv(proc)
 
 
-@pytest.mark.skipif(not shutil.which("python3") and sys.platform == "win32",
-                    reason="posix-only smoke")
+@pytest.mark.skipif(
+    not shutil.which("python3") and sys.platform == "win32", reason="posix-only smoke"
+)
 def test_agent_serve_session_roundtrip() -> None:
     proc = _spawn()
     try:
-        handshake = _ask(proc, {
-            "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": CTX,
-        })
+        handshake = _ask(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "handshake",
+                "params": CTX,
+            },
+        )
         assert handshake is not None and handshake["result"]["protocol"] == "mayhem/1"
 
         # notification → no frame on stdout; the next request must still answer id=2
-        _send(proc, {"jsonrpc": "2.0", "method": "log.emit",
-                     "params": {**CTX, "line": "noise"}})
-        caps = _ask(proc, {"jsonrpc": "2.0", "id": 2,
-                           "method": "capabilities.query", "params": CTX})
+        _send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "method": "log.emit",
+                "params": {**CTX, "line": "noise"},
+            },
+        )
+        caps = _ask(
+            proc,
+            {"jsonrpc": "2.0", "id": 2, "method": "capabilities.query", "params": CTX},
+        )
         assert caps is not None and caps["id"] == 2
         assert "proc" in caps["result"]["faults"]
 
@@ -63,8 +78,7 @@ def test_agent_serve_session_roundtrip() -> None:
         assert bad is not None
         assert bad["error"]["code"] == -32700
 
-        unknown = _ask(proc, {"jsonrpc": "2.0", "id": 3, "method": "nope",
-                              "params": CTX})
+        unknown = _ask(proc, {"jsonrpc": "2.0", "id": 3, "method": "nope", "params": CTX})
         assert unknown is not None
         assert unknown["error"]["code"] == -32601
 

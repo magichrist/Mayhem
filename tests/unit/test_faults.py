@@ -18,7 +18,11 @@ def _latency() -> FaultDefinition:
         applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.PROCESS}),
         params_schema=(
             ParamSpec(
-                name="delay_ms", type=ParamType.INTEGER, required=True, minimum=1, maximum=10_000
+                name="delay_ms",
+                type=ParamType.INTEGER,
+                required=True,
+                minimum=1,
+                maximum=10_000,
             ),
             ParamSpec(name="jitter_ms", type=ParamType.INTEGER, default=0),
             ParamSpec(name="duration_s", type=ParamType.DURATION, default=30),
