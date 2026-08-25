@@ -128,6 +128,51 @@ CATALOG: tuple[FaultDefinition, ...] = (
         max_duration_s=180.0,
         params_schema=(),
     ),
+    FaultDefinition(
+        id="dns.resolve_delay",
+        category=FaultCategory.DNS,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST}),
+        max_duration_s=300.0,
+        params_schema=(_S,),
+    ),
+    FaultDefinition(
+        id="dns.nxdomain",
+        category=FaultCategory.DNS,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST}),
+        max_duration_s=300.0,
+        params_schema=(ParamSpec(name="domain", type=ParamType.STRING),),
+    ),
+    FaultDefinition(
+        id="tls.certificate_expired",
+        category=FaultCategory.TLS,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.EXTERNAL_DEPENDENCY}),
+        max_duration_s=120.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="clock.skew",
+        category=FaultCategory.CLOCK,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="offset_ms", type=ParamType.INTEGER, required=True),
+        ),
+    ),
+    FaultDefinition(
+        id="fd.exhaust",
+        category=FaultCategory.FD,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(ParamSpec(name="limit", type=ParamType.INTEGER, default=64),),
+    ),
 )
 
 _BY_ID: dict[str, FaultDefinition] = {d.id: d for d in CATALOG}

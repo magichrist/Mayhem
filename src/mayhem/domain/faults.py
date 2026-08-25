@@ -30,6 +30,10 @@ class FaultCategory(StrEnum):
     DATABASE = "database"
     LOAD = "load"
     FUZZ = "fuzz"
+    DNS = "dns"
+    TLS = "tls"
+    CLOCK = "clock"
+    FD = "fd"
 
     @classmethod
     def from_fault_id(cls, fault_id: str) -> FaultCategory:
@@ -58,6 +62,10 @@ _PREFIX_TO_CATEGORY: dict[str, FaultCategory] = {
     "db": FaultCategory.DATABASE,
     "load": FaultCategory.LOAD,
     "fuzz": FaultCategory.FUZZ,
+    "dns": FaultCategory.DNS,
+    "tls": FaultCategory.TLS,
+    "clock": FaultCategory.CLOCK,
+    "fd": FaultCategory.FD,
 }
 
 

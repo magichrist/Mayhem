@@ -65,3 +65,18 @@ class TestFaultDefinition:
         assert spec.validate_params({"pct": 50}) == {"pct": 50.0}
         with pytest.raises(SchemaValidationError, match="outside"):
             spec.validate_params({"pct": 150})
+
+    def test_new_fault_categories(self) -> None:
+        from mayhem.domain.catalog import CATALOG
+        ids = {f.id for f in CATALOG}
+        assert "dns.resolve_delay" in ids
+        assert "dns.nxdomain" in ids
+        assert "tls.certificate_expired" in ids
+        assert "clock.skew" in ids
+        assert "fd.exhaust" in ids
+
+    def test_new_fault_category_mapping(self) -> None:
+        assert FaultCategory.from_fault_id("dns.resolve_delay") == FaultCategory.DNS
+        assert FaultCategory.from_fault_id("tls.certificate_expired") == FaultCategory.TLS
+        assert FaultCategory.from_fault_id("clock.skew") == FaultCategory.CLOCK
+        assert FaultCategory.from_fault_id("fd.exhaust") == FaultCategory.FD

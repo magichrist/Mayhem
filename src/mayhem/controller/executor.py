@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, assert_never
 from mayhem.agents.executors import executor_for
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
+from mayhem.controller.resource_manager import ResourceManager
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.checks import ProbeType
 from mayhem.domain.common import utc_now
@@ -84,6 +85,7 @@ class RunEngine:
         safety: SafetyContext | None = None,
         live_graph: Callable[[], TopologyGraph] | None = None,
         abort_file: Path | None = None,
+        resource_manager: ResourceManager | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -95,6 +97,7 @@ class RunEngine:
         self._live_graph = live_graph
         self._abort_file = abort_file
         self._abort_mode: str | None = None  # "graceful" | "immediate"
+        self._resource_manager = resource_manager
 
     # -- public -----------------------------------------------------------------------
 
@@ -256,6 +259,28 @@ class RunEngine:
                 detail={"fault": fault.fault_id, "lease": lease.id},
             )
         )
+
+        # Resource ownership tracking (ADR-0015)
+        tracked_resource = None
+        if self._resource_manager is not None:
+            from mayhem.domain.leases import UndoOp, VerifyProbe  # noqa: PLC0415
+            from mayhem.domain.resources import ResourceType  # noqa: PLC0415
+
+            tracked_resource = self._resource_manager.register(
+                resource_type=ResourceType.GENERIC,  # specific type inferred from fault_id
+                run_id=plan.run_id,
+                step_id=step.id,
+                fault_id=fault.fault_id,
+                target_identity=lease.target_id,
+                cleanup_op=UndoOp(op="lease.compensate", args={"lease_id": lease.id}),
+                verify_probe=VerifyProbe(
+                    probe="lease.verify",
+                    args={"lease_id": lease.id},
+                    expect_present=False,
+                ),
+            )
+            self._resource_manager.activate(tracked_resource.id)
+
         executor = executor_for(fault.fault_id)
         inject_outcome = executor.inject(lease) if executor is not None else None
         self._record_tool_result(inject_outcome.tool_result if inject_outcome else None)
@@ -296,9 +321,15 @@ class RunEngine:
                     detail={"fault": fault.fault_id, "lease": lease.id},
                 )
             )
+            # Update resource state after successful recovery
+            if tracked_resource is not None and self._resource_manager is not None:
+                self._resource_manager.mark_recovered(tracked_resource.id, verified=True)
             detail = "; ".join(detail_parts) or f"{fault.fault_id} injected+recovered"
             return StepReport(step.id, inject_ok, detail), []
 
+        # Recovery failed — mark resource as dirty
+        if tracked_resource is not None and self._resource_manager is not None:
+            self._resource_manager.mark_recovered(tracked_resource.id, verified=False)
         notes = f"undo_ok={undo_ok} verified={verified}; " + "; ".join(detail_parts)
         dirty_lease = self._client.mark_dirty(lease.id, notes=notes)
         self._emit(

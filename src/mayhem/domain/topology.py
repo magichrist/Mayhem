@@ -78,6 +78,81 @@ TopologyNode = ServiceNode | ContainerNode | HostNode | ProcessNode | ExternalDe
 _discriminated_nodes = Annotated[TopologyNode, Field(discriminator="kind")]
 
 
+# --- Network path model (ADR-0019) ---
+
+
+class NetworkSegment(BaseModel):
+    """A named segment in the network topology — a subnet, VLAN, or namespace."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    name: str
+    cidr: str | None = None  # e.g. "10.0.1.0/24"
+    node_ids: tuple[str, ...] = ()  # nodes in this segment
+
+
+class NetworkPath(BaseModel):
+    """A directed path between two nodes through the network.
+
+    Captures hops, expected latency, and any intermediate infrastructure
+    (load balancers, firewalls, service meshes) that could be fault targets.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    src_node_id: str
+    dst_node_id: str
+    hop_count: int = 1
+    expected_latency_ms: float = 0.0
+    intermediaries: tuple[str, ...] = ()  # node IDs of LBs, firewalls, etc.
+    segments: tuple[str, ...] = ()  # segment IDs this path crosses
+    bidirectional: bool = True
+
+
+class NetworkTopology(BaseModel):
+    """Collection of network segments and paths — the "network view" of the topology.
+
+    Used by the planner to determine which network faults are applicable
+    to a given source→destination path and which intermediaries can be targeted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    segments: tuple[NetworkSegment, ...] = ()
+    paths: tuple[NetworkPath, ...] = ()
+
+    def paths_for_node(self, node_id: str) -> tuple[NetworkPath, ...]:
+        """All paths originating from or terminating at a node."""
+        return tuple(
+            p
+            for p in self.paths
+            if p.src_node_id == node_id or p.dst_node_id == node_id
+        )
+
+    def segment_for_node(self, node_id: str) -> NetworkSegment | None:
+        """Which segment contains this node, if any."""
+        for seg in self.segments:
+            if node_id in seg.node_ids:
+                return seg
+        return None
+
+    def find_path(
+        self, src_node_id: str, dst_node_id: str
+    ) -> NetworkPath | None:
+        """Find a path between two nodes (directional)."""
+        for p in self.paths:
+            if p.src_node_id == src_node_id and p.dst_node_id == dst_node_id:
+                return p
+        return None
+
+    def cross_segment_paths(self) -> tuple[NetworkPath, ...]:
+        """Paths that cross segment boundaries — higher fault surface."""
+        return tuple(
+            p for p in self.paths if len(p.segments) > 1
+        )
+
+
 class EdgeKind(StrEnum):
     RUNS_ON = "runs_on"
     CONNECTS_VIA = "connects_via"

@@ -17,6 +17,7 @@ from mayhem.domain.capabilities import Identifier
 from mayhem.domain.checks import Expectation, OnPreFailure
 from mayhem.domain.common import Duration
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.execution_context import ExecutionContextSpec
 from mayhem.domain.faults import FaultCategory
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.risks import RiskLevel
@@ -89,6 +90,7 @@ class InjectFault(BaseModel):
     params: dict[str, object] = Field(default_factory=dict)
     duration: Duration
     backend: Identifier | None = None
+    execution: ExecutionContextSpec | None = None  # ADR-0014; None → infer from target
 
     @field_validator("fault")
     @classmethod
@@ -257,6 +259,7 @@ class PlannedFault(BaseModel):
     params: dict[str, object] = Field(default_factory=dict)
     duration: Duration
     backend: Identifier | None = None
+    execution_context: ExecutionContextSpec | None = None  # ADR-0014
 
 
 class ExecutionPlan(BaseModel):

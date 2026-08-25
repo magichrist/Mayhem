@@ -171,4 +171,43 @@ M0002_LEASE_CONTEXT = Migration(
     ),
 )
 
-ALL_MIGRATIONS: tuple[Migration, ...] = (M0001_INITIAL, M0002_LEASE_CONTEXT)
+M0003_CAMPAIGNS_OBSERVATIONS = Migration(
+    version=3,
+    name="campaigns_and_observations",
+    statements=(
+        """
+        CREATE TABLE campaigns (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft','scheduled','running','paused','completed','aborted')),
+            experiments_json TEXT NOT NULL DEFAULT '[]',
+            window_json TEXT NOT NULL DEFAULT '{}',
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            labels_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_campaigns_status ON campaigns(status)",
+        """
+        CREATE TABLE observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            data_json TEXT NOT NULL DEFAULT '{}',
+            timestamp TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_observations_run ON observations(run_id)",
+        "CREATE INDEX idx_observations_kind ON observations(kind)",
+    ),
+)
+
+ALL_MIGRATIONS: tuple[Migration, ...] = (
+    M0001_INITIAL,
+    M0002_LEASE_CONTEXT,
+    M0003_CAMPAIGNS_OBSERVATIONS,
+)

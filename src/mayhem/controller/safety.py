@@ -1,9 +1,10 @@
-"""Mechanical safety gates between planner and executor (ADR-0012, architecture/safety.md).
+"""Mechanical safety gates between planner and executor (ADR-0012, ADR-0014, architecture/safety.md).
 
 Gate stack enforced here:
   G1 config policy      — allowlists/denylists, risk ladder, critical opt-in
   G2 plan validation    — budgets fit the topology graph, fingerprint match
   G3 pre-exec assertion — resolved targets re-checked against *live* topology
+  G4 execution context  — declared context must be feasible for target node kinds
 
 Precedence: denylist beats allowlist beats selector beats default.
 Every refusal is typed and carries a machine-readable reason.
@@ -156,8 +157,33 @@ def check_blast_radius(
     return stats
 
 
+def _check_execution_context(fault: PlannedFault, graph: TopologyGraph) -> None:
+    """G4: validate that the declared execution context is feasible for all targets.
+
+    Prevents accidental host-level execution when the experiment intended
+    container-level execution, or vice versa.
+    """
+    if fault.execution_context is None:
+        return
+    node_kinds: set[NodeKind] = set()
+    for target in fault.targets:
+        for node_id in target.node_ids:
+            node = graph.by_id(node_id)
+            if node is not None:
+                node_kinds.add(node.kind)
+    if not node_kinds:
+        return  # no nodes resolved — G3 will catch this
+    try:
+        fault.execution_context.assert_compatible(frozenset(node_kinds))
+    except InvariantViolationError as exc:
+        raise SafetyRefusedError(
+            "execution_context.refused",
+            f"{fault.fault_id}: {exc}",
+        ) from exc
+
+
 def validate_plan(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext) -> None:
-    """G1+G2 over every fault step of an already-compiled plan."""
+    """G1+G2+G4 over every fault step of an already-compiled plan."""
     if plan.environment_fingerprint != ctx.fingerprint:
         raise SafetyRefusedError(
             "environment.mismatch",
@@ -181,6 +207,9 @@ def validate_plan(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext)
             ctx=ctx,
         )
         seen_faults.append(fault.fault_id)
+        # G4: validate execution context compatibility
+        if fault.execution_context is not None:
+            _check_execution_context(fault, graph)
 
 
 def pre_exec_assertion(

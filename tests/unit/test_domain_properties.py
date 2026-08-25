@@ -10,7 +10,15 @@ from hypothesis import strategies as st
 from mayhem.domain.common import parse_duration
 from mayhem.domain.errors import InvalidTransitionError
 from mayhem.domain.leases import FaultLease, LeaseState
-from mayhem.domain.topology import Edge, EdgeKind, ServiceNode, TopologyGraph
+from mayhem.domain.topology import (
+    Edge,
+    EdgeKind,
+    NetworkPath,
+    NetworkSegment,
+    NetworkTopology,
+    ServiceNode,
+    TopologyGraph,
+)
 
 _ALL_STATES = sorted(LeaseState, key=lambda s: s.value)
 _TRANSITION_TABLE: dict[LeaseState, frozenset[LeaseState]] = {
@@ -84,3 +92,52 @@ def test_lease_json_round_trip(suffix: str) -> None:
     restored = FaultLease.model_validate(lease.model_dump(mode="json"))
     assert restored == lease
     assert isinstance(restored.targets, frozenset)
+
+
+class TestNetworkTopology:
+    def test_empty_topology(self) -> None:
+        topo = NetworkTopology()
+        assert topo.paths_for_node("x") == ()
+        assert topo.segment_for_node("x") is None
+        assert topo.find_path("a", "b") is None
+        assert topo.cross_segment_paths() == ()
+
+    def test_segment_for_node(self) -> None:
+        seg = NetworkSegment(id="s1", name="frontend", node_ids=("n1", "n2"))
+        topo = NetworkTopology(segments=(seg,))
+        assert topo.segment_for_node("n1") == seg
+        assert topo.segment_for_node("n3") is None
+
+    def test_paths_for_node(self) -> None:
+        p1 = NetworkPath(src_node_id="n1", dst_node_id="n2")
+        p2 = NetworkPath(src_node_id="n2", dst_node_id="n3")
+        topo = NetworkTopology(paths=(p1, p2))
+        assert topo.paths_for_node("n2") == (p1, p2)
+        assert topo.paths_for_node("n1") == (p1,)
+        assert topo.paths_for_node("n4") == ()
+
+    def test_find_path(self) -> None:
+        p = NetworkPath(src_node_id="n1", dst_node_id="n2", hop_count=2)
+        topo = NetworkTopology(paths=(p,))
+        assert topo.find_path("n1", "n2") == p
+        assert topo.find_path("n2", "n1") is None
+
+    def test_cross_segment_paths(self) -> None:
+        p1 = NetworkPath(src_node_id="n1", dst_node_id="n2", segments=("s1", "s2"))
+        p2 = NetworkPath(src_node_id="n1", dst_node_id="n2", segments=("s1",))
+        topo = NetworkTopology(paths=(p1, p2))
+        assert topo.cross_segment_paths() == (p1,)
+
+    def test_json_round_trip(self) -> None:
+        seg = NetworkSegment(id="s1", name="dmz", cidr="10.0.0.0/24", node_ids=("n1",))
+        path = NetworkPath(
+            src_node_id="n1",
+            dst_node_id="n2",
+            hop_count=3,
+            expected_latency_ms=15.5,
+            intermediaries=("lb1",),
+            segments=("s1", "s2"),
+        )
+        topo = NetworkTopology(segments=(seg,), paths=(path,))
+        restored = NetworkTopology.model_validate(topo.model_dump(mode="json"))
+        assert restored == topo
