@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class DiscoveryResult:
     graph: TopologyGraph
     drift_report: dict[str, object] = field(default_factory=dict)
+    partial: bool = False
+    errors: tuple[str, ...] = ()
 
 
 class TopologyService:
@@ -23,10 +25,16 @@ class TopologyService:
 
     def discover(self, providers: list[TopologyProvider]) -> DiscoveryResult:
         fragments = []
+        errors: list[str] = []
         for provider in providers:
             if not provider.is_available():
+                errors.append(f"{provider.id}: not available")
                 continue
-            fragments.append(provider.discover())
+            try:
+                fragment = provider.discover()
+                fragments.append(fragment)
+            except Exception as exc:
+                errors.append(f"{provider.id}: discovery failed: {exc}")
 
         blueprint = next((f for f in fragments if f.source == "compose"), None)
         live = [f for f in fragments if f.source != "compose"]
@@ -51,6 +59,8 @@ class TopologyService:
         return DiscoveryResult(
             graph=_graph(graph_nodes, safe_edges),
             drift_report=drift,
+            partial=bool(errors),
+            errors=tuple(errors),
         )
 
     @staticmethod
@@ -60,31 +70,58 @@ class TopologyService:
     ) -> dict[str, object]:
         services = {n.name: n for n in blueprint.nodes if n.kind is NodeKind.SERVICE}
         live_by_service: dict[str, list[ContainerNode]] = {}
+        all_live_containers: list[ContainerNode] = []
         for fragment in live_fragments:
             for node in fragment.nodes:
-                if isinstance(node, ContainerNode) and node.service_name:
-                    live_by_service.setdefault(node.service_name, []).append(node)
+                if isinstance(node, ContainerNode):
+                    all_live_containers.append(node)
+                    if node.service_name:
+                        live_by_service.setdefault(node.service_name, []).append(node)
 
+        # --- matched services ---
+        matched_services: list[str] = []
+        for name in sorted(set(services) & set(live_by_service)):
+            matched_services.append(name)
+
+        # --- missing services ---
         missing_services = sorted(set(services) - set(live_by_service))
+
+        # --- extra containers (runtime containers with no matching service) ---
         extra_containers: list[dict[str, str]] = [
-            {"name": c.name, "engine": c.engine}
-            for fragment in live_fragments
-            for c in fragment.nodes
-            if isinstance(c, ContainerNode) and c.service_name and c.service_name not in services
+            {"name": c.name, "engine": c.engine, "image": str(c.image or "")}
+            for c in all_live_containers
+            if c.service_name and c.service_name not in services
         ]
+
+        # --- image drift ---
         changed_images: list[dict[str, str]] = []
         for name, svc in services.items():
             expected = getattr(svc, "image", None)
-            for _container in live_by_service.get(name, []):
-                # engine ps does not carry image on all versions; absence ≠ drift.
-                if expected is None:
-                    continue
-                changed_images.append({"service": name, "expected": str(expected)})
+            if expected is None:
+                continue
+            for container in live_by_service.get(name, []):
+                actual = getattr(container, "image", None)
+                if actual and str(expected) != str(actual):
+                    changed_images.append({
+                        "service": name,
+                        "expected": str(expected),
+                        "actual": str(actual),
+                    })
+
+        # --- state anomalies (stopped, paused, restarting) ---
+        unhealthy: list[dict[str, str]] = []
+        for name, containers in live_by_service.items():
+            for c in containers:
+                state = c.state.lower() if c.state else ""
+                if state not in ("running", "up", ""):
+                    unhealthy.append({"service": name, "name": c.name, "state": c.state})
 
         report: dict[str, object] = {
+            "matched_services": matched_services,
             "missing_services": missing_services,
             "extra_containers": extra_containers,
-            "image_expectations": changed_images,
+            "changed_images": changed_images,
+            "unhealthy": unhealthy,
         }
         return {k: v for k, v in report.items() if v}
 

@@ -1,0 +1,30 @@
+kind: deterministic
+
+metadata:
+  name: complete-compose-fault-drill
+
+hypothesis: >
+  The Compose environment can recover from every currently implemented
+  Mayhem fault.
+
+labels:
+  purpose: full-fault-validation
+  environment: development
+
+constraints:
+  risk_ceiling: critical
+  max_faults: 1
+  timeout: 30m
+
+steps:
+  - id: pause-download-1
+    inject_fault:
+      fault: proc.pause
+      targets:
+        - kind: process
+          expr: "name=download-1"
+      duration: 10s
+    on_failure: abort_and_recover
+
+  - id: settle
+    wait: 5s

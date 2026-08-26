@@ -75,7 +75,7 @@ ignore = [
 runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR0915", "SIM117"]
+"tests/**" = ["PLR0915", "SIM117", "PLC0415"]
 # CLI commands keep heavy imports inside handlers so `--help` stays instant,
 # and typer's own API *is* Option(...) in argument defaults.
 "src/mayhem/cli/**" = ["PLC0415", "PLR0917"]

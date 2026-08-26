@@ -51,15 +51,65 @@ class TestMigrator:
             "step_runs",
             "fault_leases",
             "fault_invocations",
-            "recovery_records",
-            "tool_runs",
-            "agent_states",
-            "events",
             "steady_state_evaluations",
             "maniac_decisions",
+            "campaigns",
+            "observations",
             "_schema_migrations",
+            "agent_states",
+            "events",
+            "recovery_records",
+            "tool_runs",
         }
         assert expected <= names
+        store.close()
+
+    def test_campaigns_table_insert_and_query(self, tmp_path: Path) -> None:
+        store = Store.open_migrated(tmp_path / "tg.db")
+        with store.write() as conn:
+            conn.execute(
+                """INSERT INTO campaigns
+                   (id, name, description, status, experiments_json,
+                    window_json, policy_json, labels_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "camp-test1",
+                    "Test Campaign",
+                    "A test",
+                    "draft",
+                    "[]",
+                    "{}",
+                    "{}",
+                    "{}",
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+        rows = store.query("SELECT * FROM campaigns WHERE id = ?", ("camp-test1",))
+        assert len(rows) == 1
+        assert rows[0]["name"] == "Test Campaign"
+        assert rows[0]["status"] == "draft"
+        store.close()
+
+    def test_observations_table_insert_and_query(self, tmp_path: Path) -> None:
+        store = Store.open_migrated(tmp_path / "tg.db")
+        with store.write() as conn:
+            conn.execute(
+                """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("fault.injected", "run-1", "executor", '{"fault_id": "net.latency"}', "2026-01-01T00:00:00Z"),
+            )
+            conn.execute(
+                """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("probe.measured", "run-1", "probe_runner", '{"status": 200}', "2026-01-01T00:00:01Z"),
+            )
+        rows = store.query(
+            "SELECT * FROM observations WHERE run_id = ? ORDER BY timestamp", ("run-1",)
+        )
+        assert len(rows) == 2
+        assert rows[0]["kind"] == "fault.injected"
+        assert rows[1]["kind"] == "probe.measured"
         store.close()
 
     def test_wal_mode_active(self, tmp_path: Path) -> None:

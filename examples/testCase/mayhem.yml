@@ -1,0 +1,31 @@
+apiVersion: mayhem/v1
+
+environment:
+  name: mayhem-compose-test
+  klass: development
+
+policy:
+  allow_faults: null
+  deny_faults: []
+  risk_ceiling: critical
+  allow_critical: true
+
+blast_radius:
+  max_services_pct: 100
+  max_hosts: 1
+  max_concurrent_faults: 4
+  cooldown_seconds: 5
+
+storage:
+  path: .mayhem/test/state.db
+  artifacts_dir: .mayhem/test/artifacts
+
+toolkit:
+  binaries: {}
+
+runtime: docker
+
+target:
+  containers: []
+
+log_level: DEBUG

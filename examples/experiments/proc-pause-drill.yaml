@@ -1,7 +1,7 @@
-# Deterministic drill: pause the api process briefly, then verify recovery.
+# Deterministic drill: pause the download-1 process briefly, then verify recovery.
 kind: deterministic
 name: proc-pause-drill
-hypothesis: a 10s pause of the api process is survivable without user impact
+hypothesis: a 10s pause of the download-1 process is survivable without user impact
 labels:
   team: platform
 constraints:
@@ -12,7 +12,7 @@ steps:
       fault: proc.pause
       targets:
         - kind: process
-          expr: "name=api"
+          expr: "name=download-1"
       duration: 10s
     on_failure: abort_and_recover
   - id: settle

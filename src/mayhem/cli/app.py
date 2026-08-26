@@ -21,6 +21,7 @@ from mayhem.cli.lifecycle import history, janitor, plan, recover, run, status, v
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
 from mayhem.cli.toolkit import toolkit
 from mayhem.cli.topology import topology
+from mayhem.cli.campaign import campaign
 from mayhem.controller.planner import PlanningError
 from mayhem.controller.safety import SafetyRefusedError
 from mayhem.domain.errors import (
@@ -74,7 +75,7 @@ def app(
 
 for _cmd in (validate, plan, run, status, history, recover, janitor):
     app.add_command(_cmd)
-for _group in (experiment, topology, toolkit, config):
+for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)
 
 

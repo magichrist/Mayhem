@@ -27,14 +27,19 @@ from mayhem.domain.experiments import (
     RandomExperiment,
     ResolvedTarget,
 )
-from mayhem.domain.topology import TargetSelector
+from mayhem.domain.topology import (
+    NodeKind,
+    ProcessNode,
+    TargetSelector,
+    TopologyNode,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mayhem.domain.experiments import SelectionPolicy, StepAction
     from mayhem.domain.risks import RiskLevel
-    from mayhem.domain.topology import TopologyGraph, TopologyNode
+    from mayhem.domain.topology import TopologyGraph
 
 
 class PlanningError(Exception):
@@ -216,6 +221,18 @@ def _plan_action(  # noqa: PLR0917 — internal flattener, positional by design
                 f"{node.id!r} of kind {node.kind.value!r}"
             )
             raise PlanningError(msg)
+
+    # When a process-level fault targets a service or container node,
+    # walk RUNS_ON edges to find the underlying ProcessNode (with a PID).
+    # The compensation template needs a real ProcessNode to build undo ops.
+    if NodeKind.PROCESS not in {n.kind for n in nodes}:
+        extra: list[TopologyNode] = []
+        for node in nodes:
+            procs = graph.connected_processes(node.id)
+            if procs:
+                extra.extend(procs)
+        if extra:
+            nodes = list(nodes) + extra
 
     duration_s = float(action.duration)
     if duration_s > definition.max_duration_s:

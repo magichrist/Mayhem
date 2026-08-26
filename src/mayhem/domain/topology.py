@@ -34,10 +34,21 @@ class _NodeBase(BaseModel):
     name: str
 
 
+class PortBinding(BaseModel):
+    """A single port binding — host side and container side."""
+
+    model_config = ConfigDict(frozen=True)
+
+    host_port: int
+    container_port: int
+    host_address: str = "0.0.0.0"
+    protocol: str = "tcp"  # tcp | udp
+
+
 class ServiceNode(_NodeBase):
     kind: Literal[NodeKind.SERVICE] = NodeKind.SERVICE
     image: str | None = None
-    exposed_ports: tuple[int, ...] = ()
+    exposed_ports: tuple[PortBinding, ...] = ()
 
 
 class ContainerNode(_NodeBase):
@@ -47,8 +58,10 @@ class ContainerNode(_NodeBase):
     ip_address: IPvAnyAddress | None = None
     host_id: str | None = None
     service_name: str | None = None  # com.docker.compose.service binding
-    ports: tuple[int, ...] = ()
+    ports: tuple[PortBinding, ...] = ()
     state: str = "unknown"  # engine-reported lifecycle state
+    image: str | None = None
+    networks: tuple[str, ...] = ()
 
 
 class HostNode(_NodeBase):
@@ -63,6 +76,10 @@ class ProcessNode(_NodeBase):
     pid: int
     host_id: str
     cmdline: str = ""
+    container_id: str | None = None  # short container ID if running inside a container
+    exe: str = ""  # executable path where discoverable
+    user: str = ""  # process user where discoverable
+    ppid: int | None = None  # parent PID where discoverable
 
 
 class ExternalDependencyNode(_NodeBase):
@@ -158,6 +175,9 @@ class EdgeKind(StrEnum):
     CONNECTS_VIA = "connects_via"
     DEPENDS_ON = "depends_on"
     EXPOSES = "exposes"
+    CONTAINED_IN = "contained_in"
+    LISTENS_ON = "listens_on"
+    ATTACHED_TO = "attached_to"
 
 
 class Edge(BaseModel):
@@ -243,6 +263,30 @@ class TopologyGraph(BaseModel):
         if not found:
             raise TargetResolutionError(str(selector), "no nodes matched")
         return found
+
+    def connected_processes(self, node_id: str) -> tuple[ProcessNode, ...]:
+        """Walk RUNS_ON edges from *node_id* to find connected ProcessNodes.
+
+        Follows: service → container → process.  Returns every ProcessNode
+        reachable within two hops of *node_id* via RUNS_ON edges.
+        """
+        by_id = {n.id: n for n in self.nodes}
+        child_ids = [
+            e.dst for e in self.edges if e.src == node_id and e.kind is EdgeKind.RUNS_ON
+        ]
+        # One more hop: process nodes that RUNS_ON the children.
+        grandchild_ids = [
+            e.dst
+            for cid in child_ids
+            for e in self.edges
+            if e.src == cid and e.kind is EdgeKind.RUNS_ON
+        ]
+        result: list[ProcessNode] = []
+        for cid in (*child_ids, *grandchild_ids):
+            node = by_id.get(cid)
+            if isinstance(node, ProcessNode):
+                result.append(node)
+        return tuple(result)
 
     def dependents_closure(self, node_id: str) -> frozenset[str]:
         """All node ids that transitively depend on ``node_id`` — blast-radius input."""

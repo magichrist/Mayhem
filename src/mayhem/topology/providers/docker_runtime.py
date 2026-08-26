@@ -13,8 +13,45 @@ import shutil
 import subprocess
 from typing import Any
 
-from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, HostNode
+from pydantic.networks import IPvAnyAddress
+
+from mayhem.domain.topology import (
+    ContainerNode,
+    Edge,
+    EdgeKind,
+    HostNode,
+    PortBinding,
+    ProcessNode,
+)
 from mayhem.topology.providers.base import PartialGraph
+
+
+def _inspect_pid(engine: str, container_id: str) -> int | None:
+    """Query the main PID of a running container via ``engine inspect``."""
+    try:
+        out = subprocess.run(
+            [engine, "inspect", "--format", "{{.State.Pid}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pid = int(out.stdout.strip())
+        return pid if pid > 0 else None
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+
+
+def _container_id(row: dict[str, Any]) -> str:
+    """Extract container ID handling both Docker ('ID') and Podman ('Id') keys."""
+    return str(row.get("ID") or row.get("Id") or "")
+
+
+def _container_name(row: dict[str, Any]) -> str:
+    """Extract a single container name handling Docker (str) and Podman (list)."""
+    names = row.get("Names") or row.get("Name") or ""
+    if isinstance(names, list):
+        return names[0] if names else ""
+    return str(names)
 
 
 def _ps(engine: str) -> list[dict[str, Any]]:
@@ -135,7 +172,7 @@ class ContainerRuntimeProvider:
                 if svc and svc not in self._filter_services:
                     continue
             if allowed_names is not None:
-                raw_name = str(row.get("Names") or row.get("Name") or "")
+                raw_name = _container_name(row)
                 container_names = [n.strip().lower() for n in raw_name.strip("[]").split(",")]
                 if not any(n in allowed_names for n in container_names):
                     continue
@@ -150,47 +187,148 @@ class ContainerRuntimeProvider:
 
         rows = self._filter_rows(rows)
 
-        nodes: list[HostNode | ContainerNode] = []
+        nodes: list[HostNode | ContainerNode | ProcessNode] = []
         edges: list[Edge] = []
+        notes: list[str] = []
         host_id = f"h-{self._engine}-local"
         nodes.append(HostNode(id=host_id, name=self._engine, transport="local"))
+
+        # Discover network info for IP addresses.
+        all_networks: set[str] = set()
         for row in rows:
-            service_name = _labels(row).get("com.docker.compose.service")
+            nets = row.get("Networks") or []
+            if isinstance(nets, list):
+                all_networks.update(nets)
+        network_info = _networks(self._engine, sorted(all_networks))
+
+        # Resolve container short_id → IP from network info.
+        container_ips: dict[str, str] = {}
+        for _net_name, net_data in network_info.items():
+            for cid_key, ip_val in net_data.items():
+                if cid_key != "subnet" and isinstance(ip_val, str) and "." in ip_val:
+                    container_ips[cid_key] = ip_val
+
+        for row in rows:
+            labels = _labels(row)
+            service_name = labels.get("com.docker.compose.service")
             ports = _parse_ports(row)
+            container_id = _container_id(row)
+            short_id = container_id[:12]
+            ip_str = container_ips.get(short_id)
+
+            ip_addr = IPvAnyAddress(ip_str) if ip_str else None
+
+            nets = row.get("Networks") or []
+            net_names = tuple(nets) if isinstance(nets, list) else ()
+
             node = ContainerNode(
-                id=f"ctr-{str(row.get('ID') or '')[:12]}",
-                name=str(row.get("Names") or row.get("Name") or ""),
+                id=f"ctr-{short_id}",
+                name=_container_name(row),
                 engine=self._engine,
-                runtime_id=str(row.get("ID") or ""),
+                runtime_id=container_id,
                 service_name=service_name,
                 state=str(row.get("State") or row.get("Status") or "unknown"),
                 ports=ports,
                 host_id=host_id,
+                ip_address=ip_addr,
+                image=str(row.get("Image") or ""),
+                networks=net_names,
             )
             nodes.append(node)
             edges.append(Edge(src=node.id, dst=host_id, kind=EdgeKind.RUNS_ON))
-        return PartialGraph(source=self._engine, nodes=tuple(nodes), edges=tuple(edges))
+
+            # Container → service edge (contained_in).
+            if service_name:
+                edges.append(
+                    Edge(src=node.id, dst=f"svc-{service_name}", kind=EdgeKind.CONTAINED_IN)
+                )
+
+            # Emit a ProcessNode for the container's main PID.
+            process_name = service_name or node.name
+            pid = _inspect_pid(self._engine, container_id)
+            if pid is not None and process_name:
+                proc_id = f"proc-{process_name}-{short_id}"
+                proc_node = ProcessNode(
+                    id=proc_id,
+                    name=process_name,
+                    pid=pid,
+                    host_id=host_id,
+                    cmdline=f"{self._engine} container {short_id}",
+                    container_id=short_id,
+                )
+                nodes.append(proc_node)
+                edges.append(Edge(src=proc_id, dst=node.id, kind=EdgeKind.RUNS_ON))
+
+        return PartialGraph(
+            source=self._engine,
+            nodes=tuple(nodes),
+            edges=tuple(edges),
+            notes=tuple(notes),
+        )
 
 
-def _parse_ports(row: dict[str, Any]) -> tuple[int, ...]:
-    """Extract exposed host ports from a container inspect row.
+def _parse_ports(row: dict[str, Any]) -> tuple[PortBinding, ...]:
+    """Extract port bindings from a container ps row.
 
     Docker ``ps --format json`` emits *Ports* as a comma-separated string
-    like ``"0.0.0.0:5432->5432/tcp"``.  Podman emits it as a dict keyed by
-    port number (e.g. ``{"5432": []}``).  Both cases are handled.
+    like ``"0.0.0.0:5432->5432/tcp"``.  Podman emits it as either a dict
+    keyed by port number or a list of dicts with *host_port* keys.
     """
     raw = row.get("Ports")
+    bindings: list[PortBinding] = []
+
+    # Podman list-of-dicts: [{"host_port": 8080, "container_port": 80, ...}]
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and "host_port" in item:
+                bindings.append(PortBinding(
+                    host_port=int(item["host_port"]),
+                    container_port=int(
+                        item.get("container_port", item["host_port"])
+                    ),
+                    host_address=str(item.get("host_ip", "") or "0.0.0.0"),
+                    protocol=str(item.get("protocol", "tcp")),
+                ))
+        return tuple(bindings)
+
+    # Podman dict: {"5432/tcp": []} or {"80/tcp": [{"HostPort": "8080"}]}
     if isinstance(raw, dict):
-        return tuple(int(p) for p in raw if str(p).isdigit())
-    ports: list[int] = []
+        for port_key, port_entries in raw.items():
+            parts = str(port_key).split("/")
+            try:
+                cport = int(parts[0])
+            except (ValueError, IndexError):
+                continue
+            proto = parts[1] if len(parts) > 1 else "tcp"
+            if isinstance(port_entries, list) and port_entries:
+                for entry in port_entries:
+                    if isinstance(entry, dict):
+                        bindings.append(PortBinding(
+                            host_port=int(entry.get("HostPort", cport)),
+                            container_port=cport,
+                            host_address=str(entry.get("HostIp", "") or "0.0.0.0"),
+                            protocol=proto,
+                        ))
+            else:
+                bindings.append(PortBinding(host_port=cport, container_port=cport, protocol=proto))
+        return tuple(bindings)
+
+    # Docker string form: "0.0.0.0:5432->5432/tcp,192.168.1.5:8080->8080/tcp"
     for part in str(raw or "").split(","):
         if "->" in part:
             try:
-                host_port = int(part.split(":")[1].split("/")[0])
-                ports.append(host_port)
+                host_part, rest = part.split("->")
+                host_addr, _, host_port_s = host_part.rpartition(":")
+                cport_s, _, proto = rest.partition("/")
+                bindings.append(PortBinding(
+                    host_port=int(host_port_s),
+                    container_port=int(cport_s),
+                    host_address=host_addr or "0.0.0.0",
+                    protocol=proto.strip() or "tcp",
+                ))
             except (IndexError, ValueError):
                 continue
-    return tuple(ports)
+    return tuple(bindings)
 
 
 def _labels(row: dict[str, Any]) -> dict[str, str]:
@@ -204,3 +342,48 @@ def _labels(row: dict[str, Any]) -> dict[str, str]:
             key, _, value = pair.partition("=")
             labels[key] = value
     return labels
+
+
+def _networks(engine: str, network_names: list[str]) -> dict[str, dict[str, str]]:
+    """Discover network info: {network_name: {subnet, container_id: ip}}.
+
+    Returns a mapping of network name → {subnet, container_id → ip_address}.
+    """
+    result: dict[str, dict[str, str]] = {}
+    for net_name in network_names:
+        try:
+            out = subprocess.run(
+                [engine, "network", "inspect", net_name,
+                 "--format", "{{json .}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if out.returncode != 0:
+                continue
+            data = json.loads(out.stdout.strip())
+            net = (
+                data[0] if isinstance(data, list) and data
+                else data if isinstance(data, dict)
+                else {}
+            )
+            entry: dict[str, str] = {}
+            subnets = net.get("subnets") or []
+            if subnets and isinstance(subnets[0], dict):
+                entry["subnet"] = subnets[0].get("subnet", "")
+            containers = net.get("containers") or {}
+            for cid, cdata in containers.items():
+                if isinstance(cdata, dict):
+                    interfaces = cdata.get("interfaces") or {}
+                    for iface in interfaces.values():
+                        subnets = iface.get("subnets") or []
+                        if subnets and isinstance(subnets[0], dict):
+                            ipnet = subnets[0].get("ipnet", "")
+                            if "/" in ipnet:
+                                entry[cid[:12]] = ipnet.split("/")[0]
+                            break
+            result[net_name] = entry
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+            continue
+    return result

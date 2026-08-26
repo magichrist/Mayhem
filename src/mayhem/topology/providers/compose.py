@@ -19,6 +19,7 @@ from mayhem.domain.topology import (
     EdgeKind,
     ExternalDependencyNode,
     NodeKind,
+    PortBinding,
     ServiceNode,
 )
 from mayhem.topology.providers.base import PartialGraph
@@ -51,14 +52,33 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
-def _parse_ports(raw: Any) -> tuple[int, ...]:
-    ports: list[int] = []
+def _parse_ports(raw: Any) -> tuple[PortBinding, ...]:
+    """Parse Compose port mappings into PortBinding objects.
+
+    Compose ports are in the form ``host:container`` or ``host:container/protocol``.
+    If only one port is given, it is used as both host and container port.
+    """
+    bindings: list[PortBinding] = []
     for item in raw or []:
         text = str(item)
-        host_part = text.split(":", maxsplit=1)[0]
-        if host_part.isdigit():
-            ports.append(int(host_part))
-    return tuple(sorted(set(ports)))
+        protocol = "tcp"
+        if "/" in text:
+            text, _, protocol = text.rpartition("/")
+        parts = text.split(":")
+        if len(parts) == 2:
+            host_port, container_port = int(parts[0]), int(parts[1])
+        elif len(parts) == 1:
+            host_port = container_port = int(parts[0])
+        else:
+            continue
+        bindings.append(
+            PortBinding(
+                host_port=host_port,
+                container_port=container_port,
+                protocol=protocol.strip(),
+            )
+        )
+    return tuple(bindings)
 
 
 def _depends_pairs(depends: Any) -> list[tuple[str, float]]:
@@ -123,9 +143,6 @@ class ComposeFileProvider:
                     exposed_ports=_parse_ports(svc.get("ports")),
                 )
             )
-            # EXPOSES is a self-edge carrying the declared port surface.
-            for _port in _parse_ports(svc.get("ports")):
-                edges.append(Edge(src=f"svc-{name}", dst=f"svc-{name}", kind=EdgeKind.EXPOSES))
 
             pairs = _depends_pairs(svc.get("depends_on"))
             for dep_name, weight in pairs:
@@ -179,4 +196,4 @@ class ComposeFileProvider:
         )
 
 
-__all__ = ["ComposeFileProvider", "NodeKind"]
+__all__ = ["ComposeFileProvider", "NodeKind", "PortBinding"]

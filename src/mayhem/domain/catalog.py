@@ -26,7 +26,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.PROCESS,
         risk=RiskLevel.LOW,
         required_caps=frozenset({Capability.PROCESS_CONTROL}),
-        applicable_node_kinds=frozenset({NodeKind.PROCESS}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}
+        ),
         max_duration_s=600.0,
         params_schema=(),
     ),
