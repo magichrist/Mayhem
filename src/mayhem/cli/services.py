@@ -21,6 +21,8 @@ from mayhem.controller.planner import plan_deterministic, plan_random
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, RandomExperiment
 from mayhem.domain.topology import (
+    Edge,
+    EdgeKind,
     HostNode,
     NodeKind,
     ProcessNode,
@@ -69,7 +71,7 @@ def build_graph(
                 compose_provider.service_names,
             )
 
-        return (
+        result = (
             TopologyService()
             .discover(
                 [
@@ -80,6 +82,21 @@ def build_graph(
             )
             .graph
         )
+
+        existing_process_names = {n.name for n in result.nodes if n.kind == NodeKind.PROCESS}
+        extra_nodes: list[Any] = []
+        extra_edges: list[Edge] = []
+        for svc in result.nodes:
+            if svc.kind == NodeKind.SERVICE and svc.name not in existing_process_names:
+                proc_id = f"p-{svc.name}"
+                extra_nodes.append(ProcessNode(id=proc_id, name=svc.name, pid=0, host_id="h-local"))
+                extra_edges.append(Edge(src=svc.id, dst=proc_id, kind=EdgeKind.RUNS_ON))
+        if extra_nodes:
+            result = TopologyGraph(
+                nodes=tuple(result.nodes) + tuple(extra_nodes),
+                edges=tuple(result.edges) + tuple(extra_edges),
+            )
+        return result
     nodes: list[Any] = [HostNode(id="h-local", name=host, transport="local")]
     for spec in process:
         if "=" not in spec:
@@ -91,7 +108,9 @@ def build_graph(
             raise ValueError(f"--process pid must be an integer, got {pid_text!r}") from exc
         nodes.append(ProcessNode(id=f"p-{name}", name=name, pid=pid, host_id="h-local"))
     for index, name in enumerate(service):
-        nodes.append(ServiceNode(id=f"svc-{index}-{name}", name=name))
+        svc_id = f"svc-{index}-{name}"
+        nodes.append(ServiceNode(id=svc_id, name=name))
+        nodes.append(ProcessNode(id=f"p-{name}", name=name, pid=0, host_id="h-local"))
     return TopologyGraph(nodes=tuple(nodes), edges=())
 
 

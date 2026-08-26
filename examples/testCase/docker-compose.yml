@@ -1,4 +1,23 @@
 services:
+  # ── API service ─────────────────────────────────────────────────────────
+  api:
+    image: docker.io/library/python:3.13-alpine
+    command: python -m http.server 8080
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  # ── Web frontend ────────────────────────────────────────────────────────
+  web:
+    image: docker.io/library/python:3.13-alpine
+    command: python -m http.server 8080
+    expose:
+      - "8080"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
   # ── Download servers ────────────────────────────────────────────────────
   # Two identical python http.server replicas behind the load balancer.
   # Serves static files from /srv/data inside each container.

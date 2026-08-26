@@ -8,7 +8,6 @@ from mayhem.domain.campaigns import (
     CampaignPolicy,
     CampaignSchedule,
     CampaignStatus,
-    CampaignWindow,
     ExperimentOnFailure,
 )
 from mayhem.domain.errors import InvariantViolationError

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.cli.resolver import make_group
 from mayhem.cli.services import open_store
 
 if TYPE_CHECKING:
@@ -22,258 +23,315 @@ def _ctx(ctx: Context):
     return obj
 
 
-@click.group()
-def campaign() -> None:
-    """Chaos campaign management."""
-    pass
+campaign = make_group("campaign", "Create, list, and inspect chaos campaigns.")
 
 
 @campaign.command("list")
-@click.pass_context
-def list_campaigns(ctx: Context) -> None:
-    """List all campaigns."""
-    store = open_store(_ctx(ctx).db)
-    try:
-        with store.write() as conn:
-            rows = conn.execute(
-                "SELECT id, name, status, created_at FROM campaigns ORDER BY created_at DESC"
-            ).fetchall()
-    except Exception as exc:
-        click.echo(f"Error listing campaigns: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if not rows:
-        click.echo("No campaigns found.")
-        return
-    click.echo(f"{'ID':<20} {'Name':<30} {'Status':<12} {'Created'}")
-    click.echo("-" * 80)
-    for row in rows:
-        click.echo(f"{row['id']:<20} {row['name']:<30} {row['status']:<12} {row['created_at']}")
-
-
-@campaign.command("show")
-@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def show_campaign(ctx: Context, campaign_id: str, as_json: bool) -> None:
-    """Show details of a campaign."""
-    store = open_store(_ctx(ctx).db)
+def list_campaigns(ctx: Context, db_opt: str | None, as_json: bool) -> None:
+    """List all campaigns."""
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
-        with store.write() as conn:
-            row = conn.execute(
-                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone()
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if row is None:
-        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.VALIDATION_ERROR))
-        return
-    if as_json:
-        data = dict(row)
-        for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
-            if data.get(key):
-                data[key] = json.loads(data[key])
-        click.echo(json.dumps(data, indent=2, default=str))
-        return
-    click.echo(f"Campaign: {row['name']}")
-    click.echo(f"  ID:          {row['id']}")
-    click.echo(f"  Status:      {row['status']}")
-    click.echo(f"  Description: {row['description'] or '(none)'}")
-    click.echo(f"  Created:     {row['created_at']}")
-    click.echo(f"  Updated:     {row['updated_at']}")
-    experiments = json.loads(row["experiments_json"]) if row["experiments_json"] else []
-    if experiments:
-        click.echo(f"  Experiments ({len(experiments)}):")
-        for exp in experiments:
-            ref = exp.get("experiment_ref", "?")
-            priority = exp.get("priority", 0)
-            click.echo(f"    - {ref} (priority={priority})")
-    else:
-        click.echo("  Experiments: (none)")
+        rows = store.query(
+            "SELECT id, name, status, created_at FROM campaigns ORDER BY created_at"
+        )
+        if as_json:
+            click.echo(json.dumps([dict(r) for r in rows], indent=2))
+        else:
+            if not rows:
+                click.echo("No campaigns.")
+                return
+            for row in rows:
+                click.echo(f"{row['id']:<32} {row['name']:<24} {row['status']}")
+    finally:
+        store.close()
 
 
 @campaign.command("create")
 @click.argument("name")
 @click.option("--description", "-d", default="", help="Campaign description.")
-@click.option("--hypothesis", "-h", "hyp", default="", help="Campaign hypothesis.")
-@click.option("--json-file", "-f", type=click.Path(exists=True), help="JSON file with campaign config.")
+@click.option("--hypothesis", "-h", default=None, help="Campaign hypothesis.")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def create_campaign(ctx: Context, name: str, description: str, hyp: str, json_file: str | None) -> None:
-    """Create a new campaign."""
-    store = open_store(_ctx(ctx).db)
-
+def create_campaign(
+    ctx: Context, name: str, description: str, hypothesis: str | None, db_opt: str | None, as_json: bool
+) -> None:
+    """Create a new campaign in draft status."""
     import uuid
     from datetime import datetime, timezone
 
-    campaign_id = f"camp-{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc).isoformat()
-
-    if json_file:
-        with open(json_file) as f:
-            config = json.load(f)
-    else:
-        config = {}
-
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
+        campaign_id = f"camp-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
         with store.write() as conn:
             conn.execute(
-                """INSERT INTO campaigns
-                   (id, name, description, status, experiments_json, window_json,
-                    policy_json, labels_json, created_at, updated_at)
-                   VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)""",
-                (
-                    campaign_id,
-                    name,
-                    description or hyp or config.get("description", ""),
-                    json.dumps(config.get("experiments", [])),
-                    json.dumps(config.get("window", {})),
-                    json.dumps(config.get("policy", {})),
-                    json.dumps(config.get("labels", {})),
-                    now,
-                    now,
-                ),
+                "INSERT INTO campaigns (id, name, description, status, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'draft', ?, ?)",
+                (campaign_id, name, description, now, now),
             )
-    except Exception as exc:
-        click.echo(f"Error creating campaign: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    click.echo(f"Campaign {campaign_id!r} created successfully.")
+        if as_json:
+            row = store.query(
+                "SELECT id, name, description, status, created_at, updated_at"
+                " FROM campaigns WHERE id = ?",
+                (campaign_id,),
+            )
+            click.echo(json.dumps(dict(row[0]), indent=2))
+        else:
+            click.echo(f"Campaign '{campaign_id}' created successfully.")
+    finally:
+        store.close()
+
+
+@campaign.command("show")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def show_campaign(
+    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
+) -> None:
+    """Show campaign details."""
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
+    try:
+        rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        if as_json:
+            for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
+                if row.get(key):
+                    row[key] = json.loads(row[key])
+            click.echo(json.dumps(row, indent=2))
+        else:
+            click.echo(f"Campaign: {row['name']} ({row['id']})")
+            click.echo(f"  Status: {row['status']}")
+            if row.get("description"):
+                click.echo(f"  Description: {row['description']}")
+            click.echo(f"  Created: {row['created_at']}")
+    finally:
+        store.close()
+
+
+@campaign.command("status")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.pass_context
+def campaign_status(
+    ctx: Context, campaign_id: str, db_opt: str | None
+) -> None:
+    """Show the status of a campaign."""
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
+    try:
+        rows = store.query(
+            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+        )
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        click.echo(f"{row['id']} {row['name']} {row['status']}")
+    finally:
+        store.close()
 
 
 @campaign.command("delete")
 @click.argument("campaign_id")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def delete_campaign(ctx: Context, campaign_id: str, yes: bool) -> None:
-    """Delete a campaign (draft or completed only)."""
-    store = open_store(_ctx(ctx).db)
+def delete_campaign(
+    ctx: Context, campaign_id: str, yes: bool, db_opt: str | None, as_json: bool
+) -> None:
+    """Delete a campaign (only drafts)."""
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
-        with store.write() as conn:
-            row = conn.execute(
-                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone()
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if row is None:
-        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.VALIDATION_ERROR))
-        return
-    if row["status"] not in ("draft", "completed", "aborted"):
-        click.echo(
-            f"Cannot delete campaign in status {row['status']!r}. "
-            "Only draft/completed/aborted campaigns can be deleted.",
-            err=True,
+        rows = store.query(
+            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
         )
-        ctx.exit(int(ExitCode.SAFETY_REFUSED))
-        return
-    if not yes:
-        click.confirm(f"Delete campaign {campaign_id!r}?", abort=True)
-    try:
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        if row["status"] != "draft":
+            click.echo(
+                f"Cannot delete campaign in '{row['status']}' status (must be 'draft').",
+                err=True,
+            )
+            raise click.UsageError(f"cannot delete campaign in '{row['status']}' status")
+        if not yes:
+            click.confirm(
+                f"Delete campaign '{row['name']}' ({campaign_id})?", abort=True
+            )
         with store.write() as conn:
             conn.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
-    except Exception as exc:
-        click.echo(f"Error deleting campaign: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    click.echo(f"Campaign {campaign_id!r} deleted.")
+        if as_json:
+            click.echo(json.dumps({"deleted": campaign_id}))
+        else:
+            click.echo(f"Campaign '{campaign_id}' deleted.")
+    finally:
+        store.close()
 
 
 @campaign.command("start")
 @click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def start_campaign(ctx: Context, campaign_id: str) -> None:
-    """Start a draft campaign."""
-    store = open_store(_ctx(ctx).db)
-    try:
-        with store.write() as conn:
-            row = conn.execute(
-                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone()
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if row is None:
-        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.VALIDATION_ERROR))
-        return
-    if row["status"] != "draft":
-        click.echo(f"Cannot start campaign in status {row['status']!r}.", err=True)
-        ctx.exit(int(ExitCode.SAFETY_REFUSED))
-        return
+def start_campaign(
+    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
+) -> None:
+    """Start a draft campaign (set status to 'active')."""
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc).isoformat()
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
+        rows = store.query(
+            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+        )
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        if row["status"] != "draft":
+            click.echo(
+                f"Cannot start campaign in '{row['status']}' status (must be 'draft').",
+                err=True,
+            )
+            raise click.UsageError(f"cannot start campaign in '{row['status']}' status")
+        now = datetime.now(timezone.utc).isoformat()
         with store.write() as conn:
             conn.execute(
-                "UPDATE campaigns SET status = 'running', updated_at = ? WHERE id = ?",
+                "UPDATE campaigns SET status = 'active', updated_at = ? WHERE id = ?",
                 (now, campaign_id),
             )
-    except Exception as exc:
-        click.echo(f"Error starting campaign: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    click.echo(f"Campaign {campaign_id!r} started.")
+        if as_json:
+            rows2 = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+            r = dict(rows2[0])
+            for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
+                if r.get(key):
+                    r[key] = json.loads(r[key])
+            click.echo(json.dumps(r, indent=2))
+        else:
+            click.echo(f"Campaign '{campaign_id}' started.")
+    finally:
+        store.close()
 
 
-@campaign.command("status")
+@campaign.command("archive")
 @click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def campaign_status(ctx: Context, campaign_id: str) -> None:
-    """Show status of a campaign."""
-    store = open_store(_ctx(ctx).db)
+def archive_campaign(
+    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
+) -> None:
+    """Archive a campaign (set status to 'archived')."""
+    from datetime import datetime, timezone
+
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
+        rows = store.query(
+            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+        )
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        now = datetime.now(timezone.utc).isoformat()
         with store.write() as conn:
-            row = conn.execute(
-                "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone()
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if row is None:
-        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.VALIDATION_ERROR))
-        return
-    click.echo(f"{row['id']}  {row['status']:<12}  {row['name']}")
+            conn.execute(
+                "UPDATE campaigns SET status = 'archived', updated_at = ? WHERE id = ?",
+                (now, campaign_id),
+            )
+        if as_json:
+            rows2 = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+            r = dict(rows2[0])
+            for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
+                if r.get(key):
+                    r[key] = json.loads(r[key])
+            click.echo(json.dumps(r, indent=2))
+        else:
+            click.echo(f"Campaign '{campaign_id}' archived.")
+    finally:
+        store.close()
 
 
 @campaign.command("abort")
 @click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.pass_context
-def abort_campaign(ctx: Context, campaign_id: str) -> None:
-    """Abort a running campaign."""
-    store = open_store(_ctx(ctx).db)
-    try:
-        with store.write() as conn:
-            row = conn.execute(
-                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
-            ).fetchone()
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    if row is None:
-        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.VALIDATION_ERROR))
-        return
+def abort_campaign(
+    ctx: Context, campaign_id: str, db_opt: str | None
+) -> None:
+    """Abort a draft campaign (set status to 'aborted')."""
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc).isoformat()
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
     try:
+        rows = store.query(
+            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+        )
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        now = datetime.now(timezone.utc).isoformat()
         with store.write() as conn:
             conn.execute(
                 "UPDATE campaigns SET status = 'aborted', updated_at = ? WHERE id = ?",
                 (now, campaign_id),
             )
-    except Exception as exc:
-        click.echo(f"Error aborting campaign: {exc}", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
-    click.echo(f"Campaign {campaign_id!r} aborted.")
+        click.echo(f"Campaign '{campaign_id}' aborted.")
+    finally:
+        store.close()
+
+
+@campaign.command("add-experiment")
+@click.argument("campaign_id")
+@click.argument("experiment_path", type=click.Path(exists=True))
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def add_experiment(
+    ctx: Context,
+    campaign_id: str,
+    experiment_path: str,
+    db_opt: str | None,
+    as_json: bool,
+) -> None:
+    """Add an experiment spec file to a campaign."""
+    from datetime import datetime, timezone
+
+    db = db_opt or _ctx(ctx).db
+    store = open_store(db)
+    try:
+        rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+        if not rows:
+            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        experiments = json.loads(row.get("experiments_json") or "[]")
+        experiments.append(experiment_path)
+        now = datetime.now(timezone.utc).isoformat()
+        store.query(
+            "UPDATE campaigns SET experiments_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(experiments), now, campaign_id),
+        )
+        if as_json:
+            click.echo(json.dumps({"campaign_id": campaign_id, "experiments": experiments}, indent=2))
+        else:
+            click.echo(f"Added experiment to campaign '{campaign_id}'.")
+    finally:
+        store.close()

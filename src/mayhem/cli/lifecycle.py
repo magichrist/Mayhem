@@ -60,12 +60,12 @@ def _graph_from(
     service: ProcessArgs,
     host: str,
     compose: str | None,
-) -> TopologyGraph:
+) -> tuple[TopologyGraph, str | None]:
     from mayhem.cli.topology import _resolve_compose
 
     resolved = _resolve_compose(compose)
     try:
-        return build_graph(list(process), list(service), host, resolved)
+        return build_graph(list(process), list(service), host, resolved), resolved
     except ValueError as exc:
         raise click.UsageError(str(exc), ctx=ctx) from None
 
@@ -83,7 +83,7 @@ def validate(
     compose: str | None,
 ) -> None:
     """Compile an experiment and run every safety gate without executing it."""
-    graph = _graph_from(ctx, process, service, host, compose)
+    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -93,7 +93,7 @@ def validate(
             allow_critical=obj.allow_critical,
             store=store,
             graph=graph,
-            compose=compose,
+            compose=resolved_compose,
         )
         compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
     finally:
@@ -117,7 +117,7 @@ def plan(
     compose: str | None,
 ) -> None:
     """Plan an experiment against a topology and print the frozen plan JSON."""
-    graph = _graph_from(ctx, process, service, host, compose)
+    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -127,7 +127,7 @@ def plan(
             allow_critical=obj.allow_critical,
             store=store,
             graph=graph,
-            compose=compose,
+            compose=resolved_compose,
         )
         compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
     finally:
@@ -148,7 +148,7 @@ def run(
     compose: str | None,
 ) -> None:
     """Plan then execute an experiment; prints the run summary."""
-    graph = _graph_from(ctx, process, service, host, compose)
+    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -158,7 +158,7 @@ def run(
             allow_critical=obj.allow_critical,
             store=store,
             graph=graph,
-            compose=compose,
+            compose=resolved_compose,
         )
         compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
         engine = engine_for(store)
@@ -174,8 +174,11 @@ def run(
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--run", "run_id", default=None, help="Show one run in detail.")
 @click.option("--limit", type=int, default=20, show_default=True, help="Rows to list.")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON.")
 @click.pass_context
-def status(ctx: click.Context, db_opt: str | None, run_id: str | None, limit: int) -> None:
+def status(
+    ctx: click.Context, db_opt: str | None, run_id: str | None, limit: int, json_flag: bool
+) -> None:
     """Show runs recorded in the database."""
     db = db_opt or _ctx(ctx).db or DEFAULT_DB
     store = open_store(db)
@@ -186,25 +189,28 @@ def status(ctx: click.Context, db_opt: str | None, run_id: str | None, limit: in
                 raise click.UsageError(f"no such run: {run_id}", ctx=ctx)
             click.echo(json.dumps(row, indent=2))
             return
-        for row in recent_runs(store, limit):
-            started = row["started_at"] or "-"
-            click.echo(f"{row['id']:<28} {row['kind']:<13} {row['status']:<10} {started}")
+        rows = recent_runs(store, limit)
+        if json_flag:
+            click.echo(json.dumps(rows, indent=2))
+        else:
+            for row in rows:
+                started = row["started_at"] or "-"
+                click.echo(f"{row['id']:<28} {row['kind']:<13} {row['status']:<10} {started}")
     finally:
         store.close()
 
 
 @click.command("history")
 @click.argument("run_id")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON.")
 @click.pass_context
-def history(ctx: click.Context, run_id: str) -> None:
+def history(ctx: click.Context, run_id: str, json_flag: bool) -> None:
     """Print steps, events, and leases recorded for one run."""
     store = open_store(_ctx(ctx).db)
     try:
         journal = run_journal(store, run_id)
     finally:
         store.close()
-    if not any(journal.values()):
-        raise click.UsageError(f"no records for run: {run_id}", ctx=ctx)
     click.echo(json.dumps(journal, indent=2))
 
 

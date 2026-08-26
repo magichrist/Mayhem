@@ -29,7 +29,6 @@ from mayhem.domain.experiments import (
 )
 from mayhem.domain.topology import (
     NodeKind,
-    ProcessNode,
     TargetSelector,
     TopologyNode,
 )
@@ -146,8 +145,8 @@ def plan_random(
             duration=10.0,
         )
         _plan_action(run_id, f"rnd-{offset}", offset, action, graph, steps)
-    if not steps:
-        raise PlanningError("random selection resolved no executable steps")
+    # Empty steps are allowed — random plans against empty topologies produce
+    # a valid plan with zero steps rather than failing.
     if audit_sink is not None:
         state = rng.getstate()
         audit_sink(

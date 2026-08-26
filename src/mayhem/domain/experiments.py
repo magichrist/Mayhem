@@ -277,10 +277,6 @@ class ExecutionPlan(BaseModel):
 
     @model_validator(mode="after")
     def _check_plan(self) -> ExecutionPlan:
-        if not self.steps:
-            raise InvariantViolationError(
-                "plan_requires_steps", f"plan {self.run_id} compiled with zero steps"
-            )
         return self
 
 

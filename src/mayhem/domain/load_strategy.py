@@ -67,14 +67,10 @@ class LoadStrategy(BaseModel):
     @classmethod
     def constant_profile(cls, vus: int, duration: Duration) -> LoadStrategy:
         """Shorthand: single constant-rate phase."""
-        return cls(
-            phases=(LoadPhase(pattern=LoadPattern.CONSTANT, vus=vus, duration=duration),)
-        )
+        return cls(phases=(LoadPhase(pattern=LoadPattern.CONSTANT, vus=vus, duration=duration),))
 
     @classmethod
-    def ramp_profile(
-        cls, start_vus: int, end_vus: int, duration: Duration
-    ) -> LoadStrategy:
+    def ramp_profile(cls, start_vus: int, end_vus: int, duration: Duration) -> LoadStrategy:
         """Shorthand: single ramp-up phase."""
         return cls(
             phases=(

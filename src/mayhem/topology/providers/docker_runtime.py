@@ -281,14 +281,14 @@ def _parse_ports(row: dict[str, Any]) -> tuple[PortBinding, ...]:
     if isinstance(raw, list):
         for item in raw:
             if isinstance(item, dict) and "host_port" in item:
-                bindings.append(PortBinding(
-                    host_port=int(item["host_port"]),
-                    container_port=int(
-                        item.get("container_port", item["host_port"])
-                    ),
-                    host_address=str(item.get("host_ip", "") or "0.0.0.0"),
-                    protocol=str(item.get("protocol", "tcp")),
-                ))
+                bindings.append(
+                    PortBinding(
+                        host_port=int(item["host_port"]),
+                        container_port=int(item.get("container_port", item["host_port"])),
+                        host_address=str(item.get("host_ip", "") or "0.0.0.0"),
+                        protocol=str(item.get("protocol", "tcp")),
+                    )
+                )
         return tuple(bindings)
 
     # Podman dict: {"5432/tcp": []} or {"80/tcp": [{"HostPort": "8080"}]}
@@ -303,12 +303,14 @@ def _parse_ports(row: dict[str, Any]) -> tuple[PortBinding, ...]:
             if isinstance(port_entries, list) and port_entries:
                 for entry in port_entries:
                     if isinstance(entry, dict):
-                        bindings.append(PortBinding(
-                            host_port=int(entry.get("HostPort", cport)),
-                            container_port=cport,
-                            host_address=str(entry.get("HostIp", "") or "0.0.0.0"),
-                            protocol=proto,
-                        ))
+                        bindings.append(
+                            PortBinding(
+                                host_port=int(entry.get("HostPort", cport)),
+                                container_port=cport,
+                                host_address=str(entry.get("HostIp", "") or "0.0.0.0"),
+                                protocol=proto,
+                            )
+                        )
             else:
                 bindings.append(PortBinding(host_port=cport, container_port=cport, protocol=proto))
         return tuple(bindings)
@@ -320,12 +322,14 @@ def _parse_ports(row: dict[str, Any]) -> tuple[PortBinding, ...]:
                 host_part, rest = part.split("->")
                 host_addr, _, host_port_s = host_part.rpartition(":")
                 cport_s, _, proto = rest.partition("/")
-                bindings.append(PortBinding(
-                    host_port=int(host_port_s),
-                    container_port=int(cport_s),
-                    host_address=host_addr or "0.0.0.0",
-                    protocol=proto.strip() or "tcp",
-                ))
+                bindings.append(
+                    PortBinding(
+                        host_port=int(host_port_s),
+                        container_port=int(cport_s),
+                        host_address=host_addr or "0.0.0.0",
+                        protocol=proto.strip() or "tcp",
+                    )
+                )
             except (IndexError, ValueError):
                 continue
     return tuple(bindings)
@@ -353,8 +357,7 @@ def _networks(engine: str, network_names: list[str]) -> dict[str, dict[str, str]
     for net_name in network_names:
         try:
             out = subprocess.run(
-                [engine, "network", "inspect", net_name,
-                 "--format", "{{json .}}"],
+                [engine, "network", "inspect", net_name, "--format", "{{json .}}"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -364,8 +367,10 @@ def _networks(engine: str, network_names: list[str]) -> dict[str, dict[str, str]
                 continue
             data = json.loads(out.stdout.strip())
             net = (
-                data[0] if isinstance(data, list) and data
-                else data if isinstance(data, dict)
+                data[0]
+                if isinstance(data, list) and data
+                else data
+                if isinstance(data, dict)
                 else {}
             )
             entry: dict[str, str] = {}

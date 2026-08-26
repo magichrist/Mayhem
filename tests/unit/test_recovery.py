@@ -4,8 +4,8 @@ import pytest
 
 from mayhem.controller.recovery import (
     RecoveryAuditLog,
-    RecoveryStatus,
     RecoveryStateMachine,
+    RecoveryStatus,
     RecoveryTransition,
 )
 from mayhem.domain.errors import InvariantViolationError
@@ -41,28 +41,34 @@ class TestRecoveryAuditLog:
 
     def test_sequential_transitions(self) -> None:
         log = RecoveryAuditLog()
-        log.record(RecoveryTransition(
-            resource_id="r1",
-            from_status=RecoveryStatus.IDLE,
-            to_status=RecoveryStatus.RECOVERING,
-            reason="start",
-        ))
-        log.record(RecoveryTransition(
-            resource_id="r1",
-            from_status=RecoveryStatus.RECOVERING,
-            to_status=RecoveryStatus.VERIFIED,
-            reason="done",
-        ))
+        log.record(
+            RecoveryTransition(
+                resource_id="r1",
+                from_status=RecoveryStatus.IDLE,
+                to_status=RecoveryStatus.RECOVERING,
+                reason="start",
+            )
+        )
+        log.record(
+            RecoveryTransition(
+                resource_id="r1",
+                from_status=RecoveryStatus.RECOVERING,
+                to_status=RecoveryStatus.VERIFIED,
+                reason="done",
+            )
+        )
         assert log.current_status("r1") == RecoveryStatus.VERIFIED
 
     def test_isolation_between_resources(self) -> None:
         log = RecoveryAuditLog()
-        log.record(RecoveryTransition(
-            resource_id="r1",
-            from_status=RecoveryStatus.IDLE,
-            to_status=RecoveryStatus.RECOVERING,
-            reason="start",
-        ))
+        log.record(
+            RecoveryTransition(
+                resource_id="r1",
+                from_status=RecoveryStatus.IDLE,
+                to_status=RecoveryStatus.RECOVERING,
+                reason="start",
+            )
+        )
         assert log.current_status("r2") == RecoveryStatus.IDLE
 
 

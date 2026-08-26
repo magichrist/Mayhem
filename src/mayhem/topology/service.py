@@ -102,11 +102,13 @@ class TopologyService:
             for container in live_by_service.get(name, []):
                 actual = getattr(container, "image", None)
                 if actual and str(expected) != str(actual):
-                    changed_images.append({
-                        "service": name,
-                        "expected": str(expected),
-                        "actual": str(actual),
-                    })
+                    changed_images.append(
+                        {
+                            "service": name,
+                            "expected": str(expected),
+                            "actual": str(actual),
+                        }
+                    )
 
         # --- state anomalies (stopped, paused, restarting) ---
         unhealthy: list[dict[str, str]] = []

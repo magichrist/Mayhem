@@ -26,9 +26,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.PROCESS,
         risk=RiskLevel.LOW,
         required_caps=frozenset({Capability.PROCESS_CONTROL}),
-        applicable_node_kinds=frozenset(
-            {NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}
-        ),
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
         max_duration_s=600.0,
         params_schema=(),
     ),
@@ -163,9 +161,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.NET_ADMIN}),
         applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER}),
         max_duration_s=300.0,
-        params_schema=(
-            ParamSpec(name="offset_ms", type=ParamType.INTEGER, required=True),
-        ),
+        params_schema=(ParamSpec(name="offset_ms", type=ParamType.INTEGER, required=True),),
     ),
     FaultDefinition(
         id="fd.exhaust",

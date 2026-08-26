@@ -68,6 +68,7 @@ class TestFaultDefinition:
 
     def test_new_fault_categories(self) -> None:
         from mayhem.domain.catalog import CATALOG
+
         ids = {f.id for f in CATALOG}
         assert "dns.resolve_delay" in ids
         assert "dns.nxdomain" in ids

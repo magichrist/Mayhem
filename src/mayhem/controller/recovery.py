@@ -27,10 +27,10 @@ from mayhem.domain.errors import InvariantViolationError
 class RecoveryStatus(StrEnum):
     """States in the recovery lifecycle."""
 
-    IDLE = "idle"            # resource is active, not recovering
+    IDLE = "idle"  # resource is active, not recovering
     RECOVERING = "recovering"  # cleanup in progress
-    VERIFIED = "verified"    # cleanup succeeded and verified
-    DIRTY = "dirty"          # cleanup failed or verify failed
+    VERIFIED = "verified"  # cleanup succeeded and verified
+    DIRTY = "dirty"  # cleanup failed or verify failed
 
 
 # Valid transitions: source → set of targets
@@ -62,7 +62,7 @@ class RecoveryAuditLog:
     for speed; writes go through the store for durability.
     """
 
-    def __init__(self, store: "Store | None" = None) -> None:  # noqa: F821
+    def __init__(self, store: Store | None = None) -> None:  # noqa: F821
         self._store = store
         self._transitions: list[RecoveryTransition] = []
         if store is not None:
@@ -83,15 +83,12 @@ class RecoveryAuditLog:
                 )
             """)
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_ral_resource "
-                "ON recovery_audit_log(resource_id)"
+                "CREATE INDEX IF NOT EXISTS idx_ral_resource ON recovery_audit_log(resource_id)"
             )
 
     def _load(self) -> None:
         with self._store.write() as conn:  # type: ignore[union-type]
-            rows = conn.execute(
-                "SELECT * FROM recovery_audit_log ORDER BY id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM recovery_audit_log ORDER BY id").fetchall()
         for row in rows:
             self._transitions.append(
                 RecoveryTransition(

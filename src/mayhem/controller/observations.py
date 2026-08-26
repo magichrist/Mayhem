@@ -70,9 +70,7 @@ class ObservationLog:
         **data: Any,
     ) -> None:
         """Shorthand: create and record in one call."""
-        self.record(
-            Observation(kind=kind, run_id=run_id, source=source, data=data)
-        )
+        self.record(Observation(kind=kind, run_id=run_id, source=source, data=data))
 
     @property
     def observations(self) -> tuple[Observation, ...]:

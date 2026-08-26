@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from mayhem.cli.campaign import campaign
 from mayhem.cli.config_cmd import config
 from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
@@ -21,11 +22,11 @@ from mayhem.cli.lifecycle import history, janitor, plan, recover, run, status, v
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
 from mayhem.cli.toolkit import toolkit
 from mayhem.cli.topology import topology
-from mayhem.cli.campaign import campaign
 from mayhem.controller.planner import PlanningError
 from mayhem.controller.safety import SafetyRefusedError
 from mayhem.domain.errors import (
     DomainError,
+    InvariantViolationError,
     SchemaValidationError,
     TargetResolutionError,
 )
@@ -77,6 +78,7 @@ for _cmd in (validate, plan, run, status, history, recover, janitor):
     app.add_command(_cmd)
 for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)
+app.add_command(config, "cfg")
 
 
 def _fail(message: str, code: int) -> int:
@@ -111,7 +113,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             else ExitCode.VALIDATION_ERROR
         )
         return _fail(str(exc), int(code))
-    except (PlanningError, TargetResolutionError, FileNotFoundError) as exc:
+    except (
+        InvariantViolationError,
+        PlanningError,
+        TargetResolutionError,
+        FileNotFoundError,
+    ) as exc:
         return _fail(str(exc), int(ExitCode.VALIDATION_ERROR))
     except ToolError as exc:
         return _fail(str(exc), int(ExitCode.TOOLKIT_ERROR))

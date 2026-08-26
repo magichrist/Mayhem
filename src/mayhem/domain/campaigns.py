@@ -8,7 +8,6 @@ policy for what happens when an experiment fails.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -88,7 +87,9 @@ class Campaign(BaseModel):
 
     @field_validator("experiments")
     @classmethod
-    def _non_empty_experiments(cls, value: tuple[CampaignExperiment, ...]) -> tuple[CampaignExperiment, ...]:
+    def _non_empty_experiments(
+        cls, value: tuple[CampaignExperiment, ...]
+    ) -> tuple[CampaignExperiment, ...]:
         if not value:
             raise InvariantViolationError(
                 "campaign_requires_experiments",

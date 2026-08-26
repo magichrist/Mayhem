@@ -184,21 +184,30 @@ class TestProcessNode:
 class TestContainerNode:
     def test_image_field(self) -> None:
         c = ContainerNode(
-            id="c1", name="test", engine="docker", runtime_id="abc",
+            id="c1",
+            name="test",
+            engine="docker",
+            runtime_id="abc",
             image="nginx:latest",
         )
         assert c.image == "nginx:latest"
 
     def test_networks_field(self) -> None:
         c = ContainerNode(
-            id="c1", name="test", engine="docker", runtime_id="abc",
+            id="c1",
+            name="test",
+            engine="docker",
+            runtime_id="abc",
             networks=("mynet", "bridge"),
         )
         assert c.networks == ("mynet", "bridge")
 
     def test_ports_are_port_bindings(self) -> None:
         c = ContainerNode(
-            id="c1", name="test", engine="docker", runtime_id="abc",
+            id="c1",
+            name="test",
+            engine="docker",
+            runtime_id="abc",
             ports=(PortBinding(host_port=8080, container_port=80),),
         )
         assert c.ports[0].host_port == 8080
@@ -583,9 +592,7 @@ class TestTopologyCLI:
             standalone_mode=False,
         )
         output = json.loads(result.output)
-        lb_node = next(
-            n for n in output["graph"]["nodes"] if n["id"] == "svc-lb"
-        )
+        lb_node = next(n for n in output["graph"]["nodes"] if n["id"] == "svc-lb")
         ports = lb_node["exposed_ports"]
         assert len(ports) == 1
         assert ports[0]["host_port"] == 8080

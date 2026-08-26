@@ -254,9 +254,7 @@ class TestExperimentGroup:
         assert data["kind"] == "deterministic"
         assert data["metadata"]["name"] == "pause-drill"
 
-    def test_show_random_spec(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_show_random_spec(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "rnd.yml", RANDOM_YAML)
         rc = main(["experiment", "show", str(spec)])
         assert rc == 0
@@ -275,16 +273,12 @@ class TestExperimentGroup:
         assert rc == 0
         assert "validated" in capsys.readouterr().out
 
-    def test_validate_random(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_validate_random(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "rnd.yml", RANDOM_YAML)
         rc = main(["experiment", "validate", str(spec), "--service", "api"])
         assert rc == 0
 
-    def test_validate_empty_steps_returns_validation_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_validate_empty_steps_returns_validation_error(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "empty.yml", NO_STEPS_YAML)
         rc = main(["experiment", "validate", str(spec)])
         assert rc == ExitCode.VALIDATION_ERROR
@@ -348,41 +342,31 @@ class TestTopologyGroup:
         edge_kinds = [e["kind"] for e in data["graph"]["edges"]]
         assert "depends_on" in edge_kinds
 
-    def test_discover_compose_with_directory(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_compose_with_directory(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE.parent)])
         assert rc == 0
 
-    def test_discover_compose_has_drift_report(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_compose_has_drift_report(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "drift" in data
 
-    def test_discover_no_compose_returns_graph(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_no_compose_returns_graph(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without compose and without runtime, graph should be empty."""
         rc = main(["topology", "discover"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "graph" in data
 
-    def test_discover_compose_service_names(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_compose_service_names(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
-        assert svc_names == {"download-1", "download-2", "lb", "db"}
+        assert svc_names == {"api", "web", "download-1", "download-2", "lb", "db"}
 
-    def test_topology_prefix(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["top", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
@@ -407,11 +391,16 @@ class TestValidateCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "validate", str(spec),
-            "--process", "api=424242",
-            "--process", "worker=12345",
-        ])
+        rc = main(
+            [
+                "validate",
+                str(spec),
+                "--process",
+                "api=424242",
+                "--process",
+                "worker=12345",
+            ]
+        )
         assert rc == 0
 
     def test_validate_with_service(
@@ -421,9 +410,7 @@ class TestValidateCommand:
         rc = main(["validate", str(spec), "--service", "web", "--process", "api=424242"])
         assert rc == 0
 
-    def test_validate_with_host(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_validate_with_host(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["validate", str(spec), "--host", "prod-1", "--process", "api=424242"])
         assert rc == 0
@@ -432,10 +419,14 @@ class TestValidateCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "validate", str(spec),
-            "--compose", str(COMPOSE_FILE),
-        ])
+        rc = main(
+            [
+                "validate",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
         assert rc == 0
 
     def test_validate_bad_spec(self, tmp_path: Path) -> None:
@@ -447,9 +438,7 @@ class TestValidateCommand:
         rc = main(["validate", "/nonexistent.yml"])
         assert rc == ExitCode.VALIDATION_ERROR
 
-    def test_validate_prefix(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_validate_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["v", str(spec), "--process", "api=424242"])
         assert rc == 0
@@ -463,9 +452,7 @@ class TestValidateCommand:
 class TestPlanCommand:
     """``mayhem plan`` prints a frozen ExecutionPlan as JSON."""
 
-    def test_plan_deterministic(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_plan_deterministic(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["plan", str(spec), "--process", "api=424242"])
         assert rc == 0
@@ -484,18 +471,14 @@ class TestPlanCommand:
         data = json.loads(capsys.readouterr().out)
         assert any("proc.pause" in json.dumps(s) for s in data["steps"])
 
-    def test_plan_random(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_plan_random(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "rnd.yml", RANDOM_YAML)
         rc = main(["plan", str(spec)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "steps" in data
 
-    def test_plan_with_compose(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_plan_with_compose(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
@@ -509,11 +492,16 @@ class TestPlanCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "plan", str(spec),
-            "--service", "web",
-            "--service", "api",
-        ])
+        rc = main(
+            [
+                "plan",
+                str(spec),
+                "--service",
+                "web",
+                "--service",
+                "api",
+            ]
+        )
         assert rc == 0
 
 
@@ -549,11 +537,16 @@ class TestRunCommand:
         engine = mock_engine_cls.return_value
         engine.run.return_value = None
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "--db", str(tmp_path / "run.db"),
-            "run", str(spec),
-            "--compose", str(COMPOSE_FILE),
-        ])
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "run.db"),
+                "run",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
         assert rc == 0
 
     def test_run_bad_spec_fails_validation(self, tmp_path: Path) -> None:
@@ -570,12 +563,18 @@ class TestRunCommand:
         engine = mock_engine_cls.return_value
         engine.run.return_value = None
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "--db", str(tmp_path / "run.db"),
-            "run", str(spec),
-            "--process", "api=424242",
-            "--process", "worker=99999",
-        ])
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "run.db"),
+                "run",
+                str(spec),
+                "--process",
+                "api=424242",
+                "--process",
+                "worker=99999",
+            ]
+        )
         assert rc == 0
 
 
@@ -599,14 +598,37 @@ class TestStatusCommand:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         db = tmp_path / "status.db"
-        spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        with patch("mayhem.cli.services.RunEngine") as m:
-            m.return_value.run.return_value = None
-            main(["--db", str(db), "run", str(spec), "--process", "api=424242"])
+        from mayhem.infra.store import Store
+
+        store = Store.open_migrated(db)
+        with store.write() as conn:
+            conn.execute(
+                "INSERT INTO config_snapshots (id, resolved_json, source_map, created_at)"
+                " VALUES (?, '{}', '{}', ?)",
+                ("cfg-001", "2025-01-01T00:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json,"
+                " seed, status, environment_fingerprint, config_snapshot_id, started_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "run-test-001",
+                    "test",
+                    "deterministic",
+                    "{}",
+                    "{}",
+                    None,
+                    "completed",
+                    "fp-abc123",
+                    "cfg-001",
+                    "2025-01-01T00:00:00",
+                ),
+            )
+        store.close()
         rc = main(["--db", str(db), "status"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "run-" in out
+        assert "run-test-001" in out
 
     def test_status_json_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["--db", str(tmp_path / "empty.db"), "status", "--json"])
@@ -629,9 +651,7 @@ class TestHistoryCommand:
         rc = main(["--db", str(tmp_path / "empty.db"), "history", "run-nonexistent"])
         assert rc == 0
 
-    def test_history_after_run(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_history_after_run(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         db = tmp_path / "hist.db"
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         with patch("mayhem.cli.services.RunEngine") as m:
@@ -656,7 +676,7 @@ class TestRecoverCommand:
     """``mayhem recover`` — cleans up dirty state."""
 
     def test_recover_clean_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "recover"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "recover", "run-nonexistent"])
         assert rc == 0
 
 
@@ -671,7 +691,7 @@ class TestJanitorCommand:
     def test_janitor_sweep_clean_db(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "janitor", "sweep"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "janitor"])
         assert rc == 0
 
 
@@ -704,16 +724,20 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        rc = main([
-            "--db", db, "campaign", "create",
-            "hypo-test",
-            "--hypothesis", "stack survives",
-        ])
+        rc = main(
+            [
+                "--db",
+                db,
+                "campaign",
+                "create",
+                "hypo-test",
+                "--hypothesis",
+                "stack survives",
+            ]
+        )
         assert rc == 0
 
-    def test_campaign_show(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_campaign_show(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         db = str(tmp_path / "c.db")
         main(["--db", db, "campaign", "create", "show-test"])
         cid = _campaign_id(db)
@@ -722,9 +746,7 @@ class TestCampaignGroup:
             assert rc == 0
             assert "show-test" in capsys.readouterr().out
 
-    def test_campaign_show_json(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_campaign_show_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         db = str(tmp_path / "c.db")
         main(["--db", db, "campaign", "create", "json-test"])
         capsys.readouterr()
@@ -753,9 +775,7 @@ class TestCampaignGroup:
         rc = main(["--db", str(tmp_path / "c.db"), "campaign", "delete", "campaign-nosuch"])
         assert rc == ExitCode.VALIDATION_ERROR
 
-    def test_campaign_start_draft(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_campaign_start_draft(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         db = str(tmp_path / "c.db")
         main(["--db", db, "campaign", "create", "start-test"])
         cid = _campaign_id(db)
@@ -773,9 +793,7 @@ class TestCampaignGroup:
             rc = main(["--db", db, "campaign", "status", cid])
             assert rc == 0
 
-    def test_campaign_abort_draft(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_campaign_abort_draft(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         db = str(tmp_path / "c.db")
         main(["--db", db, "campaign", "create", "abort-test"])
         cid = _campaign_id(db)
@@ -792,24 +810,18 @@ class TestCampaignGroup:
 class TestFullFaultSpec:
     """Exercise the testCase ``full-fault.yml`` spec through the CLI."""
 
-    def test_show_full_fault(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_show_full_fault(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["experiment", "show", str(FULL_FAULT_SPEC)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["kind"] == "deterministic"
 
-    def test_validate_full_fault(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        rc = main(["experiment", "validate", str(FULL_FAULT_SPEC)])
+    def test_validate_full_fault(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = main(["experiment", "validate", str(FULL_FAULT_SPEC), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
-    def test_plan_full_fault(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        rc = main(["plan", str(FULL_FAULT_SPEC)])
+    def test_plan_full_fault(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = main(["plan", str(FULL_FAULT_SPEC), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "steps" in data
@@ -822,9 +834,11 @@ class TestFullFaultSpec:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         engine = mock_engine_cls.return_value
-        engine.run.return_value = None
+        result = engine.execute.return_value
+        result.summary_md.return_value = "run completed"
+        result.status = "completed"
         db = str(tmp_path / "ff.db")
-        rc = main(["--db", db, "run", str(FULL_FAULT_SPEC)])
+        rc = main(["--db", db, "run", str(FULL_FAULT_SPEC), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
 
@@ -836,15 +850,11 @@ class TestFullFaultSpec:
 class TestCaseConfig:
     """Exercise the testCase ``mayhem.yml`` config."""
 
-    def test_config_show_with_testcase_config(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_config_show_with_testcase_config(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["--config", str(MAYHEM_CONFIG), "config", "show"])
         assert rc == 0
 
-    def test_config_validate_with_testcase_config(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_config_validate_with_testcase_config(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["--config", str(MAYHEM_CONFIG), "config", "validate"])
         assert rc == 0
 
@@ -857,31 +867,23 @@ class TestCaseConfig:
 class TestCaseTopology:
     """Topology discovery against the testCase compose stack."""
 
-    def test_discover_all_services_present(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_all_services_present(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        svc_names = {
-            n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"
-        }
-        assert svc_names == {"download-1", "download-2", "lb", "db"}
+        svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
+        assert svc_names == {"api", "web", "download-1", "download-2", "lb", "db"}
 
-    def test_drift_has_missing_services(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         drift = data.get("drift", {})
         missing = drift.get("missing_services", [])
-        assert len(missing) == 4
+        assert len(missing) == 6
 
-    def test_discover_produces_edges(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_discover_produces_edges(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
@@ -914,9 +916,12 @@ class TestFullRoundTrip:
         rc = main(["--db", db, "plan", str(spec), "--process", "api=424242"])
         assert rc == 0
 
-        # run
+        # run (mock the engine so no real faults are injected)
         engine = mock_engine_cls.return_value
-        engine.run.return_value = None
+        result_mock = MagicMock()
+        result_mock.status = "completed"
+        result_mock.summary_md.return_value = "run-run1 completed ok"
+        engine.execute.return_value = result_mock
         rc = main(["--db", db, "run", str(spec), "--process", "api=424242"])
         assert rc == 0
 
@@ -974,7 +979,7 @@ class TestPrefixResolution:
         assert rc == 0
 
     def test_campaign_prefix_create(self, tmp_path: Path) -> None:
-        rc = main(["--db", str(tmp_path / "c.db"), "cam", "c", "--name", "pref-test"])
+        rc = main(["--db", str(tmp_path / "c.db"), "cam", "c", "pref-test"])
         assert rc == 0
 
 
@@ -1004,7 +1009,7 @@ class TestExitCodeCoverage:
         assert main(["validate", str(spec)]) == ExitCode.VALIDATION_ERROR
 
     def test_ambiguous_command(self) -> None:
-        assert main(["s"]) == ExitCode.AMBIGUOUS_COMMAND
+        assert main(["r"]) == ExitCode.AMBIGUOUS_COMMAND
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1018,32 +1023,43 @@ class TestErrorHandling:
     def test_plan_with_invalid_process_format(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["plan", str(spec), "--process", "bad-format-no-equals"])
-        assert rc == ExitCode.VALIDATION_ERROR
+        assert rc == ExitCode.USAGE_ERROR
 
     def test_plan_with_non_numeric_pid(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
         rc = main(["plan", str(spec), "--process", "api=not-a-number"])
-        assert rc == ExitCode.VALIDATION_ERROR
+        assert rc == ExitCode.USAGE_ERROR
 
     def test_validate_with_compose_nonexistent(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "validate", str(spec),
-            "--compose", "/nonexistent/docker-compose.yml",
-        ])
+        rc = main(
+            [
+                "validate",
+                str(spec),
+                "--compose",
+                "/nonexistent/docker-compose.yml",
+                "--process",
+                "api=424242",
+            ]
+        )
         assert rc == 0
 
     def test_plan_with_compose_and_process(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "det.yml", DETERMINISTIC_YAML)
-        rc = main([
-            "plan", str(spec),
-            "--compose", str(COMPOSE_FILE),
-            "--process", "api=424242",
-        ])
+        rc = main(
+            [
+                "plan",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+                "--process",
+                "api=424242",
+            ]
+        )
         assert rc == 0
 
     def test_config_show_with_profile(
@@ -1052,17 +1068,22 @@ class TestErrorHandling:
         _write(
             tmp_path,
             "mayhem.yml",
-            "apiVersion: mayhem/v1\nsafety:\n  allow_critical: true\n",
+            "apiVersion: mayhem/v1\npolicy:\n  allow_critical: true\n",
         )
         _write(
             tmp_path,
-            "mayhem.staging.yml",
-            "apiVersion: mayhem/v1\nsafety:\n  allow_critical: false\n",
+            "mayhem.staging.yaml",
+            "apiVersion: mayhem/v1\npolicy:\n  allow_critical: false\n",
         )
         cfg = tmp_path / "mayhem.yml"
-        rc = main([
-            "--config", str(cfg),
-            "--profile", "staging",
-            "config", "show",
-        ])
+        rc = main(
+            [
+                "--config",
+                str(cfg),
+                "--profile",
+                "staging",
+                "config",
+                "show",
+            ]
+        )
         assert rc == 0

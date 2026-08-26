@@ -77,8 +77,7 @@ class ResourceManager:
         """Reload the in-memory graph from persistent storage."""
         with self._store.write() as conn:
             rows = conn.execute(
-                "SELECT * FROM tracked_resources "
-                "WHERE state IN ('pending', 'active', 'recovering')"
+                "SELECT * FROM tracked_resources WHERE state IN ('pending', 'active', 'recovering')"
             ).fetchall()
         for row in rows:
             resource = self._row_to_resource(row)
@@ -194,15 +193,11 @@ class ResourceManager:
         if run_id:
             # When filtering by non-active state, we need all resources for the run
             if state and state not in (ResourceState.ACTIVE, ResourceState.PENDING):
-                resources = [
-                    r
-                    for r in self._graph._resources.values()  # noqa: SLF001
-                    if r.owner_run_id == run_id
-                ]
+                resources = [r for r in self._graph._resources.values() if r.owner_run_id == run_id]
             else:
                 resources = self._graph.active_for_run(run_id)
         else:
-            resources = list(self._graph._resources.values())  # noqa: SLF001
+            resources = list(self._graph._resources.values())
         if state:
             resources = [r for r in resources if r.state == state]
         return resources

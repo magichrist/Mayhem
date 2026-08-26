@@ -97,12 +97,24 @@ class TestMigrator:
             conn.execute(
                 """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
                    VALUES (?, ?, ?, ?, ?)""",
-                ("fault.injected", "run-1", "executor", '{"fault_id": "net.latency"}', "2026-01-01T00:00:00Z"),
+                (
+                    "fault.injected",
+                    "run-1",
+                    "executor",
+                    '{"fault_id": "net.latency"}',
+                    "2026-01-01T00:00:00Z",
+                ),
             )
             conn.execute(
                 """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
                    VALUES (?, ?, ?, ?, ?)""",
-                ("probe.measured", "run-1", "probe_runner", '{"status": 200}', "2026-01-01T00:00:01Z"),
+                (
+                    "probe.measured",
+                    "run-1",
+                    "probe_runner",
+                    '{"status": 200}',
+                    "2026-01-01T00:00:01Z",
+                ),
             )
         rows = store.query(
             "SELECT * FROM observations WHERE run_id = ? ORDER BY timestamp", ("run-1",)

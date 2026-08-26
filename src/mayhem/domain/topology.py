@@ -141,11 +141,7 @@ class NetworkTopology(BaseModel):
 
     def paths_for_node(self, node_id: str) -> tuple[NetworkPath, ...]:
         """All paths originating from or terminating at a node."""
-        return tuple(
-            p
-            for p in self.paths
-            if p.src_node_id == node_id or p.dst_node_id == node_id
-        )
+        return tuple(p for p in self.paths if p.src_node_id == node_id or p.dst_node_id == node_id)
 
     def segment_for_node(self, node_id: str) -> NetworkSegment | None:
         """Which segment contains this node, if any."""
@@ -154,9 +150,7 @@ class NetworkTopology(BaseModel):
                 return seg
         return None
 
-    def find_path(
-        self, src_node_id: str, dst_node_id: str
-    ) -> NetworkPath | None:
+    def find_path(self, src_node_id: str, dst_node_id: str) -> NetworkPath | None:
         """Find a path between two nodes (directional)."""
         for p in self.paths:
             if p.src_node_id == src_node_id and p.dst_node_id == dst_node_id:
@@ -165,9 +159,7 @@ class NetworkTopology(BaseModel):
 
     def cross_segment_paths(self) -> tuple[NetworkPath, ...]:
         """Paths that cross segment boundaries — higher fault surface."""
-        return tuple(
-            p for p in self.paths if len(p.segments) > 1
-        )
+        return tuple(p for p in self.paths if len(p.segments) > 1)
 
 
 class EdgeKind(StrEnum):
@@ -271,9 +263,7 @@ class TopologyGraph(BaseModel):
         reachable within two hops of *node_id* via RUNS_ON edges.
         """
         by_id = {n.id: n for n in self.nodes}
-        child_ids = [
-            e.dst for e in self.edges if e.src == node_id and e.kind is EdgeKind.RUNS_ON
-        ]
+        child_ids = [e.dst for e in self.edges if e.src == node_id and e.kind is EdgeKind.RUNS_ON]
         # One more hop: process nodes that RUNS_ON the children.
         grandchild_ids = [
             e.dst

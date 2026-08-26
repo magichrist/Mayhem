@@ -8,7 +8,6 @@ import click
 
 from mayhem.cli.resolver import make_group
 from mayhem.cli.services import effective_config
-from mayhem.domain.errors import SchemaValidationError
 
 config = make_group("config", "Inspect the effective layered mayhem configuration.")
 
