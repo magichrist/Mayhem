@@ -110,14 +110,16 @@ class TestRootCLI:
         assert rc == ExitCode.USAGE_ERROR
 
     def test_ambiguous_prefix_returns_ambiguous_code(self) -> None:
-        """'s' is ambiguous between status, start, show, etc."""
-        rc = main(["s"])
+        """'c' is ambiguous between campaign and config."""
+        rc = main(["c"])
         assert rc == ExitCode.AMBIGUOUS_COMMAND
 
     def test_global_debug_flag_re_raises(self, tmp_path: Path) -> None:
-        spec = _write(tmp_path, "bad.yaml", INVALID_YAML)
-        with pytest.raises(Exception):
-            main(["--debug", "plan", str(spec)])
+        """--debug re-raises unexpected errors that reach the last-resort handler."""
+        with patch("mayhem.cli.lifecycle.prepare", side_effect=RuntimeError("boom")):
+            spec = _write(tmp_path, "ok.yml", DETERMINISTIC_YAML)
+            with pytest.raises(RuntimeError, match="boom"):
+                main(["--debug", "plan", str(spec), "--process", "api=424242"])
 
     def test_global_db_option_is_accepted(self) -> None:
         rc = main(["--db", "/tmp/mayhem-e2e-test.db", "toolkit", "faults"])
@@ -147,7 +149,7 @@ class TestToolkitGroup:
         assert "undo=" in out
 
     def test_toolkit_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["tk", "f"])
+        rc = main(["too", "f"])
         assert rc == 0
         assert "proc.pause" in capsys.readouterr().out
 
@@ -197,7 +199,7 @@ class TestConfigGroup:
         cfg = _write(
             tmp_path,
             "mayhem.yml",
-            "apiVersion: mayhem/v1\nsafety:\n  allow_critical: false\n",
+            "apiVersion: mayhem/v1\npolicy:\n  allow_critical: false\n",
         )
         rc = main(["--config", str(cfg), "config", "show"])
         assert rc == 0
@@ -213,7 +215,7 @@ class TestConfigGroup:
         cfg = _write(
             tmp_path,
             "mayhem.yml",
-            "apiVersion: mayhem/v1\nsafety:\n  allow_critical: true\n",
+            "apiVersion: mayhem/v1\npolicy:\n  allow_critical: true\n",
         )
         rc = main(["--config", str(cfg), "config", "validate"])
         assert rc == 0
@@ -250,7 +252,7 @@ class TestExperimentGroup:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data["kind"] == "deterministic"
-        assert data["name"] == "pause-drill"
+        assert data["metadata"]["name"] == "pause-drill"
 
     def test_show_random_spec(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -277,7 +279,7 @@ class TestExperimentGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "rnd.yml", RANDOM_YAML)
-        rc = main(["experiment", "validate", str(spec)])
+        rc = main(["experiment", "validate", str(spec), "--service", "api"])
         assert rc == 0
 
     def test_validate_empty_steps_returns_validation_error(
@@ -689,10 +691,10 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        rc = main(["--db", db, "campaign", "create", "--name", "e2e-campaign"])
+        rc = main(["--db", db, "campaign", "create", "e2e-campaign"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "campaign-" in out
+        assert "camp-" in out
 
         rc = main(["--db", db, "campaign", "list"])
         assert rc == 0
@@ -704,7 +706,7 @@ class TestCampaignGroup:
         db = str(tmp_path / "c.db")
         rc = main([
             "--db", db, "campaign", "create",
-            "--name", "hypo-test",
+            "hypo-test",
             "--hypothesis", "stack survives",
         ])
         assert rc == 0
@@ -713,7 +715,7 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "show-test"])
+        main(["--db", db, "campaign", "create", "show-test"])
         cid = _campaign_id(db)
         if cid:
             rc = main(["--db", db, "campaign", "show", cid])
@@ -724,7 +726,8 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "json-test"])
+        main(["--db", db, "campaign", "create", "json-test"])
+        capsys.readouterr()
         cid = _campaign_id(db)
         if cid:
             rc = main(["--db", db, "campaign", "show", cid, "--json"])
@@ -740,10 +743,10 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "to-delete"])
+        main(["--db", db, "campaign", "create", "to-delete"])
         cid = _campaign_id(db)
         if cid:
-            rc = main(["--db", db, "campaign", "delete", cid])
+            rc = main(["--db", db, "campaign", "delete", "--yes", cid])
             assert rc == 0
 
     def test_campaign_delete_nonexistent(self, tmp_path: Path) -> None:
@@ -754,7 +757,7 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "start-test"])
+        main(["--db", db, "campaign", "create", "start-test"])
         cid = _campaign_id(db)
         if cid:
             rc = main(["--db", db, "campaign", "start", cid])
@@ -764,7 +767,7 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "status-test"])
+        main(["--db", db, "campaign", "create", "status-test"])
         cid = _campaign_id(db)
         if cid:
             rc = main(["--db", db, "campaign", "status", cid])
@@ -774,7 +777,7 @@ class TestCampaignGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = str(tmp_path / "c.db")
-        main(["--db", db, "campaign", "create", "--name", "abort-test"])
+        main(["--db", db, "campaign", "create", "abort-test"])
         cid = _campaign_id(db)
         if cid:
             rc = main(["--db", db, "campaign", "abort", cid])
@@ -939,7 +942,8 @@ class TestPrefixResolution:
     """Verify that unique-prefix resolution works for every group."""
 
     def test_toolkit_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["tk", "faults"])
+        """'too' uniquely resolves to 'toolkit'."""
+        rc = main(["too", "faults"])
         assert rc == 0
 
     def test_experiment_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

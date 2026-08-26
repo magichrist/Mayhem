@@ -95,7 +95,7 @@ def validate(
             graph=graph,
             compose=compose,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=store)
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
     finally:
         store.close()
     click.echo(
@@ -129,7 +129,7 @@ def plan(
             graph=graph,
             compose=compose,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=store)
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
     finally:
         store.close()
     click.echo(compiled.plan.model_dump_json(indent=2))
@@ -160,7 +160,7 @@ def run(
             graph=graph,
             compose=compose,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=store)
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
         engine = engine_for(store)
         result = engine.execute(compiled.plan)
         click.echo(result.summary_md())

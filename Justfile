@@ -60,7 +60,7 @@ toolkit-list-json:
 # Toolkit prefix
 toolkit-prefix:
     @echo "=== toolkit prefix (tk f) ==="
-    mayhem tk f
+    mayhem tool f
     @echo "✓ toolkit prefix passed"
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -405,7 +405,7 @@ lint:
 # ── Docker-dependent manual tests ────────────────────────────────────────────
 
 # Start the testCase compose stack (requires Docker)
-[manual]
+#[manual]
 stack-up:
     @echo "=== starting testCase compose stack ==="
     cd {{ _testcase }} && docker compose up -d
@@ -413,28 +413,28 @@ stack-up:
     @echo "✓ stack started"
 
 # Stop the testCase compose stack
-[manual]
+#[manual]
 stack-down:
     @echo "=== stopping testCase compose stack ==="
     cd {{ _testcase }} && docker compose down -v
     @echo "✓ stack stopped"
 
 # Topology discovery with live runtime (requires Docker stack)
-[manual]
+#[manual]
 topology-live: stack-up
     @echo "=== topology discover (live runtime) ==="
     mayhem topology discover --compose {{ _compose }}
     @echo "✓ topology live passed"
 
 # Topology discovery with Podman runtime
-[manual]
+#[manual]
 topology-podman:
     @echo "=== topology discover (podman) ==="
     mayhem --podman topology discover --compose {{ _compose }}
     @echo "✓ topology podman passed"
 
 # Full round-trip with live Docker stack
-[manual]
+#[manual]
 full-live: stack-up
     @echo "=== full round-trip (live Docker) ==="
     rm -f {{ _db }}

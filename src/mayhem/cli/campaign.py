@@ -8,9 +8,18 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.cli.services import open_store
 
 if TYPE_CHECKING:
     from click import Context
+
+
+def _ctx(ctx: Context):
+    from mayhem.cli.context import CliContext
+
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    return obj
 
 
 @click.group()
@@ -23,13 +32,9 @@ def campaign() -> None:
 @click.pass_context
 def list_campaigns(ctx: Context) -> None:
     """List all campaigns."""
-    store = ctx.obj.get("store") if ctx.obj else None
-    if store is None:
-        click.echo("No store configured. Run 'mayhem configure' first.", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
+    store = open_store(_ctx(ctx).db)
     try:
-        with store.read() as conn:
+        with store.write() as conn:
             rows = conn.execute(
                 "SELECT id, name, status, created_at FROM campaigns ORDER BY created_at DESC"
             ).fetchall()
@@ -46,18 +51,15 @@ def list_campaigns(ctx: Context) -> None:
         click.echo(f"{row['id']:<20} {row['name']:<30} {row['status']:<12} {row['created_at']}")
 
 
-@campaign.command("describe")
+@campaign.command("show")
 @click.argument("campaign_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def describe_campaign(ctx: Context, campaign_id: str) -> None:
+def show_campaign(ctx: Context, campaign_id: str, as_json: bool) -> None:
     """Show details of a campaign."""
-    store = ctx.obj.get("store") if ctx.obj else None
-    if store is None:
-        click.echo("No store configured.", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
+    store = open_store(_ctx(ctx).db)
     try:
-        with store.read() as conn:
+        with store.write() as conn:
             row = conn.execute(
                 "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
             ).fetchone()
@@ -67,7 +69,14 @@ def describe_campaign(ctx: Context, campaign_id: str) -> None:
         return
     if row is None:
         click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.TARGET_NOT_FOUND))
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
+        return
+    if as_json:
+        data = dict(row)
+        for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
+            if data.get(key):
+                data[key] = json.loads(data[key])
+        click.echo(json.dumps(data, indent=2, default=str))
         return
     click.echo(f"Campaign: {row['name']}")
     click.echo(f"  ID:          {row['id']}")
@@ -89,15 +98,12 @@ def describe_campaign(ctx: Context, campaign_id: str) -> None:
 @campaign.command("create")
 @click.argument("name")
 @click.option("--description", "-d", default="", help="Campaign description.")
+@click.option("--hypothesis", "-h", "hyp", default="", help="Campaign hypothesis.")
 @click.option("--json-file", "-f", type=click.Path(exists=True), help="JSON file with campaign config.")
 @click.pass_context
-def create_campaign(ctx: Context, name: str, description: str, json_file: str | None) -> None:
+def create_campaign(ctx: Context, name: str, description: str, hyp: str, json_file: str | None) -> None:
     """Create a new campaign."""
-    store = ctx.obj.get("store") if ctx.obj else None
-    if store is None:
-        click.echo("No store configured.", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
+    store = open_store(_ctx(ctx).db)
 
     import uuid
     from datetime import datetime, timezone
@@ -121,7 +127,7 @@ def create_campaign(ctx: Context, name: str, description: str, json_file: str | 
                 (
                     campaign_id,
                     name,
-                    description or config.get("description", ""),
+                    description or hyp or config.get("description", ""),
                     json.dumps(config.get("experiments", [])),
                     json.dumps(config.get("window", {})),
                     json.dumps(config.get("policy", {})),
@@ -143,15 +149,11 @@ def create_campaign(ctx: Context, name: str, description: str, json_file: str | 
 @click.pass_context
 def delete_campaign(ctx: Context, campaign_id: str, yes: bool) -> None:
     """Delete a campaign (draft or completed only)."""
-    store = ctx.obj.get("store") if ctx.obj else None
-    if store is None:
-        click.echo("No store configured.", err=True)
-        ctx.exit(int(ExitCode.GENERAL_FAILURE))
-        return
+    store = open_store(_ctx(ctx).db)
     try:
-        with store.read() as conn:
+        with store.write() as conn:
             row = conn.execute(
-                "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
             ).fetchone()
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
@@ -159,7 +161,7 @@ def delete_campaign(ctx: Context, campaign_id: str, yes: bool) -> None:
         return
     if row is None:
         click.echo(f"Campaign {campaign_id!r} not found.", err=True)
-        ctx.exit(int(ExitCode.TARGET_NOT_FOUND))
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
         return
     if row["status"] not in ("draft", "completed", "aborted"):
         click.echo(
@@ -170,7 +172,7 @@ def delete_campaign(ctx: Context, campaign_id: str, yes: bool) -> None:
         ctx.exit(int(ExitCode.SAFETY_REFUSED))
         return
     if not yes:
-        click.confirm(f"Delete campaign '{row['name']}' ({campaign_id})?", abort=True)
+        click.confirm(f"Delete campaign {campaign_id!r}?", abort=True)
     try:
         with store.write() as conn:
             conn.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
@@ -179,3 +181,99 @@ def delete_campaign(ctx: Context, campaign_id: str, yes: bool) -> None:
         ctx.exit(int(ExitCode.GENERAL_FAILURE))
         return
     click.echo(f"Campaign {campaign_id!r} deleted.")
+
+
+@campaign.command("start")
+@click.argument("campaign_id")
+@click.pass_context
+def start_campaign(ctx: Context, campaign_id: str) -> None:
+    """Start a draft campaign."""
+    store = open_store(_ctx(ctx).db)
+    try:
+        with store.write() as conn:
+            row = conn.execute(
+                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone()
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        ctx.exit(int(ExitCode.GENERAL_FAILURE))
+        return
+    if row is None:
+        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
+        return
+    if row["status"] != "draft":
+        click.echo(f"Cannot start campaign in status {row['status']!r}.", err=True)
+        ctx.exit(int(ExitCode.SAFETY_REFUSED))
+        return
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with store.write() as conn:
+            conn.execute(
+                "UPDATE campaigns SET status = 'running', updated_at = ? WHERE id = ?",
+                (now, campaign_id),
+            )
+    except Exception as exc:
+        click.echo(f"Error starting campaign: {exc}", err=True)
+        ctx.exit(int(ExitCode.GENERAL_FAILURE))
+        return
+    click.echo(f"Campaign {campaign_id!r} started.")
+
+
+@campaign.command("status")
+@click.argument("campaign_id")
+@click.pass_context
+def campaign_status(ctx: Context, campaign_id: str) -> None:
+    """Show status of a campaign."""
+    store = open_store(_ctx(ctx).db)
+    try:
+        with store.write() as conn:
+            row = conn.execute(
+                "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone()
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        ctx.exit(int(ExitCode.GENERAL_FAILURE))
+        return
+    if row is None:
+        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
+        return
+    click.echo(f"{row['id']}  {row['status']:<12}  {row['name']}")
+
+
+@campaign.command("abort")
+@click.argument("campaign_id")
+@click.pass_context
+def abort_campaign(ctx: Context, campaign_id: str) -> None:
+    """Abort a running campaign."""
+    store = open_store(_ctx(ctx).db)
+    try:
+        with store.write() as conn:
+            row = conn.execute(
+                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone()
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        ctx.exit(int(ExitCode.GENERAL_FAILURE))
+        return
+    if row is None:
+        click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
+        return
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with store.write() as conn:
+            conn.execute(
+                "UPDATE campaigns SET status = 'aborted', updated_at = ? WHERE id = ?",
+                (now, campaign_id),
+            )
+    except Exception as exc:
+        click.echo(f"Error aborting campaign: {exc}", err=True)
+        ctx.exit(int(ExitCode.GENERAL_FAILURE))
+        return
+    click.echo(f"Campaign {campaign_id!r} aborted.")

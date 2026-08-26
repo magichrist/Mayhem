@@ -43,8 +43,5 @@ def validate(ctx: click.Context) -> None:
 
     obj = ctx.obj
     assert isinstance(obj, CliContext)
-    try:
-        _cfg, sources = effective_config(obj.config, obj.profile)
-    except SchemaValidationError as exc:
-        raise click.ClickException(f"invalid configuration: {exc}") from exc
+    _cfg, sources = effective_config(obj.config, obj.profile)
     click.echo(f"configuration valid ({len(sources)} layer(s))")
