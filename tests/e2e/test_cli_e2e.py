@@ -48,6 +48,7 @@ kind: random
 name: random-chaos
 hypothesis: random injection does not crash the stack
 max_faults: 3
+seed: 42
 targets:
   - kind: process
     expr: "kind=service"

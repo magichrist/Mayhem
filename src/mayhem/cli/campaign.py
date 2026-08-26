@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 import click
 
-from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.resolver import make_group
 from mayhem.cli.services import open_store
 
@@ -35,9 +35,7 @@ def list_campaigns(ctx: Context, db_opt: str | None, as_json: bool) -> None:
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status, created_at FROM campaigns ORDER BY created_at"
-        )
+        rows = store.query("SELECT id, name, status, created_at FROM campaigns ORDER BY created_at")
         if as_json:
             click.echo(json.dumps([dict(r) for r in rows], indent=2))
         else:
@@ -58,17 +56,22 @@ def list_campaigns(ctx: Context, db_opt: str | None, as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
 def create_campaign(
-    ctx: Context, name: str, description: str, hypothesis: str | None, db_opt: str | None, as_json: bool
+    ctx: Context,
+    name: str,
+    description: str,
+    hypothesis: str | None,
+    db_opt: str | None,
+    as_json: bool,
 ) -> None:
     """Create a new campaign in draft status."""
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
         campaign_id = f"camp-{uuid.uuid4().hex[:12]}"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with store.write() as conn:
             conn.execute(
                 "INSERT INTO campaigns (id, name, description, status, created_at, updated_at)"
@@ -93,9 +96,7 @@ def create_campaign(
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def show_campaign(
-    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
-) -> None:
+def show_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
     """Show campaign details."""
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
@@ -124,16 +125,12 @@ def show_campaign(
 @click.argument("campaign_id")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.pass_context
-def campaign_status(
-    ctx: Context, campaign_id: str, db_opt: str | None
-) -> None:
+def campaign_status(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
     """Show the status of a campaign."""
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-        )
+        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
@@ -156,9 +153,7 @@ def delete_campaign(
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-        )
+        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
@@ -170,9 +165,7 @@ def delete_campaign(
             )
             raise click.UsageError(f"cannot delete campaign in '{row['status']}' status")
         if not yes:
-            click.confirm(
-                f"Delete campaign '{row['name']}' ({campaign_id})?", abort=True
-            )
+            click.confirm(f"Delete campaign '{row['name']}' ({campaign_id})?", abort=True)
         with store.write() as conn:
             conn.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
         if as_json:
@@ -188,18 +181,14 @@ def delete_campaign(
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def start_campaign(
-    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
-) -> None:
+def start_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
     """Start a draft campaign (set status to 'active')."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-        )
+        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
@@ -210,7 +199,7 @@ def start_campaign(
                 err=True,
             )
             raise click.UsageError(f"cannot start campaign in '{row['status']}' status")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with store.write() as conn:
             conn.execute(
                 "UPDATE campaigns SET status = 'active', updated_at = ? WHERE id = ?",
@@ -234,22 +223,18 @@ def start_campaign(
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
-def archive_campaign(
-    ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool
-) -> None:
+def archive_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
     """Archive a campaign (set status to 'archived')."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-        )
+        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with store.write() as conn:
             conn.execute(
                 "UPDATE campaigns SET status = 'archived', updated_at = ? WHERE id = ?",
@@ -272,22 +257,18 @@ def archive_campaign(
 @click.argument("campaign_id")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.pass_context
-def abort_campaign(
-    ctx: Context, campaign_id: str, db_opt: str | None
-) -> None:
+def abort_campaign(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
     """Abort a draft campaign (set status to 'aborted')."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
     try:
-        rows = store.query(
-            "SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,)
-        )
+        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with store.write() as conn:
             conn.execute(
                 "UPDATE campaigns SET status = 'aborted', updated_at = ? WHERE id = ?",
@@ -312,7 +293,7 @@ def add_experiment(
     as_json: bool,
 ) -> None:
     """Add an experiment spec file to a campaign."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = db_opt or _ctx(ctx).db
     store = open_store(db)
@@ -324,13 +305,15 @@ def add_experiment(
         row = dict(rows[0])
         experiments = json.loads(row.get("experiments_json") or "[]")
         experiments.append(experiment_path)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         store.query(
             "UPDATE campaigns SET experiments_json = ?, updated_at = ? WHERE id = ?",
             (json.dumps(experiments), now, campaign_id),
         )
         if as_json:
-            click.echo(json.dumps({"campaign_id": campaign_id, "experiments": experiments}, indent=2))
+            click.echo(
+                json.dumps({"campaign_id": campaign_id, "experiments": experiments}, indent=2)
+            )
         else:
             click.echo(f"Added experiment to campaign '{campaign_id}'.")
     finally:

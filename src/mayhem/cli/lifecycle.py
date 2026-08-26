@@ -211,6 +211,8 @@ def history(ctx: click.Context, run_id: str, json_flag: bool) -> None:
         journal = run_journal(store, run_id)
     finally:
         store.close()
+    if not journal["steps"] and not journal["events"] and not journal["leases"]:
+        raise click.UsageError(f"no such run: {run_id}", ctx=ctx)
     click.echo(json.dumps(journal, indent=2))
 
 

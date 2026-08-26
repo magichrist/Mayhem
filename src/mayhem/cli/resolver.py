@@ -61,7 +61,7 @@ class PrefixGroup(click.Group):
         if len(candidates) == 1:
             return super().get_command(ctx, candidates[0])
         if not candidates:
-            raise click.UsageError(f"No command matches {cmd_name!r}.", ctx=ctx)
+            raise CommandResolutionError(cmd_name, ())
         raise CommandResolutionError(cmd_name, tuple(candidates))
 
 
