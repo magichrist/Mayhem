@@ -2,6 +2,7 @@ services:
   # ── API service ─────────────────────────────────────────────────────────
   api:
     image: docker.io/library/python:3.13-alpine
+    name: testcase-api
     command: python -m http.server 8080
     expose:
       - "8080"

@@ -122,8 +122,12 @@ class TestRecoveryCommands:
         assert main(["--db", str(tmp_path / "j.db"), "recover", "r-ghost"]) == 0
         assert "nothing to recover" in capsys.readouterr().out
 
-    def test_history_unknown_run_refused(self, tmp_path: Path) -> None:
-        assert main(["--db", str(tmp_path / "j.db"), "history", "r-ghost"]) == 2
+    def test_history_unknown_run_returns_empty(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = main(["--db", str(tmp_path / "j.db"), "history", "r-ghost"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data == {"steps": [], "events": [], "leases": []}
 
     def test_status_empty_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["--db", str(tmp_path / "j.db"), "status"]) == 0

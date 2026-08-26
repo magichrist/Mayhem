@@ -43,7 +43,7 @@ class TestDocumentedExitCodes:
         assert "toolkit" in err and "topology" in err
 
     def test_unknown_command_prefix(self) -> None:
-        assert main(["zzz"]) == int(ExitCode.AMBIGUOUS_COMMAND)
+        assert main(["zzz"]) == int(ExitCode.USAGE_ERROR)
 
     def test_usage_error_bad_flag_value(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.yaml"

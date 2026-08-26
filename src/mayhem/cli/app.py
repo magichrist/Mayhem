@@ -96,7 +96,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             windows_expand_args=False,
         )
     except CommandResolutionError as exc:
-        return _fail(str(exc), int(ExitCode.AMBIGUOUS_COMMAND))
+        code = (
+            ExitCode.USAGE_ERROR
+            if not exc.candidates
+            else ExitCode.AMBIGUOUS_COMMAND
+        )
+        return _fail(str(exc), int(code))
     except click.UsageError as exc:
         exc.show()
         return int(ExitCode.USAGE_ERROR)

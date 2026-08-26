@@ -114,9 +114,13 @@ class ComposeFileProvider:
 
     @property
     def project_name(self) -> str:
-        """Compose project name — explicit ``name:`` field or directory name."""
+        """Compose project name — explicit ``name:`` field or directory name.
+
+        Normalized to lowercase because Docker and Podman always lowercase
+        the ``com.docker.compose.project`` label.
+        """
         document: dict[str, Any] = yaml.safe_load(self._path.read_text()) or {}
-        return str(document.get("name") or self._path.parent.name)
+        return str(document.get("name") or self._path.parent.name).lower()
 
     @property
     def service_names(self) -> tuple[str, ...]:

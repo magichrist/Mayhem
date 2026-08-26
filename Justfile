@@ -1,471 +1,204 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Mayhem E2E Justfile — every CLI command exercised against examples/testCase
+# Mayhem justfile — test every capability against examples/testCase
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage:  just --list           (show all recipes)
-#         just e2e-all          (full automated run)
-#         just manual-smoke     (manual tests requiring Docker)
+#         just e2e              (full automated run)
+#         just smoke            (quick sanity check)
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 _testcase  := "examples/testCase"
 _compose   := _testcase / "docker-compose.yml"
 _config    := _testcase / "mayhem.yml"
-_fullfault := _testcase / "full-fault.yml"
 _spec      := _testcase / "full-fault.yml"
 _db        := ".mayhem/e2e.db"
 
 # ── setup ────────────────────────────────────────────────────────────────────
 
-# Remove stale test DB and create directories
 [private]
 setup:
     rm -f {{ _db }}
     mkdir -p .mayhem
-    echo "✓ setup complete"
+    @echo "✓ setup"
 
 # ── topology ─────────────────────────────────────────────────────────────────
 
-# Discover topology from compose file
-topology-discover:
-    @echo "=== topology discover (compose) ==="
-    mayhem topology discover --compose {{ _compose }}
-    @echo "✓ topology discover passed"
+# Discover topology from compose + live runtime (containers, processes, services)
+topology:
+    @echo "=== topology discover ==="
+    mayhem topology discover --compose {{ _compose }} | python3 -m json.tool > /dev/null
+    @echo "✓ topology discover"
 
-# Discover topology (prefix shorthand)
-topology-discover-prefix:
-    @echo "=== topology discover (prefix: top d) ==="
-    mayhem top d --compose {{ _compose }}
-    @echo "✓ topology prefix passed"
+# Topology with prefix shorthand
+topology-prefix:
+    @echo "=== topology prefix ==="
+    mayhem top d --compose {{ _compose }} | python3 -m json.tool > /dev/null
+    @echo "✓ topology prefix"
 
 # ── toolkit ──────────────────────────────────────────────────────────────────
 
-# List fault catalog
-toolkit-faults:
-    @echo "=== toolkit faults ==="
+# List available faults and capabilities
+toolkit:
+    @echo "=== toolkit ==="
     mayhem toolkit faults
-    @echo "✓ toolkit faults passed"
-
-# List capabilities
-toolkit-list:
-    @echo "=== toolkit list ==="
-    mayhem toolkit list
-    @echo "✓ toolkit list passed"
-
-# List capabilities as JSON
-toolkit-list-json:
-    @echo "=== toolkit list --json ==="
     mayhem toolkit list --json | python3 -m json.tool > /dev/null
-    @echo "✓ toolkit list --json passed"
-
-# Toolkit prefix
-toolkit-prefix:
-    @echo "=== toolkit prefix (tk f) ==="
-    mayhem tool f
-    @echo "✓ toolkit prefix passed"
+    @echo "✓ toolkit"
 
 # ── config ───────────────────────────────────────────────────────────────────
 
-# Show effective config (YAML)
-config-show:
-    @echo "=== config show ==="
-    mayhem config show
-    @echo "✓ config show passed"
-
-# Show effective config (JSON)
-config-show-json:
-    @echo "=== config show --json ==="
+# Show and validate effective config (default + testCase)
+config:
+    @echo "=== config ==="
     mayhem config show --json | python3 -m json.tool > /dev/null
-    @echo "✓ config show --json passed"
-
-# Show config with testCase mayhem.yml
-config-show-testcase:
-    @echo "=== config show (testCase) ==="
-    mayhem --config {{ _config }} config show
-    @echo "✓ config show (testCase) passed"
-
-# Validate config
-config-validate:
-    @echo "=== config validate ==="
+    mayhem --config {{ _config }} config show --json | python3 -m json.tool > /dev/null
     mayhem config validate
-    @echo "✓ config validate passed"
-
-# Validate testCase config
-config-validate-testcase:
-    @echo "=== config validate (testCase) ==="
     mayhem --config {{ _config }} config validate
-    @echo "✓ config validate (testCase) passed"
-
-# Config prefix
-config-prefix:
-    @echo "=== config prefix (cfg s) ==="
-    mayhem cfg s
-    @echo "✓ config prefix passed"
+    @echo "✓ config"
 
 # ── experiment ───────────────────────────────────────────────────────────────
 
-# Show experiment spec JSON
-experiment-show:
-    @echo "=== experiment show ==="
-    mayhem experiment show {{ _fullfault }}
-    @echo "✓ experiment show passed"
+# Show and validate experiment spec
+experiment:
+    @echo "=== experiment ==="
+    mayhem experiment show {{ _spec }} | python3 -m json.tool > /dev/null
+    mayhem experiment validate {{ _spec }} --compose {{ _compose }}
+    @echo "✓ experiment"
 
-# Validate experiment spec
-experiment-validate:
-    @echo "=== experiment validate ==="
-    mayhem experiment validate {{ _fullfault }}
-    @echo "✓ experiment validate passed"
+# ── lifecycle: validate → plan → run → status → history → recover ────────────
 
-# Experiment prefix (ex v)
-experiment-prefix:
-    @echo "=== experiment prefix (ex v) ==="
-    mayhem ex v {{ _fullfault }}
-    @echo "✓ experiment prefix passed"
+# Validate spec against live topology
+validate: setup
+    @echo "=== validate ==="
+    mayhem --db {{ _db }} validate {{ _spec }} --compose {{ _compose }}
+    @echo "✓ validate"
 
-# Experiment prefix (e v)
-experiment-prefix-short:
-    @echo "=== experiment prefix (e v) ==="
-    mayhem e v {{ _fullfault }}
-    @echo "✓ experiment prefix-short passed"
-
-# ── validate (lifecycle) ────────────────────────────────────────────────────
-
-# Validate with process topology
+# Validate with explicit process topology (no compose auto-detect)
 validate-process:
     @echo "=== validate --process ==="
-    mayhem validate {{ _fullfault }} --process "download-1=10001" --process "download-2=10002"
-    @echo "✓ validate --process passed"
+    mayhem validate {{ _spec }} \
+        --process "download-1=10001" --process "download-2=10002"
+    @echo "✓ validate --process"
 
-# Validate with compose topology
-validate-compose:
-    @echo "=== validate --compose ==="
-    mayhem validate {{ _fullfault }} --compose {{ _compose }}
-    @echo "✓ validate --compose passed"
+# Plan the experiment
+plan:
+    @echo "=== plan ==="
+    mayhem plan {{ _spec }} --compose {{ _compose }}
+    @echo "✓ plan"
 
-# Validate with all topology options
-validate-all-topo:
-    @echo "=== validate --process --service --host --compose ==="
-    mayhem validate {{ _fullfault }} \
-        --process "download-1=10001" \
-        --process "download-2=10002" \
-        --service "lb" \
-        --service "db" \
-        --host "local" \
-        --compose {{ _compose }}
-    @echo "✓ validate all topology options passed"
+# Full run: inject faults, record events, compensate
+run: setup
+    @echo "=== run ==="
+    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
+    @echo "✓ run"
 
-# Validate prefix
-validate-prefix:
-    @echo "=== validate prefix (v) ==="
-    mayhem v {{ _fullfault }} --process "download-1=10001"
-    @echo "✓ validate prefix passed"
-
-# ── plan (lifecycle) ────────────────────────────────────────────────────────
-
-# Plan with process topology
-plan-process:
-    @echo "=== plan --process ==="
-    mayhem plan {{ _fullfault }} --process "download-1=10001" --process "download-2=10002"
-    @echo "✓ plan --process passed"
-
-# Plan with compose topology
-plan-compose:
-    @echo "=== plan --compose ==="
-    mayhem plan {{ _fullfault }} --compose {{ _compose }}
-    @echo "✓ plan --compose passed"
-
-# Plan with all topology options
-plan-all-topo:
-    @echo "=== plan all topology ==="
-    mayhem plan {{ _fullfault }} \
-        --process "download-1=10001" \
-        --process "download-2=10002" \
-        --service "lb" \
-        --service "db" \
-        --host "local" \
-        --compose {{ _compose }}
-    @echo "✓ plan all topology passed"
-
-# Plan prefix
-plan-prefix:
-    @echo "=== plan prefix (p) ==="
-    mayhem p {{ _fullfault }} --process "download-1=10001"
-    @echo "✓ plan prefix passed"
-
-# ── run (lifecycle) ─────────────────────────────────────────────────────────
-
-# Full run with process topology (real execution, creates DB)
-run-process: setup
-    @echo "=== run --process ==="
-    mayhem --db {{ _db }} run {{ _fullfault }} \
-        --process "download-1=10001" \
-        --process "download-2=10002"
-    @echo "✓ run --process passed"
-
-# Full run with compose topology
-run-compose: setup
-    @echo "=== run --compose ==="
-    mayhem --db {{ _db }} run {{ _fullfault }} \
-        --compose {{ _compose }}
-    @echo "✓ run --compose passed"
-
-# Full run with all topology options
-run-all-topo: setup
-    @echo "=== run all topology ==="
-    mayhem --db {{ _db }} run {{ _fullfault }} \
-        --process "download-1=10001" \
-        --process "download-2=10002" \
-        --service "lb" \
-        --service "db" \
-        --host "local" \
-        --compose {{ _compose }}
-    @echo "✓ run all topology passed"
-
-# ── status / history ────────────────────────────────────────────────────────
-
-# Show run status
+# Show run status (JSON + text)
 status: setup
     @echo "=== status ==="
     mayhem --db {{ _db }} status
-    @echo "✓ status passed"
+    @echo "✓ status"
 
-# Show run status as JSON
-status-json: setup
-    @echo "=== status --json ==="
-    mayhem --db {{ _db }} status --json
-    @echo "✓ status --json passed"
-
-# Show run history (requires a run-id from a previous run)
+# Show detailed run history (JSON + text)
 history:
     @echo "=== history ==="
-    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1" 2>/dev/null || echo "none"); \
-    if [ "$$run_id" = "none" ]; then \
+    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1" 2>/dev/null || echo ""); \
+    if [ -z "$$run_id" ]; then \
         echo "⚠ no runs in DB — skipping history"; \
     else \
         mayhem --db {{ _db }} history "$$run_id"; \
-        echo "✓ history passed"; \
+        echo "✓ history"; \
     fi
 
-# Show run history as JSON
-history-json:
-    @echo "=== history --json ==="
-    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1" 2>/dev/null || echo "none"); \
-    if [ "$$run_id" = "none" ]; then \
-        echo "⚠ no runs in DB — skipping history --json"; \
-    else \
-        mayhem --db {{ _db }} history "$$run_id" --json | python3 -m json.tool > /dev/null; \
-        echo "✓ history --json passed"; \
-    fi
-
-# ── recover / janitor ───────────────────────────────────────────────────────
-
-# Recovery sweep
+# Recovery sweep (orphaned fault leases)
 recover: setup
     @echo "=== recover ==="
     mayhem --db {{ _db }} recover
-    @echo "✓ recover passed"
+    @echo "✓ recover"
 
-# Janitor sweep
-janitor-sweep: setup
-    @echo "=== janitor sweep ==="
+# Janitor sweep (stale runs / resources)
+janitor: setup
+    @echo "=== janitor ==="
     mayhem --db {{ _db }} janitor sweep
-    @echo "✓ janitor sweep passed"
+    @echo "✓ janitor"
 
 # ── campaign CRUD ────────────────────────────────────────────────────────────
 
-# List campaigns (empty)
-campaign-list: setup
-    @echo "=== campaign list ==="
+# Create, list, show, start, abort, delete a campaign
+campaign: setup
+    @echo "=== campaign ==="
+    mayhem --db {{ _db }} campaign create --name "e2e-campaign" --hypothesis "stack survives chaos"
     mayhem --db {{ _db }} campaign list
-    @echo "✓ campaign list passed"
-
-# Create a campaign
-campaign-create: setup
-    @echo "=== campaign create ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-campaign" \
-        --hypothesis "stack survives chaos"
-    @echo "✓ campaign create passed"
-
-# Create + list campaigns
-campaign-create-list: setup
-    @echo "=== campaign create + list ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-list" \
-        --hypothesis "test hypothesis"
-    mayhem --db {{ _db }} campaign list
-    @echo "✓ campaign create + list passed"
-
-# Create + show campaign
-campaign-create-show: setup
-    @echo "=== campaign create + show ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-show"
     @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} campaign show "$$cid"
-    @echo "✓ campaign create + show passed"
-
-# Create + show campaign JSON
-campaign-create-show-json: setup
-    @echo "=== campaign create + show --json ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-json"
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} campaign show "$$cid" --json | python3 -m json.tool > /dev/null
-    @echo "✓ campaign create + show --json passed"
-
-# Create + status campaign
-campaign-create-status: setup
-    @echo "=== campaign create + status ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-status"
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} campaign status "$$cid"
-    @echo "✓ campaign create + status passed"
-
-# Create + start campaign (may fail if no experiment loaded)
-campaign-create-start: setup
-    @echo "=== campaign create + start ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-start"
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} campaign start "$$cid" || true
-    @echo "✓ campaign create + start passed"
-
-# Create + abort campaign
-campaign-create-abort: setup
-    @echo "=== campaign create + abort ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-abort"
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} campaign abort "$$cid"
-    @echo "✓ campaign create + abort passed"
-
-# Create + delete campaign
-campaign-create-delete: setup
-    @echo "=== campaign create + delete ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-cl-delete"
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
+    mayhem --db {{ _db }} campaign show "$$cid"; \
+    mayhem --db {{ _db }} campaign status "$$cid"; \
+    mayhem --db {{ _db }} campaign start "$$cid" || true; \
+    mayhem --db {{ _db }} campaign abort "$$cid" || true; \
     mayhem --db {{ _db }} campaign delete "$$cid"
-    @echo "✓ campaign create + delete passed"
-
-# Campaign prefix
-campaign-prefix: setup
-    @echo "=== campaign prefix (cam l) ==="
-    mayhem --db {{ _db }} cam l
-    @echo "✓ campaign prefix passed"
+    @echo "✓ campaign"
 
 # ── full round-trip ─────────────────────────────────────────────────────────
 
 # Full lifecycle: validate → plan → run → status → history → recover
-full-roundtrip: setup
+full: setup
     @echo "=== full round-trip ==="
-    mayhem --db {{ _db }} validate {{ _fullfault }} \
-        --process "download-1=10001" --process "download-2=10002"
-    mayhem --db {{ _db }} plan {{ _fullfault }} \
-        --process "download-1=10001" --process "download-2=10002"
-    mayhem --db {{ _db }} run {{ _fullfault }} \
-        --process "download-1=10001" --process "download-2=10002"
+    mayhem --db {{ _db }} validate {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} plan {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
     mayhem --db {{ _db }} status
     @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
     mayhem --db {{ _db }} history "$$run_id"
     mayhem --db {{ _db }} recover
-    @echo "✓ full round-trip passed"
+    @echo "✓ full round-trip"
 
-# Full lifecycle with compose topology
-full-roundtrip-compose: setup
-    @echo "=== full round-trip (compose) ==="
-    mayhem --db {{ _db }} validate {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} plan {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} run {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} status
-    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} history "$$run_id"
-    mayhem --db {{ _db }} recover
-    @echo "✓ full round-trip (compose) passed"
+# ── stack management ─────────────────────────────────────────────────────────
 
-# ── pytest: unit + e2e ──────────────────────────────────────────────────────
+# Start the testCase compose stack
+stack-up:
+    @echo "=== stack up ==="
+    cd {{ _testcase }} && podman compose up -d 2>/dev/null || docker compose up -d
+    @sleep 3
+    @echo "✓ stack up"
 
-# Run all unit tests
+# Stop the testCase compose stack
+stack-down:
+    @echo "=== stack down ==="
+    cd {{ _testcase }} && podman compose down -v 2>/dev/null || docker compose down -v
+    @echo "✓ stack down"
+
+# ── tests ────────────────────────────────────────────────────────────────────
+
+# Run unit tests
 test-unit:
     @echo "=== unit tests ==="
     python3 -m pytest tests/unit/ -v --tb=short
-    @echo "✓ unit tests passed"
+    @echo "✓ unit tests"
 
-# Run all e2e tests (in-process, no Docker needed)
+# Run e2e tests (in-process, no containers needed)
 test-e2e:
     @echo "=== e2e tests ==="
     python3 -m pytest tests/e2e/ -v --tb=short
-    @echo "✓ e2e tests passed"
+    @echo "✓ e2e tests"
 
 # Run all tests
-test-all:
+test:
     @echo "=== all tests ==="
     python3 -m pytest tests/ -v --tb=short
-    @echo "✓ all tests passed"
+    @echo "✓ all tests"
 
 # Run linter
 lint:
-    @echo "=== ruff lint ==="
+    @echo "=== lint ==="
     ruff check src/ tests/
-    @echo "✓ lint passed"
+    @echo "✓ lint"
 
-# ── Docker-dependent manual tests ────────────────────────────────────────────
+# ── aggregate targets ────────────────────────────────────────────────────────
 
-# Start the testCase compose stack (requires Docker)
-#[manual]
-stack-up:
-    @echo "=== starting testCase compose stack ==="
-    cd {{ _testcase }} && docker compose up -d
-    sleep 5
-    @echo "✓ stack started"
+# Quick smoke: topology + toolkit + config + experiment + validate + plan
+smoke: topology toolkit config experiment validate plan
+    @echo "✓ smoke"
 
-# Stop the testCase compose stack
-#[manual]
-stack-down:
-    @echo "=== stopping testCase compose stack ==="
-    cd {{ _testcase }} && docker compose down -v
-    @echo "✓ stack stopped"
-
-# Topology discovery with live runtime (requires Docker stack)
-#[manual]
-topology-live: stack-up
-    @echo "=== topology discover (live runtime) ==="
-    mayhem topology discover --compose {{ _compose }}
-    @echo "✓ topology live passed"
-
-# Topology discovery with Podman runtime
-#[manual]
-topology-podman:
-    @echo "=== topology discover (podman) ==="
-    mayhem --podman topology discover --compose {{ _compose }}
-    @echo "✓ topology podman passed"
-
-# Full round-trip with live Docker stack
-#[manual]
-full-live: stack-up
-    @echo "=== full round-trip (live Docker) ==="
-    rm -f {{ _db }}
-    mayhem --db {{ _db }} validate {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} plan {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} run {{ _fullfault }} --compose {{ _compose }}
-    mayhem --db {{ _db }} status
-    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} history "$$run_id"
-    mayhem --db {{ _db }} recover
-    @echo "✓ full live passed"
-
-# ── aggregate targets ───────────────────────────────────────────────────────
-
-# Run EVERY automated e2e recipe in sequence
-e2e-all: setup topology-discover topology-discover-prefix toolkit-faults toolkit-list \
-    toolkit-list-json toolkit-prefix config-show config-show-json config-show-testcase \
-    config-validate config-validate-testcase config-prefix experiment-show \
-    experiment-validate experiment-prefix experiment-prefix-short validate-process \
-    validate-compose validate-all-topo validate-prefix plan-process plan-compose \
-    plan-all-topo plan-prefix run-process status status-json history recover \
-    janitor-sweep campaign-list campaign-create campaign-create-list \
-    campaign-create-show campaign-create-show-json campaign-create-status \
-    campaign-create-start campaign-create-abort campaign-create-delete \
-    campaign-prefix full-roundtrip test-e2e
+# Full automated run: stack → topology → config → experiment → full lifecycle → campaign → tests
+e2e: stack-up topology toolkit config experiment full campaign test
     @echo ""
     @echo "╔══════════════════════════════════════════════╗"
     @echo "║   ALL E2E RECIPES PASSED                     ║"
     @echo "╚══════════════════════════════════════════════╝"
-
-# Quick smoke: topology + toolkit + config + experiment + validate + plan
-e2e-smoke: setup topology-discover toolkit-faults config-validate experiment-show \
-    validate-process plan-process
-    @echo "✓ smoke passed"

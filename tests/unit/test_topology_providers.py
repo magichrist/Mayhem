@@ -279,7 +279,7 @@ class TestComposeProvider:
         from mayhem.topology.providers.compose import ComposeFileProvider
 
         provider = ComposeFileProvider("examples/testCase/docker-compose.yml")
-        assert provider.project_name == "testCase"
+        assert provider.project_name == "testcase"
 
     def test_service_names(self) -> None:
         from mayhem.topology.providers.compose import ComposeFileProvider
@@ -522,7 +522,30 @@ class TestContainedInEdge:
 # ===========================================================================
 
 
+def _compose_services_running() -> bool:
+    """Return True if the examples/testCase compose stack services are reachable."""
+    import shutil
+    import subprocess
+
+    engine = "podman" if shutil.which("podman") else ("docker" if shutil.which("docker") else None)
+    if engine is None:
+        return False
+    try:
+        r = subprocess.run(
+            [engine, "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        names = r.stdout
+        return "svc-lb" in names or "svc-db" in names
+    except Exception:
+        return False
+
+
 class TestTopologyCLI:
+    @pytest.mark.skipif(
+        not _compose_services_running(),
+        reason="examples/testCase compose stack not running",
+    )
     def test_discover_with_compose(self) -> None:
         """Integration test: CLI discover with compose + runtime."""
         from click.testing import CliRunner
@@ -598,6 +621,10 @@ class TestTopologyCLI:
         assert ports[0]["host_port"] == 8080
         assert ports[0]["container_port"] == 80
 
+    @pytest.mark.skipif(
+        not _compose_services_running(),
+        reason="examples/testCase compose stack not running",
+    )
     def test_drift_comprehensive(self) -> None:
         """Full drift report should have matched, no missing, no image changes."""
         from click.testing import CliRunner
