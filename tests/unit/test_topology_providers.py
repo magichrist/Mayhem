@@ -72,6 +72,7 @@ def _ctr(
     state: str = "running",
     image: str = "",
     networks: tuple[str, ...] = (),
+    container_name: str | None = None,
 ) -> ContainerNode:
     return ContainerNode(
         id=f"ctr-{name}",
@@ -82,16 +83,20 @@ def _ctr(
         state=state,
         image=image,
         networks=networks,
+        container_name=container_name,
     )
 
 
-def _proc(name: str, pid: int, container_id: str | None = None) -> ProcessNode:
+def _proc(
+    name: str, pid: int, container_id: str | None = None, container_name: str | None = None
+) -> ProcessNode:
     return ProcessNode(
         id=f"proc-{name}",
         name=name,
         pid=pid,
         host_id="h-docker-local",
         container_id=container_id,
+        container_name=container_name,
     )
 
 
@@ -518,6 +523,51 @@ class TestContainedInEdge:
 
 
 # ===========================================================================
+# Container name enforcement (ADR-0020)
+# ===========================================================================
+
+
+class TestContainerNameEnforcement:
+    def test_container_with_name_no_errors(self) -> None:
+        svc = TopologyService()
+        compose = FakeProvider("compose", nodes=(_svc("api"),))
+        runtime = FakeProvider(
+            "docker",
+            nodes=(_ctr("api", service="api", container_name="testcase-api"),),
+            edges=(_edge("ctr-api", "svc-api", EdgeKind.CONTAINED_IN),),
+        )
+        result = svc.discover([compose, runtime])
+        assert not any("container_name" in e for e in result.errors)
+
+    def test_container_without_name_produces_error(self) -> None:
+        svc = TopologyService()
+        compose = FakeProvider("compose", nodes=(_svc("api"),))
+        runtime = FakeProvider(
+            "docker",
+            nodes=(_ctr("api", service="api"),),
+            edges=(_edge("ctr-api", "svc-api", EdgeKind.CONTAINED_IN),),
+        )
+        result = svc.discover([compose, runtime])
+        assert any("no container_name" in e for e in result.errors)
+
+    def test_service_node_carries_compose_name(self) -> None:
+        node = ServiceNode(id="svc-api", name="api", image="img", container_name="testcase-api")
+        assert node.container_name == "testcase-api"
+
+    def test_service_node_container_name_optional(self) -> None:
+        node = ServiceNode(id="svc-api", name="api", image="img")
+        assert node.container_name is None
+
+    def test_proc_with_container_name(self) -> None:
+        node = _proc("api", pid=1, container_name="testcase-api")
+        assert node.container_name == "testcase-api"
+
+    def test_proc_container_name_optional(self) -> None:
+        node = _proc("api", pid=1)
+        assert node.container_name is None
+
+
+# ===========================================================================
 # Integration: topology CLI discover (end-to-end)
 # ===========================================================================
 
@@ -533,7 +583,9 @@ def _compose_services_running() -> bool:
     try:
         r = subprocess.run(
             [engine, "ps", "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         names = r.stdout
         return "svc-lb" in names or "svc-db" in names

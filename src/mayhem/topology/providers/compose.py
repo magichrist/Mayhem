@@ -120,7 +120,7 @@ class ComposeFileProvider:
         the ``com.docker.compose.project`` label.
         """
         document: dict[str, Any] = yaml.safe_load(self._path.read_text()) or {}
-        return str(document.get("name") or self._path.parent.name).lower()
+        return str(document.get("name") or self._path.resolve().parent.name).lower()
 
     @property
     def service_names(self) -> tuple[str, ...]:
@@ -139,12 +139,16 @@ class ComposeFileProvider:
 
         for name, svc in services.items():
             image = svc.get("image")
+            # Explicit container identity — prefer the standard ``container_name:``
+            # field, falling back to the newer per-service ``name:`` alias.
+            container_name = svc.get("container_name") or svc.get("name")
             nodes.append(
                 ServiceNode(
                     id=f"svc-{name}",
                     name=name,
                     image=image,
                     exposed_ports=_parse_ports(svc.get("ports")),
+                    container_name=container_name,
                 )
             )
 

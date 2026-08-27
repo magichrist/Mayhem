@@ -54,6 +54,12 @@ def run_migrations(conn: sqlite3.Connection, migrations: Sequence[Migration]) ->
         if migration.version in applied:
             continue
         try:
+            # Schema changes may rebuild parent tables (e.g. extending a CHECK
+            # constraint); FK enforcement blocks those DROP/RENAME steps, so it
+            # is disabled per-migration and re-enabled afterwards. A migration
+            # runs as the single writer with no concurrent readers, so this is
+            # safe and matches the SQLite table-rebuild procedure.
+            conn.execute("PRAGMA foreign_keys=OFF")
             with conn:
                 for statement in migration.statements:
                     conn.execute(statement)
@@ -61,7 +67,9 @@ def run_migrations(conn: sqlite3.Connection, migrations: Sequence[Migration]) ->
                     "INSERT INTO _schema_migrations (version, name) VALUES (?, ?)",
                     (migration.version, migration.name),
                 )
+            conn.execute("PRAGMA foreign_keys=ON")
         except sqlite3.Error as exc:
+            conn.execute("PRAGMA foreign_keys=ON")
             raise MigrationError(f"migration {migration.migration_id} failed: {exc}") from exc
         applied_now.append(migration.migration_id)
     return applied_now

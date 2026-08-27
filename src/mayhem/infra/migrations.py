@@ -206,8 +206,51 @@ M0003_CAMPAIGNS_OBSERVATIONS = Migration(
     ),
 )
 
+M0004_DRILL_RUN_KIND = Migration(
+    version=4,
+    name="drill_run_kind",
+    statements=(
+        # Rebuild `runs` (no ALTER support for CHECK constraints in SQLite) so the
+        # `kind` column admits 'drill' plans (Phase 5). FK enforcement is disabled
+        # for the migration by run_migrations; id values are preserved.
+        """
+        CREATE TABLE runs_new (
+            id TEXT PRIMARY KEY,
+            experiment_name TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('deterministic','random','drill')),
+            spec_json TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            seed INTEGER,
+            status TEXT NOT NULL CHECK (status IN
+                ('created','planning','validated','running','recovering',
+                 'completed','failed','aborted')),
+            environment_fingerprint TEXT NOT NULL,
+            config_snapshot_id TEXT NOT NULL REFERENCES config_snapshots(id),
+            topology_snapshot_id TEXT REFERENCES topology_snapshots(id),
+            started_at TEXT,
+            ended_at TEXT,
+            summary_md TEXT
+        )
+        """,
+        """
+        INSERT INTO runs_new (id, experiment_name, kind, spec_json, plan_json, seed,
+            status, environment_fingerprint, config_snapshot_id, topology_snapshot_id,
+            started_at, ended_at, summary_md)
+        SELECT id, experiment_name, kind, spec_json, plan_json, seed,
+            status, environment_fingerprint, config_snapshot_id, topology_snapshot_id,
+            started_at, ended_at, summary_md
+        FROM runs
+        """,
+        "DROP TABLE runs",
+        "ALTER TABLE runs_new RENAME TO runs",
+        "CREATE INDEX idx_runs_status ON runs(status)",
+        "CREATE INDEX idx_runs_started ON runs(started_at DESC)",
+    ),
+)
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
     M0003_CAMPAIGNS_OBSERVATIONS,
+    M0004_DRILL_RUN_KIND,
 )

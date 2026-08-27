@@ -215,7 +215,7 @@ def serve_sync(roles: tuple[str, ...], executors: tuple[FaultExecutor, ...]) -> 
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(_serve_async(server))
-    except NotImplementedError, ValueError:
+    except (NotImplementedError, ValueError):
         _serve_blocking(server, loop)
     finally:
         loop.close()

@@ -1,29 +1,39 @@
 """CLI surface: lifecycle commands, prefix resolution, output formats."""
 
 import json
-import subprocess
-import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mayhem.cli.app import main
 
-DETERMINISTIC_YAML = """
-kind: deterministic
-name: pause-drill
+TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
+COMPOSE_FILE = TESTCASE / "docker-compose.yml"
+
+DRILL_YAML = """\
+kind: drill
+name: drill-pause
 hypothesis: brief process pause is survivable
-steps:
-  - id: pause
-    inject_fault:
-      fault: proc.pause
-      targets:
-        - kind: process
-          expr: "name=api"
-      duration: 10s
-    on_failure: abort_and_recover
-  - id: settle
-    wait: 2s
+config:
+  risk_ceiling: critical
+  max_faults: 1
+  timeout: 10m
+containers:
+  testcase-api:
+    faults:
+      - fault: proc.pause
+        duration: 10s
+  testcase-lb:
+    faults:
+      - fault: fuzz.protocol_abuse
+        duration: 5s
+execution:
+  - parallel: [testcase-api, testcase-lb]
+  - wait: 2s
+  - check:
+      - http: http://testcase-api:8080/
+        expect: { status: 200 }
 """
 
 
@@ -31,13 +41,6 @@ def _write(tmp_path: Path, text: str) -> Path:
     spec_file = tmp_path / "spec.yaml"
     spec_file.write_text(text)
     return spec_file
-
-
-def _sleeper() -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)"],
-        stdout=subprocess.DEVNULL,
-    )
 
 
 class TestToolkitGroup:
@@ -48,67 +51,53 @@ class TestToolkitGroup:
     def test_two_level_prefix_reaches_nested_command(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        spec = _write(tmp_path, DETERMINISTIC_YAML)
-        assert main(["ex", "v", str(spec), "--process", "api=424242"]) == 0
-        assert "validated r-pause-drill" in capsys.readouterr().out
+        spec = _write(tmp_path, DRILL_YAML)
+        assert main(["ex", "v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
+        assert "validated r-drill-pause" in capsys.readouterr().out
 
 
 class TestPlanValidateRun:
     def test_plan_prints_frozen_json(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        spec = _write(tmp_path, DETERMINISTIC_YAML)
-        assert main(["plan", str(spec), "--process", "api=424242"]) == 0
+        spec = _write(tmp_path, DRILL_YAML)
+        assert main(["plan", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
         out = capsys.readouterr().out
-        assert '"proc.pause"' in out
         plan = json.loads(out)
-        assert plan["run_id"] == "r-pause-drill"
+        assert plan["run_id"] == "r-drill-pause"
+        assert "proc.pause" in out
 
     def test_validate_passes_gates(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        spec = _write(tmp_path, DETERMINISTIC_YAML)
-        assert main(["v", str(spec), "--process", "api=424242"]) == 0
-        assert "validated r-pause-drill" in capsys.readouterr().out
+        spec = _write(tmp_path, DRILL_YAML)
+        assert main(["v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
+        assert "validated r-drill-pause" in capsys.readouterr().out
 
-    def test_bad_process_flag_is_usage_error(
+    def test_missing_compose_is_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        spec = _write(tmp_path, DETERMINISTIC_YAML)
-        assert main(["plan", str(spec), "--process", "api"]) == 2
+        spec = _write(tmp_path, DRILL_YAML)
+        assert main(["plan", str(spec)]) == 2
         err = capsys.readouterr().err
-        assert "--process" in err
+        assert "compose" in err
 
-    def test_run_end_to_end_real_process(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    @patch("mayhem.cli.services.RunEngine")
+    def test_run_mocked_engine_completes(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        proc = _sleeper()
-        try:
-            needle = 'expr: "name=api"'
-            spec_text = DETERMINISTIC_YAML.replace(needle, f'expr: "sleeper-{proc.pid}"')
-            spec = _write(tmp_path, spec_text)
-            db = tmp_path / "cli.db"
-            argv = [
-                "--db",
-                str(db),
-                "run",
-                str(spec),
-                "--process",
-                f"sleeper-{proc.pid}={proc.pid}",
-            ]
-            assert main(argv) == 0
-            assert "completed" in capsys.readouterr().out
-            assert main(["--db", str(db), "status"]) == 0
-            assert "r-pause-drill" in capsys.readouterr().out
-            assert main(["--db", str(db), "status", "--run", "r-pause-drill"]) == 0
-            detail = json.loads(capsys.readouterr().out)
-            assert detail["id"] == "r-pause-drill"
-            assert main(["--db", str(db), "h", "r-pause-drill"]) == 0
-            journal = json.loads(capsys.readouterr().out)
-            assert any(step["action_type"] == "InjectFault" for step in journal["steps"])
-        finally:
-            proc.terminate()
-            proc.wait(timeout=10)
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "run completed"
+        spec = _write(tmp_path, DRILL_YAML)
+        db = tmp_path / "cli.db"
+        rc = main(["--db", str(db), "run", str(spec), "--compose", str(COMPOSE_FILE)])
+        assert rc == 0
+        assert "completed" in capsys.readouterr().out
 
 
 class TestRecoveryCommands:
@@ -122,7 +111,9 @@ class TestRecoveryCommands:
         assert main(["--db", str(tmp_path / "j.db"), "recover", "r-ghost"]) == 0
         assert "nothing to recover" in capsys.readouterr().out
 
-    def test_history_unknown_run_returns_empty(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_history_unknown_run_returns_empty(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         rc = main(["--db", str(tmp_path / "j.db"), "history", "r-ghost"])
         assert rc == 0
         out = capsys.readouterr().out

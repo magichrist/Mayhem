@@ -10,7 +10,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 _testcase  := "examples/testCase"
 _compose   := _testcase / "docker-compose.yml"
 _config    := _testcase / "mayhem.yml"
-_spec      := _testcase / "full-fault.yml"
+_spec      := _testcase / "mayhem.yaml"
 _db        := ".mayhem/e2e.db"
 
 # ── setup ────────────────────────────────────────────────────────────────────
@@ -58,9 +58,9 @@ config:
 # ── experiment ───────────────────────────────────────────────────────────────
 
 # Show and validate experiment spec
+# Validate the drill spec through the experiment group alias
 experiment:
     @echo "=== experiment ==="
-    mayhem experiment show {{ _spec }} | python3 -m json.tool > /dev/null
     mayhem experiment validate {{ _spec }} --compose {{ _compose }}
     @echo "✓ experiment"
 

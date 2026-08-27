@@ -1,9 +1,10 @@
 """Experiment specs and execution plans.
 
-``DeterministicExperiment`` / ``RandomExperiment`` are authoring surfaces;
-``ExecutionPlan`` is the frozen, validated output of compilation. The plan pins
-config/topology snapshot ids so any later analysis knows what the controller
-knew when it committed.
+``DrillSpec`` is the authored input format (ADR-0019); ``ExecutionPlan`` is
+the frozen, validated output of compilation. The plan pins config/topology
+snapshot ids so any later analysis knows what the controller knew when it
+committed. Since the clean break (ADR-0021) the only supported kind is
+``drill`` — the deterministic/random authoring surfaces were removed.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mayhem.domain.capabilities import Identifier
-from mayhem.domain.checks import Expectation, OnPreFailure
 from mayhem.domain.common import Duration
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.execution_context import ExecutionContextSpec
@@ -27,26 +27,12 @@ from mayhem.domain.topology import TargetSelector
 class ExperimentKind(StrEnum):
     DETERMINISTIC = "deterministic"
     RANDOM = "random"
-
-
-class ExperimentMetadata(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    hypothesis: str = ""
-    labels: dict[str, str] = Field(default_factory=dict)
+    DRILL = "drill"
 
 
 class OnFailure(StrEnum):
     ABORT_AND_RECOVER = "abort_and_recover"
     CONTINUE = "continue"
-
-
-class RetryPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    attempts: int = Field(default=1, ge=1)
-    backoff_seconds: Duration = 1.0
 
 
 class BlastRadiusBudget(BaseModel):
@@ -69,15 +55,6 @@ class Constraints(BaseModel):
     require_dry_run_first: bool = True
     risk_ceiling: RiskLevel | None = None  # may only tighten policy ceiling
     blast_radius: BlastRadiusBudget | None = None
-
-
-class LoadProfile(BaseModel):
-    """Parameters for load tools (k6 et al.)."""
-
-    model_config = ConfigDict(frozen=True)
-
-    vus: int | None = Field(default=None, ge=1)
-    duration: Duration | None = None
 
 
 # -- step actions ------------------------------------------------------------------
@@ -108,19 +85,6 @@ class InjectFault(BaseModel):
         return value
 
 
-class StartLoad(BaseModel):
-    type: Literal["start_load"] = "start_load"
-    tool: Identifier
-    script: str | None = None
-    profile: LoadProfile | None = None
-    name: str | None = None  # reference for stop_load
-
-
-class StopLoad(BaseModel):
-    type: Literal["stop_load"] = "stop_load"
-    name: str
-
-
 class Wait(BaseModel):
     type: Literal["wait"] = "wait"
     duration: Duration | None = None
@@ -128,102 +92,106 @@ class Wait(BaseModel):
     timeout: Duration = 120.0
 
 
-class CheckStep(BaseModel):
-    type: Literal["check"] = "check"
-    ref: str  # steady-state check id
+class CheckHttp(BaseModel):
+    """Inline HTTP health check for drill plans (ADR-0019)."""
+
+    type: Literal["check_http"] = "check_http"
+    url: str
+    expected_status: int | None = None
 
 
-class Notify(BaseModel):
-    type: Literal["notify"] = "notify"
-    channel: Literal["slack", "webhook"]
-    message: str
+# The raw action of a planned step. Drill plans only ever emit inject_fault,
+# wait and check_http — the start_load/stop_load/check/notify/parallel action
+# types were authoring-only and removed with the deterministic/random surfaces.
+StepAction = Annotated[InjectFault | Wait | CheckHttp, Field(discriminator="type")]
 
 
-class Parallel(BaseModel):
-    type: Literal["parallel"] = "parallel"
-    branches: tuple[tuple[StepAction, ...], ...] = ()
-
-    @field_validator("branches")
-    @classmethod
-    def _non_empty_branches(
-        cls, value: tuple[tuple[StepAction, ...], ...]
-    ) -> tuple[tuple[StepAction, ...], ...]:
-        if not value:
-            raise InvariantViolationError("parallel_requires_branches", ">= 1 branch required")
-        return value
+# -- drill spec (ADR-0019) ------------------------------------------------------------------
 
 
-StepAction = Annotated[
-    InjectFault | StartLoad | StopLoad | Wait | CheckStep | Notify | Parallel,
-    Field(discriminator="type"),
-]
-
-
-class Step(BaseModel):
-    """One scheduled unit of an experiment."""
+class DrillConfig(BaseModel):
+    """Configuration for a drill spec — replaces the separate mayhem.yml."""
 
     model_config = ConfigDict(frozen=True)
 
-    id: str
-    action: StepAction
-    timeout: Duration | None = None
-    retries: RetryPolicy = Field(default_factory=RetryPolicy)
+    risk_ceiling: RiskLevel = RiskLevel.HIGH
+    max_faults: int = Field(default=1, ge=0)
+    timeout: Duration = "30m"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+
+class DrillFault(BaseModel):
+    """A single fault to inject on a container."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    fault: str
+    duration: Duration = "10s"
     on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
+    targets: tuple[str, ...] = ()  # for network faults: container names to partition
 
 
-# -- specs ------------------------------------------------------------------------------
-
-
-class SteadyStateCheckSpec(BaseModel):
-    """Authoring-side check; compiles to domain checks.SteadyStateCheck."""
+class DrillContainer(BaseModel):
+    """Faults to run on a specific container (identified by container_name)."""
 
     model_config = ConfigDict(frozen=True)
 
-    id: str
-    probe: object  # parsed by checks.parse_probe at compile time
-    expect: Expectation = Field(default_factory=Expectation)
-    on_pre_failure: OnPreFailure = OnPreFailure.SKIP_RUN
-    description: str = ""
+    faults: tuple[DrillFault, ...] = ()
 
 
-class SelectionPolicy(BaseModel):
-    """Random-experiment selection inputs (ADR-0009)."""
+class CheckExpectation(BaseModel):
+    """What to verify in a check probe."""
 
     model_config = ConfigDict(frozen=True)
 
-    count: int = Field(default=1, ge=1)
-    categories: frozenset[FaultCategory] | None = None
-    exclude_faults: frozenset[str] = Field(default_factory=frozenset)
-    forbidden_pairs: frozenset[frozenset[str]] = Field(default_factory=frozenset)
-    weights: dict[str, float] | None = None  # per-fault lottery weights; default 1.0
-    diversity_window: int = Field(default=10, ge=1)
+    status: int | None = None
 
 
-class DeterministicExperiment(BaseModel):
-    kind: Literal[ExperimentKind.DETERMINISTIC] = ExperimentKind.DETERMINISTIC
-    metadata: ExperimentMetadata
-    method: str = ""
-    constraints: Constraints = Field(default_factory=Constraints)
-    steady_state: tuple[SteadyStateCheckSpec, ...] = ()
-    steps: tuple[Step, ...]
+class CheckProbe(BaseModel):
+    """A health check to run between execution rounds."""
 
-    @field_validator("steps")
+    model_config = ConfigDict(frozen=True)
+
+    http: str | None = None
+    expect: CheckExpectation = CheckExpectation()
+
+
+class ExecutionStep(BaseModel):
+    """A single step in the execution plan — parallel, sequential, wait, or check."""
+
+    model_config = ConfigDict(frozen=True)
+
+    parallel: tuple[str, ...] | None = None  # container names to run concurrently
+    sequential: tuple[str, ...] | None = None  # container names to run in order
+    wait: Duration | None = None  # seconds to wait after this step
+    check: tuple[CheckProbe, ...] | None = None  # health checks to run
+
+
+class DrillSpec(BaseModel):
+    """Unified drill spec — single YAML file replacing config + fault spec (ADR-0019)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["drill"]
+    name: str
+    hypothesis: str = ""
+    config: DrillConfig = Field(default_factory=DrillConfig)
+    containers: dict[str, DrillContainer]  # key = container_name from docker-compose
+    execution: tuple[ExecutionStep, ...]
+
+    @field_validator("containers")
     @classmethod
-    def _at_least_one_step(cls, value: tuple[Step, ...]) -> tuple[Step, ...]:
+    def _at_least_one_container(cls, value: dict[str, DrillContainer]) -> dict[str, DrillContainer]:
         if not value:
-            raise InvariantViolationError("experiment_requires_steps", "no steps defined")
+            raise InvariantViolationError("drill_requires_containers", "no containers defined")
         return value
 
-
-class RandomExperiment(BaseModel):
-    kind: Literal[ExperimentKind.RANDOM] = ExperimentKind.RANDOM
-    metadata: ExperimentMetadata
-    constraints: Constraints = Field(default_factory=Constraints)
-    seed: int | None = None  # None => derive & record
-    selection: SelectionPolicy = Field(default_factory=SelectionPolicy)
-
-
-ExperimentSpec = DeterministicExperiment | RandomExperiment
+    @field_validator("execution")
+    @classmethod
+    def _at_least_one_step(cls, value: tuple[ExecutionStep, ...]) -> tuple[ExecutionStep, ...]:
+        if not value:
+            raise InvariantViolationError("drill_requires_execution", "no execution steps defined")
+        return value
 
 
 # -- compiled plan ------------------------------------------------------------------------
@@ -288,4 +256,4 @@ class PlannedStep(BaseModel):
     id: str
     seq: int
     fault: PlannedFault | None = None
-    raw_action: StepAction  # for non-fault steps (wait/check/load/notify)
+    raw_action: StepAction  # for non-fault steps (wait/check)

@@ -29,18 +29,30 @@ def _first_process(nodes: tuple[TopologyNode, ...]) -> ProcessNode | None:
     return None
 
 
+# PID placeholder resolved to the live value at execution time (ADR-0020). The
+# value encodes the node_id so substitution can target the right container.
+_LIVE_PID = "@live-pid"
+
+
+def _pid_arg(node: ProcessNode) -> str:
+    """Return the PID arg for an undo/verify op, using the live placeholder."""
+    if node.container_name:
+        return f"{node.id}:{_LIVE_PID}"
+    return str(node.pid)
+
+
 def _proc_pause_undo(nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     proc = _first_process(nodes)
     if proc is None:
         raise NO_UNDO
-    return (UndoOp(op="signal.cont", args={"pid": str(proc.pid)}),)
+    return (UndoOp(op="signal.cont", args={"pid": _pid_arg(proc)}),)
 
 
 def _proc_pause_verify(nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
     proc = _first_process(nodes)
     if proc is None:
         raise NO_UNDO
-    pid = str(proc.pid)
+    pid = _pid_arg(proc)
     return (
         VerifyProbe(
             probe="exec",

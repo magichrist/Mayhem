@@ -49,6 +49,7 @@ class ServiceNode(_NodeBase):
     kind: Literal[NodeKind.SERVICE] = NodeKind.SERVICE
     image: str | None = None
     exposed_ports: tuple[PortBinding, ...] = ()
+    container_name: str | None = None  # compose ``name:`` field (ADR-0020)
 
 
 class ContainerNode(_NodeBase):
@@ -58,6 +59,7 @@ class ContainerNode(_NodeBase):
     ip_address: IPvAnyAddress | None = None
     host_id: str | None = None
     service_name: str | None = None  # com.docker.compose.service binding
+    container_name: str | None = None  # stable identity from docker-compose name: field
     ports: tuple[PortBinding, ...] = ()
     state: str = "unknown"  # engine-reported lifecycle state
     image: str | None = None
@@ -73,10 +75,11 @@ class HostNode(_NodeBase):
 
 class ProcessNode(_NodeBase):
     kind: Literal[NodeKind.PROCESS] = NodeKind.PROCESS
-    pid: int
+    pid: int | None = None  # resolved lazily at execution time (ADR-0020)
     host_id: str
     cmdline: str = ""
     container_id: str | None = None  # short container ID if running inside a container
+    container_name: str | None = None  # stable identity for PID resolution (ADR-0020)
     exe: str = ""  # executable path where discoverable
     user: str = ""  # process user where discoverable
     ppid: int | None = None  # parent PID where discoverable

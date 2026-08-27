@@ -6,6 +6,7 @@ The controller is the single writer. Agents never open this file.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +26,12 @@ class Store:
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path, timeout=_BUSY_TIMEOUT_MS / 1000)
+        # One connection shared across threads (parallel fault execution, ADR-0022).
+        # Access is serialized by ``_lock``; WAL + busy_timeout handle cross-process writers.
+        self._conn = sqlite3.connect(
+            self._path, timeout=_BUSY_TIMEOUT_MS / 1000, check_same_thread=False
+        )
+        self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
         for pragma in (
             "PRAGMA journal_mode=WAL",
@@ -44,23 +50,26 @@ class Store:
         return store
 
     def migrate(self, migrations: tuple[Migration, ...] = ALL_MIGRATIONS) -> list[str]:
-        return run_migrations(self._conn, migrations)
+        with self._lock:
+            return run_migrations(self._conn, migrations)
 
     @property
     def schema_version(self) -> int | None:
-        return current_version(self._conn)
+        with self._lock:
+            return current_version(self._conn)
 
     @contextmanager
     def write(self) -> Iterator[sqlite3.Connection]:
         """Single-writer transaction boundary; commits or rolls back atomically."""
         try:
-            with self._conn:
+            with self._lock, self._conn:
                 yield self._conn
         except sqlite3.Error:
             raise
 
     def query(self, sql: str, params: tuple[object, ...] = ()) -> list[sqlite3.Row]:
-        return list(self._conn.execute(sql, params))
+        with self._lock:
+            return list(self._conn.execute(sql, params))
 
     def close(self) -> None:
         self._conn.close()

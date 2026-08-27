@@ -6,18 +6,18 @@ from pathlib import Path
 
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.controller.executor import RunEngine
-from mayhem.controller.planner import plan_deterministic
+from mayhem.controller.planner import plan_drill
 from mayhem.domain.experiments import (
-    DeterministicExperiment,
-    ExperimentMetadata,
-    InjectFault,
-    Step,
+    DrillContainer,
+    DrillFault,
+    DrillSpec,
+    ExecutionStep,
 )
 from mayhem.domain.topology import (
-    NodeKind,
+    ContainerNode,
+    Edge,
+    EdgeKind,
     ProcessNode,
-    ServiceNode,
-    TargetSelector,
     TopologyGraph,
 )
 from mayhem.infra.lease_repository import SQLiteLeaseSink
@@ -34,26 +34,34 @@ def _spawn_sleeper() -> subprocess.Popen:
 def _graph(pid: int) -> TopologyGraph:
     return TopologyGraph(
         nodes=(
-            ProcessNode(id="n-proc", name=f"sleeper-{pid}", pid=pid, host_id="h-local"),
-            ServiceNode(id="n-svc", name="sleep-svc"),
+            ContainerNode(
+                id="ctr-a",
+                name="a",
+                engine="podman",
+                runtime_id="a",
+                container_name="c-a",
+                state="running",
+            ),
+            ProcessNode(
+                id="proc-a",
+                name=f"sleeper-{pid}",
+                pid=pid,
+                host_id="h-local",
+                container_name="c-a",
+            ),
         ),
-        edges=(),
+        edges=(Edge(src="ctr-a", dst="proc-a", kind=EdgeKind.RUNS_ON),),
     )
 
 
 def _plan(run_id: str, pid: int):
-    exp_step = Step(
-        id="pause",
-        action=InjectFault(
-            fault="proc.pause",
-            selectors=(TargetSelector(kind=NodeKind.PROCESS, expr=f"sleeper-{pid}"),),
-            duration=1.0,
-        ),
+    spec = DrillSpec(
+        kind="drill",
+        name="engine-e2e",
+        containers={"c-a": DrillContainer(faults=(DrillFault(fault="proc.pause", duration="1s"),))},
+        execution=(ExecutionStep(parallel=("c-a",)),),
     )
-    spec = DeterministicExperiment(
-        metadata=ExperimentMetadata(name="engine-e2e"), steps=(exp_step,)
-    )
-    return plan_deterministic(
+    return plan_drill(
         run_id,
         spec,
         _graph(pid),

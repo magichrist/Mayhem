@@ -56,8 +56,19 @@ class TopologyService:
         graph_nodes = tuple(nodes.values())
         known_ids = set(nodes)
         safe_edges = tuple(e for e in edges if e.src in known_ids and e.dst in known_ids)
+        graph = _graph(graph_nodes, safe_edges)
+
+        # Validate every ContainerNode has a container_name (ADR-0020).
+        for node in graph_nodes:
+            if isinstance(node, ContainerNode) and not node.container_name:
+                svc = node.service_name or "unknown"
+                errors.append(
+                    f"container {node.id} (service={svc}) has no container_name — "
+                    "add 'name:' to docker-compose.yml"
+                )
+
         return DiscoveryResult(
-            graph=_graph(graph_nodes, safe_edges),
+            graph=graph,
             drift_report=drift,
             partial=bool(errors),
             errors=tuple(errors),

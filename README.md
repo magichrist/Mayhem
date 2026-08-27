@@ -47,7 +47,7 @@ $ mayhem run examples/experiments/proc-pause-drill.yaml --compose examples/
 
 topology discovered: 4 services, 1 host, 3 edges
 safety gate: passed
-planning deterministic experiment: proc-pause-drill (3 steps)
+planning drill experiment: proc-pause-drill (3 steps)
   step 1/3  pause (inject fault: proc.pause, target: svc/api)
     lease acquired → fault injected → checks running...
     ✓ http_check passed (status=200, latency=42ms)
@@ -136,28 +136,23 @@ mayhem recover r-proc-pause-drill  # repair a specific run
 Experiments are YAML files. Here's a minimal one:
 
 ```yaml
-kind: deterministic
+kind: drill
 name: http-latency-drill
 hypothesis: "adding 200ms latency to the api service is survivable"
-labels:
-  team: platform
-
-constraints:
+config:
   risk_ceiling: medium
-
-steps:
-  - id: add-latency
-    inject_fault:
-      fault: net.latency
-      selectors:
-        - kind: service
-          expr: api
-      params:
+  max_faults: 1
+  timeout: 10m
+containers:
+  api:
+    faults:
+      - fault: net.latency
         duration: 30s
-        delay_ms: 200
-
-  - id: wait
-    wait: 5s
+        params:
+          delay_ms: 200
+execution:
+  - parallel: [api]
+  - wait: 5s
 ```
 
 Run it:

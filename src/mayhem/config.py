@@ -138,11 +138,18 @@ def load_config(
     profile: str | None = None,
     cli_overrides: dict[str, Any] | None = None,
     environ: dict[str, str] | None = None,
+    skip_default_file_if_spec: str | Path | None = None,
 ) -> tuple[MayhemConfig, dict[str, str]]:
     """Return ``(effective config, source map)``.
 
     The source map records which layer last supplied each top-level section —
     provenance is part of the snapshot.
+
+    ``skip_default_file_if_spec`` guards against the default config file
+    (``mayhem.yaml``) doubling as the drill-spec being run: when a spec is
+    executing from ``mayhem.yaml`` and no explicit ``--config`` was given, the
+    file layer is skipped (pure defaults apply) instead of re-parsing the drill
+    spec as a strictly-forbidden config document.
     """
     env = dict(os.environ if environ is None else environ)
     sources: dict[str, str] = dict.fromkeys(
@@ -164,7 +171,12 @@ def load_config(
             sources[field_name] = layer_name
 
     base_path = Path(config_path) if config_path else Path("mayhem.yaml")
-    if config_path or base_path.exists():
+    skip_file = (
+        config_path is None
+        and skip_default_file_if_spec is not None
+        and base_path.resolve() == Path(skip_default_file_if_spec).resolve()
+    )
+    if not skip_file and (config_path or base_path.exists()):
         absorb(_read_document(base_path), "file")
     if profile:
         overlay = base_path.parent / f"mayhem.{profile}.yaml"

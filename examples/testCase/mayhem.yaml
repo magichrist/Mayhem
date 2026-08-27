@@ -1,0 +1,39 @@
+apiVersion: "mayhem/v1"
+kind: drill
+name: testcase-fault-drill
+hypothesis: "testCase stack recovers from every injected fault"
+
+config:
+  risk_ceiling: critical
+  max_faults: 1
+  timeout: 30m
+  log_level: INFO
+
+containers:
+  testcase-api:
+    faults:
+      - fault: proc.pause
+        duration: 10s
+        on_failure: abort_and_recover
+
+  testcase-download-1:
+    faults:
+      - fault: proc.pause
+        duration: 10s
+
+  testcase-lb:
+    faults:
+      - fault: fuzz.protocol_abuse
+        duration: 5s
+
+execution:
+  - parallel: [testcase-api, testcase-download-1]
+  - wait: 5s
+  - check:
+      - http: http://testcase-api:8080/
+        expect: { status: 200 }
+  - sequential: [testcase-lb]
+  - wait: 3s
+  - check:
+      - http: http://testcase-api:8080/
+        expect: { status: 200 }

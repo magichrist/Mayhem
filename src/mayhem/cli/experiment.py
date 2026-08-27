@@ -13,10 +13,10 @@ experiment = make_group("experiment", "Inspect and validate authored experiments
 @experiment.command("show")
 @click.argument("experiment", type=click.Path())
 def show(experiment: str) -> None:
-    """Print the parsed experiment spec as JSON."""
-    from mayhem.spec import load_spec
+    """Print the parsed drill spec as JSON."""
+    from mayhem.spec import load_drill
 
-    loaded = load_spec(experiment)
+    loaded = load_drill(experiment)
     click.echo(loaded.model_dump_json(indent=2))
 
 

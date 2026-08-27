@@ -11,19 +11,21 @@ from mayhem.cli.exit_codes import ExitCode
 from mayhem.controller.safety import SafetyRefusedError
 from mayhem.toolkit.tool_runner import ToolError
 
-SPEC = """
-kind: deterministic
+TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
+COMPOSE_FILE = TESTCASE / "docker-compose.yml"
+
+SPEC = """\
+kind: drill
 name: pause-drill
-hypothesis: h
-steps:
-  - id: pause
-    inject_fault:
-      fault: proc.pause
-      targets:
-        - kind: process
-          expr: "name=api"
-      duration: 10s
-    on_failure: abort_and_recover
+config:
+  risk_ceiling: critical
+containers:
+  testcase-api:
+    faults:
+      - fault: proc.pause
+        duration: 10s
+execution:
+  - parallel: [testcase-api]
 """
 
 BAD_CONFIG = """
@@ -51,12 +53,16 @@ class TestDocumentedExitCodes:
         assert main(["plan", str(spec), "--process", "api"]) == int(ExitCode.USAGE_ERROR)
 
     def test_missing_spec_file(self) -> None:
-        assert main(["plan", "/nonexistent/spec.yaml"]) == int(ExitCode.VALIDATION_ERROR)
+        assert main(["plan", "/nonexistent/spec.yaml", "--compose", str(COMPOSE_FILE)]) == int(
+            ExitCode.VALIDATION_ERROR
+        )
 
     def test_invalid_spec_schema(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.yaml"
         bad.write_text("kind: nope\nname: x\n")
-        assert main(["plan", str(bad)]) == int(ExitCode.VALIDATION_ERROR)
+        assert main(["plan", str(bad), "--compose", str(COMPOSE_FILE)]) == int(
+            ExitCode.VALIDATION_ERROR
+        )
 
     def test_invalid_config_layer(self, tmp_path: Path) -> None:
         cfg = tmp_path / "mayhem.yaml"
@@ -77,7 +83,9 @@ class TestDocumentedExitCodes:
             raise SafetyRefusedError("g1_blast_radius", "blast radius exceeded")
 
         monkeypatch.setattr(lifecycle, "prepare", _refuse)
-        assert main(["validate", str(spec)]) == int(ExitCode.SAFETY_REFUSAL)
+        assert main(["validate", str(spec), "--compose", str(COMPOSE_FILE)]) == int(
+            ExitCode.SAFETY_REFUSAL
+        )
         assert "safety refused" in capsys.readouterr().err
 
     def test_tool_error_maps_to_nine(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,6 +96,9 @@ class TestDocumentedExitCodes:
         assert main(["toolkit", "list"]) == int(ExitCode.TOOLKIT_ERROR)
 
     def test_debug_reraises_internal_errors(self, tmp_path: Path) -> None:
+        spec = tmp_path / "spec.yaml"
+        spec.write_text(SPEC)
+
         def _explode(**kwargs: object) -> None:
             raise RuntimeError("internal detail")
 
@@ -95,7 +106,7 @@ class TestDocumentedExitCodes:
         try:
             lifecycle.prepare = _explode  # type: ignore[assignment]
             with pytest.raises(RuntimeError):
-                main(["--debug", "validate", str(tmp_path / "spec.yaml")])
+                main(["--debug", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         finally:
             lifecycle.prepare = original
 

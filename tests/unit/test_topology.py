@@ -13,6 +13,7 @@ from mayhem.domain.topology import (
     ExternalDependencyNode,
     HostNode,
     NodeKind,
+    ProcessNode,
     ServiceNode,
     TargetSelector,
     TopologyGraph,
@@ -98,3 +99,89 @@ class TestBlastRadiusClosure:
 
     def test_leaf_has_empty_closure(self) -> None:
         assert _graph().dependents_closure("n-web") == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# container_name field (ADR-0020)
+# ---------------------------------------------------------------------------
+
+
+class TestContainerName:
+    def test_container_node_has_container_name(self) -> None:
+        c = ContainerNode(
+            id="c-api",
+            name="api-1",
+            engine="docker",
+            runtime_id="abc123",
+            container_name="testcase-api",
+        )
+        assert c.container_name == "testcase-api"
+
+    def test_container_node_container_name_optional(self) -> None:
+        c = ContainerNode(
+            id="c-api",
+            name="api-1",
+            engine="docker",
+            runtime_id="abc123",
+        )
+        assert c.container_name is None
+
+    def test_process_node_has_container_name(self) -> None:
+        p = ProcessNode(
+            id="p-1",
+            name="python",
+            host_id="h1",
+            container_name="testcase-api",
+        )
+        assert p.container_name == "testcase-api"
+        assert p.pid is None  # deferred resolution
+
+    def test_process_node_pid_optional(self) -> None:
+        p = ProcessNode(
+            id="p-1",
+            name="python",
+            host_id="h1",
+        )
+        assert p.pid is None
+        assert p.container_name is None
+
+    def test_process_node_with_pid(self) -> None:
+        p = ProcessNode(
+            id="p-1",
+            name="python",
+            host_id="h1",
+            pid=12345,
+            container_name="testcase-api",
+        )
+        assert p.pid == 12345
+        assert p.container_name == "testcase-api"
+
+    def test_graph_with_container_names(self) -> None:
+        graph = TopologyGraph(
+            nodes=(
+                ServiceNode(id="n-api", name="api"),
+                ContainerNode(
+                    id="c-api",
+                    name="api-1",
+                    engine="docker",
+                    runtime_id="abc123",
+                    container_name="testcase-api",
+                ),
+                ProcessNode(
+                    id="p-api",
+                    name="python",
+                    host_id="h1",
+                    container_name="testcase-api",
+                ),
+            ),
+            edges=(
+                Edge(src="n-api", dst="c-api", kind=EdgeKind.RUNS_ON),
+                Edge(src="c-api", dst="p-api", kind=EdgeKind.RUNS_ON),
+            ),
+        )
+        container = graph.by_id("c-api")
+        assert isinstance(container, ContainerNode)
+        assert container.container_name == "testcase-api"
+        proc = graph.by_id("p-api")
+        assert isinstance(proc, ProcessNode)
+        assert proc.container_name == "testcase-api"

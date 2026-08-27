@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
@@ -27,8 +28,6 @@ if TYPE_CHECKING:
     from mayhem.controller.janitor import SweepResult
     from mayhem.domain.topology import TopologyGraph
 
-ProcessArgs = tuple[str, ...]
-
 
 def _ctx(ctx: click.Context) -> CliContext:
     obj = ctx.obj
@@ -36,54 +35,76 @@ def _ctx(ctx: click.Context) -> CliContext:
     return obj
 
 
-def _topology_options[F: Callable[..., object]](fn: F) -> F:
-    for opt in reversed(
-        (
-            click.option("--process", "-p", multiple=True, help="Local process node as name=pid."),
-            click.option("--service", multiple=True, help="Logical service node name."),
-            click.option("--host", default="local", show_default=True, help="Host node name."),
-            click.option(
-                "--compose",
-                type=str,
-                default=None,
-                help="docker-compose.yaml blueprint.",
-            ),
-        )
-    ):
-        fn = opt(fn)
-    return fn
+def _compose_option[F: Callable[..., object]](fn: F) -> F:
+    """Only topology input for drill commands is the compose blueprint.
+
+    ``--process``/``--service``/``--host`` were removed in Phase 6 — drill
+    specs are compose-native and identify targets by ``container_name``.
+    Omit ``--compose`` to auto-detect a compose file in the cwd.
+    """
+    return click.option(
+        "--compose",
+        type=str,
+        default=None,
+        help="docker-compose.yaml blueprint (auto-detected in cwd if omitted).",
+    )(fn)
 
 
-def _graph_from(
-    ctx: click.Context,
-    process: ProcessArgs,
-    service: ProcessArgs,
-    host: str,
-    compose: str | None,
-) -> tuple[TopologyGraph, str | None]:
+_SPEC_CANDIDATES = ("mayhem.yaml", "mayhem.yml")
+
+
+def _resolve_spec(explicit: str | None) -> str:
+    """Resolve the drill spec file from user input.
+
+    Accepts two forms:
+
+      * ``None`` or empty — auto-detect ``mayhem.yaml`` in the cwd.
+      * A file path — use it directly (error if missing).
+
+    ``mayhem run`` with no path therefore imports ``mayhem.yaml`` from the
+    directory the user invokes it from, unless an explicit spec is given.
+    """
+    if explicit:
+        target = Path(explicit)
+        if not target.is_file():
+            # A caller-provided path that does not exist is a validation
+            # failure (schema/input error), not a usage mistake — map it to
+            # EXIT code VALIDATION_ERROR via FileNotFoundError.
+            raise FileNotFoundError(f"spec file not found: {target}")
+        return str(target)
+    for name in _SPEC_CANDIDATES:
+        candidate = Path.cwd() / name
+        if candidate.is_file():
+            return str(candidate)
+    raise click.UsageError(f"no spec file in cwd; expected one of: {', '.join(_SPEC_CANDIDATES)}")
+
+
+def _resolve_engine_from_state() -> str:
+    """Resolve the CLI engine flag (``--podman``) to a concrete engine name."""
+    from mayhem.cli.app import _STATE
+    from mayhem.cli.topology import _resolve_engine
+
+    return _resolve_engine(str(_STATE.get("engine", ""))) or "podman"
+
+
+def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph, str | None]:
     from mayhem.cli.topology import _resolve_compose
 
     resolved = _resolve_compose(compose)
     try:
-        return build_graph(list(process), list(service), host, resolved), resolved
+        return build_graph(resolved), resolved
     except ValueError as exc:
         raise click.UsageError(str(exc), ctx=ctx) from None
 
 
 @click.command("validate")
-@_topology_options
-@click.argument("experiment", type=click.Path())
+@_compose_option
+@click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def validate(
-    ctx: click.Context,
-    experiment: str,
-    process: ProcessArgs,
-    service: ProcessArgs,
-    host: str,
-    compose: str | None,
-) -> None:
-    """Compile an experiment and run every safety gate without executing it."""
-    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
+def validate(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+    """Compile a drill spec and run every safety gate without executing it."""
+    graph, resolved_compose = _graph_from(ctx, compose)
+    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -94,8 +115,11 @@ def validate(
             store=store,
             graph=graph,
             compose=resolved_compose,
+            spec_path=experiment,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
+        compiled = plan_from_spec(
+            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
+        )
     finally:
         store.close()
     click.echo(
@@ -105,19 +129,13 @@ def validate(
 
 
 @click.command("plan")
-@_topology_options
-@click.argument("experiment", type=click.Path())
+@_compose_option
+@click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def plan(
-    ctx: click.Context,
-    experiment: str,
-    process: ProcessArgs,
-    service: ProcessArgs,
-    host: str,
-    compose: str | None,
-) -> None:
-    """Plan an experiment against a topology and print the frozen plan JSON."""
-    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
+def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+    """Compile a drill spec against a topology and print the frozen plan JSON."""
+    graph, resolved_compose = _graph_from(ctx, compose)
+    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -128,27 +146,24 @@ def plan(
             store=store,
             graph=graph,
             compose=resolved_compose,
+            spec_path=experiment,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
+        compiled = plan_from_spec(
+            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
+        )
     finally:
         store.close()
     click.echo(compiled.plan.model_dump_json(indent=2))
 
 
 @click.command("run")
-@_topology_options
-@click.argument("experiment", type=click.Path())
+@_compose_option
+@click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def run(
-    ctx: click.Context,
-    experiment: str,
-    process: ProcessArgs,
-    service: ProcessArgs,
-    host: str,
-    compose: str | None,
-) -> None:
-    """Plan then execute an experiment; prints the run summary."""
-    graph, resolved_compose = _graph_from(ctx, process, service, host, compose)
+def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+    """Compile then execute a drill spec; prints the run summary."""
+    graph, resolved_compose = _graph_from(ctx, compose)
+    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
@@ -159,9 +174,16 @@ def run(
             store=store,
             graph=graph,
             compose=resolved_compose,
+            spec_path=experiment,
         )
-        compiled = plan_from_spec(experiment, graph, prepared=prepared, store=None)
-        engine = engine_for(store)
+        compiled = plan_from_spec(
+            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
+        )
+        engine = engine_for(
+            store,
+            _resolve_engine_from_state(),
+            live_graph=lambda: build_graph(resolved_compose),
+        )
         result = engine.execute(compiled.plan)
         click.echo(result.summary_md())
         if result.status != "completed":
@@ -221,7 +243,7 @@ def recover(ctx: click.Context, run_id: str) -> None:
     """Recover every orphaned fault lease belonging to a run."""
     store = open_store(_ctx(ctx).db)
     try:
-        recovered = engine_for(store).recover_run(run_id)
+        recovered = engine_for(store, _resolve_engine_from_state()).recover_run(run_id)
         if not recovered:
             click.echo(f"nothing to recover for {run_id}")
             return

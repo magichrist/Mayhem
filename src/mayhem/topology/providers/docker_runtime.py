@@ -41,6 +41,24 @@ def _inspect_pid(engine: str, container_id: str) -> int | None:
         return None
 
 
+def _inspect_name(engine: str, container_id: str) -> str:
+    """Query the canonical container name via ``engine inspect``.
+
+    Docker returns ``/container-name``; we strip the leading ``/``.
+    """
+    try:
+        out = subprocess.run(
+            [engine, "inspect", "--format", "{{.Name}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        raw = out.stdout.strip()
+        return raw.lstrip("/") if raw else ""
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return ""
+
+
 def _container_id(row: dict[str, Any]) -> str:
     """Extract container ID handling both Docker ('ID') and Podman ('Id') keys."""
     return str(row.get("ID") or row.get("Id") or "")
@@ -227,6 +245,7 @@ class ContainerRuntimeProvider:
                 engine=self._engine,
                 runtime_id=container_id,
                 service_name=service_name,
+                container_name=_inspect_name(self._engine, container_id),
                 state=str(row.get("State") or row.get("Status") or "unknown"),
                 ports=ports,
                 host_id=host_id,
@@ -246,6 +265,7 @@ class ContainerRuntimeProvider:
             # Emit a ProcessNode for the container's main PID.
             process_name = service_name or node.name
             pid = _inspect_pid(self._engine, container_id)
+            container_name = _inspect_name(self._engine, container_id)
             if pid is not None and process_name:
                 proc_id = f"proc-{process_name}-{short_id}"
                 proc_node = ProcessNode(
@@ -255,6 +275,7 @@ class ContainerRuntimeProvider:
                     host_id=host_id,
                     cmdline=f"{self._engine} container {short_id}",
                     container_id=short_id,
+                    container_name=container_name,
                 )
                 nodes.append(proc_node)
                 edges.append(Edge(src=proc_id, dst=node.id, kind=EdgeKind.RUNS_ON))

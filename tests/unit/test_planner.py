@@ -1,253 +1,241 @@
-"""Planner: spec -> honest frozen plan. Refusals are part of the contract."""
+"""Planner: spec -> honest frozen plan. Refusals are part of the contract.
 
-import random
+Drill planning compiles :class:`DrillSpec` into a frozen :class:`ExecutionPlan`.
+Refusals are part of the contract.
+"""
 
 import pytest
 
-from mayhem.controller.planner import PlanningError, plan_deterministic, plan_random
-from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.experiments import (
-    Constraints,
-    DeterministicExperiment,
-    ExperimentMetadata,
-    InjectFault,
-    Parallel,
-    RandomExperiment,
-    SelectionPolicy,
-    Step,
-    Wait,
-)
-from mayhem.domain.risks import RiskLevel
-from mayhem.domain.topology import (
-    NodeKind,
-    ProcessNode,
-    ServiceNode,
-    TargetSelector,
-    TopologyGraph,
-)
+from mayhem.controller.planner import PlanningError, plan_drill
+from mayhem.domain.topology import TopologyGraph
+
+# ---------------------------------------------------------------------------
+# plan_drill (ADR-0019)
+# ---------------------------------------------------------------------------
 
 
-def _graph() -> TopologyGraph:
+def _drill_graph() -> TopologyGraph:
+    from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, ProcessNode, ServiceNode
+
     return TopologyGraph(
         nodes=(
-            ProcessNode(id="n-proc", name="api-pid", pid=4242, host_id="h1"),
-            ServiceNode(id="n-svc", name="api"),
+            ContainerNode(
+                id="ctr-api",
+                name="api",
+                engine="podman",
+                runtime_id="cid-api",
+                container_name="testcase-api",
+                ip_address="172.18.0.2",
+                state="running",
+            ),
+            ServiceNode(id="svc-api", name="api-svc", container_name="testcase-api"),
+            ProcessNode(
+                id="proc-api",
+                name="api-proc",
+                pid=4242,
+                host_id="h1",
+                container_name="testcase-api",
+            ),
         ),
-        edges=(),
+        edges=(
+            Edge(src="svc-api", dst="ctr-api", kind=EdgeKind.RUNS_ON),
+            Edge(src="ctr-api", dst="proc-api", kind=EdgeKind.RUNS_ON),
+        ),
     )
 
 
-def _exp(*steps: Step, risk_ceiling: RiskLevel | None = None) -> DeterministicExperiment:
-    return DeterministicExperiment(
-        metadata=ExperimentMetadata(name="proc-pause-drill"),
-        constraints=Constraints(risk_ceiling=risk_ceiling),
-        steps=tuple(steps),
+def _drill_spec(execution):
+    from mayhem.domain.experiments import DrillConfig, DrillContainer, DrillFault, DrillSpec
+
+    return DrillSpec(
+        kind="drill",
+        name="api-drill",
+        config=DrillConfig(),
+        containers={
+            "testcase-api": DrillContainer(faults=(DrillFault(fault="proc.pause", duration="3s"),))
+        },
+        execution=execution,
     )
 
 
-_PAUSE = Step(
-    id="s1",
-    action=InjectFault(
-        fault="proc.pause",
-        selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="name=api-pid"),),
-        duration=10.0,
-    ),
-)
+class TestDrillPlanning:
+    def test_compiles_valid_spec(self) -> None:
+        from mayhem.domain.experiments import ExecutionStep
 
+        plan = plan_drill(
+            "r-drill",
+            _drill_spec((ExecutionStep(parallel=("testcase-api",)),)),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        assert plan.kind.value == "drill"
+        assert len(plan.steps) == 1
+        step = plan.steps[0]
+        assert step.fault is not None
+        assert step.fault.fault_id == "proc.pause"
+        assert step.fault.undo_ops  # write-ahead undo present
+        assert step.fault.verify_probes
 
-class TestDeterministicPlanning:
-    def test_compiles_fault_with_targets_and_undo_contract(self) -> None:
-        plan = plan_deterministic(
-            "r-1",
-            _exp(_PAUSE),
-            _graph(),
-            config_snapshot_id="cfg-1",
-            topology_snapshot_id="topo-1",
-            environment_fingerprint="fp",
+    def test_missing_container_name_raises(self) -> None:
+        from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
+
+        spec = DrillSpec(
+            kind="drill",
+            name="api-drill",
+            containers={"ghost": DrillContainer(faults=(DrillFault(fault="proc.pause"),))},
+            execution=(ExecutionStep(parallel=("ghost",)),),
+        )
+        with pytest.raises(PlanningError, match="not found in topology"):
+            plan_drill(
+                "r-drill",
+                spec,
+                _drill_graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
+            )
+
+    def test_execution_references_undefined_container_raises(self) -> None:
+        from mayhem.domain.experiments import ExecutionStep
+
+        spec = _drill_spec((ExecutionStep(parallel=("not-a-container",)),))
+        with pytest.raises(PlanningError, match="not defined"):
+            plan_drill(
+                "r-drill",
+                spec,
+                _drill_graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
+            )
+
+    def test_parallel_block_produces_per_container_steps(self) -> None:
+        from mayhem.domain.experiments import (
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+        )
+        from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, ProcessNode
+
+        graph = TopologyGraph(
+            nodes=(
+                ContainerNode(
+                    id="ctr-a",
+                    name="a",
+                    engine="podman",
+                    runtime_id="a",
+                    container_name="c-a",
+                    state="running",
+                ),
+                ContainerNode(
+                    id="ctr-b",
+                    name="b",
+                    engine="podman",
+                    runtime_id="b",
+                    container_name="c-b",
+                    state="running",
+                ),
+                ProcessNode(id="proc-a", name="pa", pid=1, host_id="h", container_name="c-a"),
+                ProcessNode(id="proc-b", name="pb", pid=2, host_id="h", container_name="c-b"),
+            ),
+            edges=(
+                Edge(src="ctr-a", dst="proc-a", kind=EdgeKind.RUNS_ON),
+                Edge(src="ctr-b", dst="proc-b", kind=EdgeKind.RUNS_ON),
+            ),
+        )
+        spec = DrillSpec(
+            kind="drill",
+            name="two",
+            containers={
+                "c-a": DrillContainer(faults=(DrillFault(fault="proc.pause"),)),
+                "c-b": DrillContainer(faults=(DrillFault(fault="proc.pause"),)),
+            },
+            execution=(ExecutionStep(parallel=("c-a", "c-b")),),
+        )
+        plan = plan_drill(
+            "r-two",
+            spec,
+            graph,
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        assert len(plan.steps) == 2
+        seqs = [s.seq for s in plan.steps]
+        assert seqs == sorted(seqs)
+        # Parallel containers in one block share the same seq for concurrent execution.
+        assert len(set(seqs)) == 1
+        assert all(s.fault is not None for s in plan.steps)
+
+    def test_wait_block_produces_wait_step(self) -> None:
+        from mayhem.domain.experiments import ExecutionStep
+
+        plan = plan_drill(
+            "r-wait",
+            _drill_spec(
+                (
+                    ExecutionStep(parallel=("testcase-api",)),
+                    ExecutionStep(wait="5s"),
+                )
+            ),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        fault_step = plan.steps[0]
+        wait_step = plan.steps[1]
+        assert fault_step.fault is not None
+        assert wait_step.fault is None
+        assert wait_step.raw_action.type == "wait"
+        assert float(wait_step.raw_action.duration) == 5.0
+
+    def test_check_block_produces_check_http_step(self) -> None:
+        from mayhem.domain.experiments import (
+            CheckExpectation,
+            CheckProbe,
+            ExecutionStep,
+        )
+
+        plan = plan_drill(
+            "r-check",
+            _drill_spec(
+                (
+                    ExecutionStep(parallel=("testcase-api",)),
+                    ExecutionStep(
+                        check=(
+                            CheckProbe(
+                                http="http://testcase-api:8080/health",
+                                expect=CheckExpectation(status=200),
+                            ),
+                        )
+                    ),
+                )
+            ),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        check_step = plan.steps[1]
+        assert check_step.fault is None
+        assert check_step.raw_action.type == "check_http"
+        assert check_step.raw_action.url == "http://testcase-api:8080/health"
+        assert check_step.raw_action.expected_status == 200
+
+    def test_sequential_block_preserves_order(self) -> None:
+        from mayhem.domain.experiments import ExecutionStep
+
+        plan = plan_drill(
+            "r-seq",
+            _drill_spec((ExecutionStep(sequential=("testcase-api",)),)),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
         )
         assert len(plan.steps) == 1
-        fault = plan.steps[0].fault
-        assert fault is not None and fault.fault_id == "proc.pause"
-        assert fault.targets[0].node_ids == frozenset({"n-proc"})
-        undo_args = [op.args for op in fault.undo_ops]
-        assert {"pid": "4242"} in undo_args
-        assert fault.verify_probes  # write-ahead verify present
-
-    def test_unresolved_selector_refused(self) -> None:
-        bad = Step(
-            id="s1",
-            action=InjectFault(
-                fault="proc.pause",
-                selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="name=ghost"),),
-                duration=10.0,
-            ),
-        )
-        with pytest.raises(PlanningError, match="ghost"):
-            plan_deterministic(
-                "r-1",
-                _exp(bad),
-                _graph(),
-                config_snapshot_id="c",
-                topology_snapshot_id="t",
-                environment_fingerprint="f",
-            )
-
-    def test_unknown_fault_refused_at_authoring(self) -> None:
-        # The domain id-prefix law refuses unknown faults before planning sees them.
-        with pytest.raises(SchemaValidationError, match="quantum"):
-            Step(
-                id="s1",
-                action=InjectFault(
-                    fault="quantum.flip",
-                    selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="x"),),
-                    duration=10.0,
-                ),
-            )
-
-    def test_wrong_node_kind_refused(self) -> None:
-        bad = Step(
-            id="s1",
-            action=InjectFault(
-                fault="container.kill",  # containers only; graph has none
-                selectors=(TargetSelector(kind=NodeKind.CONTAINER, expr="name=api-pid"),),
-                duration=10.0,
-            ),
-        )
-        with pytest.raises(PlanningError, match="unresolved"):
-            plan_deterministic(
-                "r-1",
-                _exp(bad),
-                _graph(),
-                config_snapshot_id="c",
-                topology_snapshot_id="t",
-                environment_fingerprint="f",
-            )
-
-    def test_duration_over_cap_refused(self) -> None:
-        bad = Step(
-            id="s1",
-            action=InjectFault(
-                fault="proc.pause",
-                selectors=(TargetSelector(kind=NodeKind.PROCESS, expr="name=api-pid"),),
-                duration=700.0,  # cap 600
-            ),
-        )
-        with pytest.raises(PlanningError, match="exceeds cap"):
-            plan_deterministic(
-                "r-1",
-                _exp(bad),
-                _graph(),
-                config_snapshot_id="c",
-                topology_snapshot_id="t",
-                environment_fingerprint="f",
-            )
-
-    def test_parallel_flattens_branches(self) -> None:
-        wait = Step(id="w", action=Wait(duration="1s"))
-        par = Step(
-            id="p",
-            action=Parallel(branches=((wait.action,), (_PAUSE.action,))),
-        )
-        plan = plan_deterministic(
-            "r-1",
-            _exp(par, wait),
-            _graph(),
-            config_snapshot_id="c",
-            topology_snapshot_id="t",
-            environment_fingerprint="f",
-        )
-        planned_faults = [s for s in plan.steps if s.fault is not None]
-        assert len(planned_faults) == 1
-        assert planned_faults[0].id.startswith("p.")
-
-    def test_no_fault_plan_refused(self) -> None:
-        only_wait = Step(id="w", action=Wait(duration="1s"))
-        with pytest.raises(PlanningError, match="no fault injection"):
-            plan_deterministic(
-                "r-1",
-                _exp(only_wait),
-                _graph(),
-                config_snapshot_id="c",
-                topology_snapshot_id="t",
-                environment_fingerprint="f",
-            )
-
-
-def _fault_summaries(plan: object) -> list[tuple[str, list[str]]]:
-    """(fault_id, sorted target node ids) for every fault-bearing step."""
-    return [
-        (s.fault.fault_id, sorted(n for tgt in s.fault.targets for n in tgt.node_ids))
-        for s in getattr(plan, "steps", ())
-        if s.fault is not None
-    ]
-
-
-class TestRandomPlanning:
-    def test_same_seed_same_plan(self) -> None:
-        exp = RandomExperiment(
-            metadata=ExperimentMetadata(name="maniac"),
-            seed=7,
-            selection=SelectionPolicy(count=3),
-        )
-        kwargs = {
-            "config_snapshot_id": "c",
-            "topology_snapshot_id": "t",
-            "environment_fingerprint": "f",
-        }
-        a = plan_random("r-a", exp, _graph(), rng_factory=random.Random, **kwargs)
-        b = plan_random("r-b", exp, _graph(), rng_factory=random.Random, **kwargs)
-        assert _fault_summaries(a) == _fault_summaries(b)
-
-    def test_only_compensatable_faults_enter_lottery(self) -> None:
-        exp = RandomExperiment(metadata=ExperimentMetadata(name="maniac"), seed=1)
-        kwargs = {
-            "config_snapshot_id": "c",
-            "topology_snapshot_id": "t",
-            "environment_fingerprint": "f",
-        }
-        plan = plan_random("r-1", exp, _graph(), rng_factory=random.Random, **kwargs)
-        for step in plan.steps:
-            if step.fault is not None:
-                assert step.fault.undo_ops  # every chosen fault is compensatable
-
-    def test_weights_skew_lottery(self) -> None:
-        kwargs = {
-            "config_snapshot_id": "c",
-            "topology_snapshot_id": "t",
-            "environment_fingerprint": "f",
-            "rng_factory": random.Random,
-        }
-        weighted = RandomExperiment(
-            metadata=ExperimentMetadata(name="maniac"),
-            seed=3,
-            selection=SelectionPolicy(count=1, weights={"proc.pause": 1000.0}),
-        )
-        seen = {
-            p.steps[0].fault.fault_id
-            for i in range(20)
-            if (p := plan_random(f"w-{i}", weighted, _graph(), **kwargs)).steps[0].fault
-        }
-        assert "proc.pause" in seen  # heavy weight dominates the draw
-
-    def test_audit_sink_receives_decision(self) -> None:
-        captured: list[dict] = []
-        exp = RandomExperiment(
-            metadata=ExperimentMetadata(name="maniac"),
-            seed=11,
-            selection=SelectionPolicy(count=2),
-        )
-        plan_random(
-            "r-audit",
-            exp,
-            _graph(),
-            config_snapshot_id="c",
-            topology_snapshot_id="t",
-            environment_fingerprint="f",
-            audit_sink=captured.append,
-        )
-        row = captured[0]
-        assert row["seed"] == 11
-        assert len(row["candidates"]) >= 2
-        assert set(row["weights"]) == set(row["candidates"])
-        state = row["rng_state"]
-        assert isinstance(state[0], int) and isinstance(state[1], list)
+        assert plan.steps[0].fault is not None

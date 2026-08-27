@@ -24,10 +24,11 @@ from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.checks import ProbeType
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
-from mayhem.domain.leases import VerifyProbe
+from mayhem.domain.leases import LeaseState, UndoOp, VerifyProbe
+from mayhem.topology.resolve import resolve_container
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from mayhem.agents.sinks import LeaseSink
@@ -70,6 +71,87 @@ class RunResult:
         return "\n".join(lines)
 
 
+# Placeholder PID emitted by compensation templates; replaced with the live PID
+# at execution time (ADR-0020), so the value is never older than the syscall.
+_LIVE_PID = "@live-pid"
+
+
+def _substitute_pids(
+    undo_ops: tuple[UndoOp, ...],
+    verify_probes: tuple[VerifyProbe, ...],
+    live_pids: dict[str, int],
+) -> tuple[tuple[UndoOp, ...], tuple[VerifyProbe, ...]]:
+    """Replace the ``@live-pid`` placeholder with a freshly resolved PID.
+
+    ``live_pids`` maps a node_id to its current host PID. The placeholder value
+    itself is ``node_id:@live-pid`` (e.g. ``svc-api:@live-pid``) so we can tell
+    *which* target a placeholder belongs to; substitution is by node_id. When no
+    live PID is available the placeholder is left untouched, preserving the
+    plan-time value baked in by the compensation template.
+    """
+
+    def _swap(value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return type(value)(_swap_leaf(v) for v in value)
+        return _swap_leaf(value)
+
+    def _swap_leaf(value: object) -> object:
+        if not isinstance(value, str) or _LIVE_PID not in value:
+            return value
+        node_id = value.split(":", 1)[0]
+        pid = live_pids.get(node_id)
+        if pid is None:
+            return value
+        return str(pid)
+
+    new_undo = tuple(
+        UndoOp(op=op.op, args={k: _swap(v) for k, v in op.args.items()}, idempotent=op.idempotent)
+        for op in undo_ops
+    )
+    new_verify = tuple(
+        VerifyProbe(
+            probe=p.probe,
+            args={k: _swap(v) for k, v in p.args.items()},
+            expect_present=p.expect_present,
+        )
+        for p in verify_probes
+    )
+    return new_undo, new_verify
+
+
+def _group_by_seq(steps: Sequence[PlannedStep]) -> list[list[PlannedStep]]:
+    """Partition *consecutive* steps into batches that share a ``seq``.
+
+    Parallel blocks emit one step per container with a shared ``seq``; those form
+    a single batch the executor runs concurrently.
+    """
+    groups: list[list[PlannedStep]] = []
+    for step in steps:
+        if groups and groups[-1][0].seq == step.seq:
+            groups[-1].append(step)
+        else:
+            groups.append([step])
+    return groups
+
+
+def _missing_live_pids(fault: PlannedFault, live_pids: dict[str, int]) -> set[str]:
+    """Target node ids that require a live PID but could not be resolved.
+
+    In container mode each fault target is addressed by a ``node_id:@live-pid``
+    placeholder in the undo contract. A target that still carries that placeholder
+    after resolution has no usable process address, so injection must not proceed.
+    """
+    needed: set[str] = set()
+    for op in fault.undo_ops:
+        for value in op.args.values():
+            if not isinstance(value, str) or _LIVE_PID not in value:
+                continue
+            node_id = value.split(":", 1)[0]
+            if node_id not in live_pids:
+                needed.add(node_id)
+    return needed
+
+
 class RunEngine:
     """Sequential plan execution; abort-and-recover on first failing fault."""
 
@@ -86,6 +168,7 @@ class RunEngine:
         live_graph: Callable[[], TopologyGraph] | None = None,
         abort_file: Path | None = None,
         resource_manager: ResourceManager | None = None,
+        engine: str | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -98,6 +181,7 @@ class RunEngine:
         self._abort_file = abort_file
         self._abort_mode: str | None = None  # "graceful" | "immediate"
         self._resource_manager = resource_manager
+        self._engine = engine  # podman/docker; pid/ip resolved at execution (ADR-0020)
 
     # -- public -----------------------------------------------------------------------
 
@@ -113,16 +197,24 @@ class RunEngine:
         dirty: list[str] = []
         status = "completed"
         with _AbortMatrix(self, plan.run_id):
-            for step in plan.steps:
+            for group in _group_by_seq(plan.steps):
                 if self._abort_requested():
                     status = "aborted"
                     break
-                report, lease_dirty = self._run_step(plan, step)
-                reports.append(report)
-                dirty.extend(lease_dirty)
-                if not report.ok:
-                    status = "failed"
-                    break  # on_failure defaults to abort_and_recover; later steps cancelled
+                if len(group) == 1:
+                    report, lease_dirty = self._run_step(plan, group[0])
+                    reports.append(report)
+                    dirty.extend(lease_dirty)
+                    if not report.ok:
+                        status = "failed"
+                        break  # on_failure defaults to abort_and_recover; later steps cancelled
+                else:
+                    batch_reports, lease_dirty = self._run_parallel(plan, group)
+                    reports.extend(batch_reports)
+                    dirty.extend(lease_dirty)
+                    if not all(r.ok for r in batch_reports):
+                        status = "failed"
+                        break
                 if self._abort_mode == "immediate":
                     status = "aborted"
                     break
@@ -154,9 +246,19 @@ class RunEngine:
 
     def recover_run(self, run_id: str) -> tuple[str, ...]:
         """Compensate any non-terminal leases a crashed run left behind."""
+        _recoverable = {
+            LeaseState.PENDING,
+            LeaseState.ACTIVE,
+            LeaseState.ORPHANED,
+            LeaseState.RELEASING,
+        }
         recovered: list[str] = []
         for lease in self._sink.active_leases():
             if lease.run_id != run_id:
+                continue
+            if lease.state not in _recoverable:
+                # Terminal (released/expired) or dirty (terminal-pending-ack):
+                # no valid transition exists, so nothing to auto-recover.
                 continue
             try:
                 releasing = self._client.mark_orphaned(lease.id, notes="engine recovery pass")
@@ -208,6 +310,8 @@ class RunEngine:
                 dirty = []
             elif action_type == "check":
                 report, dirty = self._execute_check(step), []
+            elif action_type == "check_http":
+                report, dirty = self._execute_check_http(step), []
             elif action_type in ("start_load", "stop_load", "notify"):
                 report = StepReport(
                     step.id, True, f"{action_type} acknowledged (no backend wired yet)"
@@ -229,6 +333,27 @@ class RunEngine:
         )
         return report, dirty
 
+    def _run_parallel(
+        self, plan: ExecutionPlan, steps: list[PlannedStep]
+    ) -> tuple[list[StepReport], list[str]]:
+        """Run several same-``seq`` fault steps concurrently.
+
+        Fault injection and duration sleeps overlap across threads; all durable
+        writes funnel through the single ``Store`` connection, which is
+        internally serialized, so no executor-side locking is required here.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+
+        reports: list[StepReport] = []
+        dirty: list[str] = []
+        with ThreadPoolExecutor(max_workers=len(steps)) as pool:
+            futures = [pool.submit(self._run_step, plan, step) for step in steps]
+            for future in as_completed(futures):
+                report, lease_dirty = future.result()
+                reports.append(report)
+                dirty.extend(lease_dirty)
+        return reports, dirty
+
     def _execute_fault(
         self, plan: ExecutionPlan, step: PlannedStep
     ) -> tuple[StepReport, list[str]]:
@@ -240,13 +365,32 @@ class RunEngine:
             pre_exec_assertion(
                 [(t.selector, t.node_ids) for t in fault.targets], self._live_graph()
             )
+        # Resolve fresh PIDs at execution time (ADR-0020): the PID baked into the plan is
+        # a placeholder, never older than the injection syscall. Substitute the live value
+        # into the undo contract + verify probes before the lease forms.
+        live_pids = self._resolve_live_pids(fault)
+        if self._live_graph is not None:
+            # Container mode: a target whose container PID cannot be resolved has no
+            # usable fallback, so fail the step *before* a lease forms instead of
+            # injecting against a stale placeholder and stranding a dirty lease.
+            missing = _missing_live_pids(fault, live_pids)
+            if missing:
+                return (
+                    StepReport(
+                        step.id,
+                        False,
+                        "cannot resolve live pid for " + ", ".join(sorted(missing)),
+                    ),
+                    [],
+                )
+        undo_ops, verify_probes = _substitute_pids(fault.undo_ops, fault.verify_probes, live_pids)
         ttl = max(float(fault.duration) + 60.0, 120.0)
         lease = self._client.acquire(
             run_id=plan.run_id,
             fault_id=fault.fault_id,
             targets=targets,
-            undo_ops=tuple(op.model_dump(mode="json") for op in fault.undo_ops),
-            verify_probes=tuple(p.model_dump(mode="json") for p in fault.verify_probes),
+            undo_ops=tuple(op.model_dump(mode="json") for op in undo_ops),
+            verify_probes=tuple(p.model_dump(mode="json") for p in verify_probes),
             ttl_seconds=ttl,
         )
         self._record_invocation(plan, step, fault, lease.id)
@@ -341,6 +485,34 @@ class RunEngine:
         )
         return StepReport(step.id, False, notes), [dirty_lease.id]
 
+    def _resolve_live_pids(self, fault: PlannedFault) -> dict[str, int]:
+        """Map node_id → freshly resolved host PID via the container engine.
+
+        Only nodes that carry a container_name are resolved. Resolution is
+        best-effort: nodes without a live container are skipped so a stale
+        topology never blocks the run (ADR-0020).
+        """
+        if self._live_graph is None:
+            return {}
+        graph = self._live_graph()
+        from mayhem.domain.topology import ContainerNode, ProcessNode  # noqa: PLC0415
+
+        resolved: dict[str, int] = {}
+        for target in fault.targets:
+            for node_id in target.node_ids:
+                node = graph.by_id(node_id)
+                container_name: str | None = None
+                if isinstance(node, (ContainerNode, ProcessNode)):
+                    container_name = node.container_name
+                if not container_name:
+                    continue
+                try:
+                    info = resolve_container(container_name, self._engine)
+                except RuntimeError:
+                    continue
+                resolved[node_id] = info.pid
+        return resolved
+
     def _execute_check(self, step: PlannedStep) -> StepReport:
         ref = getattr(step.raw_action, "ref", "")
         check = self._checks.get(ref)
@@ -350,6 +522,22 @@ class RunEngine:
         result = run_probe(verify)
         passed = result.satisfied
         return StepReport(step.id, passed, f"{ref}: {'pass' if passed else result.detail}")
+
+    def _execute_check_http(self, step: PlannedStep) -> StepReport:
+        """Run an inline :class:`CheckHttp` step (drill plans) against a live URL."""
+        from mayhem.domain.leases import VerifyProbe  # noqa: PLC0415
+
+        url = getattr(step.raw_action, "url", "")
+        expected = getattr(step.raw_action, "expected_status", None)
+        if not url:
+            return StepReport(step.id, False, "check_http step missing url")
+        verify = VerifyProbe(
+            probe="http",
+            args={"url": url, "expect_status": int(expected) if expected is not None else 200},
+            expect_present=True,
+        )
+        result = run_probe(verify)
+        return StepReport(step.id, result.satisfied, f"{url}: {result.detail}")
 
     def _open_run(self, plan: ExecutionPlan) -> None:
         now_iso = utc_now().isoformat()
