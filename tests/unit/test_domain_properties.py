@@ -7,7 +7,7 @@ deviates from it, and that serialization round-trips preserve value equality.
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from mayhem.domain.common import parse_duration
+from mayhem.domain.common import parse_bytes, parse_duration
 from mayhem.domain.errors import InvalidTransitionError
 from mayhem.domain.leases import FaultLease, LeaseState
 from mayhem.domain.topology import (
@@ -70,6 +70,19 @@ def test_transition_table_is_exactly_the_documented_law(
 @given(st.integers(min_value=0, max_value=86_400))
 def test_duration_seconds_round_trip(seconds: int) -> None:
     assert parse_duration(f"{seconds}s") == float(seconds)
+
+
+@settings(max_examples=50, deadline=None)
+@given(st.integers(min_value=0, max_value=2**40))
+def test_bytes_round_trip(bytes_: int) -> None:
+    assert parse_bytes(str(bytes_)) == float(bytes_)
+
+
+def test_byte_units() -> None:
+    assert parse_bytes("256M") == 256 * 1024 * 1024
+    assert parse_bytes("1.5GiB") == 1.5 * 2**30
+    assert parse_bytes("2GB") == 2 * 10**9
+    assert parse_bytes("1024") == 1024.0
 
 
 @settings(max_examples=100, deadline=None)

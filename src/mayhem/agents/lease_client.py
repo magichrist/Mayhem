@@ -28,7 +28,10 @@ class LeaseClient:
     def __init__(self, sink: LeaseSink, agent_id: str = f"ag-{interpreter_marker()}") -> None:
         self._sink = sink
         self._agent_id = agent_id
-        self._sequence = 0
+        # Continue the counter from the store's high-water mark so lease ids stay
+        # unique across runs against a shared DB (the sink is single-writer per
+        # run; parallel steps within a run share this client).
+        self._sequence = sink.next_sequence()
 
     @property
     def agent_id(self) -> str:
@@ -60,9 +63,11 @@ class LeaseClient:
         )
         existing = [x for x in self._sink.active_leases() if x.targets & set(targets)]
         if existing:
+            holders = ", ".join(f"{x.id} ({x.owner_agent})" for x in existing)
             raise LeaseConflictError(
-                f"targets {sorted(targets)} already leased by "
-                f"{[(x.id, x.owner_agent) for x in existing]}"
+                f"targets {sorted(targets)} already leased by {holders} "
+                "-- if a previous run crashed, clear its stale leases with "
+                "'mayhem janitor' and retry"
             )
         self._sink.save(lease)
         return lease

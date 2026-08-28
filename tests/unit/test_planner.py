@@ -78,6 +78,35 @@ class TestDrillPlanning:
         assert step.fault.undo_ops  # write-ahead undo present
         assert step.fault.verify_probes
 
+    def test_mem_exhaust_accepts_byte_amount_dsl(self) -> None:
+        from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
+
+        spec = DrillSpec(
+            kind="drill",
+            name="mem-drill",
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(DrillFault(fault="mem.exhaust", amount="256M", duration="10s"),)
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-mem",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        fault = plan.steps[0].fault
+        assert fault is not None
+        assert fault.params["amount"] == 256 * 1024 * 1024
+        payload = next(op for op in fault.undo_ops if op.op == "payload.undo")
+        source = str(payload.args["payload"])
+        assert "amount = 268435456" in source
+        assert "goal = amount if amount > 0" in source
+
     def test_missing_container_name_raises(self) -> None:
         from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
 

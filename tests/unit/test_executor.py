@@ -47,7 +47,6 @@ def _graph(pid: int) -> TopologyGraph:
                 name=f"sleeper-{pid}",
                 pid=pid,
                 host_id="h-local",
-                container_name="c-a",
             ),
         ),
         edges=(Edge(src="ctr-a", dst="proc-a", kind=EdgeKind.RUNS_ON),),

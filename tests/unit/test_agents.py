@@ -10,7 +10,7 @@ import pytest
 
 from mayhem.agents.executors import (
     EXECUTORS,
-    NoopExecutor,
+    PayloadExecutor,
     ProcPauseExecutor,
     ToolExecutor,
     executor_for,
@@ -172,8 +172,9 @@ class TestProcPauseExecutor:
 class TestDispatchAndToolExecutors:
     def test_executor_dispatch_table(self) -> None:
         assert isinstance(executor_for("proc.pause"), ProcPauseExecutor)
-        assert isinstance(executor_for("fuzz.mutation"), NoopExecutor)
-        assert isinstance(executor_for("load.ramp"), NoopExecutor)
+        assert isinstance(executor_for("fuzz.protocol_abuse"), PayloadExecutor)
+        assert isinstance(executor_for("load.spike"), PayloadExecutor)
+        assert isinstance(executor_for("mem.exhaust"), PayloadExecutor)
         assert isinstance(executor_for("net.latency"), ToolExecutor)
         assert executor_for("quantum.decohere") is None
 

@@ -64,12 +64,24 @@ def _run_exec(args: dict[str, object]) -> ProbeResult:
     cmd = _arg_str_list(args, "cmd")
     if cmd is None or not cmd:
         return ProbeResult("exec", False, "exec probe requires cmd: list[str]")
+    engine = args.get("engine")
+    cont = args.get("cont")
+    if engine and cont:
+        # Container-addressed presence check. The resolved pid is a pid inside
+        # the runtime VM (podman-machine on macOS), which a host ``ps`` cannot
+        # see. ``<engine> inspect`` addresses the container main process across
+        # the VM boundary, so a nonzero/inspectable container means "present".
+        argv = [str(engine), "inspect", "--format", "{{.State.Pid}}", str(cont)]
+        result = run_tool(argv, timeout_s=_arg_float(args, "timeout_s", 10.0))
+        pid = result.stdout.strip()
+        present = result.succeeded and pid.isdigit() and int(pid) > 0
+        return ProbeResult("exec", present, f"inspect {cont} pid={pid!r}")
     result = run_tool(cmd, timeout_s=_arg_float(args, "timeout_s", 10.0))
-    return ProbeResult(
-        "exec",
-        result.succeeded,
-        f"exit={result.exit_code} stderr={result.stderr[:120]!r}",
-    )
+    detail = f"exit={result.exit_code} stderr={result.stderr[:120]!r}"
+    out = (result.stdout or "").strip()
+    if out:
+        detail = f"{detail} stdout={out[:120]!r}"
+    return ProbeResult("exec", result.succeeded, detail)
 
 
 def _run_tcp(args: dict[str, object]) -> ProbeResult:

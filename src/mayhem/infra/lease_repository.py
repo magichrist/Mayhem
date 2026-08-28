@@ -81,6 +81,18 @@ class SQLiteLeaseSink:
         )
         return tuple(_row_to_lease(dict(row)) for row in rows)
 
+    def next_sequence(self) -> int:
+        # Max trailing integer of every `l-<n>` id ever persisted. Seed the next
+        # run's counter here so ids never collide in a shared DB.
+        rows = self._store.query(
+            "SELECT MAX(CAST(substr(id, 3) AS INTEGER)) AS seq FROM fault_leases"
+            " WHERE id LIKE 'l-%'"
+        )
+        if not rows:
+            return 0
+        seq = rows[0]["seq"]
+        return int(seq) if seq is not None else 0
+
 
 def _row_to_lease(row: Mapping[str, object]) -> FaultLease:
     return FaultLease.model_validate(

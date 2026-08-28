@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +23,8 @@ from mayhem.cli.services import (
     run_journal,
 )
 from mayhem.controller.janitor import Janitor
+from mayhem.domain.common import utc_now
+from mayhem.domain.events import Event, EventKind
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 
 if TYPE_CHECKING:
@@ -33,6 +36,45 @@ def _ctx(ctx: click.Context) -> CliContext:
     obj = ctx.obj
     assert isinstance(obj, CliContext)
     return obj
+
+
+def _debug_progress() -> Callable[[Event], None]:
+    """Timestamped, step-by-step live renderer for ``mayhem --debug run``.
+
+    Hooks the engine's in-process event observer (ADR-0009 journal): each step
+    and fault transition is echoed the instant it happens, instead of the
+    run summary appearing only at the end. Locked so parallel steps can't
+    interleave mid-line.
+    """
+
+    lock = threading.Lock()
+
+    def _line(event: Event) -> str | None:
+        kind = event.kind
+        ts = utc_now().strftime("%H:%M:%S")
+        if kind is EventKind.RUN_STARTED:
+            return f"{ts} run {event.run_id} started"
+        if kind is EventKind.STEP_STARTED:
+            return f"{ts}   -> {event.detail.get('step')}"
+        if kind is EventKind.FAULT_INJECTED:
+            return (
+                f"{ts}      injected {event.detail.get('fault')}"
+                f" (lease {event.detail.get('lease')})"
+            )
+        if kind is EventKind.STEP_FINISHED:
+            return f"{ts}   [ok] {event.detail.get('step')}: {event.detail.get('detail')}"
+        if kind is EventKind.STEP_SKIPPED:
+            return f"{ts}   [FAIL] {event.detail.get('step')}: {event.detail.get('detail')}"
+        return None
+
+    def on_event(event: Event) -> None:
+        line = _line(event)
+        if line is None:
+            return
+        with lock:
+            click.echo(line)
+
+    return on_event
 
 
 def _compose_option[F: Callable[..., object]](fn: F) -> F:
@@ -183,9 +225,22 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
             store,
             _resolve_engine_from_state(),
             live_graph=lambda: build_graph(resolved_compose),
+            on_event=_debug_progress() if obj.debug else None,
         )
         result = engine.execute(compiled.plan)
-        click.echo(result.summary_md())
+        if obj.debug:
+            # per-step lines were streamed live; print the consolidated trailer
+            trailer = [
+                f"**status**: {result.status}",
+                f"**wall**: {result.wall_seconds:.1f}s",
+            ]
+            trailer.extend(
+                f"- **DIRTY LEASE** {lease_id}: manual remediation required"
+                for lease_id in result.dirty_leases
+            )
+            click.echo("\n".join(trailer))
+        else:
+            click.echo(result.summary_md())
         if result.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
     finally:

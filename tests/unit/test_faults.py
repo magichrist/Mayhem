@@ -66,6 +66,18 @@ class TestFaultDefinition:
         with pytest.raises(SchemaValidationError, match="outside"):
             spec.validate_params({"pct": 150})
 
+    def test_bytes_param_dsl(self) -> None:
+        spec = FaultDefinition(
+            id="mem.exhaust",
+            category=FaultCategory.MEMORY,
+            risk=RiskLevel.HIGH,
+            params_schema=(ParamSpec(name="amount", type=ParamType.BYTES),),
+        )
+        assert spec.validate_params({"amount": "256M"}) == {"amount": 256 * 1024 * 1024}
+        assert spec.validate_params({"amount": "1.5G"}) == {"amount": 1.5 * 2**30}
+        with pytest.raises(SchemaValidationError, match="got 'a lot'"):
+            spec.validate_params({"amount": "a lot"})
+
     def test_new_fault_categories(self) -> None:
         from mayhem.domain.catalog import CATALOG
 

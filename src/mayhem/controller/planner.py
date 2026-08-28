@@ -8,7 +8,7 @@ container so the executor can run them concurrently (Phase 5, ADR-0019/0021).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from mayhem.controller.compensation import compensated
 from mayhem.domain.catalog import definition_for
@@ -19,6 +19,7 @@ from mayhem.domain.errors import (
 )
 from mayhem.domain.experiments import (
     CheckHttp,
+    DrillFault,
     DrillSpec,
     ExecutionPlan,
     ExperimentKind,
@@ -67,26 +68,18 @@ def plan_drill(
     for block in spec.execution:
         if block.parallel:
             # All containers in a parallel block share one `seq` so the
-            # executor groups and runs them concurrently (Phase 5).
+            # executor groups and runs them concurrently (Phase 5); the block
+            # advances by the longest container's fault chain.
+            emitted = 0
             for container_name in block.parallel:
-                _plan_container_faults(
-                    container_name,
-                    spec.containers[container_name],
-                    graph,
-                    steps,
-                    seq,
-                )
-            seq += 1
+                container = spec.containers[container_name]
+                planned = _plan_container_faults(container_name, container, graph, steps, seq)
+                emitted = max(emitted, planned)
+            seq += emitted
         elif block.sequential:
             for container_name in block.sequential:
-                _plan_container_faults(
-                    container_name,
-                    spec.containers[container_name],
-                    graph,
-                    steps,
-                    seq,
-                )
-                seq += 1
+                container = spec.containers[container_name]
+                seq += _plan_container_faults(container_name, container, graph, steps, seq)
         elif block.wait is not None:
             steps.append(
                 PlannedStep(
@@ -171,12 +164,13 @@ def _plan_container_faults(
     graph: TopologyGraph,
     out: list[PlannedStep],
     seq: int,
-) -> None:
-    """Plan the fault list of one drill container as a single fault step.
+) -> int:
+    """Plan every fault on the container as its own compensatable step.
 
-    The container's faults are fused into one :class:`PlannedFault`. When a
-    container carries multiple faults, only the first is injected per step for
-    now; each step is independently compensatable (write-ahead undo per step).
+    Each fault becomes an independently compensatable step (write-ahead undo
+    per fault); steps advance ``seq`` by one so a multi-fault container never
+    double-injects concurrently. Returns the number of steps emitted so the
+    caller can advance its sequence counter.
     """
     if not container.faults:
         # Container referenced in execution but defines no faults: emit a
@@ -188,20 +182,30 @@ def _plan_container_faults(
                 raw_action=Wait(type="wait", duration=0.0),
             )
         )
-        return
-
-    matched = _find_container_nodes(graph, container_name)
-    drill_fault = container.faults[0]
-    try:
-        definition = definition_for(drill_fault.fault)
-    except SchemaValidationError as exc:
-        raise PlanningError(str(exc)) from None
-    except LookupError as exc:
-        raise PlanningError(str(exc)) from None
+        return 1
 
     # A container name matches the whole subtree (service, container, process).
+    matched = tuple(_find_container_nodes(graph, container_name))
+    for i, drill_fault in enumerate(container.faults):
+        out.append(_plan_fault_step(container_name, matched, drill_fault, graph, seq + i))
+    return len(container.faults)
+
+
+def _plan_fault_step(
+    container_name: str,
+    matched: tuple[TopologyNode, ...],
+    drill_fault: DrillFault,
+    graph: TopologyGraph,
+    seq: int,
+) -> PlannedStep:
+    """Compile one drill fault into a compensatable :class:`PlannedStep`."""
+    try:
+        definition = definition_for(drill_fault.fault)
+    except (SchemaValidationError, LookupError) as exc:
+        raise PlanningError(str(exc)) from None
+
     # The fault applies to a specific kind subset, so target only the nodes it
-    # can actually act on rather than asserting every matched kind is supported.
+    # can actually act on.
     nodes = tuple(n for n in matched if n.kind in definition.applicable_node_kinds)
     if not nodes:
         kinds = ", ".join(sorted({n.kind.value for n in matched}))
@@ -210,33 +214,51 @@ def _plan_container_faults(
             f"container {container_name!r} (matched kinds: {kinds})"
         )
 
-    resolved_targets = tuple(
-        ResolvedTarget(
-            selector=TargetSelector(kind=node.kind, expr=node.name), node_ids=frozenset({node.id})
-        )
-        for node in nodes
+    # Compensation runs against the drill container's whole subtree: the
+    # fault's own matching nodes plus the container/process address the undo op
+    # executes in. Drill faults name containers; e.g. cpu.saturate targets
+    # SERVICE only, but its payload undo must still reach the container that
+    # backs the service (ADR-0020).
+    compensation_nodes = list(matched)
+    seen = {id(node) for node in compensation_nodes}
+    for node in matched:
+        for proc in graph.connected_processes(node.id):
+            if id(proc) not in seen:
+                seen.add(id(proc))
+                compensation_nodes.append(proc)
+
+    # ``duration`` is a Duration (float); the ``"10s"`` class default reaches
+    # the runtime as an unvalidated str unless explicitly passed through
+    # validation, so resolve both forms before comparing against the cap.
+    raw_duration: int | float | str = cast("int | float | str", drill_fault.duration)
+    duration_s = (
+        parse_duration(raw_duration) if isinstance(raw_duration, str) else float(raw_duration)
     )
-
-    # Compensation needs a ProcessNode; walk RUNS_ON edges from each container.
-    compensation_nodes = list(nodes)
-    for node in nodes:
-        procs = graph.connected_processes(node.id)
-        compensation_nodes.extend(procs)
-
-    duration_raw = drill_fault.duration
-    if isinstance(duration_raw, (int, float)):
-        duration_s = float(duration_raw)
-    else:
-        duration_s = parse_duration(duration_raw)
     if duration_s > definition.max_duration_s:
         raise PlanningError(
             f"fault {definition.id!r} duration {duration_s}s exceeds cap "
             f"{definition.max_duration_s}s"
         )
-    params = definition.validate_params(getattr(drill_fault, "params", None) or {})
+    # DrillFault accepts fault parameters as extra YAML keys on the fault
+    # entry (e.g. ``percent: 80``), collected via ``model_extra``; an explicit
+    # ``params:`` mapping is honored as well. ``duration``, ``on_failure`` and
+    # ``targets`` are declared fields and never treated as parameters.
+    raw_params: dict[str, object] = {}
+    explicit = getattr(drill_fault, "params", None)
+    if isinstance(explicit, dict):
+        raw_params.update(explicit)
+    for key, value in (getattr(drill_fault, "model_extra", None) or {}).items():
+        if value is not None:
+            raw_params.setdefault(key, value)
+    params = definition.validate_params(raw_params)
+
+    selectors = tuple(TargetSelector(kind=node.kind, expr=node.name) for node in nodes)
     planned = PlannedFault(
         fault_id=definition.id,
-        targets=tuple(resolved_targets),
+        targets=tuple(
+            ResolvedTarget(selector=selector, node_ids=frozenset({node.id}))
+            for selector, node in zip(selectors, nodes, strict=True)
+        ),
         params=params,
         duration=drill_fault.duration,
         backend=None,
@@ -245,16 +267,14 @@ def _plan_container_faults(
     if not planned.undo_ops:
         msg = f"fault {definition.id!r} compiled without undo contract"
         raise InvariantViolationError("plan_write_ahead_undo", msg)
-    out.append(
-        PlannedStep(
-            id=f"{container_name}-{seq:04d}",
-            seq=seq,
-            fault=planned,
-            raw_action=InjectFault(
-                fault=definition.id,
-                selectors=tuple(TargetSelector(kind=node.kind, expr=node.name) for node in nodes),
-                params=params,
-                duration=drill_fault.duration,
-            ),
-        )
+    return PlannedStep(
+        id=f"{container_name}-{seq:04d}",
+        seq=seq,
+        fault=planned,
+        raw_action=InjectFault(
+            fault=definition.id,
+            selectors=selectors,
+            params=params,
+            duration=drill_fault.duration,
+        ),
     )

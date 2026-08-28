@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, assert_never
+from urllib.parse import urlsplit
 
 from mayhem.agents.executors import executor_for
 from mayhem.agents.lease_client import LeaseClient
@@ -80,6 +81,9 @@ def _substitute_pids(
     undo_ops: tuple[UndoOp, ...],
     verify_probes: tuple[VerifyProbe, ...],
     live_pids: dict[str, int],
+    *,
+    engine: str | None = None,
+    live_targets: Mapping[str, tuple[int, str]] | None = None,
 ) -> tuple[tuple[UndoOp, ...], tuple[VerifyProbe, ...]]:
     """Replace the ``@live-pid`` placeholder with a freshly resolved PID.
 
@@ -88,7 +92,16 @@ def _substitute_pids(
     *which* target a placeholder belongs to; substitution is by node_id. When no
     live PID is available the placeholder is left untouched, preserving the
     plan-time value baked in by the compensation template.
+
+    When ``engine`` and ``live_targets`` (node_id → ``(pid, container_name)``)
+    are supplied for a **proc.pause** op, the substituted PID is additionally
+    addressed by its owning ``cont`` + ``engine`` so the executor can signal the
+    process *inside* the container (podman/docker ``exec``). This is required
+    when the container runtime lives in a detached VM (podman-machine on macOS),
+    where a host ``os.kill`` cannot reach the container PID namespace.
     """
+
+    cont_by_node = {nid: cont for nid, (_pid, cont) in (live_targets or {}).items()}
 
     def _swap(value: object) -> object:
         if isinstance(value, (list, tuple)):
@@ -104,19 +117,57 @@ def _substitute_pids(
             return value
         return str(pid)
 
+    def _address(node_id: str) -> dict[str, str]:
+        if not engine:
+            return {}
+        cont = cont_by_node.get(node_id)
+        if not cont:
+            return {}
+        return {"cont": cont, "engine": engine}
+
     new_undo = tuple(
-        UndoOp(op=op.op, args={k: _swap(v) for k, v in op.args.items()}, idempotent=op.idempotent)
+        UndoOp(
+            op=op.op,
+            args={**{k: _swap(v) for k, v in op.args.items()}, **_address(_resolved_node(op))},
+            idempotent=op.idempotent,
+        )
         for op in undo_ops
     )
     new_verify = tuple(
         VerifyProbe(
             probe=p.probe,
-            args={k: _swap(v) for k, v in p.args.items()},
+            args={
+                **{k: _swap(v) for k, v in p.args.items()},
+                **_address(_resolved_verify_node(p)),
+            },
             expect_present=p.expect_present,
         )
         for p in verify_probes
     )
     return new_undo, new_verify
+
+
+def _resolved_verify_node(probe: VerifyProbe) -> str | None:
+    """node_id whose ``@live-pid`` placeholder appears in a verify probe."""
+    for value in probe.args.values():
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and _LIVE_PID in item:
+                    return item.split(":", 1)[0] or None
+        elif isinstance(value, str) and _LIVE_PID in value:
+            return value.split(":", 1)[0] or None
+    return None
+
+
+def _resolved_node(op: UndoOp) -> str | None:
+    """node_id whose ``@live-pid`` placeholder was resolved in ``op``, if any."""
+    for value in op.args.values():
+        if not isinstance(value, str) or _LIVE_PID not in value:
+            continue
+        node_id = value.split(":", 1)[0]
+        if node_id:
+            return node_id
+    return None
 
 
 def _group_by_seq(steps: Sequence[PlannedStep]) -> list[list[PlannedStep]]:
@@ -169,6 +220,7 @@ class RunEngine:
         abort_file: Path | None = None,
         resource_manager: ResourceManager | None = None,
         engine: str | None = None,
+        on_event: Callable[[Event], None] | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -182,6 +234,7 @@ class RunEngine:
         self._abort_mode: str | None = None  # "graceful" | "immediate"
         self._resource_manager = resource_manager
         self._engine = engine  # podman/docker; pid/ip resolved at execution (ADR-0020)
+        self._on_event = on_event  # in-process observer; invoked for every journaled event
 
     # -- public -----------------------------------------------------------------------
 
@@ -368,7 +421,8 @@ class RunEngine:
         # Resolve fresh PIDs at execution time (ADR-0020): the PID baked into the plan is
         # a placeholder, never older than the injection syscall. Substitute the live value
         # into the undo contract + verify probes before the lease forms.
-        live_pids = self._resolve_live_pids(fault)
+        live_targets = self._resolve_live_targets(fault)
+        live_pids = {node_id: pid for node_id, (pid, _cont) in live_targets.items()}
         if self._live_graph is not None:
             # Container mode: a target whose container PID cannot be resolved has no
             # usable fallback, so fail the step *before* a lease forms instead of
@@ -383,7 +437,13 @@ class RunEngine:
                     ),
                     [],
                 )
-        undo_ops, verify_probes = _substitute_pids(fault.undo_ops, fault.verify_probes, live_pids)
+        undo_ops, verify_probes = _substitute_pids(
+            fault.undo_ops,
+            fault.verify_probes,
+            live_pids,
+            engine=self._engine,
+            live_targets=live_targets,
+        )
         ttl = max(float(fault.duration) + 60.0, 120.0)
         lease = self._client.acquire(
             run_id=plan.run_id,
@@ -491,27 +551,97 @@ class RunEngine:
         Only nodes that carry a container_name are resolved. Resolution is
         best-effort: nodes without a live container are skipped so a stale
         topology never blocks the run (ADR-0020).
+
+        The container name is captured alongside so downstream container-mode
+        executors can address the process *inside* its container (podman/docker
+        ``exec``) rather than via a host PID — required when the container
+        runtime lives in a detached VM (e.g. podman-machine on macOS).
         """
+        resolved = {key: value[0] for key, value in self._resolve_live_targets(fault).items()}
+        return resolved
+
+    def _resolve_live_targets(self, fault: PlannedFault) -> dict[str, tuple[int, str]]:
+        """Map node_id → ``(host_pid, container_name)`` for live container runs."""
         if self._live_graph is None:
             return {}
         graph = self._live_graph()
         from mayhem.domain.topology import ContainerNode, ProcessNode  # noqa: PLC0415
 
-        resolved: dict[str, int] = {}
+        resolved: dict[str, tuple[int, str]] = {}
+        node_pool: set[str] = set()
         for target in fault.targets:
-            for node_id in target.node_ids:
-                node = graph.by_id(node_id)
-                container_name: str | None = None
-                if isinstance(node, (ContainerNode, ProcessNode)):
-                    container_name = node.container_name
-                if not container_name:
-                    continue
-                try:
-                    info = resolve_container(container_name, self._engine)
-                except RuntimeError:
-                    continue
-                resolved[node_id] = info.pid
+            node_pool.update(target.node_ids)
+        # The undo contract may reference a compensation node (e.g. the process
+        # node under a service target) rather than the fault's kind-gated
+        # targets; resolve those placeholders too so payload executors get a
+        # live cont/engine address (ADR-0020).
+        for op in fault.undo_ops:
+            for value in op.args.values():
+                if isinstance(value, str) and _LIVE_PID in value:
+                    node_pool.add(value.split(":", 1)[0])
+        for node_id in node_pool:
+            node = graph.by_id(node_id)
+            container_name: str | None = None
+            if isinstance(node, (ContainerNode, ProcessNode)):
+                container_name = node.container_name
+            if not container_name:
+                continue
+            try:
+                info = resolve_container(container_name, self._engine)
+            except RuntimeError:
+                continue
+            resolved[node_id] = (info.pid, container_name)
         return resolved
+
+    def _route_http_probe(self, url: str, expected: int) -> VerifyProbe:
+        """Return an HTTP :class:`VerifyProbe`, routed through the engine when
+        the URL host names a running container.
+
+        Drill checks name compose services (e.g. ``http://testcase-api:8080/``)
+        which resolve only inside the container network and are not routable
+        from the host (podman-machine sits behind a NAT). When the host is a
+        live container, rewrite the probe into an ``<engine> exec`` that runs
+        the HTTP request inside the container against ``127.0.0.1:port``,
+        bridging the host/VM boundary. Unmatched or unresolvable hosts keep a
+        plain on-host HTTP probe.
+        """
+        from mayhem.domain.leases import VerifyProbe  # noqa: PLC0415
+
+        parts = None
+        host = None
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+        except ValueError:
+            parts = None
+        container = False
+        if host and self._engine:
+            try:
+                resolve_container(host, self._engine)
+                container = True
+            except Exception:
+                container = False
+        if not container:
+            return VerifyProbe(
+                probe="http",
+                args={"url": url, "expect_status": expected, "timeout_s": "5"},
+                expect_present=True,
+            )
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        code = (
+            "import urllib.request,sys;"
+            f"r=urllib.request.urlopen('http://127.0.0.1:{port}/',timeout=5);"
+            f"print('HTTP', r.status);"
+            f"sys.exit(0 if r.status=={expected} else 1)"
+        )
+        return VerifyProbe(
+            probe="exec",
+            args={
+                "cmd": [self._engine, "exec", host, "python", "-c", code],
+                "timeout_s": "10",
+            },
+            expect_present=True,
+        )
 
     def _execute_check(self, step: PlannedStep) -> StepReport:
         ref = getattr(step.raw_action, "ref", "")
@@ -519,23 +649,23 @@ class RunEngine:
         if check is None:
             return StepReport(step.id, False, f"check {ref!r} not compiled into engine")
         verify = _domain_probe_to_verify(check.probe)
+        if verify is not None and verify.probe == "http" and verify.args.get("url"):
+            expected = verify.args.get("expect_status", 200)
+            if not isinstance(expected, int):
+                expected = 200
+            verify = self._route_http_probe(str(verify.args["url"]), expected)
         result = run_probe(verify)
         passed = result.satisfied
         return StepReport(step.id, passed, f"{ref}: {'pass' if passed else result.detail}")
 
     def _execute_check_http(self, step: PlannedStep) -> StepReport:
         """Run an inline :class:`CheckHttp` step (drill plans) against a live URL."""
-        from mayhem.domain.leases import VerifyProbe  # noqa: PLC0415
 
         url = getattr(step.raw_action, "url", "")
         expected = getattr(step.raw_action, "expected_status", None)
         if not url:
             return StepReport(step.id, False, "check_http step missing url")
-        verify = VerifyProbe(
-            probe="http",
-            args={"url": url, "expect_status": int(expected) if expected is not None else 200},
-            expect_present=True,
-        )
+        verify = self._route_http_probe(url, int(expected) if expected is not None else 200)
         result = run_probe(verify)
         return StepReport(step.id, result.satisfied, f"{url}: {result.detail}")
 
@@ -697,6 +827,11 @@ class RunEngine:
                     json.dumps(event.detail),
                 ),
             )
+        # Observer callbacks must never break the run (ADR-0009: the journal is
+        # the source of truth; a live renderer is a best-effort projection).
+        if self._on_event is not None:
+            with contextlib.suppress(Exception):
+                self._on_event(event)
 
 
 def _domain_probe_to_verify(probe: Probe) -> VerifyProbe:

@@ -8,7 +8,7 @@ layer can reuse it verbatim.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +30,9 @@ from mayhem.infra.store import Store
 from mayhem.spec import load_drill
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from mayhem.domain.events import Event
     from mayhem.toolkit.registry import CapabilityReport
 
 DEFAULT_DB = "mayhem.db"
@@ -168,13 +171,17 @@ def plan_from_spec(
     resolved against the right runtime at execution time ([ADR-0020]).
     """
     spec = load_drill(spec_path)
-    run_id = f"r-{spec.name}"
+    # The run id is `r-<name>-<suffix>`: the readable base keeps the drill
+    # identifiable, while the unique suffix lets any number of runs against the
+    # same spec be recorded in one persistent DB without colliding on the
+    # `runs.id` PRIMARY KEY.
+    run_id = f"r-{spec.name}-{uuid.uuid4().hex[:8]}"
     common: dict[str, str] = {
         "config_snapshot_id": prepared.config_snapshot_id,
         "topology_snapshot_id": prepared.topology_snapshot_id,
         "environment_fingerprint": prepared.fingerprint,
     }
-    plan = plan_drill(run_id, spec, graph, **common, engine=engine)  # type: ignore[arg-type]
+    plan = plan_drill(run_id, spec, graph, **common, engine=engine)
     return CompiledPlan(run_id=run_id, plan=plan)
 
 
@@ -183,8 +190,15 @@ def engine_for(
     engine: str = "podman",
     *,
     live_graph: Callable[[], TopologyGraph] | None = None,
+    on_event: Callable[[Event], None] | None = None,
 ) -> RunEngine:
-    return RunEngine(store, SQLiteLeaseSink(store), engine=engine, live_graph=live_graph)
+    return RunEngine(
+        store,
+        SQLiteLeaseSink(store),
+        engine=engine,
+        live_graph=live_graph,
+        on_event=on_event,
+    )
 
 
 def recent_runs(store: Store, limit: int) -> list[dict[str, Any]]:

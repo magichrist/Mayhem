@@ -76,6 +76,7 @@ class ParamType(StrEnum):
     BOOLEAN = "boolean"
     DURATION = "duration"
     PERCENT = "percent"
+    BYTES = "bytes"
 
 
 class ParamSpec(BaseModel):
@@ -185,27 +186,34 @@ def _numeric(raw: object) -> float:
 def _convert(spec: ParamSpec, raw: object) -> object:
     match spec.type:
         case ParamType.STRING:
-            return str(raw)
+            value: object = str(raw)
         case ParamType.INTEGER:
             number = _numeric(raw)
             if not number.is_integer():
                 raise ValueError(f"{raw!r} is not an integer")
-            return int(number)
+            value = int(number)
         case ParamType.FLOAT:
-            return _numeric(raw)
+            value = _numeric(raw)
         case ParamType.BOOLEAN:
             if not isinstance(raw, bool):
                 raise ValueError("expected boolean")
-            return raw
+            value = raw
         case ParamType.DURATION:
             from mayhem.domain.common import parse_duration  # noqa: PLC0415
 
-            return parse_duration(str(raw))
+            value = parse_duration(str(raw))
+        case ParamType.BYTES:
+            from mayhem.domain.common import parse_bytes  # noqa: PLC0415
+
+            value = parse_bytes(str(raw))
         case ParamType.PERCENT:
             number = _numeric(raw)
             if not 0.0 <= number <= 100.0:
                 raise ValueError(f"{number} outside [0, 100]")
-            return number
+            value = number
+        case _:
+            raise AssertionError(f"unhandled param type {spec.type}")
+    return value
 
 
 def _coerce(spec: ParamSpec, raw: object) -> object:

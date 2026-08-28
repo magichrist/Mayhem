@@ -23,7 +23,7 @@ mayhem run      --db .mayhem/e2e.db examples/testCase/mayhem.yaml --compose exam
 | Field         | Type                    | Required | Default          | Description |
 |---------------|-------------------------|----------|------------------|-------------|
 | `kind`        | `"drill"` (literal)     | yes      | —                | Discriminator; must be exactly `drill`. |
-| `name`        | string                  | yes      | —                | Drill name; used for the run id (`r-<name>`). |
+| `name`        | string                  | yes      | —                | Drill name; run ids carry it as a readable prefix (`r-<name>-<suffix>`). The unique suffix lets unlimited runs against one spec be recorded in a persistent DB. |
 | `hypothesis`  | string                  | no       | `""`             | What the drill is trying to prove. |
 | `config`      | [DrillConfig](#config)  | no       | `DrillConfig()`  | Safety / runtime settings. |
 | `containers`  | map<string, [DrillContainer](#containers)> | yes | — | Faults per container. At least one required. |
@@ -145,8 +145,8 @@ Faults are identified by their catalog id in `fault:`. Risk levels feed the
 |--------------------------|----------|---------|--------------|------------|
 | `proc.pause`             | process  | low     | 600s         | — |
 | `cpu.saturate`           | cpu      | medium  | 300s         | `percent` (1–100) |
-| `mem.exhaust`            | memory   | high    | —            | `percent` (1–99) |
-| `fs.fill`                | storage  | medium  | —            | `percent` (1–99) |
+| `mem.exhaust`            | memory   | high    | 120s         | `percent` (1–99) **or** `amount` (byte DSL) |
+| `fs.fill`                | storage  | medium  | 300s         | `percent` (1–99) |
 | `net.latency`            | network  | medium  | —            | `ms`, `jitter_ms` |
 | `net.partition`          | network  | high    | —            | `targets` (list in the fault) |
 | `container.kill`         | container| medium  | —            | `signal` (default `SIGKILL`) |
@@ -160,6 +160,23 @@ Faults are identified by their catalog id in `fault:`. Risk levels feed the
 | `tls.certificate_expired`| tls      | high    | —            | — |
 | `clock.skew`             | clock    | high    | 300s         | `offset_ms` (required) |
 | `fd.exhaust`             | fd       | high    | 120s         | `limit` (default `64`) |
+
+### Byte-quantity DSL
+
+Faults that take a size (e.g. `mem.exhaust` with `amount`) accept a byte-quantity
+string: a number plus an optional unit. Plain `K`/`M`/`G`/`T` and `KiB`/`MiB`/
+`GiB`/`TiB` are powers of 1024; `KB`/`MB`/`GB`/`TB` are powers of 1000; a bare
+number is plain bytes.
+
+```yaml
+- fault: mem.exhaust
+  amount: 256M   # 256 * 1024 * 1024 bytes
+  duration: 20s
+```
+
+When both `amount` and `percent` are given, `amount` wins. `amount` is also
+capped at 95% of the container's memory limit so a drill can never OOM-kill the
+whole container.
 
 > A fault whose definition lacks an executable compensation/undo template is refused
 > at plan time — every injected fault is reversible.

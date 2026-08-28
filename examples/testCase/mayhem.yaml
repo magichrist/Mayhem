@@ -15,16 +15,21 @@ containers:
       - fault: proc.pause
         duration: 10s
         on_failure: abort_and_recover
+      - fault: mem.exhaust
+        amount: 256M
+        duration: 20s
+  
+  testcase-lb:
+    faults:
+      - fault: fuzz.protocol_abuse
+        duration: 5s
+      - fault: load.spike
+        duration: 5s
 
   testcase-download-1:
     faults:
       - fault: proc.pause
         duration: 10s
-
-  testcase-lb:
-    faults:
-      - fault: fuzz.protocol_abuse
-        duration: 5s
 
 execution:
   - parallel: [testcase-api, testcase-download-1]

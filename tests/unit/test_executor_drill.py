@@ -106,6 +106,40 @@ def _patch_resolve(
     monkeypatch.setattr(executor_mod, "resolve_container", fake_resolve)
 
 
+def _patch_run_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the in-container signal delivery + inspect presence check.
+
+    Container-addressed faults send SIGSTOP/SIGCONT via ``engine kill`` and
+    verify presence via ``engine inspect``. Unit tests have no live container,
+    so the delivery is stubbed as a successful invocation and the inspect
+    returns a nonzero pid (process present).
+    """
+    from mayhem.agents import executors as agents_mod
+    from mayhem.agents import probes as probes_mod
+    from mayhem.toolkit.tool_runner import ToolResult
+
+    def fake_run_tool(
+        argv, *, env=None, cwd=None, timeout_s=None, max_output_bytes=None, stdin_data=None
+    ) -> ToolResult:
+        argv = tuple(argv)
+        stdout = "2310872" if len(argv) >= 2 and argv[1] == "inspect" else ""
+        return ToolResult(
+            argv=argv,
+            argv_digest="x",
+            env_digest="x",
+            host="",
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=stdout,
+            stderr="",
+            truncated=False,
+        )
+
+    monkeypatch.setattr(agents_mod, "run_tool", fake_run_tool)
+    monkeypatch.setattr(probes_mod, "run_tool", fake_run_tool)
+
+
 def _plan(run_id: str, graph: TopologyGraph, spec: DrillSpec):
     return plan_drill(
         run_id,
@@ -126,6 +160,7 @@ class TestParallelExecution:
         try:
             graph = _graph(pa.pid, pb.pid)
             _patch_resolve(monkeypatch, {"c-a": pa.pid, "c-b": pb.pid})
+            _patch_run_tool(monkeypatch)
             engine, store = _engine(tmp_path, graph)
             plan = _plan("r-par", graph, _drill())
 
@@ -203,6 +238,7 @@ class TestInlineCheck:
         try:
             graph = _graph(pa.pid, 999998)
             _patch_resolve(monkeypatch, {"c-a": pa.pid})
+            _patch_run_tool(monkeypatch)
             engine, _store = _engine(tmp_path, graph)
             spec = DrillSpec(
                 kind="drill",

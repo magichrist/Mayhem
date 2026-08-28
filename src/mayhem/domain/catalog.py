@@ -44,7 +44,10 @@ CATALOG: tuple[FaultDefinition, ...] = (
         risk=RiskLevel.HIGH,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
         max_duration_s=120.0,
-        params_schema=(_pct(minimum=1.0, maximum=99.0),),
+        params_schema=(
+            _pct(minimum=1.0, maximum=99.0),
+            ParamSpec(name="amount", type=ParamType.BYTES),
+        ),
     ),
     FaultDefinition(
         id="fs.fill",

@@ -8,7 +8,7 @@ import json
 import pytest
 
 from mayhem.agents import protocol as rpc
-from mayhem.agents.executors import NoopExecutor, ProcPauseExecutor
+from mayhem.agents.executors import EXECUTORS, ProcPauseExecutor
 from mayhem.agents.server import AgentServer
 from mayhem.agents.transports import LocalStdioTransport, SSHTransport, session_for
 
@@ -54,7 +54,7 @@ class TestFraming:
 
 class TestServerMethods:
     def _server(self) -> AgentServer:
-        return AgentServer(roles=("proc", "fuzz"), executors=(ProcPauseExecutor(), NoopExecutor()))
+        return AgentServer(roles=("proc", "fuzz"), executors=EXECUTORS)
 
     def test_handshake_reports_identity(self) -> None:
         request = rpc.RpcRequest(id=1, method="handshake", params=CTX)

@@ -53,7 +53,7 @@ class TestToolkitGroup:
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
         assert main(["ex", "v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
-        assert "validated r-drill-pause" in capsys.readouterr().out
+        assert "validated r-drill-pause-" in capsys.readouterr().out
 
 
 class TestPlanValidateRun:
@@ -64,7 +64,7 @@ class TestPlanValidateRun:
         assert main(["plan", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
         out = capsys.readouterr().out
         plan = json.loads(out)
-        assert plan["run_id"] == "r-drill-pause"
+        assert plan["run_id"].startswith("r-drill-pause")
         assert "proc.pause" in out
 
     def test_validate_passes_gates(
@@ -72,7 +72,7 @@ class TestPlanValidateRun:
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
         assert main(["v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
-        assert "validated r-drill-pause" in capsys.readouterr().out
+        assert "validated r-drill-pause-" in capsys.readouterr().out
 
     def test_missing_compose_is_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
