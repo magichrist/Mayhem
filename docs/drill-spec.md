@@ -149,6 +149,7 @@ Faults are identified by their catalog id in `fault:`. Risk levels feed the
 | `fs.fill`                | storage  | medium  | 300s         | `percent` (1–99) |
 | `net.latency`            | network  | medium  | —            | `ms`, `jitter_ms` |
 | `net.partition`          | network  | high    | —            | `targets` (list in the fault) |
+| `net.load`               | network  | medium  | 600s         | `users` (≥1), `url` — saturates container egress with a deterministic k6 HTTP load generator; requires a `k6` binary in the target image |
 | `container.kill`         | container| medium  | —            | `signal` (default `SIGKILL`) |
 | `node.service_stop`      | node     | high    | —            | — |
 | `http.error_injection`   | http_api | medium  | —            | `status` (default `500`) |

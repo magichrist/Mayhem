@@ -24,6 +24,7 @@ class EventKind(StrEnum):
     STEP_FINISHED = "step.finished"
     STEP_SKIPPED = "step.skipped"
     FAULT_INJECTED = "fault.injected"
+    FAULT_OBSERVED = "fault.observed"
     FAULT_RECOVERED = "fault.recovered"
     FAULT_FAILED = "fault.failed"
     TOOL_EXECUTED = "tool.executed"

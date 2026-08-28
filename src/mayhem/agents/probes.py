@@ -71,6 +71,11 @@ def _run_exec(args: dict[str, object]) -> ProbeResult:
         # the runtime VM (podman-machine on macOS), which a host ``ps`` cannot
         # see. ``<engine> inspect`` addresses the container main process across
         # the VM boundary, so a nonzero/inspectable container means "present".
+        if args.get("incontainer"):
+            argv = [str(engine), "exec", str(cont), *cmd]
+            result = run_tool(argv, timeout_s=_arg_float(args, "timeout_s", 10.0))
+            detail = f"exec {cont} exit={result.exit_code} stderr={result.stderr[:120]!r}"
+            return ProbeResult("exec", result.succeeded, detail)
         argv = [str(engine), "inspect", "--format", "{{.State.Pid}}", str(cont)]
         result = run_tool(argv, timeout_s=_arg_float(args, "timeout_s", 10.0))
         pid = result.stdout.strip()

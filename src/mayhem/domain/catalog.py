@@ -80,6 +80,17 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(),
     ),
     FaultDefinition(
+        id="net.load",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.MEDIUM,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=600.0,
+        params_schema=(
+            ParamSpec(name="users", type=ParamType.INTEGER, minimum=1.0),
+            ParamSpec(name="url", type=ParamType.STRING, default="http://localhost/"),
+        ),
+    ),
+    FaultDefinition(
         id="container.kill",
         category=FaultCategory.CONTAINER,
         risk=RiskLevel.MEDIUM,

@@ -106,6 +106,14 @@ class TestDrillPlanning:
         source = str(payload.args["payload"])
         assert "amount = 268435456" in source
         assert "goal = amount if amount > 0" in source
+        assert fault.verify_probes  # lease activation demands recovery evidence
+        probe = fault.verify_probes[0]
+        assert probe.probe == "exec"
+        assert probe.args["incontainer"] is True
+        assert "test ! -e" in str(probe.args["cmd"])
+        assert probe.args["pid"] == "ctr-api:@live-pid"
+        assert "test ! -e" in str(probe.args["cmd"])
+        assert probe.args["incontainer"] is True
 
     def test_missing_container_name_raises(self) -> None:
         from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep

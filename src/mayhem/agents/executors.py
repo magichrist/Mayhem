@@ -229,7 +229,7 @@ class ToolExecutor(FaultExecutor):
     Keeps exotic faults declarative without new executor classes.
     """
 
-    prefixes = ("net", "disk", "container", "node", "http", "db")
+    prefixes = ("net", "disk", "container", "node", "http", "db", "dns", "clock")
 
     def _argv_for(self, lease: FaultLease, key: str) -> list[str]:
         for op in lease.undo_ops:
@@ -244,6 +244,16 @@ class ToolExecutor(FaultExecutor):
                     and decoded
                     and all(isinstance(item, str) for item in decoded)
                 ):
+                    # Container-addressed faults embed @engine/@cont tokens that the
+                    # live substitute resolves (ADR-0020); leave them untouched when
+                    # the op carries no live address so a stale plan fails loudly.
+                    engine = op.args.get("engine")
+                    cont = op.args.get("cont")
+                    if engine and cont:
+                        return [
+                            item.replace("@engine", engine).replace("@cont", cont)
+                            for item in decoded
+                        ]
                     return decoded
         return []
 

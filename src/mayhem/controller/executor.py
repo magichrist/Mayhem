@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, assert_never
 from urllib.parse import urlsplit
 
 from mayhem.agents.executors import executor_for
+from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.resource_manager import ResourceManager
@@ -490,6 +491,44 @@ class RunEngine:
         self._record_tool_result(inject_outcome.tool_result if inject_outcome else None)
         self._sleep_interruptible(float(fault.duration))
 
+        # Functional-impact observation (FaultGateway): while the fault is
+        # live, invert the recovery probe to capture whether the perturbation
+        # actually took hold. Families whose probe cannot see the live state
+        # (e.g. proc.pause — a STOPped process still answers ``kill -0``) are
+        # recorded as inconclusive, never as inert.
+        impact_observed: bool | None = None
+        impact_note = ""
+        if lease.verify_probes:
+            live_report = verify_all(tuple(lease.verify_probes), lease.id)
+            if fault.fault_id in OBSERVATION_BLIND:
+                impact_observed = None
+                impact_note = "probe-blind family: perturbation not visible to recovery probe"
+            else:
+                impact_observed = not live_report.all_satisfied
+                impact_note = next(
+                    (r.detail for r in live_report.results if not r.satisfied), ""
+                )
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_OBSERVED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "impact_observed": impact_observed,
+                        "note": impact_note,
+                    },
+                )
+            )
+
+        impact_part = (
+            "impact observed"
+            if impact_observed
+            else "impact inconclusive (probe-blind)"
+            if impact_observed is None
+            else "no impact observed by recovery probe"
+        )
+
         self._client.mark_releasing(lease.id)
         undo_outcome = executor.undo(lease) if executor is not None else None
         self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
@@ -511,6 +550,8 @@ class RunEngine:
                 {
                     "inject": (inject_outcome.detail if inject_outcome else "no-executor"),
                     "undo": undo_outcome.detail if undo_outcome else "no-executor",
+                    "impact_observed": impact_observed,
+                    "impact_note": impact_note,
                 }
             ),
             verified=verified,
@@ -528,7 +569,7 @@ class RunEngine:
             # Update resource state after successful recovery
             if tracked_resource is not None and self._resource_manager is not None:
                 self._resource_manager.mark_recovered(tracked_resource.id, verified=True)
-            detail = "; ".join(detail_parts) or f"{fault.fault_id} injected+recovered"
+            detail = "; ".join([*detail_parts, impact_part]) or f"{fault.fault_id} injected+recovered"
             return StepReport(step.id, inject_ok, detail), []
 
         # Recovery failed — mark resource as dirty

@@ -308,3 +308,76 @@ def _process_state(pid: int) -> str:
         check=False,
     )
     return out.stdout.strip()[:1]
+
+
+class TestToolExecutorTokenAddressing:
+    def test_dispatch_covers_tool_compensated_families(self) -> None:
+        for fid in (
+            "dns.resolve_delay",
+            "dns.nxdomain",
+            "clock.skew",
+        ):
+            assert isinstance(executor_for(fid), ToolExecutor)
+
+    def test_container_tokens_rewritten_from_live_address(self) -> None:
+        executor = ToolExecutor()
+        lease = FaultLease.model_validate(
+            {
+                "id": "l-tok",
+                "run_id": "r-1",
+                "fault_id": "dns.resolve_delay",
+                "owner_agent": "ag-t",
+                "targets": ["n1"],
+                "undo_ops": (
+                    {
+                        "op": "file.revert",
+                        "args": {
+                            "inject_argv": json.dumps(
+                                ["@engine", "exec", "@cont", "sh", "-c", "true"]
+                            ),
+                            "undo_argv": json.dumps(
+                                ["@engine", "exec", "@cont", "sh", "-c", "true"]
+                            ),
+                            "engine": "podman",
+                            "cont": "testcase-api",
+                        },
+                    },
+                ),
+                "verify_probes": (),
+            }
+        )
+        assert executor._argv_for(lease, "inject_argv") == [
+            "podman",
+            "exec",
+            "testcase-api",
+            "sh",
+            "-c",
+            "true",
+        ]
+
+    def test_unaddressed_tokens_survive_verbatim(self) -> None:
+        executor = ToolExecutor()
+        lease = FaultLease.model_validate(
+            {
+                "id": "l-bare",
+                "run_id": "r-1",
+                "fault_id": "net.latency",
+                "owner_agent": "ag-t",
+                "targets": ["n1"],
+                "undo_ops": (
+                    {
+                        "op": "custom.argv",
+                        "args": {
+                            "inject_argv": json.dumps([sys.executable, "-c", "print('x')"]),
+                            "undo_argv": json.dumps([sys.executable, "-c", "pass"]),
+                        },
+                    },
+                ),
+                "verify_probes": (),
+            }
+        )
+        assert executor._argv_for(lease, "inject_argv") == [
+            sys.executable,
+            "-c",
+            "print('x')",
+        ]

@@ -7,9 +7,11 @@ fault prefix and may inspect resolved nodes.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
+from mayhem.domain.common import parse_duration
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.topology import NodeKind, ProcessNode
@@ -84,6 +86,20 @@ def _iparam(fault: PlannedFault, name: str, default: int) -> int:
     """Coerce a validated param to int (params deserialize from YAML scalars)."""
     raw = _param(fault, name, default)
     return default if not isinstance(raw, (int, float)) else int(raw)
+
+
+def _fault_duration_s(fault: PlannedFault, default: float = 30.0) -> float:
+    """Fault window in seconds (planned faults may carry a ``10s`` string)."""
+    raw = fault.duration
+    if isinstance(raw, str):
+        try:
+            return parse_duration(raw)
+        except (TypeError, ValueError):
+            return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def _payload_marker(fault: PlannedFault, node: TopologyNode) -> str:
@@ -265,18 +281,35 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
 _PAYLOAD_IMPORTS = "import os, time\n"
 
 
+def _payload_node(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> TopologyNode | None:
+    """Pick the engine address for a payload fault: the first node that carries a
+    container_name — a live container, its process, or the compose service
+    (blueprint-only topology) — since payload inject/undo/verify all run through
+    the container engine (ADR-0020)."""
+    from mayhem.domain.topology import (  # noqa: PLC0415
+        ContainerNode, ProcessNode, ServiceNode, TopologyNode,
+    )
+
+    node: TopologyNode | None = next(
+        (
+            n
+            for n in nodes
+            if isinstance(n, (ContainerNode, ProcessNode)) and getattr(n, "container_name", None)
+        ),
+        None,
+    )
+    if node is None:
+        node = next(
+            (n for n in nodes if isinstance(n, ServiceNode) and getattr(n, "container_name", None)),
+            None,
+        )
+    return node
+
+
 def _payload_undo_ops(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Compensation for payload-family faults: SIGKILL the injected process and
     remove its marker files. Reversible by construction (marker-addressed undo)."""
-    from mayhem.domain.topology import ContainerNode, ProcessNode  # noqa: PLC0415
-
-    node = None
-    for candidate in nodes:
-        if isinstance(candidate, (ContainerNode, ProcessNode)) and getattr(
-            candidate, "container_name", None
-        ):
-            node = candidate
-            break
+    node = _payload_node(fault, nodes)
     if node is None:
         raise NO_UNDO
     marker = _payload_marker(fault, node)
@@ -290,6 +323,31 @@ def _payload_undo_ops(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> t
                 "marker": marker,
                 "pid": _pid_arg(node),  # node_id:@live-pid -> cont/engine at exec
             },
+        ),
+    )
+
+
+def _payload_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    """Recovery evidence for payload-family faults: the marker file must be gone
+    after undo (undo SIGKILLs the marker pid and deletes the marker). Addressed
+    through the same container engine path as the undo op (ADR-0020), so the
+    probe only passes once the payload's in-container effects were removed."""
+    node = _payload_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _payload_marker(fault, node)
+    return (
+        VerifyProbe(
+            probe="exec",
+            args={
+                "cmd": ["sh", "-c", f"test ! -e {marker}"],
+                "incontainer": True,
+                "pid": _pid_arg(node),
+                "timeout_s": "5",
+            },
+            expect_present=True,
         ),
     )
 
@@ -340,13 +398,481 @@ def _ignores_fault(
 def _payload_compensation_templates() -> dict[str, CompensationTemplate]:
     return dict.fromkeys(
         sorted(_PAYLOAD_FAULTS),
-        CompensationTemplate(_payload_undo_ops, lambda _fault, _nodes: ()),
+        CompensationTemplate(_payload_undo_ops, _payload_verify),
     )
+
+
+# ---------------------------------------------------------------------------
+# Tool compensation — argv-pair faults driven by :class:`ToolExecutor`.
+#
+# Each family emits exactly one undo op whose args carry ``inject_argv`` /
+# ``undo_argv`` (JSON list[str]) plus a ``node_id:@live-pid`` placeholder so the
+# live substitute appends the container address (``cont``/``engine``). The argv
+# pairs embed ``@engine`` / ``@cont`` tokens that :class:`ToolExecutor` rewrites
+# to the live engine + container at execution time (ADR-0020). Verify probes are
+# the payload style: an in-container command that must exit 0 after undo, or an
+# engine-inspect presence check when the fault stops the container.
+# ---------------------------------------------------------------------------
+
+_ENGINE_TOKEN = "@engine"
+_CONTAINER_TOKEN = "@cont"
+
+
+def _tool_node(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> TopologyNode | None:
+    """Engine address for an argv-pair fault: same as the payload selection."""
+    return _payload_node(fault, nodes)
+
+
+def _tool_marker(fault: PlannedFault, node: TopologyNode, suffix: str) -> str:
+    tag = re.sub(r"[^A-Za-z0-9_-]", "-", f"{fault.fault_id}.{node.id}")
+    return f"/tmp/mayhem.{tag}.{suffix}"
+
+
+def _tool_op(
+    fault: PlannedFault,
+    node: TopologyNode,
+    name: str,
+    inject_argv: list[str],
+    undo_argv: list[str],
+) -> UndoOp:
+    return UndoOp(
+        op=name,
+        args={
+            "fault": fault.fault_id,
+            "inject_argv": json.dumps(inject_argv),
+            "undo_argv": json.dumps(undo_argv),
+            "pid": _pid_arg(node),  # node_id:@live-pid -> cont/engine at execution
+        },
+    )
+
+
+def _exec_verify(
+    node: TopologyNode, cmd: list[str], *, incontainer: bool, timeout_s: str = "5"
+) -> VerifyProbe:
+    args: dict[str, object] = {"cmd": cmd, "pid": _pid_arg(node), "timeout_s": timeout_s}
+    if incontainer:
+        args["incontainer"] = True
+    return VerifyProbe(probe="exec", args=args, expect_present=True)
+
+
+def _incontainer_argv(cmd: list[str]) -> list[str]:
+    return [_ENGINE_TOKEN, "exec", _CONTAINER_TOKEN, *cmd]
+
+
+def _engine_argv(action: str) -> list[str]:
+    return [_ENGINE_TOKEN, action, _CONTAINER_TOKEN]
+
+
+def _tool_template(
+    undo: Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]],
+    verify: Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]],
+) -> CompensationTemplate:
+    return CompensationTemplate(undo, verify)
+
+
+def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    delay_ms = _iparam(fault, "seconds", 5) * 1000
+    jitter_ms = _iparam(fault, "jitter_ms", 0)
+    inject = ["tc", "qdisc", "add", "dev", "eth0", "root", "netem", "delay", f"{delay_ms}ms"]
+    if jitter_ms > 0:
+        inject += [f"{jitter_ms}ms"]
+    undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
+    return (
+        _tool_op(
+            fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)
+        ),
+    )
+
+
+def _net_latency_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (
+        _exec_verify(
+            node, ["sh", "-c", "! tc qdisc show dev eth0 | grep -q netem"], incontainer=True
+        ),
+    )
+
+
+def _net_partition_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    inject = ["tc", "qdisc", "add", "dev", "eth0", "root", "netem", "loss", "100%"]
+    undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
+    return (
+        _tool_op(
+            fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)
+        ),
+    )
+
+
+def _net_partition_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (
+        _exec_verify(
+            node, ["sh", "-c", "! tc qdisc show dev eth0 | grep -q netem"], incontainer=True
+        ),
+    )
+
+
+def _net_load_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Saturate container egress with a deterministic k6 HTTP load generator.
+
+    The k6 script is written under the marker path (so the verify probe can see
+    the fault while it is live), then ``k6 run`` is detached inside the
+    container's pid namespace. Undo SIGKILLs the recorded k6 pid and removes
+    both marker files, so recovery, undo and the impact probe agree.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    users = max(1, _iparam(fault, "users", 1))
+    url = str(_param(fault, "url", "http://localhost/"))
+    url = url.replace("\\", "\\\\").replace('"', '\\"')
+    duration_s = max(1, int(_fault_duration_s(fault)))
+    script = _tool_marker(fault, node, "load.js")
+    pidfile = _tool_marker(fault, node, "k6.pid")
+    source = (
+        f"cat > {script} <<'K6EOF'\n"
+        "import http from 'k6/http';\n"
+        "export default function () {\n"
+        f'  http.get("{url}");\n'
+        "}\n"
+        "K6EOF\n"
+        f"k6 run -u {users} -d {duration_s}s {script} >/dev/null 2>&1 &\n"
+        f"echo $! > {pidfile}\n"
+        f"[ -s {pidfile} ] && kill -0 \"$(cat {pidfile})\" 2>/dev/null && exit 0\n"
+        "exit 1\n"
+    )
+    undo = [
+        "sh", "-c",
+        f"p={pidfile}; [ ! -f \"$p\" ] || kill \"$(cat \"$p\")\" 2>/dev/null; "
+        f"rm -f \"$p\" {script}",
+    ]
+    return (
+        _tool_op(
+            fault,
+            node,
+            "k6.sync",
+            _incontainer_argv(["sh", "-c", source]),
+            _incontainer_argv(undo),
+        ),
+    )
+
+
+def _net_load_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    script = _tool_marker(fault, node, "load.js")
+    pidfile = _tool_marker(fault, node, "k6.pid")
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"test ! -e {script} && test ! -e {pidfile}"],
+            incontainer=True,
+        ),
+    )
+
+
+def _engine_restart_undo(
+    inject_action: str, undo_action: str
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return (
+            _tool_op(
+                fault,
+                node,
+                "engine.restart",
+                _engine_argv(inject_action),
+                _engine_argv(undo_action),
+            ),
+        )
+
+    return build
+
+
+def _engine_signal_undo(
+    action: str, undo_action: str
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        sig = str(_param(fault, "signal", "SIGKILL"))
+        if sig.startswith("SIG"):
+            sig = sig[3:]
+        inject = [_ENGINE_TOKEN, action, "--signal", sig, _CONTAINER_TOKEN]
+        undo = [_ENGINE_TOKEN, undo_action, _CONTAINER_TOKEN]
+        return (_tool_op(fault, node, "engine.restart", inject, undo),)
+
+    return build
+
+
+def _engine_restart_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (_exec_verify(node, ["true"], incontainer=False),)
+
+
+def _netfilter_undo(
+    dport: str
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        inject = [
+            "iptables", "-I", "OUTPUT", "-p", "tcp", "--dport", dport, "-j", "DROP",
+        ]
+        undo = [
+            "iptables", "-D", "OUTPUT", "-p", "tcp", "--dport", dport, "-j", "DROP",
+        ]
+        return (
+            _tool_op(
+                fault,
+                node,
+                "iptables.sync",
+                _incontainer_argv(inject),
+                _incontainer_argv(undo),
+            ),
+        )
+
+    return build
+
+
+def _http_error_inject() -> (
+    Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]
+):
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        inject = [
+            "iptables", "-I", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REJECT",
+            "--reject-with", "tcp-reset",
+        ]
+        undo = [
+            "iptables", "-D", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REJECT",
+            "--reject-with", "tcp-reset",
+        ]
+        return (
+            _tool_op(
+                fault,
+                node,
+                "iptables.sync",
+                _incontainer_argv(inject),
+                _incontainer_argv(undo),
+            ),
+        )
+
+    return build
+
+
+def _netfilter_verify(
+    dport: str,
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return (
+            _exec_verify(
+                node,
+                ["sh", "-c", f"! iptables -S OUTPUT | grep -q -- '--dport {dport}'"],
+                incontainer=True,
+            ),
+        )
+
+    return build
+
+
+def _http_error_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", "! iptables -S OUTPUT | grep -q -- '--dport 80'"],
+            incontainer=True,
+        ),
+    )
+
+
+def _file_revert_undo(
+    target: str, *ops: str
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    """Marker-addressed file swap: back up ``target``, then apply ``ops`` (lines
+    of shell run in order). Undo restores the backup and removes the marker."""
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        marker = _tool_marker(fault, node, "orig")
+        inject = ["sh", "-c", f"cp {target} {marker}; " + "; ".join(ops)]
+        undo = ["sh", "-c", f"mv -f {marker} {target}; rm -f {marker}"]
+        return (
+            _tool_op(
+                fault,
+                node,
+                "file.revert",
+                _incontainer_argv(inject),
+                _incontainer_argv(undo),
+            ),
+        )
+
+    return build
+
+
+def _file_revert_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _tool_marker(fault, node, "orig")
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"test ! -e {marker}"],
+            incontainer=True,
+        ),
+    )
+
+
+def _clock_skew_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _tool_marker(fault, node, "clock.orig")
+    offset_ms = _iparam(fault, "offset_ms", 0)
+    inject = [
+        "sh", "-c",
+        f"date -u '+%s' > {marker}; target=$(( $(cat {marker}) + {offset_ms} )); "
+        f"date -u -s '@$target'",
+    ]
+    undo = [
+        "sh", "-c",
+        f"if [ -f {marker} ]; then date -u -s \"@$(cat {marker})\"; fi; rm -f {marker}",
+    ]
+    return (
+        _tool_op(
+            fault,
+            node,
+            "clock.restore",
+            _incontainer_argv(inject),
+            _incontainer_argv(undo),
+        ),
+    )
+
+
+def _clock_skew_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _tool_marker(fault, node, "clock.orig")
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"test ! -e {marker}"],
+            incontainer=True,
+        ),
+    )
+
+
+def _dns_nxdomain_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    target = "/etc/hosts"
+    marker = _tool_marker(fault, node, "orig")
+    domain = str(_param(fault, "domain", "example.com"))
+    inject = ["sh", "-c", f"cp {target} {marker}; echo '127.0.0.1 {domain}' >> {target}"]
+    undo = ["sh", "-c", f"mv -f {marker} {target}; rm -f {marker}"]
+    return (
+        _tool_op(
+            fault,
+            node,
+            "file.revert",
+            _incontainer_argv(inject),
+            _incontainer_argv(undo),
+        ),
+    )
+
+
+def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
+    return {
+        "net.latency": _tool_template(_net_latency_undo, _net_latency_verify),
+        "net.partition": _tool_template(_net_partition_undo, _net_partition_verify),
+        "net.load": _tool_template(_net_load_undo, _net_load_verify),
+        "container.kill": _tool_template(
+            _engine_signal_undo("kill", "start"), _engine_restart_verify
+        ),
+        "node.service_stop": _tool_template(
+            _engine_restart_undo("stop", "start"), _engine_restart_verify
+        ),
+        "http.error_injection": _tool_template(
+            _http_error_inject(), _http_error_verify
+        ),
+        "db.slow_query": _tool_template(
+            _netfilter_undo("3306"),
+            _netfilter_verify("3306"),
+        ),
+        "dns.resolve_delay": _tool_template(
+            _file_revert_undo(
+                "/etc/resolv.conf",
+                "printf 'nameserver 10.255.255.1\\n' > /etc/resolv.conf",
+            ),
+            _file_revert_verify,
+        ),
+        "dns.nxdomain": _tool_template(_dns_nxdomain_undo, _file_revert_verify),
+        "tls.certificate_expired": _tool_template(
+            _file_revert_undo(
+                "/etc/ssl/certs/ca-certificates.crt",
+                ": > /etc/ssl/certs/ca-certificates.crt",
+            ),
+            _file_revert_verify,
+        ),
+        "clock.skew": _tool_template(_clock_skew_undo, _clock_skew_verify),
+    }
 
 
 _TEMPLATES: dict[str, CompensationTemplate] = {
     "proc.pause": _ignores_fault(_proc_pause_undo, _proc_pause_verify),
     **_payload_compensation_templates(),
+    **_tool_compensation_templates(),
 }
 
 

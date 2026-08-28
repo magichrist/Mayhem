@@ -38,6 +38,47 @@ def _ctx(ctx: click.Context) -> CliContext:
     return obj
 
 
+def _gate_faults(engine_name: str, plan: object, graph: object) -> None:
+    """Refuse a run whose faults are proven inert in the live environment.
+
+    Gated here (not at plan time) because the verdict depends on what the
+    *running* container actually has — binaries, capabilities and uid. Water
+    user: an execution whose faults cannot perturb the targets degrades into
+    a survey; we abort before any lease forms.
+    """
+    from mayhem.agents.impact import scan_plan_faults as _scan
+    from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.topology import TopologyGraph
+
+    if not isinstance(plan, ExecutionPlan) or not isinstance(graph, TopologyGraph):
+        return
+    if not engine_name:
+        click.echo(
+            "warning: no engine configured — skipping pre-run fault gate", err=True
+        )
+        return
+    verdicts, engine_probed = _scan(plan, graph, engine_name)
+    dead = [v for v in verdicts if not v.impact_possible and v.probed]
+    unreachable = [v for v in verdicts if not v.probed and v.container != "?"]
+    if dead:
+        lines = "\n".join(
+            f"  - {v.fault_id} → {v.container}: {v.note}"
+            for v in dead
+        )
+        raise click.ClickException(
+            "Fault gate: target containers cannot actually be perturbed "
+            f"({len(dead)} inert injection(s)) — add the missing tooling and "
+            "re-run.\n" + lines
+        )
+    if unreachable:
+        click.echo(
+            "warning: runtime unreachable for "
+            + ", ".join(f"{v.fault_id}@{v.container}" for v in unreachable)
+            + " — impact of those faults cannot be gate-checked before the run",
+            err=True,
+        )
+
+
 def _debug_progress() -> Callable[[Event], None]:
     """Timestamped, step-by-step live renderer for ``mayhem --debug run``.
 
@@ -221,9 +262,11 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
         compiled = plan_from_spec(
             experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
         )
+        engine_name = _resolve_engine_from_state()
+        _gate_faults(engine_name, compiled.plan, graph)
         engine = engine_for(
             store,
-            _resolve_engine_from_state(),
+            engine_name,
             live_graph=lambda: build_graph(resolved_compose),
             on_event=_debug_progress() if obj.debug else None,
         )

@@ -99,6 +99,45 @@ class TestPlanValidateRun:
         assert rc == 0
         assert "completed" in capsys.readouterr().out
 
+    def test_run_refuses_inert_fault_at_gate(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from mayhem.agents import impact as impact_mod
+
+        DRILL = """\
+kind: drill
+name: drill-load
+config:
+  risk_ceiling: critical
+  max_faults: 1
+  timeout: 10m
+containers:
+  testcase-api:
+    faults:
+      - fault: net.load
+        duration: 10s
+execution:
+  - parallel: [testcase-api]
+  - wait: 1s
+"""
+        spec = _write(tmp_path, DRILL)
+        runtime = impact_mod.ContainerRuntime(
+            container="testcase-api",
+            engine="podman",
+            bins={"k6": False},
+            uid=0,
+            cap_eff=0,
+        )
+        monkeypatch.setattr(impact_mod, "probe_container_runtime", lambda *a, **k: runtime)
+        db = tmp_path / "cli.db"
+        rc = main(["--db", str(db), "run", str(spec), "--compose", str(COMPOSE_FILE)])
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "Fault gate" in err and "net.load" in err
+
 
 class TestRecoveryCommands:
     def test_janitor_quiet_sweep(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
