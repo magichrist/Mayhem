@@ -191,6 +191,7 @@ def engine_for(
     *,
     live_graph: Callable[[], TopologyGraph] | None = None,
     on_event: Callable[[Event], None] | None = None,
+    bypass: dict[tuple[str, str], str] | None = None,
 ) -> RunEngine:
     return RunEngine(
         store,
@@ -198,6 +199,7 @@ def engine_for(
         engine=engine,
         live_graph=live_graph,
         on_event=on_event,
+        bypass=bypass,
     )
 
 

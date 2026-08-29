@@ -34,6 +34,40 @@ def test_payload_marks_pid_before_alloc() -> None:
     assert "chunks.append(bytearray(4 * 2 ** 20))" in source
 
 
+def test_holding_payloads_survive_interpreter_eof() -> None:
+    """Faults that hold until undo must not die when ``python -c`` hits EOF."""
+    params = {"dur": 0, "duration": 0, "percent": "80", "limit": "64", "amount": "1"}
+    for fid in ("cpu.saturate", "fd.exhaust", "fs.fill", "mem.exhaust"):
+        fault = PlannedFault(
+            fault_id=fid, targets=(), undo_ops=(), verify_probes=(),
+            params={k: v for k, v in params.items() if k in ("percent", "amount", "limit")},
+            duration=8.0,
+        )
+        source = _payload_source(fault, "/tmp/mayhem.t.pid")
+        assert "time.sleep(3600)" in source, f"{fid} must keep the interpreter alive"
+
+
+def test_burst_payloads_keep_main_thread_for_window() -> None:
+    """load.spike / fuzz.protocol_abuse must sleep through their blast window."""
+    for fid in ("load.spike", "fuzz.protocol_abuse"):
+        fault = PlannedFault(
+            fault_id=fid, targets=(), undo_ops=(), verify_probes=(), params={}, duration=8.0
+        )
+        source = _payload_source(fault, "/tmp/mayhem.t.pid")
+        assert re.search(r"time\.sleep\(8\.0\)", source)
+
+
+def test_cpu_burner_releases_the_gil() -> None:
+    """cpu.saturate must use GIL-releasing C work so N threads pin N cores."""
+    fault = PlannedFault(
+        fault_id="cpu.saturate", targets=(), undo_ops=(), verify_probes=(),
+        params={"percent": "100"}, duration=8.0,
+    )
+    source = _payload_source(fault, "/tmp/mayhem.t.pid")
+    assert "hashlib.sha256" in source
+    assert "threading.Thread" in source
+
+
 def test_payload_undo_addressed_via_service_in_blueprint_only_topology() -> None:
     fault = _mem_fault(percent=60)
     ops = _payload_undo_ops(

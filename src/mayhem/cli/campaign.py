@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from mayhem.cli import style
 from mayhem.cli.resolver import make_group
 from mayhem.cli.services import open_store
 
@@ -43,7 +44,7 @@ def list_campaigns(ctx: Context, db_opt: str | None, as_json: bool) -> None:
                 click.echo("No campaigns.")
                 return
             for row in rows:
-                click.echo(f"{row['id']:<32} {row['name']:<24} {row['status']}")
+                click.echo(f"{row['id']:<32} {row['name']:<24} {style.state(row['status'])}")
     finally:
         store.close()
 
@@ -86,7 +87,7 @@ def create_campaign(
             )
             click.echo(json.dumps(dict(row[0]), indent=2))
         else:
-            click.echo(f"Campaign '{campaign_id}' created successfully.")
+            click.echo(style.ok(f"Campaign '{campaign_id}' created successfully."))
     finally:
         store.close()
 
@@ -103,7 +104,7 @@ def show_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: b
     try:
         rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         row = dict(rows[0])
         if as_json:
@@ -113,7 +114,7 @@ def show_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: b
             click.echo(json.dumps(row, indent=2))
         else:
             click.echo(f"Campaign: {row['name']} ({row['id']})")
-            click.echo(f"  Status: {row['status']}")
+            click.echo(f"  Status: {style.state(row['status'])}")
             if row.get("description"):
                 click.echo(f"  Description: {row['description']}")
             click.echo(f"  Created: {row['created_at']}")
@@ -132,10 +133,10 @@ def campaign_status(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
     try:
         rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         row = dict(rows[0])
-        click.echo(f"{row['id']} {row['name']} {row['status']}")
+        click.echo(f"{row['id']} {row['name']} {style.state(row['status'])}")
     finally:
         store.close()
 
@@ -155,7 +156,7 @@ def delete_campaign(
     try:
         rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         row = dict(rows[0])
         if row["status"] != "draft":
@@ -171,7 +172,7 @@ def delete_campaign(
         if as_json:
             click.echo(json.dumps({"deleted": campaign_id}))
         else:
-            click.echo(f"Campaign '{campaign_id}' deleted.")
+            click.echo(style.ok(f"Campaign '{campaign_id}' deleted."))
     finally:
         store.close()
 
@@ -190,7 +191,7 @@ def start_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: 
     try:
         rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         row = dict(rows[0])
         if row["status"] != "draft":
@@ -213,7 +214,7 @@ def start_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: 
                     r[key] = json.loads(r[key])
             click.echo(json.dumps(r, indent=2))
         else:
-            click.echo(f"Campaign '{campaign_id}' started.")
+            click.echo(style.ok(f"Campaign '{campaign_id}' started."))
     finally:
         store.close()
 
@@ -232,7 +233,7 @@ def archive_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json
     try:
         rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         now = datetime.now(UTC).isoformat()
         with store.write() as conn:
@@ -248,7 +249,7 @@ def archive_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json
                     r[key] = json.loads(r[key])
             click.echo(json.dumps(r, indent=2))
         else:
-            click.echo(f"Campaign '{campaign_id}' archived.")
+            click.echo(style.ok(f"Campaign '{campaign_id}' archived."))
     finally:
         store.close()
 
@@ -266,7 +267,7 @@ def abort_campaign(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
     try:
         rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         now = datetime.now(UTC).isoformat()
         with store.write() as conn:
@@ -274,7 +275,7 @@ def abort_campaign(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
                 "UPDATE campaigns SET status = 'aborted', updated_at = ? WHERE id = ?",
                 (now, campaign_id),
             )
-        click.echo(f"Campaign '{campaign_id}' aborted.")
+        click.echo(style.ok(f"Campaign '{campaign_id}' aborted."))
     finally:
         store.close()
 
@@ -300,7 +301,7 @@ def add_experiment(
     try:
         rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"Campaign {campaign_id!r} not found.", err=True)
+            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
         row = dict(rows[0])
         experiments = json.loads(row.get("experiments_json") or "[]")
@@ -315,6 +316,6 @@ def add_experiment(
                 json.dumps({"campaign_id": campaign_id, "experiments": experiments}, indent=2)
             )
         else:
-            click.echo(f"Added experiment to campaign '{campaign_id}'.")
+            click.echo(style.ok(f"Added experiment to campaign '{campaign_id}'."))
     finally:
         store.close()

@@ -21,7 +21,6 @@ from mayhem.agents.executors import executor_for
 from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
-from mayhem.controller.resource_manager import ResourceManager
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.checks import ProbeType
 from mayhem.domain.common import utc_now
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from mayhem.agents.sinks import LeaseSink
+    from mayhem.controller.resource_manager import ResourceManager
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.checks import Probe, SteadyStateCheck
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
@@ -47,6 +47,11 @@ class StepReport:
     step_id: str
     ok: bool
     detail: str
+    status: str = "ok"  # ok | bypassed | failed
+
+    @property
+    def bypassed(self) -> bool:
+        return self.status == "bypassed"
 
 
 @dataclass(frozen=True)
@@ -66,7 +71,11 @@ class RunResult:
         lines = [f"# Run {self.run_id}", "", f"**status**: {self.status}"]
         lines.append(f"**wall**: {self.wall_seconds:.1f}s")
         for step in self.steps:
-            mark = "ok" if step.ok else "FAIL"
+            mark = (
+                "bypass"
+                if step.status == "bypassed"
+                else "ok" if step.ok else "FAIL"
+            )
             lines.append(f"- [{mark}] {step.step_id}: {step.detail}")
         for lease_id in self.dirty_leases:
             lines.append(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
@@ -76,6 +85,13 @@ class RunResult:
 # Placeholder PID emitted by compensation templates; replaced with the live PID
 # at execution time (ADR-0020), so the value is never older than the syscall.
 _LIVE_PID = "@live-pid"
+
+
+def _step_db_status(report: StepReport) -> str:
+    """Persisted step_runs.status for a report (bypassed echoes the verdict)."""
+    if report.bypassed:
+        return "bypassed"
+    return "completed" if report.ok else "failed"
 
 
 def _substitute_pids(
@@ -222,6 +238,7 @@ class RunEngine:
         resource_manager: ResourceManager | None = None,
         engine: str | None = None,
         on_event: Callable[[Event], None] | None = None,
+        bypass: Mapping[tuple[str, str], str] | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -236,6 +253,10 @@ class RunEngine:
         self._resource_manager = resource_manager
         self._engine = engine  # podman/docker; pid/ip resolved at execution (ADR-0020)
         self._on_event = on_event  # in-process observer; invoked for every journaled event
+        # Verified-inert injections: {(fault_id, container): reason}. The engine
+        # skips those steps as "bypass due to <reason>" instead of failing the
+        # whole run (per-fault fail-safe, mirrors the impact-gate verdicts).
+        self._bypass = dict(bypass or {})
 
     # -- public -----------------------------------------------------------------------
 
@@ -377,10 +398,14 @@ class RunEngine:
         except Exception as exc:
             report = StepReport(step.id, False, f"{type(exc).__name__}: {exc}")
             dirty = []
-        self._finish_step(step, ok=report.ok)
+        self._finish_step(step, ok=report.ok, status=_step_db_status(report))
         self._emit(
             Event(
-                kind=(EventKind.STEP_FINISHED if report.ok else EventKind.STEP_SKIPPED),
+                kind=(
+                    EventKind.STEP_SKIPPED
+                    if (report.bypassed or not report.ok)
+                    else EventKind.STEP_FINISHED
+                ),
                 run_id=plan.run_id,
                 detail={"step": step.id, "detail": report.detail},
             )
@@ -408,7 +433,7 @@ class RunEngine:
                 dirty.extend(lease_dirty)
         return reports, dirty
 
-    def _execute_fault(
+    def _execute_fault(  # noqa: PLR0915, PLR0912  (converging inject/monitor/recover pipeline)
         self, plan: ExecutionPlan, step: PlannedStep
     ) -> tuple[StepReport, list[str]]:
         fault = step.fault
@@ -423,6 +448,21 @@ class RunEngine:
         # a placeholder, never older than the injection syscall. Substitute the live value
         # into the undo contract + verify probes before the lease forms.
         live_targets = self._resolve_live_targets(fault)
+        bypass_reasons = {
+            cont: why
+            for (fid, cont), why in self._bypass.items()
+            if fid == fault.fault_id
+            and cont in {container for _pid, container in live_targets.values()}
+        }
+        if bypass_reasons:
+            # Fail-safe per fault: the impact gate proved this injection cannot
+            # take effect (missing tooling/capability), so skip it with an
+            # explicit reason instead of failing (or perturbing) the run.
+            note = "; ".join(f"{c}: {why}" for c, why in sorted(bypass_reasons.items()))
+            return (
+                StepReport(step.id, True, f"bypass due to {note}", status="bypassed"),
+                [],
+            )
         live_pids = {node_id: pid for node_id, (pid, _cont) in live_targets.items()}
         if self._live_graph is not None:
             # Container mode: a target whose container PID cannot be resolved has no
@@ -569,7 +609,9 @@ class RunEngine:
             # Update resource state after successful recovery
             if tracked_resource is not None and self._resource_manager is not None:
                 self._resource_manager.mark_recovered(tracked_resource.id, verified=True)
-            detail = "; ".join([*detail_parts, impact_part]) or f"{fault.fault_id} injected+recovered"
+            detail = (
+                "; ".join([*detail_parts, impact_part]) or f"{fault.fault_id} injected+recovered"
+            )
             return StepReport(step.id, inject_ok, detail), []
 
         # Recovery failed — mark resource as dirty
@@ -598,8 +640,7 @@ class RunEngine:
         ``exec``) rather than via a host PID — required when the container
         runtime lives in a detached VM (e.g. podman-machine on macOS).
         """
-        resolved = {key: value[0] for key, value in self._resolve_live_targets(fault).items()}
-        return resolved
+        return {key: value[0] for key, value in self._resolve_live_targets(fault).items()}
 
     def _resolve_live_targets(self, fault: PlannedFault) -> dict[str, tuple[int, str]]:
         """Map node_id → ``(host_pid, container_name)`` for live container runs."""
@@ -778,12 +819,15 @@ class RunEngine:
                 ),
             )
 
-    def _finish_step(self, step: PlannedStep, *, ok: bool) -> None:
+    def _finish_step(
+        self, step: PlannedStep, *, ok: bool, status: str | None = None
+    ) -> None:
+        value = status or ("completed" if ok else "failed")
         with self._store.write() as conn:
             conn.execute(
                 "UPDATE step_runs SET status = ?, ended_at = ? WHERE id = ?",
                 (
-                    "completed" if ok else "failed",
+                    value,
                     utc_now().isoformat(),
                     f"{step.seq:04d}-{step.id}",
                 ),

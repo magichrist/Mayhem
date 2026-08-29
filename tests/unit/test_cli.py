@@ -95,19 +95,22 @@ class TestPlanValidateRun:
         result.summary_md.return_value = "run completed"
         spec = _write(tmp_path, DRILL_YAML)
         db = tmp_path / "cli.db"
-        rc = main(["--db", str(db), "run", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(
+            ["--db", str(db), "--skip-gate", "run", str(spec), "--compose", str(COMPOSE_FILE)]
+        )
         assert rc == 0
         assert "completed" in capsys.readouterr().out
 
-    def test_run_refuses_inert_fault_at_gate(
+    def test_run_bypasses_inert_fault_at_gate(
         self,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from mayhem.agents import impact as impact_mod
+        from mayhem.controller.executor import RunResult
 
-        DRILL = """\
+        drill = """\
 kind: drill
 name: drill-load
 config:
@@ -123,7 +126,7 @@ execution:
   - parallel: [testcase-api]
   - wait: 1s
 """
-        spec = _write(tmp_path, DRILL)
+        spec = _write(tmp_path, drill)
         runtime = impact_mod.ContainerRuntime(
             container="testcase-api",
             engine="podman",
@@ -132,11 +135,81 @@ execution:
             cap_eff=0,
         )
         monkeypatch.setattr(impact_mod, "probe_container_runtime", lambda *a, **k: runtime)
+        captured: dict[str, object] = {}
+
+        def _stub_engine(*args: object, **kwargs: object):
+            captured.update(kwargs)
+            eng = MagicMock()
+            eng.execute.return_value = RunResult(
+                run_id="r-gate",
+                status="completed",
+                started_at_epoch_s=0.0,
+                ended_at_epoch_s=0.0,
+            )
+            return eng
+
+        monkeypatch.setattr("mayhem.cli.services.RunEngine", _stub_engine)
         db = tmp_path / "cli.db"
         rc = main(["--db", str(db), "run", str(spec), "--compose", str(COMPOSE_FILE)])
-        assert rc != 0
+        assert rc == 0
         err = capsys.readouterr().err
-        assert "Fault gate" in err and "net.load" in err
+        assert "impact gate — bypassing" in err
+        assert "net.load → testcase-api: bypass due to missing bin:k6" in err
+        bypass = captured["bypass"]
+        assert isinstance(bypass, dict)
+        assert bypass[("net.load", "testcase-api")] == "missing bin:k6"
+
+    def test_skip_gate_bypasses_inert_refusal(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from mayhem.agents import impact as impact_mod
+
+        drill = """\
+kind: drill
+name: drill-load-skip
+config:
+  risk_ceiling: critical
+  max_faults: 1
+  timeout: 10m
+containers:
+  testcase-api:
+    faults:
+      - fault: net.load
+        duration: 10s
+execution:
+  - parallel: [testcase-api]
+  - wait: 1s
+"""
+        spec = _write(tmp_path, drill)
+        inert = impact_mod.ContainerRuntime(
+            container="testcase-api",
+            engine="podman",
+            bins={"k6": False},
+            uid=0,
+            cap_eff=0,
+        )
+        monkeypatch.setattr(impact_mod, "probe_container_runtime", lambda *a, **k: inert)
+        engine = MagicMock()
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "run completed"
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(tmp_path / "cli.db"),
+                    "--skip-gate",
+                    "run",
+                    str(spec),
+                    "--compose",
+                    str(COMPOSE_FILE),
+                ]
+            )
+        assert rc == 0
+        assert "gate skipped" in capsys.readouterr().err
 
 
 class TestRecoveryCommands:

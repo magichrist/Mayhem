@@ -116,7 +116,12 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
     it. Markers let undo and the effect probe detect the payload deterministically.
     """
     fid = fault.fault_id
-    header = f"import os\nopen({marker!r}, 'w').write(str(os.getpid()))\n"
+    header = f"import os, time\nopen({marker!r}, 'w').write(str(os.getpid()))\n"
+    # Payloads holding a fault in force until the undo op SIGKILLs the marker
+    # pid must keep the interpreter alive once their threads are spawned —
+    # otherwise ``python -c`` hits EOF, the daemon threads are killed at
+    # interpreter shutdown, and the effect evaporates within milliseconds.
+    _HOLD = "while True:\n    time.sleep(3600)\n"
     if fid == "mem.exhaust":
         amount = _fparam(fault, "amount", 0.0)
         percent = min(_fparam(fault, "percent", 60.0), 99.0)
@@ -150,16 +155,22 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
         )
     if fid == "cpu.saturate":
         percent = min(_fparam(fault, "percent", 80.0), 100.0)
-        cores = "max(1, int(os.cpu_count() or 1))"
         return header + (
-            "import threading\n"
+            # Pin ``percent`` of the container's visible cores. A pure-Python
+            # arithmetic loop is GIL-bound to a single core no matter how many
+            # threads run, so the burner spins the OpenSSL-backed ``hashlib`` in
+            # each thread instead — C work that releases the GIL, letting N
+            # threads genuinely saturate N cores. Undo stays intact: SIGKILLing
+            # the marker pid kills every burner thread with the process.
+            "import threading, hashlib\n"
             "def burn():\n"
-            "    x = 0\n"
+            "    buf = bytes(64 * 1024)\n"
             "    while True:\n"
-            "        x = (x + 1) % 7\n"
-            f"n = max(1, int(({cores}) * {percent} / 100))\n"
+            "        hashlib.sha256(buf).digest()\n"
+            f"n = max(1, (os.cpu_count() or 1) * {percent:g} // 100)\n"
             "for _ in range(n):\n"
             "    threading.Thread(target=burn, daemon=True).start()\n"
+            + _HOLD
         )
     if fid == "fs.fill":
         percent = min(_fparam(fault, "percent", 45.0), 99.0)
@@ -186,6 +197,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "    except OSError:\n"
             "        time.sleep(0.3)\n"
             "    i += 1\n"
+            + _HOLD
         )
     if fid == "fd.exhaust":
         limit = max(_iparam(fault, "limit", 64), 1)
@@ -202,6 +214,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             f"    open({marker!r} + '.count', 'w').write(str(opened))\n"
             "except Exception:\n"
             "    pass\n"
+            + _HOLD
         )
     if fid == "load.spike":
         seconds = min(_fparam(fault, "seconds", 8.0), 60.0)
@@ -231,6 +244,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "import threading\n"
             f"for _ in range({concurrency}):\n"
             "    threading.Thread(target=blast, daemon=True).start()\n"
+            + f"time.sleep({seconds})\n"
         )
     if fid == "fuzz.protocol_abuse":
         seconds = min(_fparam(fault, "seconds", 8.0), 60.0)
@@ -273,6 +287,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "import threading\n"
             "for _ in range(4):\n"
             "    threading.Thread(target=abuse, daemon=True).start()\n"
+            + f"time.sleep({seconds})\n"
         )
     raise NO_UNDO  # pragma: no cover - only reachable for unregistered payloads
 
@@ -287,7 +302,9 @@ def _payload_node(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> Topol
     (blueprint-only topology) — since payload inject/undo/verify all run through
     the container engine (ADR-0020)."""
     from mayhem.domain.topology import (  # noqa: PLC0415
-        ContainerNode, ProcessNode, ServiceNode, TopologyNode,
+        ContainerNode,
+        ProcessNode,
+        ServiceNode,
     )
 
     node: TopologyNode | None = next(

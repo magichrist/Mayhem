@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from mayhem.cli import style
 from mayhem.cli.context import DEFAULT_DB, CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import (
@@ -38,45 +39,65 @@ def _ctx(ctx: click.Context) -> CliContext:
     return obj
 
 
-def _gate_faults(engine_name: str, plan: object, graph: object) -> None:
-    """Refuse a run whose faults are proven inert in the live environment.
+def _gate_enabled() -> bool:
+    """Impact gate refusal on unless the user explicitly opted out."""
+    from mayhem.cli.app import _STATE
 
-    Gated here (not at plan time) because the verdict depends on what the
-    *running* container actually has — binaries, capabilities and uid. Water
-    user: an execution whose faults cannot perturb the targets degrades into
-    a survey; we abort before any lease forms.
+    return _STATE.get("gate", "1") != "0"
+
+
+def _gate_bypasses(
+    engine_name: str, plan: object, graph: object
+) -> dict[tuple[str, str], str]:
+    """Probe the live containers and mark proved-inert faults for bypass.
+
+    Fail-safe by contract: a fault whose tooling is *proven absent* in its
+    target container is bypassed at execution time (``bypass due to <reason>``)
+    and the rest of the run proceeds — the whole run is never aborted because
+    one image lacks a binary. Only probed verdicts become bypasses; an
+    unreachable runtime is warned about but still attempted.
     """
-    from mayhem.agents.impact import scan_plan_faults as _scan
+    from mayhem.agents.impact import (
+        bypass_from_verdicts,
+    )
+    from mayhem.agents.impact import (
+        scan_plan_faults as _scan,
+    )
     from mayhem.domain.experiments import ExecutionPlan
     from mayhem.domain.topology import TopologyGraph
-
     if not isinstance(plan, ExecutionPlan) or not isinstance(graph, TopologyGraph):
-        return
+        return {}
     if not engine_name:
         click.echo(
-            "warning: no engine configured — skipping pre-run fault gate", err=True
+            style.warn("warning:") + " no engine configured — skipping pre-run fault gate",
+            err=True,
         )
-        return
-    verdicts, engine_probed = _scan(plan, graph, engine_name)
-    dead = [v for v in verdicts if not v.impact_possible and v.probed]
+        return {}
+    verdicts, _engine_probed = _scan(plan, graph, engine_name)
+    bypass = bypass_from_verdicts(verdicts)
     unreachable = [v for v in verdicts if not v.probed and v.container != "?"]
-    if dead:
-        lines = "\n".join(
-            f"  - {v.fault_id} → {v.container}: {v.note}"
-            for v in dead
+    if bypass:
+        n = sum(len(reasons) for reasons in bypass.values())
+        click.echo(
+            style.info("info:") + f" impact gate — bypassing {n} inert fault injection(s):",
+            err=True,
         )
-        raise click.ClickException(
-            "Fault gate: target containers cannot actually be perturbed "
-            f"({len(dead)} inert injection(s)) — add the missing tooling and "
-            "re-run.\n" + lines
-        )
+        for (fid, cont), why in sorted(bypass.items()):
+            click.echo(
+                style.yellow(
+                    f"  - {fid} → {cont}: bypass due to {why}"
+                ),
+                err=True,
+            )
     if unreachable:
         click.echo(
-            "warning: runtime unreachable for "
+            style.warn("warning:")
+            + " runtime unreachable for "
             + ", ".join(f"{v.fault_id}@{v.container}" for v in unreachable)
             + " — impact of those faults cannot be gate-checked before the run",
             err=True,
         )
+    return bypass
 
 
 def _debug_progress() -> Callable[[Event], None]:
@@ -90,22 +111,29 @@ def _debug_progress() -> Callable[[Event], None]:
 
     lock = threading.Lock()
 
-    def _line(event: Event) -> str | None:
+    def _line(event: Event) -> str | None:  # noqa: PLR0911 (one return per event kind)
         kind = event.kind
-        ts = utc_now().strftime("%H:%M:%S")
+        ts = style.ts(utc_now().strftime("%H:%M:%S"))
         if kind is EventKind.RUN_STARTED:
-            return f"{ts} run {event.run_id} started"
+            return f"{ts} {style.cyan(f'run {event.run_id} started')}"
         if kind is EventKind.STEP_STARTED:
-            return f"{ts}   -> {event.detail.get('step')}"
+            return f"{ts}   -> {style.cyan(str(event.detail.get('step') or ''))}"
         if kind is EventKind.FAULT_INJECTED:
             return (
-                f"{ts}      injected {event.detail.get('fault')}"
+                f"{ts}      {style.cyan('injected')} {event.detail.get('fault')}"
                 f" (lease {event.detail.get('lease')})"
             )
         if kind is EventKind.STEP_FINISHED:
-            return f"{ts}   [ok] {event.detail.get('step')}: {event.detail.get('detail')}"
+            step = event.detail.get("step")
+            return f"{ts}   {style.ok('[ok]')} {step}: {event.detail.get('detail')}"
         if kind is EventKind.STEP_SKIPPED:
-            return f"{ts}   [FAIL] {event.detail.get('step')}: {event.detail.get('detail')}"
+            step = event.detail.get("step")
+            detail = str(event.detail.get("detail") or "").strip()
+            if detail.startswith("bypass due to"):
+                return f"{ts}   {style.yellow('[bypass]', bold=True)} {step}: " + style.yellow(
+                    detail
+                )
+            return f"{ts}   {style.danger('[FAIL]', err=False)} {step}: {detail}"
         return None
 
     def on_event(event: Event) -> None:
@@ -206,7 +234,8 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
     finally:
         store.close()
     click.echo(
-        f"validated {compiled.run_id}: {len(compiled.plan.steps)} step(s), "
+        f"{style.ok('validated')} {style.cyan(compiled.run_id)}: "
+        f"{len(compiled.plan.steps)} step(s), "
         f"fingerprint {prepared.fingerprint[:12]}"
     )
 
@@ -263,22 +292,31 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
             experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
         )
         engine_name = _resolve_engine_from_state()
-        _gate_faults(engine_name, compiled.plan, graph)
+        bypass: dict[tuple[str, str], str] = {}
+        if _gate_enabled():
+            bypass = _gate_bypasses(engine_name, compiled.plan, graph)
+        else:
+            click.echo(
+                style.warn("warning:")
+                + " impact gate skipped (--skip-gate); inert faults may run",
+                err=True,
+            )
         engine = engine_for(
             store,
             engine_name,
             live_graph=lambda: build_graph(resolved_compose),
             on_event=_debug_progress() if obj.debug else None,
+            bypass=bypass,
         )
         result = engine.execute(compiled.plan)
         if obj.debug:
             # per-step lines were streamed live; print the consolidated trailer
             trailer = [
-                f"**status**: {result.status}",
-                f"**wall**: {result.wall_seconds:.1f}s",
+                f"**status**: {style.state(result.status)}",
+                f"**wall**: {style.ts(f'{result.wall_seconds:.1f}s')}",
             ]
             trailer.extend(
-                f"- **DIRTY LEASE** {lease_id}: manual remediation required"
+                style.danger(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
                 for lease_id in result.dirty_leases
             )
             click.echo("\n".join(trailer))
@@ -315,7 +353,8 @@ def status(
         else:
             for row in rows:
                 started = row["started_at"] or "-"
-                click.echo(f"{row['id']:<28} {row['kind']:<13} {row['status']:<10} {started}")
+                sid = style.state(f"{row['status']:<10}")
+                click.echo(f"{row['id']:<28} {row['kind']:<13} {sid} {started}")
     finally:
         store.close()
 
@@ -343,10 +382,10 @@ def recover(ctx: click.Context, run_id: str) -> None:
     try:
         recovered = engine_for(store, _resolve_engine_from_state()).recover_run(run_id)
         if not recovered:
-            click.echo(f"nothing to recover for {run_id}")
+            click.echo(f"nothing to recover for {style.cyan(run_id)}")
             return
         for lease_id in recovered:
-            click.echo(f"recovered lease {lease_id}")
+            click.echo(f"recovered lease {style.cyan(lease_id)}")
     finally:
         store.close()
 
@@ -361,13 +400,15 @@ def janitor(ctx: click.Context) -> None:
     finally:
         store.close()
     if sweep.quiet:
-        click.echo("janitor: nothing to do")
+        click.echo(style.cyan("janitor: nothing to do"))
         return
     for lease_id in sweep.expired:
-        click.echo(f"expired pending lease {lease_id}")
+        click.echo(f"expired pending lease {style.cyan(lease_id)}")
     for lease_id in sweep.recovered:
-        click.echo(f"recovered orphaned lease {lease_id}")
+        click.echo(f"recovered orphaned lease {style.cyan(lease_id)}")
     for lease_id in sweep.dirty:
-        click.echo(f"DIRTY lease {lease_id}: compensation failed; manual action required")
+        click.echo(
+            style.danger(f"DIRTY lease {lease_id}: compensation failed; manual action required")
+        )
     if sweep.dirty:
         ctx.exit(int(ExitCode.RECOVERY_FAILURE))

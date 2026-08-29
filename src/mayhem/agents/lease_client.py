@@ -7,11 +7,15 @@ still leaves a durable trail for the janitor.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
+from mayhem.domain.common import utc_now
 from mayhem.domain.leases import FaultLease, LeaseState
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from mayhem.agents.sinks import LeaseSink
 from mayhem.toolkit.fingerprint import interpreter_marker
 
@@ -61,16 +65,32 @@ class LeaseClient:
                 "ttl_seconds": ttl_seconds,
             }
         )
-        existing = [x for x in self._sink.active_leases() if x.targets & set(targets)]
-        if existing:
-            holders = ", ".join(f"{x.id} ({x.owner_agent})" for x in existing)
+        now = utc_now()
+        live: list[FaultLease] = []
+        overlap = [x for x in self._sink.active_leases() if x.targets & set(targets)]
+        for existing in overlap:
+            deadline = existing.created_at.timestamp() + float(existing.ttl_seconds)
+            if deadline < now.timestamp():
+                # Past TTL is abandoned by definition (ADR-0007 / janitor
+                # contract) — expire it durably so a crashed run cannot wedge
+                # every later run on the same targets.
+                self._expire_quietly(existing, now)
+            else:
+                live.append(existing)
+        if live:
+            holders = ", ".join(f"{x.id} ({x.owner_agent})" for x in live)
             raise LeaseConflictError(
                 f"targets {sorted(targets)} already leased by {holders} "
-                "-- if a previous run crashed, clear its stale leases with "
-                "'mayhem janitor' and retry"
+                "-- retry after the lease owner releases them"
             )
         self._sink.save(lease)
         return lease
+
+    def _expire_quietly(self, lease: FaultLease, now: datetime) -> None:
+        """Best-effort TTL reap; a failed reap just gets retried next acquire."""
+        with contextlib.suppress(Exception):
+            expired = lease.transition(LeaseState.EXPIRED, mechanism="past-ttl", now=now)
+            self._sink.save(expired)
 
     def activate(self, lease_id: str) -> FaultLease:
         lease = self._require(lease_id)

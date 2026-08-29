@@ -8,6 +8,7 @@ from mayhem.agents import impact
 from mayhem.agents.impact import (
     ContainerRuntime,
     GateVerdict,
+    bypass_from_verdicts,
     gate_fault,
     parse_runtime_output,
     probe_container_runtime,
@@ -56,6 +57,16 @@ CAP_STRING = (
 
 
 class TestParse:
+    def test_probe_script_is_valid_sh(self) -> None:
+        """The probe must not start with a bare ``;`` (it previously did, so
+        every runtime probe died with ``sh: syntax error`` and the gate fell
+        back to "unreachable" for all faults)."""
+        script = impact._PROBE_SH
+        assert script.startswith("printf 'BINS'")
+        assert "; printf ' tc:" in script
+        assert script.count("printf 'BINS'") == 1
+        assert "uid 0" not in script
+
     def test_parses_bins_uid_capeff(self) -> None:
         out = "BINS tc:1 python:0 python3:1 sh:1 date:0 k6:1" + "\nUID 7\n" + CAP_STRING
         run = parse_runtime_output("podman", "testcase-api", out)
@@ -97,12 +108,16 @@ class TestGate:
         verdict = gate_fault("container.kill", "testcase-api", "podman", _runtime(bins={}))
         assert verdict.impact_possible is True
 
-    def test_unreachable_runtime_is_inconclusive_not_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unreachable_runtime_is_inconclusive_not_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(impact, "probe_container_runtime", lambda *a, **k: None)
         verdict = gate_fault("net.latency", "testcase-api", "podman", runtime=None)
         assert verdict.impact_possible is False and verdict.probed is False
 
-    def test_probe_container_runtime_none_on_tool_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_probe_container_runtime_none_on_tool_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from mayhem.toolkit.tool_runner import ToolError
 
         def boom(*a, **k):
@@ -140,8 +155,22 @@ def _plan(fault_id: str) -> ExecutionPlan:
     fault = PlannedFault(
         fault_id=fault_id,
         targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"ctr-api"})),),
-        undo_ops=(UndoOp(op="sh.sync", args={"inject_argv": json.dumps(["tc"]), "undo_argv": json.dumps(["tc"])}),),
-        verify_probes=(VerifyProbe(probe="exec", args={"cmd": ["sh", "-c", "true"]}, expect_present=False),),
+        undo_ops=(
+            UndoOp(
+                op="sh.sync",
+                args={
+                    "inject_argv": json.dumps(["tc"]),
+                    "undo_argv": json.dumps(["tc"]),
+                },
+            ),
+        ),
+        verify_probes=(
+            VerifyProbe(
+                probe="exec",
+                args={"cmd": ["sh", "-c", "true"]},
+                expect_present=False,
+            ),
+        ),
         params={},
         duration=6.0,
     )
@@ -190,6 +219,26 @@ class TestScan:
         verdicts, probed = scan_plan_faults(_plan("net.load"), _graph(), "podman")
         assert probed is False
         assert all(v.probed is False for v in verdicts)
+
+
+class TestBypass:
+    def test_only_probed_inert_verdicts_become_bypasses(self) -> None:
+        verdicts = [
+            GateVerdict("cpu.saturate", "c-a", True, note="ok"),
+            GateVerdict("net.latency", "c-b", False, missing=("bin:tc",), note="missing bin:tc"),
+            GateVerdict("clock.skew", "c-c", False, probed=False, note="unreachable"),
+            GateVerdict("mem.exhaust", "c-d", False, missing=("uid(0)",), note="missing uid(0)"),
+        ]
+        bypass = bypass_from_verdicts(verdicts)
+        assert bypass == {
+            ("net.latency", "c-b"): "missing bin:tc",
+            ("mem.exhaust", "c-d"): "missing uid(0)",
+        }
+        # Unreachable runtimes are not proven inert => attempted, never bypassed.
+        assert ("clock.skew", "c-c") not in bypass
+
+    def test_empty_verdicts_produce_empty_bypass(self) -> None:
+        assert bypass_from_verdicts([]) == {}
 
 
 class TestCatalogDose:

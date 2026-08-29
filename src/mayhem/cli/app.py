@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from mayhem.cli import style
 from mayhem.cli.campaign import campaign
 from mayhem.cli.config_cmd import config
 from mayhem.cli.context import CliContext
@@ -50,6 +51,11 @@ _STATE: dict[str, str] = {"debug": "", "engine": ""}
 @click.option("--profile", default=None, help="Configuration profile name.")
 @click.option("--allow-critical", is_flag=True, help="Acknowledge critical-risk faults.")
 @click.option(
+    "--skip-gate",
+    is_flag=True,
+    help="Run even when the impact gate proved some faults inert.",
+)
+@click.option(
     "--podman", "podman", is_flag=True, default=False, help="Use Podman instead of Docker."
 )
 @click.option("--debug", is_flag=True, help="Re-raise errors instead of rendering them.")
@@ -60,11 +66,13 @@ def app(
     config_path: str | None,
     profile: str | None,
     allow_critical: bool,
+    skip_gate: bool,
     podman: bool,
     debug: bool,
 ) -> None:
     _STATE["debug"] = "1" if debug else ""
     _STATE["engine"] = "podman" if podman else ""
+    _STATE["gate"] = "0" if skip_gate else "1"
     ctx.obj = CliContext(
         db=db or "mayhem.db",
         config=config_path,
@@ -82,7 +90,7 @@ app.add_command(config, "cfg")
 
 
 def _fail(message: str, code: int) -> int:
-    click.echo(f"error: {message}", err=True)
+    click.echo(f"{style.danger('error:')} {message}", err=True)
     return code
 
 

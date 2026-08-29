@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 from mayhem.toolkit.tool_runner import ToolError, run_tool
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault
     from mayhem.domain.topology import TopologyGraph
 
@@ -105,9 +107,10 @@ class ContainerRuntime:
 
 
 _PROBE_SH = (
-    "printf 'BINS'"
-    "".join(f"; printf ' {b}:%s' \"$(command -v {b} >/dev/null 2>&1 && echo 1 || echo 0)\""
-            for b in _PROBE_BINS)
+    "printf 'BINS'" + "".join(
+        f"; printf ' {b}:%s' \"$(command -v {b} >/dev/null 2>&1 && echo 1 || echo 0)\""
+        for b in _PROBE_BINS
+    )
     + "; echo; printf 'UID %s\\n' \"$(id -u 2>/dev/null || echo -1)\";"
     + " printf 'CAPEFF %s\\n' \"$(awk '/CapEff/{print $2}' /proc/1/status 2>/dev/null || echo 0)\""
 )
@@ -201,20 +204,21 @@ def gate_fault(
     return GateVerdict(fault_id, container, possible, tuple(missing), note=note)
 
 
-def _container_for(graph: "TopologyGraph", fault: "PlannedFault") -> str | None:
+def _container_for(graph: TopologyGraph, fault: PlannedFault) -> str | None:
     """First resolvable container the fault would inject into (for gating)."""
     for target in fault.targets:
         for node_id in target.node_ids:
             node = graph.by_id(node_id)
             if node is None:
                 continue
-            if getattr(node, "container_name", None):
-                return node.container_name
+            name = getattr(node, "container_name", None)
+            if isinstance(name, str) and name:
+                return name
     return None
 
 
 def scan_plan_faults(
-    plan: "ExecutionPlan", graph: "TopologyGraph", engine: str
+    plan: ExecutionPlan, graph: TopologyGraph, engine: str
 ) -> tuple[list[GateVerdict], bool]:
     """Gate every fault in ``plan`` against its live container.
 
@@ -253,3 +257,21 @@ def scan_plan_faults(
             engine_probed = True
         verdicts.append(gate_fault(fault.fault_id, container, engine, runtime))
     return verdicts, engine_probed
+
+
+def bypass_from_verdicts(
+    verdicts: Sequence[GateVerdict],
+) -> dict[tuple[str, str], str]:
+    """Verified-inert injections → ``{(fault_id, container): reason}``.
+
+    Fail-safe contract: a fault whose tooling is **proven absent** in its
+    target container is bypassed at execution time (logged as ``bypass due to
+    <reason>``) instead of aborting the whole run. Only ``probed`` verdicts
+    count — an unreachable runtime cannot be proven inert, so those faults are
+    still attempted.
+    """
+    return {
+        (v.fault_id, v.container): v.note or v.fault_id
+        for v in verdicts
+        if v.probed and not v.impact_possible
+    }

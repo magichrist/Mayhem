@@ -248,9 +248,44 @@ M0004_DRILL_RUN_KIND = Migration(
     ),
 )
 
+M0005_STEP_RUN_BYPASS_STATUS = Migration(
+    version=5,
+    name="step_run_bypass_status",
+    statements=(
+        # Rebuild `step_runs` so `status` admits 'bypassed' — the per-fault
+        # fail-safe outcome where the impact gate proved tooling absent and the
+        # engine skipped the injection instead of failing the run.
+        """
+        CREATE TABLE step_runs_new (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            parent_step_id TEXT REFERENCES step_runs(id),
+            action_type TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','running','completed','failed','skipped','cancelled','bypassed')),
+            started_at TEXT,
+            ended_at TEXT,
+            error TEXT
+        )
+        """,
+        """
+        INSERT INTO step_runs_new (id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error)
+        SELECT id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error
+        FROM step_runs
+        """,
+        "DROP TABLE step_runs",
+        "ALTER TABLE step_runs_new RENAME TO step_runs",
+    ),
+)
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
     M0003_CAMPAIGNS_OBSERVATIONS,
     M0004_DRILL_RUN_KIND,
+    M0005_STEP_RUN_BYPASS_STATUS,
 )

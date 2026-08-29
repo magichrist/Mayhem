@@ -77,6 +77,35 @@ class TestLeaseLifecycle:
         first.acquire(run_id="r-1", fault_id="cpu.burn", targets={"svc-1"}, undo_ops=())
         second.acquire(run_id="r-1", fault_id="mem.pressure", targets={"svc-2"}, undo_ops=())
 
+    def test_stale_lease_past_ttl_is_reaped_not_conflicted(self) -> None:
+        """A crashed run's past-TTL lease must not wedge later runs."""
+        from datetime import timedelta
+
+        shared = InMemoryLeaseSink()
+        first = LeaseClient(shared, agent_id="ag-a")
+        stale = first.acquire(
+            run_id="r-1", fault_id="cpu.burn", targets={"svc-1"}, undo_ops=()
+        )
+        aged = stale.model_copy(
+            update={"created_at": stale.created_at - timedelta(seconds=200)}
+        )
+        shared.save(aged)
+        second = LeaseClient(shared, agent_id="ag-b")
+        lease = second.acquire(
+            run_id="r-2", fault_id="mem.pressure", targets={"svc-1"}, undo_ops=()
+        )
+        assert lease.targets == {"svc-1"}
+        assert shared.load(stale.id).state is LeaseState.EXPIRED
+
+    def test_live_lease_within_ttl_still_conflicts(self) -> None:
+        shared = InMemoryLeaseSink()
+        first = LeaseClient(shared, agent_id="ag-a")
+        first.acquire(run_id="r-1", fault_id="cpu.burn", targets={"svc-1"}, undo_ops=())
+        with pytest.raises(LeaseConflictError, match="svc-1"):
+            LeaseClient(shared, agent_id="ag-b").acquire(
+                run_id="r-1", fault_id="mem.pressure", targets={"svc-1"}, undo_ops=()
+            )
+
     def test_unknown_lease_raises_key_error(self) -> None:
         with pytest.raises(KeyError):
             _client().activate("l-does-not-exist")

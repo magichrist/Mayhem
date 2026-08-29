@@ -6,6 +6,7 @@ import json
 
 import click
 
+from mayhem.cli import style
 from mayhem.cli.resolver import make_group
 from mayhem.cli.services import effective_config
 
@@ -43,4 +44,4 @@ def validate(ctx: click.Context) -> None:
     obj = ctx.obj
     assert isinstance(obj, CliContext)
     _cfg, sources = effective_config(obj.config, obj.profile)
-    click.echo(f"configuration valid ({len(sources)} layer(s))")
+    click.echo(style.ok(f"configuration valid ({len(sources)} layer(s))"))

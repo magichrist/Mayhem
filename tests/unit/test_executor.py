@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.planner import plan_drill
@@ -70,10 +72,15 @@ def _plan(run_id: str, pid: int):
     )
 
 
-def _engine(tmp_path: Path) -> tuple[RunEngine, Store]:
+def _engine(
+    tmp_path: Path,
+    *,
+    live_graph=None,
+    bypass: dict[tuple[str, str], str] | None = None,
+) -> tuple[RunEngine, Store]:
     store = Store.open_migrated(tmp_path / "tg.db")
     sink = SQLiteLeaseSink(store)
-    engine = RunEngine(store, sink)
+    engine = RunEngine(store, sink, live_graph=live_graph, bypass=bypass)
     return engine, store
 
 
@@ -117,6 +124,42 @@ class TestEndToEnd:
             engine.execute(_plan("r-durable", proc.pid))
             rows = store.query("SELECT spec_json, plan_json, seed FROM runs WHERE id = 'r-durable'")
             assert rows[0]["plan_json"].startswith("{")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    def test_gate_verified_inert_fault_is_bypassed_not_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fault the impact gate proved inert (missing tooling) is skipped as
+        ``bypass due to <reason>`` — the run completes and no lease forms."""
+        from types import SimpleNamespace
+
+        from mayhem.controller import executor as executor_mod
+
+        proc = _spawn_sleeper()
+        try:
+            engine, store = _engine(
+                tmp_path,
+                live_graph=lambda: _graph(proc.pid),
+                bypass={("proc.pause", "c-a"): "missing bin:k6"},
+            )
+            monkeypatch.setattr(
+                executor_mod,
+                "resolve_container",
+                lambda *a, **k: SimpleNamespace(pid=proc.pid),
+            )
+            result = engine.execute(_plan("r-bypass", proc.pid))
+            step = result.steps[0]
+            assert result.status == "completed", result.summary_md()
+            assert step.status == "bypassed"
+            assert step.ok
+            assert "bypass due to c-a: missing bin:k6" in step.detail
+            assert not result.dirty_leases
+            rows = store.query("SELECT status FROM step_runs WHERE run_id = 'r-bypass'")
+            assert rows[0]["status"] == "bypassed"
+            leases = store.query("SELECT id FROM fault_leases WHERE run_id = 'r-bypass'")
+            assert not leases
         finally:
             proc.terminate()
             proc.wait(timeout=10)
