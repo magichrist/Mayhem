@@ -29,6 +29,7 @@ from mayhem.domain.errors import (
     DomainError,
     InvariantViolationError,
     SchemaValidationError,
+    TargetDriftError,
     TargetResolutionError,
 )
 from mayhem.toolkit.tool_runner import ToolError
@@ -126,6 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         InvariantViolationError,
         PlanningError,
         TargetResolutionError,
+        TargetDriftError,
         FileNotFoundError,
     ) as exc:
         return _fail(str(exc), int(ExitCode.VALIDATION_ERROR))

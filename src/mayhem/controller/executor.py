@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import signal
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -23,10 +25,16 @@ from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.checks import ProbeType
+from mayhem.domain.cancellation import CancellationLevel, CancellationToken
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
-from mayhem.domain.leases import LeaseState, UndoOp, VerifyProbe
-from mayhem.topology.resolve import resolve_container
+from mayhem.domain.identity import ProcessRuntimeIdentity
+from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
+from mayhem.topology.resolve import (
+    resolve_container,
+    resolve_identity,
+    resolve_process_identity,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -47,11 +55,23 @@ class StepReport:
     step_id: str
     ok: bool
     detail: str
-    status: str = "ok"  # ok | bypassed | failed
+    status: str = "ok"  # ok | bypassed | failed | target_drift | failed_to_apply | resource_conflict
 
     @property
     def bypassed(self) -> bool:
         return self.status == "bypassed"
+
+    @property
+    def target_drift(self) -> bool:
+        return self.status == "target_drift"
+
+    @property
+    def failed_to_apply(self) -> bool:
+        return self.status == "failed_to_apply"
+
+    @property
+    def resource_conflict(self) -> bool:
+        return self.status == "resource_conflict"
 
 
 @dataclass(frozen=True)
@@ -88,9 +108,13 @@ _LIVE_PID = "@live-pid"
 
 
 def _step_db_status(report: StepReport) -> str:
-    """Persisted step_runs.status for a report (bypassed echoes the verdict)."""
+    """Persisted step_runs.status for a report (verdict statuses echo)."""
     if report.bypassed:
         return "bypassed"
+    if report.target_drift:
+        return "target_drift"
+    if report.failed_to_apply:
+        return "failed_to_apply"
     return "completed" if report.ok else "failed"
 
 
@@ -239,6 +263,7 @@ class RunEngine:
         engine: str | None = None,
         on_event: Callable[[Event], None] | None = None,
         bypass: Mapping[tuple[str, str], str] | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -257,6 +282,14 @@ class RunEngine:
         # skips those steps as "bypass due to <reason>" instead of failing the
         # whole run (per-fault fail-safe, mirrors the impact-gate verdicts).
         self._bypass = dict(bypass or {})
+        # Live process identities captured during target resolution last run
+        # (ADR-M2 Phase 2.4) — the PID-reuse guard compares these boot times
+        # against a re-read immediately before mutation.
+        self._resolved_process_identities: dict[str, ProcessRuntimeIdentity] = {}
+        # Cancellation escalation ladder (ADR-M2 Phase 2.5): a shared token the
+        # signal handler escalates grace -> term -> kill and the agent loop
+        # reads at every safe point.
+        self._cancellation = cancellation or CancellationToken()
 
     # -- public -----------------------------------------------------------------------
 
@@ -348,15 +381,93 @@ class RunEngine:
     # -- internals --------------------------------------------------------------------
 
     def _abort_requested(self) -> bool:
-        if self._abort_mode is not None:
-            return True
-        if self._abort_file is not None and self._abort_file.exists():
-            self._abort_mode = "immediate"
-            return True
-        return False
+        """True when cancellation has been requested at any ladder level.
+
+        Side effect: asserts the enforcement side of the ladder — TERM sends
+        SIGTERM to live payload toolkit processes, KILL sends SIGKILL.
+        """
+        level = self._cancellation.level
+        if level == CancellationLevel.NONE:
+            # Not cancelled via the token; fall back to the legacy abort file.
+            if self._abort_file is not None and self._abort_file.exists():
+                self._cancellation.request(CancellationLevel.KILL)
+                level = CancellationLevel.KILL
+            else:
+                return False
+        self._sync_abort_mode(level)
+        self._enforce_ladder(level)
+        return True
+
+    def _sync_abort_mode(self, level: CancellationLevel) -> None:
+        """Map the ladder level back onto the legacy ``_abort_mode`` string."""
+        self._abort_mode = {
+            CancellationLevel.GRACE: "graceful",
+            CancellationLevel.TERM: "term",
+            CancellationLevel.KILL: "immediate",
+        }[level]
+
+    def _enforce_ladder(self, level: CancellationLevel) -> None:
+        """Signal live payload toolkit processes per the ladder rung.
+
+        ``grace`` does nothing here: the cooperative boundary (next step /
+        fault edge) is the safe abort. ``term`` sends SIGTERM to every live
+        payload process tracked by active leases, then re-asserts; ``kill``
+        sends SIGKILL. Signals are best-effort: a payload that already exited
+        is simply skipped.
+        """
+        if level == CancellationLevel.GRACE:
+            return
+        try:
+            leases = self._client.active_leases()
+        except Exception:
+            return
+        for lease in leases:
+            for pid, cont, engine in self._live_payload_pids(lease):
+                self._send_payload_signal(pid, level, cont, engine)
+
+    def _live_payload_pids(self, lease: FaultLease) -> list[tuple[int, str | None, str | None]]:
+        """Extract ``(pid, cont, engine)`` for live payload targets in a lease."""
+        found: list[tuple[int, str | None, str | None]] = []
+        for op in lease.undo_ops:
+            raw = op.args.get("pid")
+            try:
+                pid = int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                continue
+            if pid is not None and pid > 1:
+                found.append((pid, op.args.get("cont"), op.args.get("engine")))
+        return found
+
+    def _send_payload_signal(
+        self,
+        pid: int,
+        level: CancellationLevel,
+        cont: str | None,
+        engine: str | None,
+    ) -> None:
+        """Deliver SIGTERM (term) or SIGKILL (kill) to a payload process.
+
+        Container-addressed payloads are signaled via ``<engine> kill`` so the
+        signal reaches the container's main process across the runtime
+        boundary (ADR-0020); otherwise a plain host ``os.kill``.
+        """
+        sig = signal.SIGKILL if level == CancellationLevel.KILL else signal.SIGTERM
+        if cont and engine:
+            with contextlib.suppress(Exception):
+                import subprocess
+
+                subprocess.run(
+                    [engine, "kill", "--signal", f"SIGKILL" if sig == signal.SIGKILL else "TERM", cont],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, sig)
 
     def _sleep_interruptible(self, seconds: float) -> None:
-        """Sleep honoring the abort matrix: SIGUSR1 cuts sleeps short."""
+        """Sleep honoring the cancellation ladder: any rung cuts sleeps short."""
         deadline = time.monotonic() + seconds
         while True:
             remaining = deadline - time.monotonic()
@@ -463,6 +574,21 @@ class RunEngine:
                 StepReport(step.id, True, f"bypass due to {note}", status="bypassed"),
                 [],
             )
+        # ADR-M2-3: live inspection wins over a stale journal. Re-resolve the
+        # target's current RuntimeIdentity and compare it to the planned one;
+        # a mismatch (container recreated under the same name) is TARGET_DRIFT —
+        # safe-abort this fault with no mutation.
+        drift = self._detect_target_drift(step, fault, live_targets)
+        if drift is not None:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    drift,
+                    status="target_drift",
+                ),
+                [],
+            )
         live_pids = {node_id: pid for node_id, (pid, _cont) in live_targets.items()}
         if self._live_graph is not None:
             # Container mode: a target whose container PID cannot be resolved has no
@@ -493,6 +619,9 @@ class RunEngine:
             undo_ops=tuple(op.model_dump(mode="json") for op in undo_ops),
             verify_probes=tuple(p.model_dump(mode="json") for p in verify_probes),
             ttl_seconds=ttl,
+            runtime_identity=(
+                fault.runtime_identity.key() if fault.runtime_identity is not None else None
+            ),
         )
         self._record_invocation(plan, step, fault, lease.id)
 
@@ -505,8 +634,9 @@ class RunEngine:
             )
         )
 
-        # Resource ownership tracking (ADR-0015)
+# Resource ownership tracking (ADR-0015)
         tracked_resource = None
+        journal_entry = None
         if self._resource_manager is not None:
             from mayhem.domain.leases import UndoOp, VerifyProbe  # noqa: PLC0415
             from mayhem.domain.resources import ResourceType  # noqa: PLC0415
@@ -524,11 +654,103 @@ class RunEngine:
                     expect_present=False,
                 ),
             )
-            self._resource_manager.activate(tracked_resource.id)
+
+            # Phase 2.7: one-inflight-writer — reject if another lease holds
+            # an active mutation on the same target.
+            conflict_reason = self._resource_manager.check_no_inflight_writer(
+                lease.target_id, exclude_run_id=plan.run_id,
+            )
+            if conflict_reason is not None:
+                self._client.mark_releasing(lease.id)
+                self._client.confirm_release(lease.id, mechanism="resource_conflict")
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_FAILED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "status": "resource_conflict",
+                            "reason": conflict_reason,
+                        },
+                    ),
+                )
+                # Transition tracked resource to DIRTY (cleanup failed)
+                if tracked_resource is not None:
+                    self._resource_manager.start_recovery(tracked_resource.id)
+                    self._resource_manager.mark_recovered(tracked_resource.id, False)
+                return (
+                    StepReport(
+                        step.id,
+                        False,
+                        f"{conflict_reason} (safe-aborted, no mutation)",
+                        "resource_conflict",
+                    ),
+                    [],
+                )
 
         executor = executor_for(fault.fault_id)
+        # ADR-M2 Phase 2.3: revalidate the execution-time capability at the
+        # mutation boundary. A mismatch (engine binary gone, tooling removed
+        # since plan time) records `failed_to_apply`: no mutation, lease
+        # released, run continues.
+        if executor is not None:
+            reason = executor.can_apply(lease)
+            if reason is not None:
+                self._client.mark_releasing(lease.id)
+                self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_FAILED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "status": "failed_to_apply",
+                            "reason": reason,
+                        },
+                    ),
+                )
+                if tracked_resource is not None:
+                    self._resource_manager.start_recovery(tracked_resource.id)
+                    self._resource_manager.mark_recovered(tracked_resource.id, False)
+                return (
+                    StepReport(
+                        step.id,
+                        False,
+                        f"failed to apply: {reason} (safe-aborted, no mutation)",
+                        "failed_to_apply",
+                    ),
+                    [],
+                )
+
         inject_outcome = executor.inject(lease) if executor is not None else None
         self._record_tool_result(inject_outcome.tool_result if inject_outcome else None)
+
+        # Phase 2.6: mutation-boundary journal — only after inject succeeds.
+        # This is the exact moment the mutation actually happened (the last
+        # undo-fallible op was applied). Carries the resource owner, the
+        # mutation's defining op, and the lease reference.
+        if (
+            tracked_resource is not None
+            and self._resource_manager is not None
+            and inject_outcome is not None
+            and inject_outcome.ok
+        ):
+            from mayhem.domain.leases import UndoOp as _UndoOp  # noqa: PLC0415
+
+            journal_entry = self._resource_manager.journal_mutation(
+                lease_id=lease.id,
+                resource_id=tracked_resource.id,
+                run_id=plan.run_id,
+                step_id=step.id,
+                fault_id=fault.fault_id,
+                defining_op=_UndoOp(
+                    op="inject",
+                    args={"fault_id": fault.fault_id, "target": lease.target_id},
+                ),
+                target_identity=lease.target_id,
+            )
         self._sleep_interruptible(float(fault.duration))
 
         # Functional-impact observation (FaultGateway): while the fault is
@@ -595,6 +817,7 @@ class RunEngine:
                 }
             ),
             verified=verified,
+            runtime_identity=lease.runtime_identity,
         )
 
         if undo_ok and verified:
@@ -643,7 +866,12 @@ class RunEngine:
         return {key: value[0] for key, value in self._resolve_live_targets(fault).items()}
 
     def _resolve_live_targets(self, fault: PlannedFault) -> dict[str, tuple[int, str]]:
-        """Map node_id → ``(host_pid, container_name)`` for live container runs."""
+        """Map node_id → ``(host_pid, container_name)`` for live container runs.
+
+        The live ``ProcessRuntimeIdentity`` of every resolved node is captured
+        into ``self._resolved_process_identities`` at the same instant, giving
+        the PID-reuse guard a boot-time baseline (ADR-M2 Phase 2.4).
+        """
         if self._live_graph is None:
             return {}
         graph = self._live_graph()
@@ -661,6 +889,7 @@ class RunEngine:
             for value in op.args.values():
                 if isinstance(value, str) and _LIVE_PID in value:
                     node_pool.add(value.split(":", 1)[0])
+        process_ids: dict[str, ProcessRuntimeIdentity] = {}
         for node_id in node_pool:
             node = graph.by_id(node_id)
             container_name: str | None = None
@@ -673,7 +902,91 @@ class RunEngine:
             except RuntimeError:
                 continue
             resolved[node_id] = (info.pid, container_name)
+            process_ids[node_id] = resolve_process_identity(
+                info.pid,
+                host_id=self._host_id(),
+                container_name=container_name,
+            )
+        self._resolved_process_identities = process_ids
         return resolved
+
+    def _detect_target_drift(
+        self,
+        step: PlannedStep,
+        fault: PlannedFault,
+        live_targets: Mapping[str, tuple[int, str]],
+    ) -> str | None:
+        """ADR-M2-3 — compare the live RuntimeIdentity to the planned one, and
+        guard against PID reuse (ADR-M2 Phase 2.4).
+
+        Returns a human-readable drift reason (no mutation may proceed) or
+        ``None`` when the target still matches what was planned.
+        """
+        planned = fault.runtime_identity
+        if planned is not None:
+            # The planned identity is keyed to the container node among the
+            # fault's targets; find that node in the live graph to get its
+            # container name.
+            container_name: str | None = None
+            if self._live_graph is not None:
+                graph = self._live_graph()
+                from mayhem.domain.topology import ContainerNode  # noqa: PLC0415
+
+                for target in fault.targets:
+                    for node_id in target.node_ids:
+                        node = graph.by_id(node_id)
+                        if isinstance(node, ContainerNode) and node.container_name:
+                            container_name = node.container_name
+                            break
+                    if container_name:
+                        break
+            if container_name is not None:
+                try:
+                    live = resolve_identity(container_name, self._engine)
+                except RuntimeError:
+                    return (
+                        f"TARGET_DRIFT: container {container_name!r} unreachable at "
+                        "execution time (planned identity no longer resolvable)"
+                    )
+                if (live.runtime_id, live.host_id) != (
+                    planned.runtime_id,
+                    planned.host_id,
+                ):
+                    return (
+                        f"TARGET_DRIFT: {container_name!r} recreated — planned "
+                        f"{planned.runtime_id} vs live {live.runtime_id}"
+                    )
+        # PID-reuse guard (ADR-M2 Phase 2.4): the process identity captured at
+        # target resolution (boot time + pid) must still hold at the mutation
+        # boundary. A short-lived process can exit and its PID be recycled in
+        # this window — boot time disambiguates the interloper. Runs even when
+        # no container identity was planned (plain host-process targets).
+        for node_id, baseline in self._resolved_process_identities.items():
+            if baseline.boot_time is None:
+                continue  # platform exposes no procfs start time; degrade.
+            try:
+                now = resolve_process_identity(
+                    baseline.pid,
+                    host_id=self._host_id(),
+                    container_name=baseline.container_name,
+                )
+            except (RuntimeError, OSError):
+                return (
+                    f"TARGET_DRIFT: pid {baseline.pid} unreachable at execution "
+                    "time (process exited; cannot revalidate identity)"
+                )
+            if now.boot_time is not None and now.boot_time != baseline.boot_time:
+                return (
+                    f"TARGET_DRIFT: pid {baseline.pid} recycled — boot time "
+                    f"{baseline.boot_time} vs live {now.boot_time}"
+                )
+        return None
+
+    def _host_id(self) -> str:
+        """Stable host id for process identities (ADR-M2 Phase 2.4)."""
+        if self._engine:
+            return f"h-{self._engine}-local"
+        return "h-local"
 
     def _route_http_probe(self, url: str, expected: int) -> VerifyProbe:
         """Return an HTTP :class:`VerifyProbe`, routed through the engine when
@@ -807,8 +1120,9 @@ class RunEngine:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO step_runs (id, run_id, seq, parent_step_id,
-                    action_type, action_json, status)
-                VALUES (?, ?, ?, NULL, ?, ?, 'running')
+                    action_type, action_json, status, runtime_identity,
+                    execution_group_id, group_mode, group_path)
+                VALUES (?, ?, ?, NULL, ?, ?, 'running', ?, ?, ?, ?)
                 """,
                 (
                     f"{step.seq:04d}-{step.id}",
@@ -816,6 +1130,14 @@ class RunEngine:
                     step.seq,
                     type(step.raw_action).__name__,
                     step.raw_action.model_dump_json(),
+                    (
+                        step.runtime_identity.key()
+                        if step.runtime_identity is not None
+                        else None
+                    ),
+                    step.execution_group_id,
+                    step.group_mode.value if step.group_mode is not None else None,
+                    step.group_path,
                 ),
             )
 
@@ -860,14 +1182,21 @@ class RunEngine:
             )
 
     def _record_recovery(
-        self, lease_id: str, *, mechanism: str, undo_results_json: str, verified: bool
+        self,
+        lease_id: str,
+        *,
+        mechanism: str,
+        undo_results_json: str,
+        verified: bool,
+        runtime_identity: str | None = None,
     ) -> None:
         with self._store.write() as conn:
             conn.execute(
                 """
                 INSERT INTO recovery_records
-                    (id, lease_id, attempt, mechanism, undo_results_json, verified, at)
-                VALUES (?, ?, 1, ?, ?, ?, ?)
+                    (id, lease_id, attempt, mechanism, undo_results_json, verified, at,
+                     runtime_identity)
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"rec-{uuid.uuid4().hex[:12]}",
@@ -876,6 +1205,7 @@ class RunEngine:
                     undo_results_json,
                     int(verified),
                     utc_now().isoformat(),
+                    runtime_identity,
                 ),
             )
 
@@ -951,7 +1281,14 @@ def _domain_probe_to_verify(probe: Probe) -> VerifyProbe:
 
 
 class _AbortMatrix:
-    """Arms SIGINT (graceful, second signal escalates) and SIGUSR1 (immediate)."""
+    """Arms the SIGINT/SIGUSR1 escalation ladder (ADR-M2 Phase 2.5).
+
+    * SIGINT  — request ``grace``; a second SIGINT escalates to ``term``, a
+      third to ``kill``. Operators press again if the run does not stop.
+    * SIGUSR1 — jump straight to ``kill`` (immediate stop).
+    The ladder level is enforced the next time the agent loop checks the
+    cancellation token.
+    """
 
     def __init__(self, engine: RunEngine, run_id: str) -> None:
         self._engine = engine
@@ -959,12 +1296,12 @@ class _AbortMatrix:
         self._previous: dict[int, object] = {}
 
     def __enter__(self) -> _AbortMatrix:
-        for signum, mode in (
-            (signal.SIGINT, "graceful"),
-            (signal.SIGUSR1, "immediate"),
+        for signum, target in (
+            (signal.SIGINT, CancellationLevel.GRACE),
+            (signal.SIGUSR1, CancellationLevel.KILL),
         ):
             with contextlib.suppress(ValueError, OSError):  # non-main thread / unsupported platform
-                self._previous[signum] = signal.signal(signum, self._make_handler(mode))
+                self._previous[signum] = signal.signal(signum, self._make_handler(target))
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -973,22 +1310,22 @@ class _AbortMatrix:
                 signal.signal(signum, previous)  # type: ignore[arg-type]
         self._engine._abort_mode = None
 
-    def _make_handler(self, mode: str) -> Callable[[int, object], None]:
+    def _make_handler(self, target: CancellationLevel) -> Callable[[int, object], None]:
         def handler(signum: int, frame: object) -> None:
             del signum, frame
-            if mode == "graceful" and getattr(handler, "seen_once", False):
-                effective = "immediate"  # operator insists; escalate
+            token = self._engine._cancellation
+            if target == CancellationLevel.GRACE:
+                token.escalate()  # grace -> term -> kill on repeated presses
+                effective = token.level
             else:
-                if mode == "graceful":
-                    handler.seen_once = True  # type: ignore[attr-defined]
-                effective = mode
-            self._engine._abort_mode = effective
+                effective = token.request(CancellationLevel.KILL)
+                effective = CancellationLevel.KILL
             with contextlib.suppress(Exception):
                 self._engine._emit(
                     Event(
                         kind=EventKind.RUN_ABORT_REQUESTED,
                         run_id=self._run_id,
-                        detail={"mode": effective},
+                        detail={"mode": str(effective)},
                     )
                 )
 
