@@ -41,6 +41,17 @@ class FaultExecutor:
         """Fault families handled here; advertised via capabilities.query."""
         return self.prefixes
 
+    def can_apply(self, lease: FaultLease) -> str | None:
+        """Execution-time capability revalidation (ADR-M2 Phase 2.3).
+
+        Runs immediately before the mutation boundary inside ``inject``. Return
+        ``None`` when the capability still holds; return a human-readable reason
+        when it does not — the executor then records ``failed_to_apply`` and
+        never mutates. The default assumes the capability holds; subclasses
+        revalidate what they actually need.
+        """
+        return None
+
     def inject(self, lease: FaultLease) -> StepOutcome:  # pragma: no cover
         raise NotImplementedError
 
@@ -55,6 +66,23 @@ class ProcPauseExecutor(FaultExecutor):
 
     def __init__(self) -> None:
         self._paused_pids: set[int] = set()
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        """Revalidate the container-mode signal capability (ADR-M2 Phase 2.3).
+
+        A container-addressed ``proc.pause`` needs the engine binary on PATH to
+        deliver ``SIGSTOP`` inside the container's pid namespace. If the binary
+        vanished between plan time and the mutation boundary, this fault cannot
+        be applied — report ``failed_to_apply`` instead of mutating.
+        """
+        import shutil  # noqa: PLC0415
+
+        _pid, cont, engine = self._signal_spec(lease)
+        if cont is None or engine is None:
+            return None  # host-mode signal needs no engine binary
+        if shutil.which(engine) is None:
+            return f"capability lost: container engine {engine!r} no longer on PATH"
+        return None
 
     def _signal_spec(self, lease: FaultLease) -> tuple[int | None, str | None, str | None]:
         """Return (pid, container, engine) carried by the first usable undo op.
