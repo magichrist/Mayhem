@@ -718,7 +718,7 @@ class RunEngine:
                     StepReport(
                         step.id,
                         False,
-                        f"failed to apply: {reason} (safe-aborted, no mutation)",
+                        f"failed_to_apply: {reason} (safe-aborted, no mutation)",
                         "failed_to_apply",
                     ),
                     [],
