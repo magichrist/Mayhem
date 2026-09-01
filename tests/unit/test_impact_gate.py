@@ -22,6 +22,7 @@ from mayhem.domain.experiments import (
     PlannedStep,
     ResolvedTarget,
 )
+from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.topology import (
     ContainerNode,
@@ -134,7 +135,9 @@ def _graph() -> TopologyGraph:
                 id="ctr-api",
                 name="api",
                 engine="podman",
-                runtime_id="api",
+                runtime_identity=RuntimeIdentity(
+                    runtime="podman", host_id="h1", runtime_id="api"
+                ),
                 container_name="testcase-api",
                 state="running",
             ),

@@ -18,6 +18,7 @@ from mayhem.domain.experiments import (
     DrillSpec,
     ExecutionStep,
 )
+from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.topology import (
     ContainerNode,
     Edge,
@@ -43,7 +44,7 @@ def _graph(pid_a: int, pid_b: int) -> TopologyGraph:
                 id="ctr-a",
                 name="a",
                 engine="podman",
-                runtime_id="a",
+                runtime_identity=RuntimeIdentity(runtime="podman", host_id="h", runtime_id="a"),
                 container_name="c-a",
                 state="running",
             ),
@@ -51,7 +52,7 @@ def _graph(pid_a: int, pid_b: int) -> TopologyGraph:
                 id="ctr-b",
                 name="b",
                 engine="podman",
-                runtime_id="b",
+                runtime_identity=RuntimeIdentity(runtime="podman", host_id="h", runtime_id="b"),
                 container_name="c-b",
                 state="running",
             ),
@@ -92,6 +93,7 @@ def _patch_resolve(
     monkeypatch: pytest.MonkeyPatch, pids: dict[str, int], *, fail: bool = False
 ) -> None:
     from mayhem.controller import executor as executor_mod
+    from mayhem.domain.identity import RuntimeIdentity
     from mayhem.topology.resolve import ContainerInfo
 
     def fake_resolve(container_name: str, engine: str | None = None) -> ContainerInfo:
@@ -103,7 +105,19 @@ def _patch_resolve(
             state="running",
         )
 
+    def fake_resolve_identity(container_name: str, engine: str | None = None) -> RuntimeIdentity:
+        if fail:
+            raise RuntimeError(f"{engine} inspect failed for {container_name}")
+        # Match the plan-time identity (host "h", runtime_id equal to the short
+        # container id) so ADR-M2-3 drift detection sees no recreation.
+        return RuntimeIdentity(
+            runtime=engine or "podman",
+            host_id="h",
+            runtime_id=container_name.split("-", 1)[-1],
+        )
+
     monkeypatch.setattr(executor_mod, "resolve_container", fake_resolve)
+    monkeypatch.setattr(executor_mod, "resolve_identity", fake_resolve_identity)
 
 
 def _patch_run_tool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,10 +182,23 @@ class TestParallelExecution:
 
             assert result.status == "completed", result.summary_md()
             assert not result.dirty_leases
-            leases = store.query("SELECT state, fault_id FROM fault_leases WHERE run_id='r-par'")
+            leases = store.query("SELECT state, fault_id, runtime_identity FROM fault_leases WHERE run_id='r-par'")
             assert len(leases) == 2
             assert {r["fault_id"] for r in leases} == {"proc.pause"}
             assert all(r["state"] == "released" for r in leases)
+            # ADR-M1-3: the canonical identity persists alongside each lease.
+            assert {r["runtime_identity"] for r in leases} == {
+                "podman|h|a",
+                "podman|h|b",
+            }
+            # ADR-M1-3: the same identity lands on the step_runs rows.
+            step_identities = {
+                r["runtime_identity"]
+                for r in store.query(
+                    "SELECT runtime_identity FROM step_runs WHERE run_id='r-par'"
+                )
+            }
+            assert step_identities == {"podman|h|a", "podman|h|b"}
         finally:
             pa.terminate()
             pb.terminate()

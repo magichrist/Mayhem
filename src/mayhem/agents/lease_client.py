@@ -50,6 +50,7 @@ class LeaseClient:
         undo_ops: tuple[dict[str, Any], ...],
         verify_probes: tuple[dict[str, Any], ...] = (),
         ttl_seconds: float = 120.0,
+        runtime_identity: str | None = None,
     ) -> FaultLease:
         """Create a PENDING lease; the caller must activate() before injecting."""
         self._sequence += 1
@@ -63,6 +64,7 @@ class LeaseClient:
                 "undo_ops": list(undo_ops),
                 "verify_probes": list(verify_probes),
                 "ttl_seconds": ttl_seconds,
+                "runtime_identity": runtime_identity,
             }
         )
         now = utc_now()

@@ -24,7 +24,7 @@ from mayhem.domain.leases import UndoOp, VerifyProbe
 
 
 class ResourceType(StrEnum):
-    """Kinds of system resources a fault may create or modify."""
+    """Kinds of system resources a fault may create or modifies."""
 
     TC_RULE = "tc_rule"
     IPTABLES_RULE = "iptables_rule"
@@ -82,6 +82,29 @@ class TrackedResource(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     recovered_at: datetime | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class MutationJournalEntry(BaseModel):
+    """ADR-M2 Phase 2.6 — mutation-boundary journal entry.
+
+    Recorded at the exact boundary when the last undo-fallible op is applied
+    (injection succeeds), not as a post-hoc probe result. Carries the resource
+    owner, the mutation's defining op (e.g. ``kill -9``), and the lease
+    reference so downstream can tell *which* lease holds the mutation and
+    *what* actually mutated the system.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str  # uuid4
+    lease_id: str
+    resource_id: str
+    run_id: str
+    step_id: str
+    fault_id: str
+    defining_op: UndoOp  # the op that actually mutated the system
+    target_identity: str
+    journaled_at: datetime = Field(default_factory=utc_now)
 
 
 class ResourceConflict(BaseModel):

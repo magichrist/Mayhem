@@ -19,6 +19,7 @@ from mayhem.domain.common import Duration
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.execution_context import ExecutionContextSpec
 from mayhem.domain.faults import FaultCategory
+from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import TargetSelector
@@ -228,6 +229,7 @@ class PlannedFault(BaseModel):
     duration: Duration
     backend: Identifier | None = None
     execution_context: ExecutionContextSpec | None = None  # ADR-0014
+    runtime_identity: RuntimeIdentity | None = None  # planned identity (ADR-M1-1/1-3)
 
 
 class ExecutionPlan(BaseModel):
@@ -248,6 +250,34 @@ class ExecutionPlan(BaseModel):
         return self
 
 
+class GroupMode(StrEnum):
+    """Execution semantics of a fault group (ADR-M2-1)."""
+
+    PARALLEL = "parallel"  # members run concurrently
+    SEQUENTIAL = "sequential"  # members run one-at-a-time in order
+    BEST_EFFORT = "best_effort"  # continue past member failures
+
+
+class FaultGroup(BaseModel):
+    """A set of fault members executed under one persistent identity.
+
+    v1 semantics (ADR-M2-1): ``parallel`` runs members concurrently;
+    ``sequential`` runs them in order; ``best_effort`` continues past member
+    failures. ``atomic`` (strong all-or-nothing) is demoted to
+    compensate-on-failure in v1. Every executed group carries a persistent
+    ``execution_group_id`` and a ``group_path``; member faults share the id.
+    Partial failure is a first-class result (which members succeeded/failed).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    execution_group_id: str
+    parent_group_id: str | None = None
+    mode: GroupMode = GroupMode.SEQUENTIAL
+    path: str = "/"
+    fault_ids: tuple[str, ...] = ()
+
+
 class PlannedStep(BaseModel):
     """A step whose fault actions have been fully resolved against topology."""
 
@@ -257,3 +287,7 @@ class PlannedStep(BaseModel):
     seq: int
     fault: PlannedFault | None = None
     raw_action: StepAction  # for non-fault steps (wait/check)
+    runtime_identity: RuntimeIdentity | None = None  # planned identity (ADR-M1-1/1-3)
+    execution_group_id: str | None = None  # group attribution (ADR-M2-1/2-2)
+    group_mode: GroupMode | None = None  # parallel|sequential|best_effort
+    group_path: str | None = None  # hierarchical group location

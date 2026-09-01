@@ -29,7 +29,7 @@ def test_m0004_drill_run_kind_preserves_data_and_allows_drill(
 
     applied = store.migrate()
     assert "0004_drill_run_kind" in applied
-    assert store.schema_version == 5
+    assert store.schema_version == ALL_MIGRATIONS[-1].version
 
     assert store.query("SELECT id, kind FROM runs WHERE id='r1'")[0]["kind"] == "deterministic"
     assert store.query("PRAGMA foreign_key_check") == []
@@ -61,7 +61,7 @@ def test_m0005_step_run_bypass_status_preserves_data_and_admits_bypassed(
 
     applied = store.migrate()
     assert "0005_step_run_bypass_status" in applied
-    assert store.schema_version == 5
+    assert store.schema_version == ALL_MIGRATIONS[-1].version
     assert (
         store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"]
         == "skipped"
@@ -85,3 +85,121 @@ def test_migrations_are_strictly_increasing() -> None:
     assert versions == sorted(versions)
     assert len(versions) == len(set(versions))
     assert versions[0] == 1
+
+
+def test_m0006_runtime_identity_adds_identity_columns_and_target_drift(
+    tmp_path: Path,
+) -> None:
+    store = Store.open_migrated(tmp_path / "tg.db", migrations=ALL_MIGRATIONS[:5])
+    _insert_deterministic_run(store, "r1")
+    with store.write() as conn:
+        conn.execute(
+            "INSERT INTO step_runs (id, run_id, seq, action_type, action_json, status)"
+            " VALUES ('s1', 'r1', 1, 'inject', '{}', 'completed')"
+        )
+        conn.execute(
+            "INSERT INTO fault_leases (id, run_id, fault_id, state, owner_agent,"
+            " undo_json, verify_json, targets_json, ttl_seconds, expires_at,"
+            " created_epoch_s)"
+            " VALUES ('l1', 'r1', 'proc.pause', 'released', 'ag', '[]', '[]', '[]',"
+            " 30, 'now', 1)"
+        )
+        conn.execute(
+            "INSERT INTO observations (kind, run_id, data_json, timestamp)"
+            " VALUES ('signal', 'r1', '{}', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO recovery_records (id, lease_id, attempt, mechanism,"
+            " undo_results_json, verified, at)"
+            " VALUES ('rr1', 'l1', 1, 'normal', '{}', 1, 'now')"
+        )
+
+    applied = store.migrate()
+    assert "0006_runtime_identity" in applied
+    assert store.schema_version == ALL_MIGRATIONS[-1].version
+
+    for table in (
+        "runs",
+        "fault_leases",
+        "observations",
+        "recovery_records",
+    ):
+        cols = {row["name"] for row in store.query(f"PRAGMA table_info({table})")}
+        assert "runtime_identity" in cols, f"{table} missing runtime_identity"
+
+    step_cols = {row["name"] for row in store.query("PRAGMA table_info(step_runs)")}
+    assert "runtime_identity" in step_cols
+
+    # target_drift is now a legal persisted step status.
+    with store.write() as conn:
+        conn.execute(
+            "UPDATE step_runs SET status = 'target_drift' WHERE id = 's1'"
+        )
+    assert (
+        store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"]
+        == "target_drift"
+    )
+
+    # Identity can be written and read back round-trippably.
+    with store.write() as conn:
+        conn.execute(
+            "UPDATE runs SET runtime_identity = 'podman|h1|cid-x' WHERE id = 'r1'"
+        )
+    assert (
+        store.query("SELECT runtime_identity FROM runs WHERE id='r1'")[0][
+            "runtime_identity"
+        ]
+        == "podman|h1|cid-x"
+    )
+    assert store.query("PRAGMA foreign_key_check") == []
+    store.close()
+
+
+def test_m0007_fault_groups_add_group_columns(tmp_path: Path) -> None:
+    store = Store.open_migrated(tmp_path / "tg.db", migrations=ALL_MIGRATIONS[:6])
+    _insert_deterministic_run(store, "r1")
+    with store.write() as conn:
+        conn.execute(
+            "INSERT INTO step_runs (id, run_id, seq, action_type, action_json, status)"
+            " VALUES ('s1', 'r1', 1, 'inject', '{}', 'completed')"
+        )
+        conn.execute(
+            "INSERT INTO fault_leases (id, run_id, fault_id, state, owner_agent,"
+            " undo_json, verify_json, targets_json, ttl_seconds, expires_at,"
+            " created_epoch_s)"
+            " VALUES ('l1', 'r1', 'proc.pause', 'released', 'ag', '[]', '[]', '[]',"
+            " 30, 'now', 1)"
+        )
+        conn.execute(
+            "INSERT INTO fault_invocations (id, run_id, step_run_id, fault_id,"
+            " targets_json, params_json, backend, lease_id)"
+            " VALUES ('fi1', 'r1', 's1', 'proc.pause', '[]', '{}', 'podman', 'l1')"
+        )
+
+    applied = store.migrate()
+    assert "0007_fault_groups" in applied
+    assert store.schema_version == ALL_MIGRATIONS[-1].version
+
+    step_cols = {row["name"] for row in store.query("PRAGMA table_info(step_runs)")}
+    for col in ("execution_group_id", "group_mode", "group_path"):
+        assert col in step_cols, f"step_runs missing {col}"
+    inv_cols = {
+        row["name"] for row in store.query("PRAGMA table_info(fault_invocations)")
+    }
+    assert "execution_group_id" in inv_cols
+
+    # Group fields round-trip on step_runs.
+    with store.write() as conn:
+        conn.execute(
+            "UPDATE step_runs SET execution_group_id='grp-1', group_mode='sequential',"
+            " group_path='/testcase-api' WHERE id='s1'"
+        )
+    row = store.query(
+        "SELECT execution_group_id, group_mode, group_path FROM step_runs WHERE id='s1'"
+    )[0]
+    assert row["execution_group_id"] == "grp-1"
+    assert row["group_mode"] == "sequential"
+    assert row["group_path"] == "/testcase-api"
+    assert store.query("PRAGMA foreign_key_check") == []
+    store.close()
+

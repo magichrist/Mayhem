@@ -8,6 +8,7 @@ container so the executor can run them concurrently (Phase 5, ADR-0019/0021).
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, cast
 
 from mayhem.controller.compensation import compensated
@@ -23,12 +24,14 @@ from mayhem.domain.experiments import (
     DrillSpec,
     ExecutionPlan,
     ExperimentKind,
+    GroupMode,
     InjectFault,
     PlannedFault,
     PlannedStep,
     ResolvedTarget,
     Wait,
 )
+from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.topology import (
     TargetSelector,
     TopologyNode,
@@ -186,8 +189,25 @@ def _plan_container_faults(
 
     # A container name matches the whole subtree (service, container, process).
     matched = tuple(_find_container_nodes(graph, container_name))
+    # Every fault on this container belongs to one persistent group (ADR-M2-1):
+    # members share an execution_group_id and run sequentially one-at-a-time so
+    # a multi-fault container never double-injects concurrently.
+    group_id = f"grp-{uuid.uuid4().hex[:12]}"
+    mode = GroupMode.SEQUENTIAL
+    path = f"/{container_name}"
     for i, drill_fault in enumerate(container.faults):
-        out.append(_plan_fault_step(container_name, matched, drill_fault, graph, seq + i))
+        out.append(
+            _plan_fault_step(
+                container_name,
+                matched,
+                drill_fault,
+                graph,
+                seq + i,
+                execution_group_id=group_id,
+                group_mode=mode,
+                group_path=path,
+            )
+        )
     return len(container.faults)
 
 
@@ -197,6 +217,10 @@ def _plan_fault_step(
     drill_fault: DrillFault,
     graph: TopologyGraph,
     seq: int,
+    *,
+    execution_group_id: str | None = None,
+    group_mode: GroupMode | None = None,
+    group_path: str | None = None,
 ) -> PlannedStep:
     """Compile one drill fault into a compensatable :class:`PlannedStep`."""
     try:
@@ -262,6 +286,7 @@ def _plan_fault_step(
         params=params,
         duration=drill_fault.duration,
         backend=None,
+        runtime_identity=_resolve_planned_identity(matched),
     )
     planned = compensated(planned, tuple(compensation_nodes))
     if not planned.undo_ops:
@@ -271,6 +296,10 @@ def _plan_fault_step(
         id=f"{container_name}-{seq:04d}",
         seq=seq,
         fault=planned,
+        runtime_identity=_resolve_planned_identity(matched),
+        execution_group_id=execution_group_id,
+        group_mode=group_mode,
+        group_path=group_path,
         raw_action=InjectFault(
             fault=definition.id,
             selectors=selectors,
@@ -278,3 +307,21 @@ def _plan_fault_step(
             duration=drill_fault.duration,
         ),
     )
+
+
+def _resolve_planned_identity(nodes: tuple[TopologyNode, ...]) -> RuntimeIdentity | None:
+    """The canonical identity backing the authored name (ADR-M1-1).
+
+    The plan targets the whole matched subtree (service/container/process), but
+    the canonical ``RuntimeIdentity`` is contributed by the container node —
+    the only node kind that carries it (topology.py). Resolver-key nodes
+    (service/process) contribute no identity; their plan identity stays ``None``
+    until a runtime adapter supplies one. This satisfies the milestone bar:
+    identity is populated for a container-targeted fault whenever a provider is
+    available.
+    """
+    for node in nodes:
+        identity: object = getattr(node, "runtime_identity", None)
+        if isinstance(identity, RuntimeIdentity):
+            return identity
+    return None

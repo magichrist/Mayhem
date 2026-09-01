@@ -15,6 +15,7 @@ from mayhem.domain.topology import TopologyGraph
 
 
 def _drill_graph() -> TopologyGraph:
+    from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
     from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, ProcessNode, ServiceNode
 
     return TopologyGraph(
@@ -23,7 +24,10 @@ def _drill_graph() -> TopologyGraph:
                 id="ctr-api",
                 name="api",
                 engine="podman",
-                runtime_id="cid-api",
+                runtime_identity=RuntimeIdentity(
+                    runtime="podman", host_id="h1", runtime_id="cid-api"
+                ),
+                runtime_metadata=RuntimeMetadata(service="api-svc", name="api"),
                 container_name="testcase-api",
                 ip_address="172.18.0.2",
                 state="running",
@@ -77,6 +81,58 @@ class TestDrillPlanning:
         assert step.fault.fault_id == "proc.pause"
         assert step.fault.undo_ops  # write-ahead undo present
         assert step.fault.verify_probes
+
+    def test_container_target_carries_planned_runtime_identity(self) -> None:
+        from mayhem.domain.experiments import ExecutionStep
+        from mayhem.domain.identity import RuntimeIdentity
+
+        plan = plan_drill(
+            "r-drill",
+            _drill_spec((ExecutionStep(parallel=("testcase-api",)),)),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        step = plan.steps[0]
+        assert step.runtime_identity == RuntimeIdentity(
+            runtime="podman", host_id="h1", runtime_id="cid-api"
+        )
+        assert step.fault is not None
+        assert step.fault.runtime_identity == step.runtime_identity
+        assert step.fault.runtime_identity.key() == "podman|h1|cid-api"
+
+    def test_identity_is_none_when_node_has_no_container_identity(self) -> None:
+        from mayhem.domain.identity import RuntimeIdentity
+        from mayhem.domain.topology import ServiceNode
+
+        from mayhem.controller.planner import _resolve_planned_identity
+
+        # A service is a resolver key only (ADR-M1-1): it contributes no
+        # RuntimeIdentity, so the planned identity for a service-only match is
+        # None even though the plan succeeded.
+        service = ServiceNode(
+            id="svc-x",
+            name="x-svc",
+            container_name="x",
+        )
+        assert _resolve_planned_identity((service,)) is None
+
+        # A ContainerNode (which always carries a RuntimeIdentity) is the one
+        # that contributes the canonical planned identity.
+        from mayhem.domain.topology import ContainerNode
+
+        container = ContainerNode(
+            id="ctr-x",
+            name="x",
+            engine="podman",
+            runtime_identity=RuntimeIdentity(runtime="podman", host_id="h1", runtime_id="c-x"),
+            container_name="x",
+        )
+        assert _resolve_planned_identity((service, container)) == RuntimeIdentity(
+            runtime="podman", host_id="h1", runtime_id="c-x"
+        )
+
 
     def test_mem_exhaust_accepts_byte_amount_dsl(self) -> None:
         from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
@@ -148,6 +204,46 @@ class TestDrillPlanning:
                 environment_fingerprint="f",
             )
 
+    def test_multi_fault_container_plans_all_faults_with_shared_group(self) -> None:
+        from mayhem.domain.experiments import (
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+            GroupMode,
+        )
+
+        spec = DrillSpec(
+            kind="drill",
+            name="multi",
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(
+                        DrillFault(fault="proc.pause"),
+                        DrillFault(fault="proc.pause"),
+                        DrillFault(fault="proc.pause"),
+                    )
+                )
+            },
+            execution=(ExecutionStep(sequential=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r1",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="e",
+        )
+        fault_steps = [s for s in plan.steps if s.fault is not None]
+        assert len(fault_steps) == 3  # no faults[0]-only regression
+        group_ids = {s.execution_group_id for s in fault_steps}
+        assert len(group_ids) == 1  # all members share one group
+        for step in fault_steps:
+            assert step.group_mode == GroupMode.SEQUENTIAL
+            assert step.group_path == "/testcase-api"
+            assert step.execution_group_id == next(iter(group_ids))
+
     def test_parallel_block_produces_per_container_steps(self) -> None:
         from mayhem.domain.experiments import (
             DrillContainer,
@@ -155,6 +251,7 @@ class TestDrillPlanning:
             DrillSpec,
             ExecutionStep,
         )
+        from mayhem.domain.identity import RuntimeIdentity
         from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, ProcessNode
 
         graph = TopologyGraph(
@@ -163,7 +260,7 @@ class TestDrillPlanning:
                     id="ctr-a",
                     name="a",
                     engine="podman",
-                    runtime_id="a",
+                    runtime_identity=RuntimeIdentity(runtime="podman", host_id="h", runtime_id="a"),
                     container_name="c-a",
                     state="running",
                 ),
@@ -171,7 +268,7 @@ class TestDrillPlanning:
                     id="ctr-b",
                     name="b",
                     engine="podman",
-                    runtime_id="b",
+                    runtime_identity=RuntimeIdentity(runtime="podman", host_id="h", runtime_id="b"),
                     container_name="c-b",
                     state="running",
                 ),

@@ -6,6 +6,7 @@ from mayhem.domain.errors import (
     InvariantViolationError,
     TargetResolutionError,
 )
+from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.topology import (
     ContainerNode,
     Edge,
@@ -29,8 +30,10 @@ def _graph() -> TopologyGraph:
                 id="c-api",
                 name="api-1",
                 engine="docker",
-                runtime_id="abc123",
-                service_name="api",
+                runtime_identity=RuntimeIdentity(
+                    runtime="docker", host_id="h-docker-local", runtime_id="abc123"
+                ),
+                runtime_metadata=RuntimeMetadata(service="api", name="api-1"),
             ),
             HostNode(id="h-bm1", name="bm-1"),
             ExternalDependencyNode(id="x-pg", name="postgres", endpoint="postgres:5432"),
@@ -112,7 +115,9 @@ class TestContainerName:
             id="c-api",
             name="api-1",
             engine="docker",
-            runtime_id="abc123",
+            runtime_identity=RuntimeIdentity(
+                runtime="docker", host_id="h-docker-local", runtime_id="abc123"
+            ),
             container_name="testcase-api",
         )
         assert c.container_name == "testcase-api"
@@ -122,7 +127,9 @@ class TestContainerName:
             id="c-api",
             name="api-1",
             engine="docker",
-            runtime_id="abc123",
+            runtime_identity=RuntimeIdentity(
+                runtime="docker", host_id="h-docker-local", runtime_id="abc123"
+            ),
         )
         assert c.container_name is None
 
@@ -164,7 +171,9 @@ class TestContainerName:
                     id="c-api",
                     name="api-1",
                     engine="docker",
-                    runtime_id="abc123",
+                    runtime_identity=RuntimeIdentity(
+                        runtime="docker", host_id="h-docker-local", runtime_id="abc123"
+                    ),
                     container_name="testcase-api",
                 ),
                 ProcessNode(

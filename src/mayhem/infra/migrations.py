@@ -282,10 +282,118 @@ M0005_STEP_RUN_BYPASS_STATUS = Migration(
     ),
 )
 
+M0006_RUNTIME_IDENTITY = Migration(
+    version=6,
+    name="runtime_identity",
+    statements=(
+        # Rebuild `step_runs` adding the canonical `runtime_identity` column and
+        # admitting `'target_drift'` as a first-class persisted step status
+        # (ADR-M1-3 Phase 1.4). `'bypassed'` and all prior statuses are retained
+        # so pre-M1 rows read identically (ADR-M1-4).
+        """
+        CREATE TABLE step_runs_v6 (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            parent_step_id TEXT REFERENCES step_runs(id),
+            action_type TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','running','completed','failed','skipped','cancelled',
+                 'bypassed','target_drift')),
+            started_at TEXT,
+            ended_at TEXT,
+            error TEXT,
+            runtime_identity TEXT
+        )
+        """,
+        """
+        INSERT INTO step_runs_v6 (id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, runtime_identity)
+        SELECT id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, NULL
+        FROM step_runs
+        """,
+        "DROP TABLE step_runs",
+        "ALTER TABLE step_runs_v6 RENAME TO step_runs",
+        # Nullable identity columns on every persisted record (ADR-M1-3).
+        "ALTER TABLE runs ADD COLUMN runtime_identity TEXT",
+        "ALTER TABLE fault_leases ADD COLUMN runtime_identity TEXT",
+        "ALTER TABLE observations ADD COLUMN runtime_identity TEXT",
+        "ALTER TABLE recovery_records ADD COLUMN runtime_identity TEXT",
+    ),
+)
+
+
+M0007_FAULT_GROUPS = Migration(
+    version=7,
+    name="fault_groups",
+    statements=(
+        # Persistent fault-group attribution (ADR-M2-1/2-2): every executed
+        # step and fault invocation carries the group it belongs to. In-place
+        # column additions per Q9 (schema freeze enforced at M4).
+        "ALTER TABLE step_runs ADD COLUMN execution_group_id TEXT",
+        "ALTER TABLE step_runs ADD COLUMN group_mode TEXT",
+        "ALTER TABLE step_runs ADD COLUMN group_path TEXT",
+        "ALTER TABLE fault_invocations ADD COLUMN execution_group_id TEXT",
+        "CREATE INDEX idx_step_runs_group ON step_runs(execution_group_id)",
+    ),
+)
+
+
+M0008_FAILED_TO_APPLY = Migration(
+    version=8,
+    name="failed_to_apply",
+    statements=(
+        # Execution-time capability revalidation (ADR-M2 Phase 2.3): a fault
+        # that reaches the mutation boundary but whose capability no longer
+        # holds (engine binary gone, tooling removed after plan time) is
+        # recorded as `'failed_to_apply'` instead of mutating or bypassing.
+        # Rebuild `step_runs` to admit the new persisted status; every prior
+        # status remains so pre-M8 rows read identically (ADR-M1-4).
+        """
+        CREATE TABLE step_runs_v8 (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            parent_step_id TEXT REFERENCES step_runs(id),
+            action_type TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','running','completed','failed','skipped','cancelled',
+                 'bypassed','target_drift','failed_to_apply')),
+            started_at TEXT,
+            ended_at TEXT,
+            error TEXT,
+            runtime_identity TEXT,
+            execution_group_id TEXT,
+            group_mode TEXT,
+            group_path TEXT
+        )
+        """,
+        """
+        INSERT INTO step_runs_v8 (id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, runtime_identity,
+            execution_group_id, group_mode, group_path)
+        SELECT id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, runtime_identity,
+            execution_group_id, group_mode, group_path
+        FROM step_runs
+        """,
+        "DROP TABLE step_runs",
+        "ALTER TABLE step_runs_v8 RENAME TO step_runs",
+        "CREATE INDEX idx_step_runs_group ON step_runs(execution_group_id)",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
     M0003_CAMPAIGNS_OBSERVATIONS,
     M0004_DRILL_RUN_KIND,
     M0005_STEP_RUN_BYPASS_STATUS,
+    M0006_RUNTIME_IDENTITY,
+    M0007_FAULT_GROUPS,
+    M0008_FAILED_TO_APPLY,
 )

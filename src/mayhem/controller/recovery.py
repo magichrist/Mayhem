@@ -53,6 +53,7 @@ class RecoveryTransition(BaseModel):
     reason: str
     attempt: int = 1
     timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
+    runtime_identity: str | None = None  # canonical identity key (ADR-M1-1/1-3)
 
 
 class RecoveryAuditLog:
@@ -79,12 +80,21 @@ class RecoveryAuditLog:
                     to_status TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     attempt INTEGER NOT NULL DEFAULT 1,
-                    timestamp TEXT NOT NULL
+                    timestamp TEXT NOT NULL,
+                    runtime_identity TEXT
                 )
             """)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ral_resource ON recovery_audit_log(resource_id)"
             )
+            # Back-fill the identity column on tables created before it existed.
+            cols = {r["name"] for r in conn.execute(
+                "PRAGMA table_info(recovery_audit_log)"
+            ).fetchall()}
+            if "runtime_identity" not in cols:
+                conn.execute(
+                    "ALTER TABLE recovery_audit_log ADD COLUMN runtime_identity TEXT"
+                )
 
     def _load(self) -> None:
         with self._store.write() as conn:  # type: ignore[union-type]
@@ -98,6 +108,7 @@ class RecoveryAuditLog:
                     reason=row["reason"],
                     attempt=row["attempt"],
                     timestamp=row["timestamp"],
+                    runtime_identity=row.get("runtime_identity"),
                 )
             )
 
@@ -107,8 +118,9 @@ class RecoveryAuditLog:
             with self._store.write() as conn:
                 conn.execute(
                     "INSERT INTO recovery_audit_log "
-                    "(resource_id, from_status, to_status, reason, attempt, timestamp) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(resource_id, from_status, to_status, reason, attempt, timestamp,"
+                    " runtime_identity) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         transition.resource_id,
                         transition.from_status.value,
@@ -116,6 +128,7 @@ class RecoveryAuditLog:
                         transition.reason,
                         transition.attempt,
                         transition.timestamp,
+                        transition.runtime_identity,
                     ),
                 )
         self._transitions.append(transition)

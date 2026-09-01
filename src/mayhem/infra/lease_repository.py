@@ -38,8 +38,9 @@ class SQLiteLeaseSink:
                     id, state, owner_agent, undo_json, verify_json,
                     ttl_seconds, expires_at, injected_at, released_at,
                     release_mechanism, escalation_notes,
-                    run_id, fault_id, targets_json, created_epoch_s
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, fault_id, targets_json, created_epoch_s,
+                    runtime_identity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.id,
@@ -57,6 +58,7 @@ class SQLiteLeaseSink:
                     lease.fault_id,
                     json.dumps(sorted(lease.targets)),
                     created.timestamp(),
+                    lease.runtime_identity,
                 ),
             )
 
@@ -111,6 +113,7 @@ def _row_to_lease(row: Mapping[str, object]) -> FaultLease:
             "fault_id": str(row["fault_id"] or ""),
             "targets": frozenset(json.loads(str(row["targets_json"]))),
             "created_at": datetime.fromtimestamp(float(str(row["created_epoch_s"])), tz=UTC),
+            "runtime_identity": row.get("runtime_identity"),
         }
     )
 

@@ -9,7 +9,13 @@ from hypothesis import strategies as st
 
 from mayhem.domain.common import parse_bytes, parse_duration
 from mayhem.domain.errors import InvalidTransitionError
+from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.leases import FaultLease, LeaseState
+from mayhem.domain.outcomes import (
+    DriftEvent,
+    StepOutcome,
+    TargetOutcome,
+)
 from mayhem.domain.topology import (
     Edge,
     EdgeKind,
@@ -154,3 +160,86 @@ class TestNetworkTopology:
         topo = NetworkTopology(segments=(seg,), paths=(path,))
         restored = NetworkTopology.model_validate(topo.model_dump(mode="json"))
         assert restored == topo
+
+
+class TestStepOutcome:
+    """StepOutcome is the persisted step state (ADR-M1-3 Phase 1.4).
+
+    Every value serializes to its canonical string and round-trips through
+    the persisted outcome vocabulary — including ``target_drift``, which is a
+    first-class step state, not a plain failure.
+    """
+
+    def test_step_outcome_serializes_to_string(self) -> None:
+        assert StepOutcome.TARGET_DRIFT.value == "target_drift"
+        assert StepOutcome.COMPLETED.value == "completed"
+        assert StepOutcome.FAILED.value == "failed"
+
+    def test_step_outcome_json_round_trip(self) -> None:
+        for value in StepOutcome:
+            encoded = value.value
+            assert StepOutcome(encoded) == value
+
+
+class TestTargetOutcome:
+    """TargetOutcome is the failure taxonomy (ADR-M1-3).
+
+    A drifted target is *mismatched, not failed*: TARGET_DRIFT must never
+    collapse into FAILED_TO_APPLY or RESOURCE_CONFLICT.
+    """
+
+    def test_values_are_sharply_distinct(self) -> None:
+        assert len(TargetOutcome) == 3
+        assert TargetOutcome.TARGET_DRIFT.value == "target_drift"
+        assert TargetOutcome.FAILED_TO_APPLY.value == "failed_to_apply"
+        assert TargetOutcome.RESOURCE_CONFLICT.value == "resource_conflict"
+        assert TargetOutcome.TARGET_DRIFT is not TargetOutcome.FAILED_TO_APPLY
+        assert TargetOutcome.TARGET_DRIFT is not TargetOutcome.RESOURCE_CONFLICT
+
+    def test_target_outcome_json_round_trip(self) -> None:
+        for value in TargetOutcome:
+            assert TargetOutcome(value.value) == value
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    st.sampled_from(["docker", "podman"]),
+    st.text(alphabet="abcdefghijklmnopqrstuvwxyz-", min_size=1),
+    st.text(alphabet="abcdef0123456789", min_size=1),
+)
+def test_drift_event_carries_both_identities(
+    runtime: str, host_id: str, runtime_id: str
+) -> None:
+    """A DriftEvent pairs the planned and live identity (ADR-M1-3)."""
+    planned = RuntimeIdentity(runtime=runtime, host_id=host_id, runtime_id=runtime_id)
+    live = RuntimeIdentity(runtime=runtime, host_id=host_id, runtime_id=f"{runtime_id}-v2")
+    event = DriftEvent(
+        run_id="r-1",
+        step_id="s-1",
+        planned=planned,
+        live=live,
+    )
+    assert event.planned != event.live
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    st.text(alphabet="abcdefghijklmnopqrstuvwxyz-", min_size=1),
+    st.text(alphabet="abcdefghijklmnopqrstuvwxyz-", min_size=1),
+    st.text(alphabet="abcdef0123456789", min_size=1),
+    st.text(alphabet="abcdefghijklmnopqrstuvwxyz-", min_size=1),
+)
+def test_runtime_identity_equality_ignores_metadata(
+    runtime: str, host_id: str, runtime_id: str, metadata_name: str
+) -> None:
+    """Metadata churn never changes the identity key (ADR-M1-1/M1-2)."""
+    identity = RuntimeIdentity(runtime=runtime, host_id=host_id, runtime_id=runtime_id)
+    with_meta_a = RuntimeIdentity(
+        runtime=runtime,
+        host_id=host_id,
+        runtime_id=runtime_id,
+    )
+    assert identity == with_meta_a
+    metadata_a = RuntimeMetadata(name=metadata_name, service="svc")
+    metadata_b = RuntimeMetadata(name=f"{metadata_name}-b", service="svc-other")
+    assert metadata_a != metadata_b

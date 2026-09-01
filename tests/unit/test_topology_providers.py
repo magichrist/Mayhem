@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pydantic_core
 import pytest
 
+from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.topology import (
     ContainerNode,
     Edge,
@@ -78,8 +79,12 @@ def _ctr(
         id=f"ctr-{name}",
         name=name,
         engine=engine,
-        runtime_id=f"id-{name}",
-        service_name=service,
+        runtime_identity=RuntimeIdentity(
+            runtime=engine, host_id=f"h-{engine}-local", runtime_id=f"id-{name}"
+        ),
+        runtime_metadata=RuntimeMetadata(
+            service=service, name=name, image=image or None
+        ),
         state=state,
         image=image,
         networks=networks,
@@ -192,7 +197,7 @@ class TestContainerNode:
             id="c1",
             name="test",
             engine="docker",
-            runtime_id="abc",
+            runtime_identity=RuntimeIdentity(runtime="docker", host_id="h1", runtime_id="abc"),
             image="nginx:latest",
         )
         assert c.image == "nginx:latest"
@@ -202,7 +207,7 @@ class TestContainerNode:
             id="c1",
             name="test",
             engine="docker",
-            runtime_id="abc",
+            runtime_identity=RuntimeIdentity(runtime="docker", host_id="h1", runtime_id="abc"),
             networks=("mynet", "bridge"),
         )
         assert c.networks == ("mynet", "bridge")
@@ -212,7 +217,7 @@ class TestContainerNode:
             id="c1",
             name="test",
             engine="docker",
-            runtime_id="abc",
+            runtime_identity=RuntimeIdentity(runtime="docker", host_id="h1", runtime_id="abc"),
             ports=(PortBinding(host_port=8080, container_port=80),),
         )
         assert c.ports[0].host_port == 8080

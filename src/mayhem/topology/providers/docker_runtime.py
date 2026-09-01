@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic.networks import IPvAnyAddress
 
+from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.topology import (
     ContainerNode,
     Edge,
@@ -57,6 +58,36 @@ def _inspect_name(engine: str, container_id: str) -> str:
         return raw.lstrip("/") if raw else ""
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return ""
+
+
+def _inspect_meta(
+    engine: str, container_id: str
+) -> tuple[str, str | None, str | None]:
+    """Query name + lifecycle timestamps in a single inspect pass (ADR-M1-2).
+
+    Returns ``(name, created_at, started_at)`` with the leading ``/`` stripped.
+    """
+    try:
+        out = subprocess.run(  # noqa: PLW1510 — expected fire-and-forget inspect
+            [
+                engine, "inspect", "--format",
+                "{{.Name}}|{{.Created}}|{{.State.StartedAt}}",
+                container_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        raw = out.stdout.strip()
+        name, _, rest = raw.partition("|")
+        created, _, started = rest.partition("|")
+        return (
+            name.lstrip("/"),
+            created or None,
+            started or None,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return ("", None, None)
 
 
 def _container_id(row: dict[str, Any]) -> str:
@@ -239,16 +270,34 @@ class ContainerRuntimeProvider:
             nets = row.get("Networks") or []
             net_names = tuple(nets) if isinstance(nets, list) else ()
 
+            # Identity (ADR-M1-1) + descriptive metadata (ADR-M1-2) in one
+            # inspect pass; `container_name` stays as the authored resolver key.
+            container_name, created_at, started_at = _inspect_meta(
+                self._engine, container_id
+            )
+            metadata = RuntimeMetadata.from_inspect(
+                {
+                    "labels": labels,
+                    "created_at": created_at,
+                    "started_at": started_at,
+                    "image": str(row.get("Image") or ""),
+                },
+                name=container_name,
+            )
+
             node = ContainerNode(
                 id=f"ctr-{short_id}",
                 name=_container_name(row),
                 engine=self._engine,
-                runtime_id=container_id,
-                service_name=service_name,
-                container_name=_inspect_name(self._engine, container_id),
+                runtime_identity=RuntimeIdentity(
+                    runtime=self._engine,
+                    host_id=host_id,
+                    runtime_id=container_id,
+                ),
+                runtime_metadata=metadata,
                 state=str(row.get("State") or row.get("Status") or "unknown"),
                 ports=ports,
-                host_id=host_id,
+                container_name=container_name,
                 ip_address=ip_addr,
                 image=str(row.get("Image") or ""),
                 networks=net_names,
@@ -265,7 +314,6 @@ class ContainerRuntimeProvider:
             # Emit a ProcessNode for the container's main PID.
             process_name = service_name or node.name
             pid = _inspect_pid(self._engine, container_id)
-            container_name = _inspect_name(self._engine, container_id)
             if pid is not None and process_name:
                 proc_id = f"proc-{process_name}-{short_id}"
                 proc_node = ProcessNode(

@@ -45,6 +45,7 @@ class Observation(BaseModel):
     timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
     source: str = ""  # e.g. "executor", "janitor", "probe_runner"
     data: dict[str, Any] = Field(default_factory=dict)
+    runtime_identity: str | None = None  # canonical identity key (ADR-M1-1/1-3)
 
 
 class ObservationLog:

@@ -79,6 +79,7 @@ class FaultLease(BaseModel):
     released_at: datetime | None = None
     release_mechanism: str | None = None  # normal|watchdog|janitor|manual
     escalation_notes: str | None = None
+    runtime_identity: str | None = None  # canonical identity key (ADR-M1-1/1-3)
 
     @field_validator("id")
     @classmethod

@@ -14,6 +14,7 @@ from mayhem.topology.resolve import (
     resolve_container,
     resolve_ip,
     resolve_pid,
+    resolve_process_identity,
 )
 
 
@@ -115,6 +116,35 @@ class TestResolveIp:
             patch("mayhem.topology.resolve._detect_engine", return_value="podman"),
         ):
             assert resolve_ip("testcase-api") == ""
+
+
+class TestResolveProcessIdentity:
+    def test_reads_boot_time_on_linux(self) -> None:
+        # pid 42, comm "(python)", then fields 3..: state (R), ppid, pgrp,
+        # session, tty, tpgid, flags, minflt, cminflt, majflt, cmajflt, utime,
+        # stime, cutime, cstime, priority, nice, num_threads, itrealvalue,
+        # starttime (field 22 -> index 19 after the ')' split) = 9001.
+        stat = "42 (python) R 1 42 42 0 -1 4194304 0 0 0 0 10 3 0 0 20 0 1 0 9001 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+
+        class _FakeStat:
+            def read_text(self) -> str:
+                return stat
+
+        with (
+            patch("mayhem.topology.resolve.sys.platform", "linux"),
+            patch("mayhem.topology.resolve.Path", return_value=_FakeStat()),
+        ):
+            identity = resolve_process_identity(42, "h-local", "c-a")
+        assert identity.pid == 42
+        assert identity.boot_time == 9001
+        assert identity.container_name == "c-a"
+        assert identity.resolve_key() == "h-local|42|9001|c-a"
+
+    def test_degrades_to_none_on_darwin(self) -> None:
+        with patch("mayhem.topology.resolve.sys.platform", "darwin"):
+            identity = resolve_process_identity(42, "h-local")
+        assert identity.boot_time is None
+        assert identity.pid == 42
 
 
 class TestResolveContainer:

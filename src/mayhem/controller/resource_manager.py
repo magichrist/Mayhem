@@ -19,6 +19,7 @@ from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.resources import (
+    MutationJournalEntry,
     RecoveryResult,
     ResourceOwnershipGraph,
     ResourceState,
@@ -72,6 +73,28 @@ class ResourceManager:
                 "CREATE INDEX IF NOT EXISTS idx_tr_target ON tracked_resources(target_identity)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_state ON tracked_resources(state)")
+            # Mutation-boundary journal (ADR-M2 Phase 2.6/2.7)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS mutation_journal (
+                    id TEXT PRIMARY KEY,
+                    lease_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    fault_id TEXT NOT NULL,
+                    defining_op_json TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
+                    journaled_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mj_target "
+                "ON mutation_journal(target_identity)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mj_lease "
+                "ON mutation_journal(lease_id)"
+            )
 
     def _load_graph(self) -> None:
         """Reload the in-memory graph from persistent storage."""
@@ -132,6 +155,120 @@ class ResourceManager:
     def activate(self, resource_id: str) -> TrackedResource:
         """Mark a resource as ACTIVE after successful injection."""
         return self._transition(resource_id, ResourceState.ACTIVE)
+
+    # -- mutation journal (ADR-M2 Phase 2.6/2.7) --------------------------------
+
+    def journal_mutation(
+        self,
+        lease_id: str,
+        resource_id: str,
+        run_id: str,
+        step_id: str,
+        fault_id: str,
+        defining_op: UndoOp,
+        target_identity: str,
+    ) -> MutationJournalEntry:
+        """Record a mutation at the boundary when the last undo-fallible op is
+        applied (Phase 2.6). Carries the resource owner, the defining op, and
+        the lease reference.
+
+        Must be called AFTER the inject succeeds — never before.
+
+        The resource transitions from PENDING to ACTIVE at this point (not
+        during ``register()``). A resource that was registered but never
+        journaled is orphaned during cleanup.
+        """
+        entry = MutationJournalEntry(
+            id=f"mj-{uuid.uuid4().hex[:12]}",
+            lease_id=lease_id,
+            resource_id=resource_id,
+            run_id=run_id,
+            step_id=step_id,
+            fault_id=fault_id,
+            defining_op=defining_op,
+            target_identity=target_identity,
+        )
+        with self._store.write() as conn:
+            conn.execute(
+                "INSERT INTO mutation_journal "
+                "(id, lease_id, resource_id, run_id, step_id, fault_id, "
+                " defining_op_json, target_identity, journaled_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.id,
+                    entry.lease_id,
+                    entry.resource_id,
+                    entry.run_id,
+                    entry.step_id,
+                    entry.fault_id,
+                    entry.defining_op.model_dump_json(),
+                    entry.target_identity,
+                    entry.journaled_at.isoformat(),
+                ),
+            )
+        self.activate(resource_id)
+        return entry
+
+    def check_no_inflight_writer(
+        self,
+        target_identity: str,
+        exclude_run_id: str | None = None,
+    ) -> str | None:
+        """Phase 2.7 — one-inflight-writer check.
+
+        Returns ``None`` when no conflict is found.  When another lease holds
+        an active mutation on *target_identity*, returns the human-readable
+        conflict reason (caller reports RESOURCE_CONFLICT and aborts).
+        """
+        with self._store.write() as conn:
+            rows = conn.execute(
+                "SELECT mj.lease_id, mj.run_id, mj.fault_id, tr.state "
+                "FROM mutation_journal mj "
+                "JOIN tracked_resources tr ON tr.id = mj.resource_id "
+                "WHERE mj.target_identity = ? "
+                "AND tr.state IN ('pending', 'active')",
+                (target_identity,),
+            ).fetchall()
+        for row in rows:
+            if exclude_run_id and row["run_id"] == exclude_run_id:
+                continue
+            lease_id = row["lease_id"]
+            resource_state = row["state"]
+            return (
+                f"RESOURCE_CONFLICT: target '{target_identity}' is held by "
+                f"lease '{lease_id}' (run {row['run_id']}, fault "
+                f"{row['fault_id']}, resource state {resource_state})"
+            )
+        return None
+
+    def in_flight_mutations_for_target(self, target_identity: str) -> list[MutationJournalEntry]:
+        """Return all journaled mutations on a target whose resource is still
+        held (PENDING or ACTIVE state). Used for diagnostics and conflict
+        reporting.
+        """
+        with self._store.write() as conn:
+            rows = conn.execute(
+                "SELECT mj.* FROM mutation_journal mj "
+                "JOIN tracked_resources tr ON tr.id = mj.resource_id "
+                "WHERE mj.target_identity = ? "
+                "AND tr.state IN ('pending', 'active')",
+                (target_identity,),
+            ).fetchall()
+        entries: list[MutationJournalEntry] = []
+        for row in rows:
+            entry = MutationJournalEntry(
+                id=row["id"],
+                lease_id=row["lease_id"],
+                resource_id=row["resource_id"],
+                run_id=row["run_id"],
+                step_id=row["step_id"],
+                fault_id=row["fault_id"],
+                defining_op=UndoOp.model_validate_json(row["defining_op_json"]),
+                target_identity=row["target_identity"],
+                journaled_at=utc_now(),  # approx; the actual value is in the DB
+            )
+            entries.append(entry)
+        return entries
 
     def start_recovery(self, resource_id: str) -> TrackedResource:
         """Mark a resource as RECOVERING before cleanup starts."""

@@ -44,6 +44,14 @@ class TestRoundTrip:
         loaded = sink.load("l-round")
         assert loaded == original
 
+    def test_runtime_identity_round_trips(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path)
+        original = _lease(runtime_identity="podman|h1|cid-x")
+        sink.save(original)
+        loaded = sink.load("l-round")
+        assert loaded is not None
+        assert loaded.runtime_identity == "podman|h1|cid-x"
+
     def test_active_leases_exclude_terminals(self, tmp_path: Path) -> None:
         sink = _sink(tmp_path)
         sink.save(_lease(LeaseState.RELEASED, id="l-done"))

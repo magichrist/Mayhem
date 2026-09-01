@@ -2,7 +2,9 @@
 
 Node kinds form a *closed union* — adding Kubernetes later means extending this
 union deliberately (ADR-0013), never duck-typing through it. Container-runtime
-specifics stay out: ``ContainerNode`` is engine-agnostic.
+specifics stay out: ``ContainerNode`` is engine-agnostic. Identity lives in
+``RuntimeIdentity``/``RuntimeMetadata`` (ADR-M1-1/M1-2); ``container_name`` and
+``service_name`` are authoring resolver keys, never identity.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.networks import IPvAnyAddress
 
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
+from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 
 
 class NodeKind(StrEnum):
@@ -55,15 +58,21 @@ class ServiceNode(_NodeBase):
 class ContainerNode(_NodeBase):
     kind: Literal[NodeKind.CONTAINER] = NodeKind.CONTAINER
     engine: str  # "docker" | "podman" — label only, no runtime types here (ADR-0013)
-    runtime_id: str
+    runtime_identity: RuntimeIdentity  # equality key (ADR-M1-1)
+    runtime_metadata: RuntimeMetadata | None = None  # descriptive, never identity (ADR-M1-2)
     ip_address: IPvAnyAddress | None = None
-    host_id: str | None = None
-    service_name: str | None = None  # com.docker.compose.service binding
-    container_name: str | None = None  # stable identity from docker-compose name: field
+    # Resolver key only — authoring/DSL lookup by a stable name (ADR-M1-1, ADR-M1-4).
+    # Deprecated in identity contexts: equality goes through runtime_identity.
+    container_name: str | None = None
     ports: tuple[PortBinding, ...] = ()
     state: str = "unknown"  # engine-reported lifecycle state
     image: str | None = None
     networks: tuple[str, ...] = ()
+
+    @property
+    def identity_key(self) -> str:
+        """Canonical identity key for persisted records."""
+        return self.runtime_identity.key()
 
 
 class HostNode(_NodeBase):
@@ -216,6 +225,12 @@ class TargetSelector(BaseModel):
 
 
 def _field_str(node: BaseModel, key: str) -> str | None:
+    # Authoring resolver keys (ADR-M1-1, ADR-M1-4). `service_name=` and
+    # `container_name=` selectors resolve through RuntimeMetadata; they are
+    # names of user intent, not node attributes after the identity refactor.
+    if key == "service_name" and isinstance(node, ContainerNode):
+        meta = node.runtime_metadata
+        return meta.service if meta is not None else None
     value = getattr(node, key, None)
     return None if value is None else str(value)
 

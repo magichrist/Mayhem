@@ -58,3 +58,30 @@ class SchemaValidationError(DomainError):
     def __init__(self, subject: str, reason: str) -> None:
         self.subject = subject
         super().__init__(f"{subject}: {reason}")
+
+
+class TargetDriftError(DomainError):
+    """The planned ``RuntimeIdentity`` no longer matches the live one.
+
+    Declared in M1 (ADR-M1-3); *raised* in M2 when live re-validation
+    detects that a container was recreated mid-run under the same authored
+    name. Distinct from capability failures and ownership contention — a
+    drifted target is mismatched, not failed.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        step_id: str,
+        planned: str,
+        live: str,
+    ) -> None:
+        self.run_id = run_id
+        self.step_id = step_id
+        self.planned = planned
+        self.live = live
+        super().__init__(
+            f"target drift on step '{step_id}' (run '{run_id}'): "
+            f"planned identity '{planned}' no longer matches live "
+            f"identity '{live}'"
+        )
