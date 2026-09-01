@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from mayhem.domain.topology import ContainerNode, Edge, NodeKind, TopologyGraph
 
@@ -18,6 +18,38 @@ class DiscoveryResult:
     drift_report: dict[str, object] = field(default_factory=dict)
     partial: bool = False
     errors: tuple[str, ...] = ()
+
+
+def _find_extra_containers(
+    all_live: list[ContainerNode],
+    services: Mapping[str, TopologyNode],
+) -> list[dict[str, str]]:
+    """Return live containers whose service isn't in the blueprint."""
+    extras: list[dict[str, str]] = []
+    for c in all_live:
+        svc = c.runtime_metadata.service if c.runtime_metadata else None
+        if svc and svc not in services:
+            extras.append({"name": c.name, "engine": c.engine, "image": str(c.image or "")})
+    return extras
+
+
+def _find_image_drift(
+    services: Mapping[str, TopologyNode],
+    live_by_service: Mapping[str, list[ContainerNode]],
+) -> list[dict[str, str]]:
+    """Return services whose running image differs from the blueprint."""
+    changed: list[dict[str, str]] = []
+    for name, svc in services.items():
+        expected = getattr(svc, "image", None)
+        if expected is None:
+            continue
+        for container in live_by_service.get(name, []):
+            actual = getattr(container, "image", None)
+            if actual and str(expected) != str(actual):
+                changed.append(
+                    {"service": name, "expected": str(expected), "actual": str(actual)}
+                )
+    return changed
 
 
 class TopologyService:
@@ -61,10 +93,10 @@ class TopologyService:
         # Validate every ContainerNode has a container_name (ADR-0020).
         for node in graph_nodes:
             if isinstance(node, ContainerNode) and not node.container_name:
-                svc = node.service_name or "unknown"
+                node_service = node.runtime_metadata.service if node.runtime_metadata else None
                 errors.append(
-                    f"container {node.id} (service={svc}) has no container_name — "
-                    "add 'name:' to docker-compose.yml"
+                    f"container {node.id} (service={node_service or 'unknown'}) has no "
+                    "container_name — add 'name:' to docker-compose.yml"
                 )
 
         return DiscoveryResult(
@@ -86,8 +118,9 @@ class TopologyService:
             for node in fragment.nodes:
                 if isinstance(node, ContainerNode):
                     all_live_containers.append(node)
-                    if node.service_name:
-                        live_by_service.setdefault(node.service_name, []).append(node)
+                    svc_name = node.runtime_metadata.service if node.runtime_metadata else None
+                    if svc_name:
+                        live_by_service.setdefault(svc_name, []).append(node)
 
         # --- matched services ---
         matched_services: list[str] = []
@@ -98,28 +131,10 @@ class TopologyService:
         missing_services = sorted(set(services) - set(live_by_service))
 
         # --- extra containers (runtime containers with no matching service) ---
-        extra_containers: list[dict[str, str]] = [
-            {"name": c.name, "engine": c.engine, "image": str(c.image or "")}
-            for c in all_live_containers
-            if c.service_name and c.service_name not in services
-        ]
+        extra_containers = _find_extra_containers(all_live_containers, services)
 
         # --- image drift ---
-        changed_images: list[dict[str, str]] = []
-        for name, svc in services.items():
-            expected = getattr(svc, "image", None)
-            if expected is None:
-                continue
-            for container in live_by_service.get(name, []):
-                actual = getattr(container, "image", None)
-                if actual and str(expected) != str(actual):
-                    changed_images.append(
-                        {
-                            "service": name,
-                            "expected": str(expected),
-                            "actual": str(actual),
-                        }
-                    )
+        changed_images = _find_image_drift(services, live_by_service)
 
         # --- state anomalies (stopped, paused, restarting) ---
         unhealthy: list[dict[str, str]] = []
