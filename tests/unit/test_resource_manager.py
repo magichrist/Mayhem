@@ -181,3 +181,151 @@ class TestResourceManagerPersistence:
     def test_unknown_resource_raises(self, rm: ResourceManager) -> None:
         with pytest.raises(InvariantViolationError, match="resource_unknown"):
             rm.activate(str(uuid.uuid4()))
+
+
+# ------------------------------------------------------------------
+# Phase 2.6 — mutation-boundary journal
+# ------------------------------------------------------------------
+
+
+class TestMutationJournal:
+    def test_journal_mutation_activates_resource(self, rm: ResourceManager) -> None:
+        r = rm.register(
+            resource_type=ResourceType.PROCESS_SPAWN,
+            run_id="run-j1",
+            step_id="step-1",
+            fault_id="proc.kill",
+            target_identity="host-a",
+            cleanup_op=_undo(),
+            verify_probe=_probe(),
+        )
+        assert r.state == ResourceState.PENDING
+
+        entry = rm.journal_mutation(
+            lease_id="l-100",
+            resource_id=r.id,
+            run_id="run-j1",
+            step_id="step-1",
+            fault_id="proc.kill",
+            defining_op=UndoOp(op="kill", args={"pid": "42"}),
+            target_identity="host-a",
+        )
+
+        assert entry.lease_id == "l-100"
+        assert entry.defining_op.args["pid"] == "42"
+        assert entry.target_identity == "host-a"
+
+        updated = rm.graph.get(r.id)
+        assert updated is not None
+        assert updated.state == ResourceState.ACTIVE
+
+    def test_journal_mutation_survives_restart(self, tmp_path: object) -> None:
+        db = tmp_path / "jm.db"  # type: ignore[union-attr]
+        rm1 = ResourceManager(Store.open_migrated(db))
+        r = rm1.register(
+            resource_type=ResourceType.IPTABLES_RULE,
+            run_id="run-j2",
+            step_id="s-2",
+            fault_id="fw.drop",
+            target_identity="host-b",
+            cleanup_op=_undo(),
+            verify_probe=_probe(),
+        )
+        rm1.journal_mutation(
+            lease_id="l-200",
+            resource_id=r.id,
+            run_id="run-j2",
+            step_id="s-2",
+            fault_id="fw.drop",
+            defining_op=UndoOp(op="iptables", args={"cmd": "-A DROP"}),
+            target_identity="host-b",
+        )
+
+        # Fresh manager
+        rm2 = ResourceManager(Store.open_migrated(db))
+        assert rm2.graph.size == 1
+        res = rm2.graph.get(r.id)
+        assert res is not None
+        assert res.state == ResourceState.ACTIVE
+
+
+# ------------------------------------------------------------------
+# Phase 2.7 — one-inflight-writer (resource-conflict)
+# ------------------------------------------------------------------
+
+
+class TestInflightWriter:
+    def test_no_conflict_on_idle_target(self, rm: ResourceManager) -> None:
+        assert rm.check_no_inflight_writer("host-x") is None
+
+    def test_conflict_when_target_held(self, rm: ResourceManager) -> None:
+        r = rm.register(
+            resource_type=ResourceType.TC_RULE,
+            run_id="run-w1",
+            step_id="s-1",
+            fault_id="net.loss",
+            target_identity="host-y",
+            cleanup_op=_undo(),
+            verify_probe=_probe(),
+        )
+        rm.journal_mutation(
+            lease_id="l-300",
+            resource_id=r.id,
+            run_id="run-w1",
+            step_id="s-1",
+            fault_id="net.loss",
+            defining_op=UndoOp(op="tc", args={"netem": "loss 100%"}),
+            target_identity="host-y",
+        )
+        reason = rm.check_no_inflight_writer("host-y")
+        assert reason is not None
+        assert "RESOURCE_CONFLICT" in reason
+        assert "l-300" in reason
+
+    def test_no_conflict_for_same_run(self, rm: ResourceManager) -> None:
+        """The same run should not conflict with itself (parallel steps)."""
+        r = rm.register(
+            resource_type=ResourceType.TC_RULE,
+            run_id="run-w2",
+            step_id="s-1",
+            fault_id="net.latency",
+            target_identity="host-z",
+            cleanup_op=_undo(),
+            verify_probe=_probe(),
+        )
+        rm.journal_mutation(
+            lease_id="l-400",
+            resource_id=r.id,
+            run_id="run-w2",
+            step_id="s-1",
+            fault_id="net.latency",
+            defining_op=UndoOp(op="tc", args={"netem": "delay"}),
+            target_identity="host-z",
+        )
+        # Same run, different step → no conflict
+        assert rm.check_no_inflight_writer("host-z", exclude_run_id="run-w2") is None
+
+    def test_conflict_vanishes_after_recovery(self, rm: ResourceManager) -> None:
+        r = rm.register(
+            resource_type=ResourceType.PROCESS_SIGNAL,
+            run_id="run-w3",
+            step_id="s-1",
+            fault_id="proc.pause",
+            target_identity="host-w",
+            cleanup_op=_undo(),
+            verify_probe=_probe(),
+        )
+        rm.journal_mutation(
+            lease_id="l-500",
+            resource_id=r.id,
+            run_id="run-w3",
+            step_id="s-1",
+            fault_id="proc.pause",
+            defining_op=UndoOp(op="signal", args={"sig": "STOP"}),
+            target_identity="host-w",
+        )
+        assert rm.check_no_inflight_writer("host-w") is not None
+
+        # Recovery clears the conflict
+        rm.mark_recovered(r.id, verified=True)
+        assert rm.check_no_inflight_writer("host-w") is None

@@ -182,7 +182,9 @@ class TestParallelExecution:
 
             assert result.status == "completed", result.summary_md()
             assert not result.dirty_leases
-            leases = store.query("SELECT state, fault_id, runtime_identity FROM fault_leases WHERE run_id='r-par'")
+            leases = store.query(
+                "SELECT state, fault_id, runtime_identity FROM fault_leases WHERE run_id='r-par'"
+            )
             assert len(leases) == 2
             assert {r["fault_id"] for r in leases} == {"proc.pause"}
             assert all(r["state"] == "released" for r in leases)
@@ -194,9 +196,7 @@ class TestParallelExecution:
             # ADR-M1-3: the same identity lands on the step_runs rows.
             step_identities = {
                 r["runtime_identity"]
-                for r in store.query(
-                    "SELECT runtime_identity FROM step_runs WHERE run_id='r-par'"
-                )
+                for r in store.query("SELECT runtime_identity FROM step_runs WHERE run_id='r-par'")
             }
             assert step_identities == {"podman|h|a", "podman|h|b"}
         finally:

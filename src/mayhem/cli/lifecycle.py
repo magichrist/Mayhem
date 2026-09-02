@@ -46,9 +46,7 @@ def _gate_enabled() -> bool:
     return _STATE.get("gate", "1") != "0"
 
 
-def _gate_bypasses(
-    engine_name: str, plan: object, graph: object
-) -> dict[tuple[str, str], str]:
+def _gate_bypasses(engine_name: str, plan: object, graph: object) -> dict[tuple[str, str], str]:
     """Probe the live containers and mark proved-inert faults for bypass.
 
     Fail-safe by contract: a fault whose tooling is *proven absent* in its
@@ -65,6 +63,7 @@ def _gate_bypasses(
     )
     from mayhem.domain.experiments import ExecutionPlan
     from mayhem.domain.topology import TopologyGraph
+
     if not isinstance(plan, ExecutionPlan) or not isinstance(graph, TopologyGraph):
         return {}
     if not engine_name:
@@ -84,9 +83,7 @@ def _gate_bypasses(
         )
         for (fid, cont), why in sorted(bypass.items()):
             click.echo(
-                style.yellow(
-                    f"  - {fid} → {cont}: bypass due to {why}"
-                ),
+                style.yellow(f"  - {fid} → {cont}: bypass due to {why}"),
                 err=True,
             )
     if unreachable:
@@ -297,8 +294,7 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
             bypass = _gate_bypasses(engine_name, compiled.plan, graph)
         else:
             click.echo(
-                style.warn("warning:")
-                + " impact gate skipped (--skip-gate); inert faults may run",
+                style.warn("warning:") + " impact gate skipped (--skip-gate); inert faults may run",
                 err=True,
             )
         engine = engine_for(

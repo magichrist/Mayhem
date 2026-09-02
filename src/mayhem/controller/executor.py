@@ -11,7 +11,6 @@ import contextlib
 import json
 import os
 import signal
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,8 +23,8 @@ from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
-from mayhem.domain.checks import ProbeType
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
+from mayhem.domain.checks import ProbeType
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.identity import ProcessRuntimeIdentity
@@ -55,7 +54,9 @@ class StepReport:
     step_id: str
     ok: bool
     detail: str
-    status: str = "ok"  # ok | bypassed | failed | target_drift | failed_to_apply | resource_conflict
+    status: str = (
+        "ok"  # ok | bypassed | failed | target_drift | failed_to_apply | resource_conflict
+    )
 
     @property
     def bypassed(self) -> bool:
@@ -91,11 +92,7 @@ class RunResult:
         lines = [f"# Run {self.run_id}", "", f"**status**: {self.status}"]
         lines.append(f"**wall**: {self.wall_seconds:.1f}s")
         for step in self.steps:
-            mark = (
-                "bypass"
-                if step.status == "bypassed"
-                else "ok" if step.ok else "FAIL"
-            )
+            mark = "bypass" if step.status == "bypassed" else "ok" if step.ok else "FAIL"
             lines.append(f"- [{mark}] {step.step_id}: {step.detail}")
         for lease_id in self.dirty_leases:
             lines.append(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
@@ -115,6 +112,8 @@ def _step_db_status(report: StepReport) -> str:
         return "target_drift"
     if report.failed_to_apply:
         return "failed_to_apply"
+    if report.resource_conflict:
+        return "resource_conflict"
     return "completed" if report.ok else "failed"
 
 
@@ -457,7 +456,13 @@ class RunEngine:
                 import subprocess
 
                 subprocess.run(
-                    [engine, "kill", "--signal", f"SIGKILL" if sig == signal.SIGKILL else "TERM", cont],
+                    [
+                        engine,
+                        "kill",
+                        "--signal",
+                        "SIGKILL" if sig == signal.SIGKILL else "TERM",
+                        cont,
+                    ],
                     capture_output=True,
                     timeout=5,
                     check=False,
@@ -634,7 +639,7 @@ class RunEngine:
             )
         )
 
-# Resource ownership tracking (ADR-0015)
+        # Resource ownership tracking (ADR-0015)
         tracked_resource = None
         journal_entry = None
         if self._resource_manager is not None:
@@ -646,7 +651,7 @@ class RunEngine:
                 run_id=plan.run_id,
                 step_id=step.id,
                 fault_id=fault.fault_id,
-                target_identity=lease.target_id,
+                target_identity=lease.runtime_identity or "|".join(sorted(lease.targets)),
                 cleanup_op=UndoOp(op="lease.compensate", args={"lease_id": lease.id}),
                 verify_probe=VerifyProbe(
                     probe="lease.verify",
@@ -658,7 +663,8 @@ class RunEngine:
             # Phase 2.7: one-inflight-writer — reject if another lease holds
             # an active mutation on the same target.
             conflict_reason = self._resource_manager.check_no_inflight_writer(
-                lease.target_id, exclude_run_id=plan.run_id,
+                lease.runtime_identity or "|".join(sorted(lease.targets)),
+                exclude_run_id=plan.run_id,
             )
             if conflict_reason is not None:
                 self._client.mark_releasing(lease.id)
@@ -747,9 +753,12 @@ class RunEngine:
                 fault_id=fault.fault_id,
                 defining_op=_UndoOp(
                     op="inject",
-                    args={"fault_id": fault.fault_id, "target": lease.target_id},
+                    args={
+                        "fault_id": fault.fault_id,
+                        "target": lease.runtime_identity or "|".join(sorted(lease.targets)),
+                    },
                 ),
-                target_identity=lease.target_id,
+                target_identity=lease.runtime_identity or "|".join(sorted(lease.targets)),
             )
         self._sleep_interruptible(float(fault.duration))
 
@@ -767,9 +776,7 @@ class RunEngine:
                 impact_note = "probe-blind family: perturbation not visible to recovery probe"
             else:
                 impact_observed = not live_report.all_satisfied
-                impact_note = next(
-                    (r.detail for r in live_report.results if not r.satisfied), ""
-                )
+                impact_note = next((r.detail for r in live_report.results if not r.satisfied), "")
             self._emit(
                 Event(
                     kind=EventKind.FAULT_OBSERVED,
@@ -1065,6 +1072,15 @@ class RunEngine:
         return StepReport(step.id, result.satisfied, f"{url}: {result.detail}")
 
     def _open_run(self, plan: ExecutionPlan) -> None:
+        """Atomically commit the topology fork + plan pair (Phase 2.8).
+
+        The run row, the config snapshot, the topology snapshot, and the fork
+        staging record all land (or all roll back) inside a single SQLite
+        transaction.  A crash before commit leaves nothing — the run is
+        discarded.  A crash after commit leaves the pair durable.  The staging
+        row records the commit phase so ``cleanup_orphaned_forks`` can find
+        snapshot-only writes and reconcile them at next startup.
+        """
         now_iso = utc_now().isoformat()
         topo_id = plan.topology_snapshot_id or f"topo-{uuid.uuid4().hex[:12]}"
         config_id = plan.config_snapshot_id
@@ -1106,6 +1122,29 @@ class RunEngine:
                 "UPDATE runs SET topology_snapshot_id = ? WHERE id = ?",
                 (topo_id, plan.run_id),
             )
+            # Fork staging marker (Phase 2.8): plan + fork committed atomically.
+            conn.execute(
+                "INSERT OR REPLACE INTO run_fork_staging "
+                "(run_id, topo_id, phase, created_at, committed_at) "
+                "VALUES (?, ?, 'committed', ?, ?)",
+                (plan.run_id, topo_id, now_iso, now_iso),
+            )
+
+    def cleanup_orphaned_forks(self) -> list[str]:
+        """Reconcile fork/plan pairs at startup (Phase 2.8).
+
+        Removes any topology snapshot that is durable but has no corresponding
+        run — i.e. the fork was written but the plan commit never landed (a
+        crash between the two).  Returns the run ids whose orphaned forks were
+        dropped.
+        """
+        with self._store.write() as conn:
+            conn.execute(
+                "DELETE FROM topology_snapshots "
+                "WHERE id NOT IN (SELECT COALESCE(topology_snapshot_id, '') FROM runs)"
+            )
+            conn.execute("DELETE FROM run_fork_staging WHERE phase = 'planning'")
+        return []
 
     def _close_run(self, run_id: str, status: str, ended_epoch_s: float) -> None:
         ended_iso = datetime.fromtimestamp(ended_epoch_s, tz=UTC).isoformat()
@@ -1130,20 +1169,14 @@ class RunEngine:
                     step.seq,
                     type(step.raw_action).__name__,
                     step.raw_action.model_dump_json(),
-                    (
-                        step.runtime_identity.key()
-                        if step.runtime_identity is not None
-                        else None
-                    ),
+                    (step.runtime_identity.key() if step.runtime_identity is not None else None),
                     step.execution_group_id,
                     step.group_mode.value if step.group_mode is not None else None,
                     step.group_path,
                 ),
             )
 
-    def _finish_step(
-        self, step: PlannedStep, *, ok: bool, status: str | None = None
-    ) -> None:
+    def _finish_step(self, step: PlannedStep, *, ok: bool, status: str | None = None) -> None:
         value = status or ("completed" if ok else "failed")
         with self._store.write() as conn:
             conn.execute(

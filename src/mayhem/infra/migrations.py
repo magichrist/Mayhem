@@ -387,6 +387,62 @@ M0008_FAILED_TO_APPLY = Migration(
 )
 
 
+M0009_FORK_ATOMICITY = Migration(
+    version=9,
+    name="fork_atomicity",
+    statements=(
+        # ADR-M2 Phase 2.8 — fork atomicity. A run starts by snapshotting the
+        # topology fork and committing a plan *as a pair*; either both land or
+        # neither. The staging table records the commit phase so a crash
+        # between "fork durable" and "plan committed" leaves a durable marker
+        # the next startup can reconcile (orphaned fork -> cleaned up).
+        """
+        CREATE TABLE run_fork_staging (
+            run_id TEXT PRIMARY KEY,
+            topo_id TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK (phase IN ('planning','committed')),
+            created_at TEXT NOT NULL,
+            committed_at TEXT
+        )
+        """,
+        # Rebuild step_runs to admit the persisted `resource_conflict` status
+        # (ADR-M2 Phase 2.7).
+        """
+        CREATE TABLE step_runs_v9 (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            parent_step_id TEXT REFERENCES step_runs(id),
+            action_type TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','running','completed','failed','skipped','cancelled',
+                 'bypassed','target_drift','failed_to_apply','resource_conflict')),
+            started_at TEXT,
+            ended_at TEXT,
+            error TEXT,
+            runtime_identity TEXT,
+            execution_group_id TEXT,
+            group_mode TEXT,
+            group_path TEXT
+        )
+        """,
+        """
+        INSERT INTO step_runs_v9 (id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, runtime_identity,
+            execution_group_id, group_mode, group_path)
+        SELECT id, run_id, seq, parent_step_id, action_type,
+            action_json, status, started_at, ended_at, error, runtime_identity,
+            execution_group_id, group_mode, group_path
+        FROM step_runs
+        """,
+        "DROP TABLE step_runs",
+        "ALTER TABLE step_runs_v9 RENAME TO step_runs",
+        "CREATE INDEX idx_step_runs_group ON step_runs(execution_group_id)",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -396,4 +452,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0006_RUNTIME_IDENTITY,
     M0007_FAULT_GROUPS,
     M0008_FAILED_TO_APPLY,
+    M0009_FORK_ATOMICITY,
 )

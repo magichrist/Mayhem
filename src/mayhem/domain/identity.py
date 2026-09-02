@@ -76,9 +76,7 @@ class RuntimeIdentity(BaseModel):
         try:
             runtime, host_id, runtime_id = key.split("|", maxsplit=2)
         except ValueError as exc:
-            raise ValueError(
-                f"not a canonical identity key: {key!r}"
-            ) from exc
+            raise ValueError(f"not a canonical identity key: {key!r}") from exc
         return cls(
             runtime=runtime,
             host_id=host_id or None,
@@ -185,9 +183,7 @@ class RuntimeMetadata(BaseModel):
         )
 
     @classmethod
-    def from_inspect(
-        cls, info: Mapping[str, Any], name: str | None = None
-    ) -> RuntimeMetadata:
+    def from_inspect(cls, info: Mapping[str, Any], name: str | None = None) -> RuntimeMetadata:
         """Build metadata from an engine ``inspect``-like mapping.
 
         Recognized keys: ``"labels"``, ``"project"``, ``"service"``,

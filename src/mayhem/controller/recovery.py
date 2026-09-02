@@ -88,13 +88,11 @@ class RecoveryAuditLog:
                 "CREATE INDEX IF NOT EXISTS idx_ral_resource ON recovery_audit_log(resource_id)"
             )
             # Back-fill the identity column on tables created before it existed.
-            cols = {r["name"] for r in conn.execute(
-                "PRAGMA table_info(recovery_audit_log)"
-            ).fetchall()}
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(recovery_audit_log)").fetchall()
+            }
             if "runtime_identity" not in cols:
-                conn.execute(
-                    "ALTER TABLE recovery_audit_log ADD COLUMN runtime_identity TEXT"
-                )
+                conn.execute("ALTER TABLE recovery_audit_log ADD COLUMN runtime_identity TEXT")
 
     def _load(self) -> None:
         with self._store.write() as conn:  # type: ignore[union-type]

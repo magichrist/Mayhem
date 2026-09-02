@@ -57,16 +57,12 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "load.spike": FaultRequirement(bins=frozenset({"python"})),
     "fuzz.protocol_abuse": FaultRequirement(bins=frozenset({"python"})),
     "net.latency": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
-    "net.partition": FaultRequirement(
-        bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})
-    ),
+    "net.partition": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.load": FaultRequirement(bins=frozenset({"k6"})),
     "http.error_injection": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
-    "db.slow_query": FaultRequirement(
-        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
-    ),
+    "db.slow_query": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "dns.resolve_delay": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "dns.nxdomain": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "tls.certificate_expired": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
@@ -107,7 +103,8 @@ class ContainerRuntime:
 
 
 _PROBE_SH = (
-    "printf 'BINS'" + "".join(
+    "printf 'BINS'"
+    + "".join(
         f"; printf ' {b}:%s' \"$(command -v {b} >/dev/null 2>&1 && echo 1 || echo 0)\""
         for b in _PROBE_BINS
     )
@@ -144,17 +141,12 @@ def parse_runtime_output(engine: str, container: str, text: str) -> ContainerRun
     m = _BINS_RE.search(text)
     if m is None:
         return None
-    bins = {
-        pair.split(":")[0]: pair.split(":")[1] == "1"
-        for pair in m.group(1).split()
-    }
+    bins = {pair.split(":")[0]: pair.split(":")[1] == "1" for pair in m.group(1).split()}
     uid_m = _UID_RE.search(text)
     cap_m = _CAPEFF_RE.search(text)
     cap_eff = int(cap_m.group(1), 16) if cap_m else 0
     uid = int(uid_m.group(1)) if uid_m else None
-    return ContainerRuntime(
-        container=container, engine=engine, bins=bins, uid=uid, cap_eff=cap_eff
-    )
+    return ContainerRuntime(container=container, engine=engine, bins=bins, uid=uid, cap_eff=cap_eff)
 
 
 @dataclass(frozen=True)

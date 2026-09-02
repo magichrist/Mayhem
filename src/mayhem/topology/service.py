@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING
 
 from mayhem.domain.topology import ContainerNode, Edge, NodeKind, TopologyGraph
 
@@ -46,9 +47,7 @@ def _find_image_drift(
         for container in live_by_service.get(name, []):
             actual = getattr(container, "image", None)
             if actual and str(expected) != str(actual):
-                changed.append(
-                    {"service": name, "expected": str(expected), "actual": str(actual)}
-                )
+                changed.append({"service": name, "expected": str(expected), "actual": str(actual)})
     return changed
 
 

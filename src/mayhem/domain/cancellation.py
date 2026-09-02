@@ -22,7 +22,7 @@ from __future__ import annotations
 from enum import IntEnum
 from threading import Lock
 
-_LADDER: tuple["CancellationLevel", ...] = (
+_LADDER: tuple[CancellationLevel, ...] = (
     "grace",
     "term",
     "kill",

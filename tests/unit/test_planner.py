@@ -103,10 +103,9 @@ class TestDrillPlanning:
         assert step.fault.runtime_identity.key() == "podman|h1|cid-api"
 
     def test_identity_is_none_when_node_has_no_container_identity(self) -> None:
+        from mayhem.controller.planner import _resolve_planned_identity
         from mayhem.domain.identity import RuntimeIdentity
         from mayhem.domain.topology import ServiceNode
-
-        from mayhem.controller.planner import _resolve_planned_identity
 
         # A service is a resolver key only (ADR-M1-1): it contributes no
         # RuntimeIdentity, so the planned identity for a service-only match is
@@ -132,7 +131,6 @@ class TestDrillPlanning:
         assert _resolve_planned_identity((service, container)) == RuntimeIdentity(
             runtime="podman", host_id="h1", runtime_id="c-x"
         )
-
 
     def test_mem_exhaust_accepts_byte_amount_dsl(self) -> None:
         from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep

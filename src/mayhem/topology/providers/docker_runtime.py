@@ -60,9 +60,7 @@ def _inspect_name(engine: str, container_id: str) -> str:
         return ""
 
 
-def _inspect_meta(
-    engine: str, container_id: str
-) -> tuple[str, str | None, str | None]:
+def _inspect_meta(engine: str, container_id: str) -> tuple[str, str | None, str | None]:
     """Query name + lifecycle timestamps in a single inspect pass (ADR-M1-2).
 
     Returns ``(name, created_at, started_at)`` with the leading ``/`` stripped.
@@ -70,7 +68,9 @@ def _inspect_meta(
     try:
         out = subprocess.run(  # noqa: PLW1510 — expected fire-and-forget inspect
             [
-                engine, "inspect", "--format",
+                engine,
+                "inspect",
+                "--format",
                 "{{.Name}}|{{.Created}}|{{.State.StartedAt}}",
                 container_id,
             ],
@@ -272,9 +272,7 @@ class ContainerRuntimeProvider:
 
             # Identity (ADR-M1-1) + descriptive metadata (ADR-M1-2) in one
             # inspect pass; `container_name` stays as the authored resolver key.
-            container_name, created_at, started_at = _inspect_meta(
-                self._engine, container_id
-            )
+            container_name, created_at, started_at = _inspect_meta(self._engine, container_id)
             metadata = RuntimeMetadata.from_inspect(
                 {
                     "labels": labels,

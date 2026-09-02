@@ -204,9 +204,7 @@ class TestTargetDrift:
             assert result.status == "failed"
             assert step.target_drift
             assert "TARGET_DRIFT" in step.detail
-            rows = store.query(
-                "SELECT status FROM step_runs WHERE run_id = 'r-drift'"
-            )
+            rows = store.query("SELECT status FROM step_runs WHERE run_id = 'r-drift'")
             assert rows[0]["status"] == "target_drift"
             leases = store.query("SELECT id FROM fault_leases WHERE run_id = 'r-drift'")
             assert not leases  # no mutation, no lease
@@ -276,8 +274,9 @@ class TestTargetDrift:
         )
         calls = {"n": 0}
 
-        def fake_resolve_process_identity(pid, host_id=None, container_name=None,
-                                          _baseline=baseline, _recycled=recycled):
+        def fake_resolve_process_identity(
+            pid, host_id=None, container_name=None, _baseline=baseline, _recycled=recycled
+        ):
             calls["n"] += 1
             # first call = baseline capture at resolution; second = re-read at
             # mutation boundary, which now sees a recycled boot time.
@@ -310,9 +309,7 @@ class TestTargetDrift:
             assert result.status == "failed"
             assert step.target_drift
             assert "recycled" in step.detail
-            leases = store.query(
-                "SELECT id FROM fault_leases WHERE run_id = 'r-reused'"
-            )
+            leases = store.query("SELECT id FROM fault_leases WHERE run_id = 'r-reused'")
             assert not leases  # no mutation, no lease formed
         finally:
             proc.terminate()
@@ -362,9 +359,7 @@ class TestFailedToApply:
             step = result.steps[0]
             assert step.failed_to_apply
             assert "failed_to_apply" in step.detail
-            rows = store.query(
-                "SELECT status FROM step_runs WHERE run_id = 'r-f2a'"
-            )
+            rows = store.query("SELECT status FROM step_runs WHERE run_id = 'r-f2a'")
             assert rows[0]["status"] == "failed_to_apply"
             # Lease released, never mutated, no paused pid.
             leases = store.query(

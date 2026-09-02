@@ -39,7 +39,10 @@ def test_holding_payloads_survive_interpreter_eof() -> None:
     params = {"dur": 0, "duration": 0, "percent": "80", "limit": "64", "amount": "1"}
     for fid in ("cpu.saturate", "fd.exhaust", "fs.fill", "mem.exhaust"):
         fault = PlannedFault(
-            fault_id=fid, targets=(), undo_ops=(), verify_probes=(),
+            fault_id=fid,
+            targets=(),
+            undo_ops=(),
+            verify_probes=(),
             params={k: v for k, v in params.items() if k in ("percent", "amount", "limit")},
             duration=8.0,
         )
@@ -60,8 +63,12 @@ def test_burst_payloads_keep_main_thread_for_window() -> None:
 def test_cpu_burner_releases_the_gil() -> None:
     """cpu.saturate must use GIL-releasing C work so N threads pin N cores."""
     fault = PlannedFault(
-        fault_id="cpu.saturate", targets=(), undo_ops=(), verify_probes=(),
-        params={"percent": "100"}, duration=8.0,
+        fault_id="cpu.saturate",
+        targets=(),
+        undo_ops=(),
+        verify_probes=(),
+        params={"percent": "100"},
+        duration=8.0,
     )
     source = _payload_source(fault, "/tmp/mayhem.t.pid")
     assert "hashlib.sha256" in source
@@ -74,9 +81,7 @@ def test_payload_undo_addressed_via_service_in_blueprint_only_topology() -> None
         fault,
         (
             ServiceNode(id="svc-api", name="api", container_name="testcase-api"),
-            ProcessNode(
-                id="p-api", name="api", pid=4242, host_id="h1", container_name=None
-            ),
+            ProcessNode(id="p-api", name="api", pid=4242, host_id="h1", container_name=None),
         ),
     )
     assert ops[0].op == "payload.undo"
@@ -147,7 +152,9 @@ def test_tool_engine_restart_families_verify_via_inspect() -> None:
         inject = json.loads(ops[0].args["inject_argv"])
         undo = json.loads(ops[0].args["undo_argv"])
         assert inject[:3] == ["@engine", inject_verb, "--signal"] or inject[:3] == [
-            "@engine", inject_verb, "@cont",
+            "@engine",
+            inject_verb,
+            "@cont",
         ]
         assert undo == ["@engine", "start", "@cont"]
         probe = probes[0]

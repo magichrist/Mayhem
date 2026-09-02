@@ -54,18 +54,12 @@ def test_m0005_step_run_bypass_status_preserves_data_and_admits_bypassed(
             "INSERT INTO step_runs (id, run_id, seq, action_type, action_json, status)"
             " VALUES ('s1', 'r1', 1, 'inject', '{}', 'skipped')"
         )
-    assert (
-        store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"]
-        == "skipped"
-    )
+    assert store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"] == "skipped"
 
     applied = store.migrate()
     assert "0005_step_run_bypass_status" in applied
     assert store.schema_version == ALL_MIGRATIONS[-1].version
-    assert (
-        store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"]
-        == "skipped"
-    )
+    assert store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"] == "skipped"
     assert store.query("PRAGMA foreign_key_check") == []
 
     with store.write() as conn:
@@ -73,10 +67,7 @@ def test_m0005_step_run_bypass_status_preserves_data_and_admits_bypassed(
             "INSERT INTO step_runs (id, run_id, seq, action_type, action_json, status)"
             " VALUES ('s2', 'r1', 2, 'inject', '{}', 'bypassed')"
         )
-    assert (
-        store.query("SELECT status FROM step_runs WHERE id='s2'")[0]["status"]
-        == "bypassed"
-    )
+    assert store.query("SELECT status FROM step_runs WHERE id='s2'")[0]["status"] == "bypassed"
     store.close()
 
 
@@ -132,23 +123,14 @@ def test_m0006_runtime_identity_adds_identity_columns_and_target_drift(
 
     # target_drift is now a legal persisted step status.
     with store.write() as conn:
-        conn.execute(
-            "UPDATE step_runs SET status = 'target_drift' WHERE id = 's1'"
-        )
-    assert (
-        store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"]
-        == "target_drift"
-    )
+        conn.execute("UPDATE step_runs SET status = 'target_drift' WHERE id = 's1'")
+    assert store.query("SELECT status FROM step_runs WHERE id='s1'")[0]["status"] == "target_drift"
 
     # Identity can be written and read back round-trippably.
     with store.write() as conn:
-        conn.execute(
-            "UPDATE runs SET runtime_identity = 'podman|h1|cid-x' WHERE id = 'r1'"
-        )
+        conn.execute("UPDATE runs SET runtime_identity = 'podman|h1|cid-x' WHERE id = 'r1'")
     assert (
-        store.query("SELECT runtime_identity FROM runs WHERE id='r1'")[0][
-            "runtime_identity"
-        ]
+        store.query("SELECT runtime_identity FROM runs WHERE id='r1'")[0]["runtime_identity"]
         == "podman|h1|cid-x"
     )
     assert store.query("PRAGMA foreign_key_check") == []
@@ -183,9 +165,7 @@ def test_m0007_fault_groups_add_group_columns(tmp_path: Path) -> None:
     step_cols = {row["name"] for row in store.query("PRAGMA table_info(step_runs)")}
     for col in ("execution_group_id", "group_mode", "group_path"):
         assert col in step_cols, f"step_runs missing {col}"
-    inv_cols = {
-        row["name"] for row in store.query("PRAGMA table_info(fault_invocations)")
-    }
+    inv_cols = {row["name"] for row in store.query("PRAGMA table_info(fault_invocations)")}
     assert "execution_group_id" in inv_cols
 
     # Group fields round-trip on step_runs.
@@ -202,4 +182,3 @@ def test_m0007_fault_groups_add_group_columns(tmp_path: Path) -> None:
     assert row["group_path"] == "/testcase-api"
     assert store.query("PRAGMA foreign_key_check") == []
     store.close()
-

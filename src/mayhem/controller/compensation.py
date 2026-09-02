@@ -169,8 +169,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "        hashlib.sha256(buf).digest()\n"
             f"n = max(1, (os.cpu_count() or 1) * {percent:g} // 100)\n"
             "for _ in range(n):\n"
-            "    threading.Thread(target=burn, daemon=True).start()\n"
-            + _HOLD
+            "    threading.Thread(target=burn, daemon=True).start()\n" + _HOLD
         )
     if fid == "fs.fill":
         percent = min(_fparam(fault, "percent", 45.0), 99.0)
@@ -196,8 +195,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "        f.close()\n"
             "    except OSError:\n"
             "        time.sleep(0.3)\n"
-            "    i += 1\n"
-            + _HOLD
+            "    i += 1\n" + _HOLD
         )
     if fid == "fd.exhaust":
         limit = max(_iparam(fault, "limit", 64), 1)
@@ -213,8 +211,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "try:\n"
             f"    open({marker!r} + '.count', 'w').write(str(opened))\n"
             "except Exception:\n"
-            "    pass\n"
-            + _HOLD
+            "    pass\n" + _HOLD
         )
     if fid == "load.spike":
         seconds = min(_fparam(fault, "seconds", 8.0), 60.0)
@@ -243,8 +240,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "            pass\n"
             "import threading\n"
             f"for _ in range({concurrency}):\n"
-            "    threading.Thread(target=blast, daemon=True).start()\n"
-            + f"time.sleep({seconds})\n"
+            "    threading.Thread(target=blast, daemon=True).start()\n" + f"time.sleep({seconds})\n"
         )
     if fid == "fuzz.protocol_abuse":
         seconds = min(_fparam(fault, "seconds", 8.0), 60.0)
@@ -286,8 +282,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "        i += 1\n"
             "import threading\n"
             "for _ in range(4):\n"
-            "    threading.Thread(target=abuse, daemon=True).start()\n"
-            + f"time.sleep({seconds})\n"
+            "    threading.Thread(target=abuse, daemon=True).start()\n" + f"time.sleep({seconds})\n"
         )
     raise NO_UNDO  # pragma: no cover - only reachable for unregistered payloads
 
@@ -498,9 +493,7 @@ def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> t
         inject += [f"{jitter_ms}ms"]
     undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
     return (
-        _tool_op(
-            fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)
-        ),
+        _tool_op(fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
     )
 
 
@@ -517,18 +510,14 @@ def _net_latency_verify(
     )
 
 
-def _net_partition_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _net_partition_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
     inject = ["tc", "qdisc", "add", "dev", "eth0", "root", "netem", "loss", "100%"]
     undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
     return (
-        _tool_op(
-            fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)
-        ),
+        _tool_op(fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
     )
 
 
@@ -545,9 +534,7 @@ def _net_partition_verify(
     )
 
 
-def _net_load_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Saturate container egress with a deterministic k6 HTTP load generator.
 
     The k6 script is written under the marker path (so the verify probe can see
@@ -573,13 +560,13 @@ def _net_load_undo(
         "K6EOF\n"
         f"k6 run -u {users} -d {duration_s}s {script} >/dev/null 2>&1 &\n"
         f"echo $! > {pidfile}\n"
-        f"[ -s {pidfile} ] && kill -0 \"$(cat {pidfile})\" 2>/dev/null && exit 0\n"
+        f'[ -s {pidfile} ] && kill -0 "$(cat {pidfile})" 2>/dev/null && exit 0\n'
         "exit 1\n"
     )
     undo = [
-        "sh", "-c",
-        f"p={pidfile}; [ ! -f \"$p\" ] || kill \"$(cat \"$p\")\" 2>/dev/null; "
-        f"rm -f \"$p\" {script}",
+        "sh",
+        "-c",
+        f'p={pidfile}; [ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null; rm -f "$p" {script}',
     ]
     return (
         _tool_op(
@@ -656,17 +643,33 @@ def _engine_restart_verify(
 
 
 def _netfilter_undo(
-    dport: str
+    dport: str,
 ) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
     def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
         node = _tool_node(fault, nodes)
         if node is None:
             raise NO_UNDO
         inject = [
-            "iptables", "-I", "OUTPUT", "-p", "tcp", "--dport", dport, "-j", "DROP",
+            "iptables",
+            "-I",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "--dport",
+            dport,
+            "-j",
+            "DROP",
         ]
         undo = [
-            "iptables", "-D", "OUTPUT", "-p", "tcp", "--dport", dport, "-j", "DROP",
+            "iptables",
+            "-D",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "--dport",
+            dport,
+            "-j",
+            "DROP",
         ]
         return (
             _tool_op(
@@ -681,20 +684,36 @@ def _netfilter_undo(
     return build
 
 
-def _http_error_inject() -> (
-    Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]
-):
+def _http_error_inject() -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
     def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
         node = _tool_node(fault, nodes)
         if node is None:
             raise NO_UNDO
         inject = [
-            "iptables", "-I", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REJECT",
-            "--reject-with", "tcp-reset",
+            "iptables",
+            "-I",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "--dport",
+            "80",
+            "-j",
+            "REJECT",
+            "--reject-with",
+            "tcp-reset",
         ]
         undo = [
-            "iptables", "-D", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REJECT",
-            "--reject-with", "tcp-reset",
+            "iptables",
+            "-D",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "--dport",
+            "80",
+            "-j",
+            "REJECT",
+            "--reject-with",
+            "tcp-reset",
         ]
         return (
             _tool_op(
@@ -747,6 +766,7 @@ def _file_revert_undo(
 ) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
     """Marker-addressed file swap: back up ``target``, then apply ``ops`` (lines
     of shell run in order). Undo restores the backup and removes the marker."""
+
     def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
         node = _tool_node(fault, nodes)
         if node is None:
@@ -783,22 +803,22 @@ def _file_revert_verify(
     )
 
 
-def _clock_skew_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _clock_skew_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
     marker = _tool_marker(fault, node, "clock.orig")
     offset_ms = _iparam(fault, "offset_ms", 0)
     inject = [
-        "sh", "-c",
+        "sh",
+        "-c",
         f"date -u '+%s' > {marker}; target=$(( $(cat {marker}) + {offset_ms} )); "
         f"date -u -s '@$target'",
     ]
     undo = [
-        "sh", "-c",
-        f"if [ -f {marker} ]; then date -u -s \"@$(cat {marker})\"; fi; rm -f {marker}",
+        "sh",
+        "-c",
+        f'if [ -f {marker} ]; then date -u -s "@$(cat {marker})"; fi; rm -f {marker}',
     ]
     return (
         _tool_op(
@@ -827,9 +847,7 @@ def _clock_skew_verify(
     )
 
 
-def _dns_nxdomain_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _dns_nxdomain_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
@@ -860,9 +878,7 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "node.service_stop": _tool_template(
             _engine_restart_undo("stop", "start"), _engine_restart_verify
         ),
-        "http.error_injection": _tool_template(
-            _http_error_inject(), _http_error_verify
-        ),
+        "http.error_injection": _tool_template(_http_error_inject(), _http_error_verify),
         "db.slow_query": _tool_template(
             _netfilter_undo("3306"),
             _netfilter_verify("3306"),

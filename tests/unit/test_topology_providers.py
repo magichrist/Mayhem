@@ -82,9 +82,7 @@ def _ctr(
         runtime_identity=RuntimeIdentity(
             runtime=engine, host_id=f"h-{engine}-local", runtime_id=f"id-{name}"
         ),
-        runtime_metadata=RuntimeMetadata(
-            service=service, name=name, image=image or None
-        ),
+        runtime_metadata=RuntimeMetadata(service=service, name=name, image=image or None),
         state=state,
         image=image,
         networks=networks,

@@ -88,13 +88,9 @@ class ResourceManager:
                 )
             """)
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_mj_target "
-                "ON mutation_journal(target_identity)"
+                "CREATE INDEX IF NOT EXISTS idx_mj_target ON mutation_journal(target_identity)"
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_mj_lease "
-                "ON mutation_journal(lease_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mj_lease ON mutation_journal(lease_id)")
 
     def _load_graph(self) -> None:
         """Reload the in-memory graph from persistent storage."""

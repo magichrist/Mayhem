@@ -29,9 +29,7 @@ def _use_color(stream: IO[str]) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
-def _style(
-    text: str, fg: str | tuple[int, int, int], *, err: bool, bold: bool
-) -> str:
+def _style(text: str, fg: str | tuple[int, int, int], *, err: bool, bold: bool) -> str:
     if not _use_color(_stream(err=err)):
         return text
     return click.style(text, fg=fg, bold=bold)

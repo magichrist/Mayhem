@@ -207,9 +207,7 @@ class TestTargetOutcome:
     st.text(alphabet="abcdefghijklmnopqrstuvwxyz-", min_size=1),
     st.text(alphabet="abcdef0123456789", min_size=1),
 )
-def test_drift_event_carries_both_identities(
-    runtime: str, host_id: str, runtime_id: str
-) -> None:
+def test_drift_event_carries_both_identities(runtime: str, host_id: str, runtime_id: str) -> None:
     """A DriftEvent pairs the planned and live identity (ADR-M1-3)."""
     planned = RuntimeIdentity(runtime=runtime, host_id=host_id, runtime_id=runtime_id)
     live = RuntimeIdentity(runtime=runtime, host_id=host_id, runtime_id=f"{runtime_id}-v2")

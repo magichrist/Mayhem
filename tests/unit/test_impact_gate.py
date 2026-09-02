@@ -135,9 +135,7 @@ def _graph() -> TopologyGraph:
                 id="ctr-api",
                 name="api",
                 engine="podman",
-                runtime_identity=RuntimeIdentity(
-                    runtime="podman", host_id="h1", runtime_id="api"
-                ),
+                runtime_identity=RuntimeIdentity(runtime="podman", host_id="h1", runtime_id="api"),
                 container_name="testcase-api",
                 state="running",
             ),

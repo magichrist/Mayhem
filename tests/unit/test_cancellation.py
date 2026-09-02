@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
 
 
@@ -65,9 +63,7 @@ def _mk_engine(tmp_path: Path):
 
 
 class TestEngineLadder:
-    def test_grace_aborts_without_signaling_payloads(
-        self, tmp_path: Path
-    ) -> None:
+    def test_grace_aborts_without_signaling_payloads(self, tmp_path: Path) -> None:
         """A grace-level cancellation stops at the next boundary but does NOT
         SIGTERM live payload processes (cooperative safe-abort)."""
         store, engine = _mk_engine(tmp_path)
@@ -98,7 +94,9 @@ class TestEngineLadder:
             owner_agent="ag-test",
             targets=frozenset({"n-proc"}),
             state=LeaseState.ACTIVE,
-            undo_ops=(UndoOp(op="signal", args={"pid": "4242", "cont": "c-a", "engine": "podman"}),),
+            undo_ops=(
+                UndoOp(op="signal", args={"pid": "4242", "cont": "c-a", "engine": "podman"}),
+            ),
             verify_probes=(VerifyProbe(probe="proc", args={"pid": "4242"}),),
         )
         sink.save(lease)
@@ -150,7 +148,9 @@ class TestEngineLadder:
         from mayhem.domain.cancellation import CancellationLevel
 
         sigs: list[int] = []
-        with patch("mayhem.controller.executor.os.kill", side_effect=lambda pid, sig: sigs.append(sig)):
+        with patch(
+            "mayhem.controller.executor.os.kill", side_effect=lambda pid, sig: sigs.append(sig)
+        ):
             engine._send_payload_signal(9999, CancellationLevel.TERM, None, None)
             engine._send_payload_signal(10000, CancellationLevel.KILL, None, None)
         assert sigs == [signal.SIGTERM, signal.SIGKILL]

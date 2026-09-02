@@ -83,12 +83,8 @@ class TestLeaseLifecycle:
 
         shared = InMemoryLeaseSink()
         first = LeaseClient(shared, agent_id="ag-a")
-        stale = first.acquire(
-            run_id="r-1", fault_id="cpu.burn", targets={"svc-1"}, undo_ops=()
-        )
-        aged = stale.model_copy(
-            update={"created_at": stale.created_at - timedelta(seconds=200)}
-        )
+        stale = first.acquire(run_id="r-1", fault_id="cpu.burn", targets={"svc-1"}, undo_ops=())
+        aged = stale.model_copy(update={"created_at": stale.created_at - timedelta(seconds=200)})
         shared.save(aged)
         second = LeaseClient(shared, agent_id="ag-b")
         lease = second.acquire(
