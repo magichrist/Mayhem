@@ -443,6 +443,26 @@ M0009_FORK_ATOMICITY = Migration(
 )
 
 
+# M0010 — NetworkPath target columns (ADR-M3-7).
+#
+# A fault step may target a first-class NetworkPath rather than a bare
+# container name.  The structured fault is already serialized in action_json;
+# these three *nullable* columns make the path target queryable without parsing
+# the blob and provide a stable place for the fingerprint.  They are added with
+# ALTER TABLE ADD COLUMN (nullable, no default) so existing step_runs rows are
+# untouched — no table rebuild, no CHECK evolution needed.
+M0010_NETWORK_PATH = Migration(
+    version=10,
+    name="network_path",
+    statements=(
+        "ALTER TABLE step_runs ADD COLUMN network_path TEXT",
+        "ALTER TABLE step_runs ADD COLUMN path_namespace TEXT",
+        "ALTER TABLE step_runs ADD COLUMN path_interface TEXT",
+        "ALTER TABLE step_runs ADD COLUMN network_fingerprint TEXT",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -453,4 +473,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0007_FAULT_GROUPS,
     M0008_FAILED_TO_APPLY,
     M0009_FORK_ATOMICITY,
+    M0010_NETWORK_PATH,
 )

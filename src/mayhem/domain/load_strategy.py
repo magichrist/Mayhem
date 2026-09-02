@@ -58,7 +58,7 @@ class LoadStrategy(BaseModel):
 
     def total_duration(self) -> float:
         """Sum of all phase durations in seconds."""
-        return sum(p.duration for p in self.phases)
+        return sum(float(p.duration) for p in self.phases)
 
     def max_concurrency(self) -> int:
         """Peak VUs across all phases."""

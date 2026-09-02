@@ -65,9 +65,18 @@ class ResourceManager:
                     verify_probe_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     recovered_at TEXT,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    fingerprint TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Defensive column add for DBs created before ADR-M3-7: a pre-existing
+            # tracked_resources table won't be re-CREATEd, so ensure the column
+            # exists without dropping any data.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(tracked_resources)")}
+            if "fingerprint" not in cols:
+                conn.execute(
+                    "ALTER TABLE tracked_resources ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_run ON tracked_resources(owner_run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tr_target ON tracked_resources(target_identity)"
@@ -364,8 +373,8 @@ class ResourceManager:
                 "INSERT INTO tracked_resources "
                 "(id, resource_type, owner_run_id, owner_step_id, owner_fault_id, "
                 " state, target_identity, cleanup_op_json, verify_probe_json, "
-                " created_at, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " created_at, metadata_json, fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     resource.id,
                     resource.resource_type.value,
@@ -378,6 +387,7 @@ class ResourceManager:
                     resource.verify_probe.model_dump_json(),
                     resource.created_at.isoformat(),
                     json.dumps(resource.metadata),
+                    resource.fingerprint,
                 ),
             )
 

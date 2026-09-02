@@ -13,11 +13,17 @@ Every refusal is typed and carries a machine-readable reason.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
+from mayhem.domain.execution_context import ExecutionContext
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.runtime_adapter import (
+    CapabilityRequirements,
+    CapabilityVerdict,
+    RuntimeAdapter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -62,6 +68,7 @@ class SafetyContext:
     budget: BlastRadiusBudget
     fingerprint: str
     allow_critical_cli: bool = False
+    warnings: list[str] = field(default_factory=list)
 
 
 DEFAULT_DENY = frozenset({"node.reboot"})
@@ -182,14 +189,27 @@ def _check_execution_context(fault: PlannedFault, graph: TopologyGraph) -> None:
         ) from exc
 
 
-def validate_plan(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext) -> None:
-    """G1+G2+G4 over every fault step of an already-compiled plan."""
+def validate_plan(
+    plan: ExecutionPlan,
+    graph: TopologyGraph,
+    ctx: SafetyContext,
+    adapter: RuntimeAdapter | None = None,
+) -> None:
+    """G1+G2+G4 over every fault step of an already-compiled plan.
+
+    When *adapter* is provided, capability requirements are derived from the
+    plan's execution contexts and evaluated against the adapter.  UNSUPPORTED
+    verdicts block the plan; ALTERNATIVE verdicts are tolerated but emit a
+    warning (ADR-M3-2).
+    """
     if plan.environment_fingerprint != ctx.fingerprint:
         raise SafetyRefusedError(
             "environment.mismatch",
             "plan fingerprint does not match current environment identity;"
             " re-plan against live topology",
         )
+    if adapter is not None:
+        _validate_capability_requirements(plan, adapter, ctx)
     seen_faults: list[str] = []
     for step in plan.steps:
         fault = step.fault
@@ -210,6 +230,60 @@ def validate_plan(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext)
         # G4: validate execution context compatibility
         if fault.execution_context is not None:
             _check_execution_context(fault, graph)
+
+
+def _validate_capability_requirements(
+    plan: ExecutionPlan,
+    adapter: RuntimeAdapter,
+    ctx: SafetyContext,
+) -> None:
+    """ADR-M3-2: evaluate plan capability requirements against an adapter.
+
+    Unsupported verdicts block the plan; alternatives warn.
+    """
+    namespaces: set[str] = set()
+    tools: set[str] = set()
+    permissions: set[str] = set()
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        if fault.execution_loci is not None:
+            target = fault.execution_loci.get("target")
+            if isinstance(target, str) and target.startswith("network_namespace"):
+                namespaces.add(target)
+        if fault.execution_context is not None and (
+            fault.execution_context.context
+            in (ExecutionContext.NETWORK_NAMESPACE, ExecutionContext.PROCESS)
+        ):
+            namespaces.add(fault.execution_context.context.value)
+        for target in fault.targets:
+            for node_id in target.node_ids:
+                if node_id.startswith("net"):
+                    namespaces.add(node_id)
+                if node_id.startswith(("p-", "proc")):
+                    permissions.add("limit")
+
+    reqs = CapabilityRequirements(
+        namespaces=frozenset(namespaces),
+        tools=frozenset(tools),
+        permissions=frozenset(permissions),
+    )
+    fallback = CapabilityRequirements(
+        namespaces=frozenset({"network"}),
+        tools=frozenset({"tool"}),
+        permissions=frozenset({"limit"}),
+    )
+    if not (namespaces or tools or permissions):
+        result = adapter.evaluate(fallback)
+    else:
+        result = adapter.evaluate(reqs)
+    if result.blocking:
+        message = result.refuse_with_message() or "unsupported capability requirements"
+        raise SafetyRefusedError("capability.unsupported", f"{adapter.id}: {message}")
+    for key, verdict in result.verdicts.items():
+        if verdict == CapabilityVerdict.ALTERNATIVE:
+            ctx.warnings.append(f"{adapter.id}: capability '{key}' satisfied via ALTERNATIVE path")
 
 
 def pre_exec_assertion(

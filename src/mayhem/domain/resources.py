@@ -36,6 +36,7 @@ class ResourceType(StrEnum):
     TEMPORARY_FILE = "temporary_file"
     LOAD_GENERATOR = "load_generator"
     NETWORK_NAMESPACE = "network_namespace"
+    NETWORK_FAULT = "network_fault"
     FILESYSTEM_MOUNT = "filesystem_mount"
     PROCESS_SPAWN = "process_spawn"
     RESOURCE_LIMIT = "resource_limit"
@@ -82,6 +83,7 @@ class TrackedResource(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     recovered_at: datetime | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    fingerprint: str = ""  # ADR-M3-7 fault-path fingerprint
 
 
 class MutationJournalEntry(BaseModel):

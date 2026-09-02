@@ -16,6 +16,7 @@ Turn the current engine-parameterized `ContainerRuntimeProvider` (which already 
 - **ADR-M3-5 — Remote execution: interface only.** `RemoteAgentInterface` contract (connect, capability handshake, target resolution, tool run, cancel, teardown) is defined and ADR'd; **no SSH transport is implemented** (Q11). A remote target in a spec fails-planning with `UNSUPPORTED` until a future milestone implements a transport.
 - **ADR-M3-6 — Kubernetes: interface only.** Kubernetes `RuntimeAdapter` interface + `NodeKind.POD`/`K8S_NODE` extensions + fault categories (capacity, network, preemption) are ADR'd; no cluster execution (see M7).
 - **ADR-M3-7 — NetworkPath is first-class.** `NetworkPath(source_id, dest_id, network, namespace, interface, protocol, ports, direction)` models a connectivity relation; a network fault targets a `NetworkPath`, not a bare "partition these container names". Every network operation carries an **ownership/identity fingerprint** (§16) so it is attributable, journaled, and recoverable.
+- **ADR-M3-8 — Fault registry keyed by adapter + target kind.** Each fault resolves its mutation/undo/probe implementation per (adapter, target kind) with clear precedence (definition default → per-kinds → adapter-specialized). This is why a compose SERVICE backing a container is targetable by `container.kill`/`clock.skew` (the planner selects the node kinds a fault can act on).
 
 ## 3. Phases
 

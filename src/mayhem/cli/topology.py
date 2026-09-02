@@ -29,8 +29,8 @@ _COMPOSE_CANDIDATES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml
 def discover(ctx: click.Context, compose_path: str | None) -> None:
     """Run the topology provider pipeline and print graph + drift JSON."""
     from mayhem.cli.app import _STATE
+    from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
     from mayhem.topology.providers.compose import ComposeFileProvider
-    from mayhem.topology.providers.docker_runtime import ContainerRuntimeProvider
     from mayhem.topology.service import TopologyService
 
     resolved = _resolve_compose(compose_path)
@@ -41,7 +41,7 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
     # Compose blueprint — scoped runtime match.
     if resolved is not None:
         compose_provider = ComposeFileProvider(resolved)
-        runtime_provider = ContainerRuntimeProvider.best_effort(engine)
+        runtime_provider = runtime_best_effort(engine)
         if runtime_provider is not None:
             runtime_provider.filter_by_compose(
                 compose_provider.project_name,
@@ -66,7 +66,7 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
         if config is not None:
             target_names = list(config.target.containers)
 
-        runtime_provider = ContainerRuntimeProvider.best_effort(engine)
+        runtime_provider = runtime_best_effort(engine)
         if runtime_provider is not None and target_names:
             runtime_provider.filter_by_names(target_names)
 

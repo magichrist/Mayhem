@@ -15,6 +15,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mayhem.domain.capabilities import Identifier
+from mayhem.domain.checks import CheckLocus, CheckSpec, Probe
 from mayhem.domain.common import Duration
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.execution_context import ExecutionContextSpec
@@ -101,10 +102,24 @@ class CheckHttp(BaseModel):
     expected_status: int | None = None
 
 
+class CheckSpecStep(BaseModel):
+    """A drill check step compiled from a :class:`CheckSpec` (ADR-M4-2).
+
+    Carries the fully-resolved probe and its execution locus so the executor
+    can evaluate the check where it is declared to run.
+    """
+
+    type: Literal["check_spec"] = "check_spec"
+    check_id: str
+    probe: Probe
+    execution: CheckLocus | None = None  # None → infer from fault target
+    target: str | None = None
+
+
 # The raw action of a planned step. Drill plans only ever emit inject_fault,
 # wait and check_http — the start_load/stop_load/check/notify/parallel action
 # types were authoring-only and removed with the deterministic/random surfaces.
-StepAction = Annotated[InjectFault | Wait | CheckHttp, Field(discriminator="type")]
+StepAction = Annotated[InjectFault | Wait | CheckHttp | CheckSpecStep, Field(discriminator="type")]
 
 
 # -- drill spec (ADR-0019) ------------------------------------------------------------------
@@ -130,6 +145,7 @@ class DrillFault(BaseModel):
     duration: Duration = "10s"
     on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
     targets: tuple[str, ...] = ()  # for network faults: container names to partition
+    network_path: str | None = None  # ADR-M3-7 optional path target for network faults
 
 
 class DrillContainer(BaseModel):
@@ -166,6 +182,7 @@ class ExecutionStep(BaseModel):
     sequential: tuple[str, ...] | None = None  # container names to run in order
     wait: Duration | None = None  # seconds to wait after this step
     check: tuple[CheckProbe, ...] | None = None  # health checks to run
+    check_spec: tuple[CheckSpec, ...] | None = None  # locus-aware checks (ADR-M4-2)
 
 
 class DrillSpec(BaseModel):
@@ -230,6 +247,7 @@ class PlannedFault(BaseModel):
     backend: Identifier | None = None
     execution_context: ExecutionContextSpec | None = None  # ADR-0014
     runtime_identity: RuntimeIdentity | None = None  # planned identity (ADR-M1-1/1-3)
+    execution_loci: dict[str, object] | None = None  # ADR-M3-3 target/agent/tool loci
 
 
 class ExecutionPlan(BaseModel):

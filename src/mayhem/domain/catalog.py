@@ -95,7 +95,11 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.CONTAINER,
         risk=RiskLevel.MEDIUM,
         required_caps=frozenset({Capability.DOCKER_ENGINE}),
-        applicable_node_kinds=frozenset({NodeKind.CONTAINER}),
+        # A compose service is a SERVICE-kind node backed by a container; killing
+        # the backing container is the intended action, so a SERVICE target must
+        # be accepted (matching sibling container-level faults like mem.exhaust),
+        # not just a bare CONTAINER node.
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
         max_duration_s=60.0,
         params_schema=(ParamSpec(name="signal", type=ParamType.STRING, default="SIGKILL"),),
     ),
@@ -173,7 +177,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.CLOCK,
         risk=RiskLevel.HIGH,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER}),
+        # A compose service (SERVICE kind) is backed by a container whose clock is
+        # skewed, so accept SERVICE like sibling container-backing faults.
+        applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER, NodeKind.SERVICE}),
         max_duration_s=300.0,
         params_schema=(ParamSpec(name="offset_ms", type=ParamType.INTEGER, required=True),),
     ),

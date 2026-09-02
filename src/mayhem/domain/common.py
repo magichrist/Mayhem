@@ -63,18 +63,32 @@ def _coerce_duration(v: object) -> object:
     return parse_duration(v) if isinstance(v, str) else v
 
 
-def _check_non_negative(v: float) -> float:
-    if v < 0:
+def _check_non_negative(v: float | str) -> float:
+    seconds = parse_duration(v) if isinstance(v, str) else float(v)
+    if seconds < 0:
         raise SchemaValidationError("duration", f"must be >= 0, got {v}")
-    return v
+    return seconds
+
+
+def _serialize_duration(v: float | str) -> str:
+    return f"{float(v):g}s"
 
 
 Duration = Annotated[
-    Annotated[float, AfterValidator(_check_non_negative)],
+    float | str,
     BeforeValidator(_coerce_duration),
-    PlainSerializer(lambda v: f"{v:g}s", return_type=str),
+    AfterValidator(_check_non_negative),
+    PlainSerializer(_serialize_duration, return_type=str),
 ]
-"""Seconds as float; accepts and emits DSL duration strings."""
+"""Seconds; accepts DSL duration strings (``"30s"``/``"5m"``/``"1h"``) or a
+plain ``float`` of seconds, and emits a seconds string on serialization.
+
+The declared type is ``float | str`` because an unpassed class default is
+returned by Pydantic v2 *without* running the validator (see
+``tests/unit/test_drill_spec.py`` asserting ``DrillConfig().timeout == "30m"``),
+so a string default must be type-valid. Explicitly supplied values are coerced
+to ``float`` seconds at validation time.
+"""
 
 
 def utc_now() -> datetime:

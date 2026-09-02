@@ -58,14 +58,14 @@ def build_graph(compose: str | None) -> TopologyGraph:
         )
     from mayhem.cli.app import _STATE
     from mayhem.cli.topology import _resolve_engine
+    from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
     from mayhem.topology.providers.compose import ComposeFileProvider
-    from mayhem.topology.providers.docker_runtime import ContainerRuntimeProvider
     from mayhem.topology.service import TopologyService
 
     engine = _resolve_engine(str(_STATE.get("engine", "")))
 
     compose_provider = ComposeFileProvider(compose)
-    runtime_provider = ContainerRuntimeProvider.best_effort(engine)
+    runtime_provider = runtime_best_effort(engine)
     if runtime_provider is not None:
         runtime_provider.filter_by_compose(
             compose_provider.project_name,

@@ -11,15 +11,15 @@ Extend the drill DSL *without breaking anything* to support the observation/eval
 
 ## 2. ADR lock (freeze before code)
 
-- **ADR-M4-1 — Additive DSL sections.** Introduce optional top-level `checks`, `success`, `observability` (and reserve `metrics`) keys alongside existing `containers:` + `execution:`. `containers:` remains the primary authoring path; any new relation to a future `targets/operations` grammar is documented as a convenience-target relationship, **not** a forced migration.
+- **ADR-M4-1 — Additive DSL sections (_written: `ADR-M4-1-additive-duration.md`_).** Introduce optional top-level `checks`, `success`, `observability` (and reserve `metrics`) keys alongside existing `containers:` + `execution:`; `Duration` typed as `float | str`. `containers:` remains the primary authoring path; any new relation to a future `targets/operations` grammar is documented as a convenience-target relationship, **not** a forced migration.
 - **ADR-M4-2 — Execution-locus checks (≥ §19).** A check declares `execution` (where the check runs: host / container / service / process) and is evaluated *at that locus*, distinct from the fault target. No check silently assumes its target's locus.
 - **ADR-M4-3 — Machine-evaluable SuccessCriteria (§18).** Success is an objective, machine-evaluable predicate over recorded observations — never a human eyeball. Assertions are typed (status, latency bound, metric threshold, count, boolean) and evaluated by the engine; a drill's success/failure verdict is derived from these.
 - **ADR-M4-4 — Observability/metrics sources (§21).** Sources (container logs, inspect, external probe, metrics endpoint) are declared additively; observations are replayed/collected per source into the outcome record. Metrics sources are optional; polling cadence + timeout are bounded.
-- **ADR-M4-5 — Schema freeze + versioned migrations (Q9).** The execution/identity/ownership schema introduced across M1–M3 is **frozen**; introduce versioned forward migrations (`infra/migrations.py` gains proper sequencing) from this milestone onward. In-place dev-DB drops end here.
+- **ADR-M4-5 — Schema freeze + versioned migrations (Q9) (_written: `ADR-M4-5-schema-freeze-migrations.md`_).** The execution/identity/ownership schema introduced across M1–M3 is **frozen**; introduce versioned forward migrations (`infra/migrations.py` gains proper sequencing) from this milestone onward. In-place dev-DB drops end here.
 
 ## 3. Phases
 
-### Phase 4.1 — Fix Duration string typing (pre-existing bug)
+### Phase 4.1 — Fix Duration string typing (pre-existing bug) — DONE
 
 **Tasks**
 - Resolve the `Duration` mis-typing: specs pass `"3s"`, `"30m"`, `"10s"`; the field type is `float`. Introduce a proper duration value type (e.g., `Duration` parsed from `"3s"`/`"30m"` → seconds) so `tests/unit/test_planner.py`, `test_drill_spec.py`, `test_faults.py` type-check and stay semantically identical.
@@ -28,6 +28,8 @@ Extend the drill DSL *without breaking anything* to support the observation/eval
 **Acceptance criteria**
 - Mypy clean on `experiments.py`/`planner.py`/`tests/unit/test_planner.py` Duration paths (these are the exact diagnostics the review surfaced).
 - Existing `"3s"`/`"5s"`/`"30m"` specs parse to the identical runtime behaviour (unit `test_drill_spec.py`).
+
+**_Verification (2026-09-02):** `Duration = Annotated[float | str, ...]` keeps string defaults type-valid (Pydantic v2 returns un-passed class defaults un-validated, so `DrillConfig().timeout == "30m"` stays true) while explicit values still coerce to `float`. mypy: `experiments.py`/`planner.py`/`common.py`/`load_strategy.py` clean (src error count 32→28); full suite green; `test_drill_spec` unchanged.**
 
 ### Phase 4.2 — Execution-locus checks
 

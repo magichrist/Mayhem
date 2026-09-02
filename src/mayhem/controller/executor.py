@@ -24,7 +24,7 @@ from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
-from mayhem.domain.checks import ProbeType
+from mayhem.domain.checks import CheckLocus, ProbeType
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.identity import ProcessRuntimeIdentity
@@ -503,6 +503,8 @@ class RunEngine:
                 report, dirty = self._execute_check(step), []
             elif action_type == "check_http":
                 report, dirty = self._execute_check_http(step), []
+            elif action_type == "check_spec":
+                report, dirty = self._execute_check_spec(step), []
             elif action_type in ("start_load", "stop_load", "notify"):
                 report = StepReport(
                     step.id, True, f"{action_type} acknowledged (no backend wired yet)"
@@ -1071,6 +1073,70 @@ class RunEngine:
         result = run_probe(verify)
         return StepReport(step.id, result.satisfied, f"{url}: {result.detail}")
 
+    def _execute_check_spec(self, step: PlannedStep) -> StepReport:
+        """Evaluate a :class:`CheckSpecStep` at its declared execution locus.
+
+        An explicit ``execution`` locus wins; a bare (unset) locus is inferred
+        from the fault target (``CheckLocus.CONTAINER`` when the target names a
+        container, else ``HOST``), preserving pre-0.3.0 behaviour (ADR-M4-2).
+        Container/service-locus checks run inside the resolved container; host
+        and process-locus checks run against the host.
+        """
+        action = step.raw_action
+        probe = getattr(action, "probe", None)
+        if probe is None:
+            return StepReport(step.id, False, "check_spec step missing probe")
+        check_locus = getattr(action, "execution", None) or self._infer_check_locus(
+            getattr(action, "target", None)
+        )
+        verify = _domain_probe_to_verify(probe)
+        if check_locus in (CheckLocus.CONTAINER, CheckLocus.SERVICE):
+            verify = self._container_scope_verify(verify, action)
+        elif check_locus is CheckLocus.PROCESS:
+            pid = getattr(probe, "pid", None)
+            if pid is None:
+                return StepReport(step.id, False, "process check at process locus requires a pid")
+        result = run_probe(verify)
+        return StepReport(
+            step.id,
+            result.satisfied,
+            f"{check_locus.value}:{getattr(probe, 'type', 'check')} -> {result.detail}",
+        )
+
+    def _infer_check_locus(self, target: str | None) -> CheckLocus:
+        """Infer a bare check's locus from its fault target (ADR-M4-2)."""
+
+        if target:
+            return CheckLocus.CONTAINER
+        return CheckLocus.HOST
+
+    def _container_scope_verify(self, verify: VerifyProbe, action: object) -> VerifyProbe:
+        """Re-target a probe into the resolved container for container/service loci.
+
+        ``engine``/``cont``/``incontainer`` let the exec/process/file runners
+        address the container main process across the host/VM boundary instead of
+        a host ``ps``/``cat``.
+        """
+        container_name = getattr(action, "target", None)
+        if not container_name or not self._engine:
+            return verify
+        try:
+            info = resolve_container(container_name, self._engine)
+        except Exception:
+            return verify.model_copy(
+                update={"args": {**verify.args, "cont": container_name, "engine": self._engine}}
+            )
+        args = dict(verify.args)
+        if verify.probe == "http" and args.get("url"):
+            raw_status = args.get("expect_status", 200)
+            expected_status = raw_status if isinstance(raw_status, int) else 200
+            return self._route_http_probe(str(args["url"]), expected_status)
+        args["engine"] = self._engine
+        args["cont"] = container_name
+        args["incontainer"] = True
+        args["pid"] = info.pid
+        return verify.model_copy(update={"args": args})
+
     def _open_run(self, plan: ExecutionPlan) -> None:
         """Atomically commit the topology fork + plan pair (Phase 2.8).
 
@@ -1306,6 +1372,37 @@ def _domain_probe_to_verify(probe: Probe) -> VerifyProbe:
             args={
                 "url": probe.url,
                 "expect_status": int(probe.expected_status),
+                "timeout_s": float(probe.timeout),
+            },
+            expect_present=True,
+        )
+    if probe.type is ProbeType.PROCESS:
+        return VerifyProbe(
+            probe="process",
+            args={
+                "name": probe.name,
+                "pid": probe.pid,
+                "timeout_s": float(probe.timeout),
+            },
+            expect_present=True,
+        )
+    if probe.type is ProbeType.METRIC:
+        return VerifyProbe(
+            probe="metric",
+            args={
+                "endpoint": probe.endpoint,
+                "query": probe.query,
+                "threshold": probe.threshold,
+                "timeout_s": float(probe.timeout),
+            },
+            expect_present=True,
+        )
+    if probe.type is ProbeType.FILE:
+        return VerifyProbe(
+            probe="file",
+            args={
+                "path": probe.path,
+                "contains": probe.contains,
                 "timeout_s": float(probe.timeout),
             },
             expect_present=True,

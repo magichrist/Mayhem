@@ -20,6 +20,7 @@ from mayhem.domain.errors import (
 )
 from mayhem.domain.experiments import (
     CheckHttp,
+    CheckSpecStep,
     DrillFault,
     DrillSpec,
     ExecutionPlan,
@@ -103,6 +104,22 @@ def plan_drill(
                             type="check_http",
                             url=probe.http or "",
                             expected_status=expected,
+                        ),
+                    )
+                )
+                seq += 1
+        elif block.check_spec:
+            for i, cspec in enumerate(block.check_spec):
+                steps.append(
+                    PlannedStep(
+                        id=f"check-{seq:04d}-{i}",
+                        seq=seq,
+                        raw_action=CheckSpecStep(
+                            type="check_spec",
+                            check_id=cspec.id,
+                            probe=cspec.probe,
+                            execution=cspec.execution,
+                            target=cspec.target,
                         ),
                     )
                 )

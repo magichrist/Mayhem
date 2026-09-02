@@ -19,6 +19,9 @@ class ProbeType(StrEnum):
     HTTP = "http"
     EXEC = "exec"
     TCP = "tcp"
+    PROCESS = "process"
+    METRIC = "metric"
+    FILE = "file"
 
 
 class HttpProbe(BaseModel):
@@ -49,7 +52,38 @@ class TcpProbe(BaseModel):
     timeout: Duration = 3.0
 
 
-Probe = Annotated[HttpProbe | ExecProbe | TcpProbe, Field(discriminator="type")]
+class ProcessProbe(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal[ProbeType.PROCESS] = ProbeType.PROCESS
+    name: str = ""  # process name/pattern (e.g. "nginx")
+    pid: int | None = Field(default=None, ge=1)
+    timeout: Duration = 5.0
+
+
+class MetricProbe(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal[ProbeType.METRIC] = ProbeType.METRIC
+    endpoint: str = ""  # metrics endpoint (e.g. "http://svc:9090/metrics")
+    query: str = ""  # metric name / label selector
+    threshold: float | None = None  # lower bound for the sampled value
+    timeout: Duration = 5.0
+
+
+class FileProbe(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal[ProbeType.FILE] = ProbeType.FILE
+    path: str  # path to check inside the execution locus
+    contains: str | None = None  # optional content substring to require
+    timeout: Duration = 5.0
+
+
+Probe = Annotated[
+    HttpProbe | ExecProbe | TcpProbe | ProcessProbe | MetricProbe | FileProbe,
+    Field(discriminator="type"),
+]
 _probe_adapter: TypeAdapter[Probe] = TypeAdapter(Probe)
 
 
@@ -75,6 +109,19 @@ class OnPreFailure(StrEnum):
     ABORT = "abort"
 
 
+class CheckLocus(StrEnum):
+    """Where a check is evaluated — distinct from the fault target's locus.
+
+    A bare (unqualified) check infers its locus from the fault target for
+    backward compatibility (ADR-M4-2); an explicit locus is honored as-is.
+    """
+
+    HOST = "host"
+    CONTAINER = "container"
+    SERVICE = "service"
+    PROCESS = "process"
+
+
 class SteadyStateCheck(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -82,6 +129,24 @@ class SteadyStateCheck(BaseModel):
     probe: Probe
     expect: Expectation = Field(default_factory=Expectation)
     description: str = ""
+
+
+class CheckSpec(BaseModel):
+    """A drill check: a probe evaluated at an explicit or inferred locus (ADR-M4-2).
+
+    ``execution`` declares where the check runs (host / container / service /
+    process); when unset (None) the executor infers it from the fault target so
+    pre-0.3.0 specs behave unchanged. ``target`` names the fault target container
+    used for that inference.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    probe: Probe
+    execution: CheckLocus | None = None  # None → infer from fault target
+    expect: Expectation = Field(default_factory=Expectation)
+    target: str | None = None  # fault target container for locus inference
 
 
 class CheckPhase(StrEnum):

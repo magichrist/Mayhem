@@ -7,6 +7,7 @@ Refusals are part of the contract.
 import pytest
 
 from mayhem.controller.planner import PlanningError, plan_drill
+from mayhem.domain.experiments import DrillSpec, ExecutionStep
 from mayhem.domain.topology import TopologyGraph
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ def _drill_graph() -> TopologyGraph:
     )
 
 
-def _drill_spec(execution):
+def _drill_spec(execution: tuple[ExecutionStep, ...]) -> DrillSpec:
     from mayhem.domain.experiments import DrillConfig, DrillContainer, DrillFault, DrillSpec
 
     return DrillSpec(
@@ -357,6 +358,70 @@ class TestDrillPlanning:
         assert check_step.raw_action.type == "check_http"
         assert check_step.raw_action.url == "http://testcase-api:8080/health"
         assert check_step.raw_action.expected_status == 200
+
+    def test_check_spec_block_compiles_to_check_spec_step(self) -> None:
+        from mayhem.domain.checks import CheckLocus, CheckSpec, FileProbe
+        from mayhem.domain.experiments import ExecutionStep
+
+        plan = plan_drill(
+            "r-check-spec",
+            _drill_spec(
+                (
+                    ExecutionStep(parallel=("testcase-api",)),
+                    ExecutionStep(
+                        check_spec=(
+                            CheckSpec(
+                                id="file-present",
+                                probe=FileProbe(path="/var/run/app.pid"),
+                                execution=CheckLocus.HOST,
+                                target="testcase-api",
+                            ),
+                        )
+                    ),
+                )
+            ),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        check_step = plan.steps[1]
+        assert check_step.fault is None
+        assert check_step.raw_action.type == "check_spec"
+        assert check_step.raw_action.check_id == "file-present"
+        assert check_step.raw_action.probe.type == "file"
+        assert check_step.raw_action.probe.path == "/var/run/app.pid"
+        assert check_step.raw_action.execution == CheckLocus.HOST
+        assert check_step.raw_action.target == "testcase-api"
+
+    def test_check_spec_accepts_bare_locus_for_inference(self) -> None:
+        from mayhem.domain.checks import CheckSpec, MetricProbe
+        from mayhem.domain.experiments import ExecutionStep
+
+        plan = plan_drill(
+            "r-check-bare",
+            _drill_spec(
+                (
+                    ExecutionStep(parallel=("testcase-api",)),
+                    ExecutionStep(
+                        check_spec=(
+                            CheckSpec(
+                                id="metric-up",
+                                probe=MetricProbe(endpoint="http://svc:9090", query="up"),
+                            ),
+                        )
+                    ),
+                )
+            ),
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        check_step = plan.steps[1]
+        assert check_step.raw_action.type == "check_spec"
+        assert check_step.raw_action.execution is None  # bare → executor infers locus
+        assert check_step.raw_action.probe.type == "metric"
 
     def test_sequential_block_preserves_order(self) -> None:
         from mayhem.domain.experiments import ExecutionStep

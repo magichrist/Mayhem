@@ -7,10 +7,13 @@ positive ones (service healthy).
 
 from __future__ import annotations
 
+import os
+import re
 import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mayhem.toolkit.tool_runner import run_tool
@@ -120,10 +123,92 @@ def _run_http(args: dict[str, object]) -> ProbeResult:
     return ProbeResult("http.status", status == expected_raw, f"{url} -> {status}")
 
 
+def _run_process(args: dict[str, object]) -> ProbeResult:
+    name = str(args.get("name", ""))
+    raw_pid = args.get("pid")
+    if raw_pid is not None and not isinstance(raw_pid, bool):
+        if isinstance(raw_pid, int):
+            pid: int = raw_pid
+        elif isinstance(raw_pid, str) and raw_pid.strip().lstrip("-").isdigit():
+            pid = int(raw_pid)
+        else:
+            return ProbeResult("process", False, f"bad pid {raw_pid!r}")
+        try:
+            os.kill(pid, 0)
+            return ProbeResult("process", True, f"pid {pid} alive")
+        except OSError:
+            return ProbeResult("process", False, f"pid {pid} not running")
+    if name:
+        result = run_tool(["pgrep", "-f", name], timeout_s=_arg_float(args, "timeout_s", 5.0))
+        found = result.succeeded and bool((result.stdout or "").strip())
+        return ProbeResult("process", found, f"pgrep {name!r} -> {result.stdout!r}")
+    return ProbeResult("process", False, "process probe requires name or pid")
+
+
+def _run_metric(args: dict[str, object]) -> ProbeResult:  # noqa: PLR0911 (one branch per failure mode)
+    endpoint = str(args.get("endpoint", ""))
+    query = str(args.get("query", ""))
+    if not endpoint:
+        return ProbeResult("metric", False, "metric probe requires endpoint")
+    try:
+        with urllib.request.urlopen(
+            endpoint, timeout=_arg_float(args, "timeout_s", 5.0)
+        ) as response:
+            body = response.read(10_000).decode("utf-8", errors="replace")
+    except Exception as exc:
+        return ProbeResult("metric", False, f"{endpoint} unreachable ({exc})")
+    found = (not query) or (query in body)
+    if not found:
+        return ProbeResult("metric", False, f"metric {query!r} not present")
+    threshold_raw = args.get("threshold")
+    threshold_num: float | None = None
+    if threshold_raw is not None and not isinstance(threshold_raw, bool) and isinstance(
+        threshold_raw, (int, float, str)
+    ):
+        try:
+            threshold_num = float(threshold_raw)
+        except ValueError:
+            return ProbeResult("metric", False, f"bad threshold {threshold_raw!r}")
+    elif threshold_raw is not None and not isinstance(threshold_raw, bool):
+        return ProbeResult("metric", False, f"bad threshold {threshold_raw!r}")
+    if threshold_num is not None:
+        try:
+            match = re.search(rf"{re.escape(query)}\s+([-+0-9.eE]+)", body)
+            if match is None:
+                return ProbeResult("metric", False, f"metric {query!r} lacks a value")
+            value = float(match.group(1))
+            ok = value >= threshold_num
+            return ProbeResult("metric", ok, f"{query}={value} (threshold {threshold_num})")
+        except (ValueError, IndexError):
+            return ProbeResult("metric", False, f"cannot parse {query!r} value")
+    return ProbeResult("metric", True, f"metric {query!r} present")
+
+
+def _run_file(args: dict[str, object]) -> ProbeResult:
+    path = str(args.get("path", ""))
+    if not path:
+        return ProbeResult("file", False, "file probe requires path")
+    p = Path(path)
+    if not p.exists():
+        return ProbeResult("file", False, f"{path} missing")
+    contains = args.get("contains")
+    if contains:
+        try:
+            content = p.read_text(errors="replace")
+        except OSError as exc:
+            return ProbeResult("file", False, f"{path} unreadable ({exc})")
+        if str(contains) not in content:
+            return ProbeResult("file", False, f"{path} lacks {contains!r}")
+    return ProbeResult("file", True, f"{path} present")
+
+
 _HANDLERS = {
     "exec": _run_exec,
     "tcp": _run_tcp,
     "http": _run_http,
+    "process": _run_process,
+    "metric": _run_metric,
+    "file": _run_file,
 }
 
 

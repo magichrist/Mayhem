@@ -9,6 +9,7 @@ specifics stay out: ``ContainerNode`` is engine-agnostic. Identity lives in
 
 from __future__ import annotations
 
+import hashlib
 import re
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -137,6 +138,31 @@ class NetworkPath(BaseModel):
     intermediaries: tuple[str, ...] = ()  # node IDs of LBs, firewalls, etc.
     segments: tuple[str, ...] = ()  # segment IDs this path crosses
     bidirectional: bool = True
+    # ADR-M3-7: fault-targetable path detail + fingerprint
+    namespace: str | None = None
+    interface: str | None = None
+    protocol: str = "tcp"
+    ports: tuple[int, ...] = ()
+    direction: str = "both"
+    fingerprint: str = ""
+
+
+def compute_network_fingerprint(
+    *,
+    src: str,
+    dst: str,
+    namespace: str | None = None,
+    protocol: str = "tcp",
+    fault_type: str = "network",
+) -> str:
+    """Deterministic 16-hex fingerprint for a network fault path (ADR-M3-7).
+
+    The fingerprint is stable across runs and engine choices, so the planner
+    and the resource ledger can correlate a planned fault with the tracked
+    resource it mutates.
+    """
+    key = f"{src}:{dst}:{namespace or ''}:{protocol}:{fault_type}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
 class NetworkTopology(BaseModel):

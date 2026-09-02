@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from mayhem.domain.errors import InvariantViolationError
 
 if TYPE_CHECKING:
+    from mayhem.domain.execution_loci import ThreeLocusContext
     from mayhem.domain.topology import NodeKind
 
 
@@ -86,6 +87,16 @@ class ExecutionContextSpec(BaseModel):
                 f"node kinds {{{kinds_str}}}; "
                 f"allowed: {{{', '.join(sorted(k.value for k in allowed))}}}",
             )
+
+    def to_three_locus(self) -> ThreeLocusContext:
+        """Bridge to the three-locus model (ADR-M3-3).
+
+        Returns a ``ThreeLocusContext`` derived from this legacy single-locus
+        spec.  Imported lazily to keep this module dependency-light.
+        """
+        from mayhem.domain.execution_loci import ThreeLocusContext
+
+        return ThreeLocusContext.from_single(self.context)
 
 
 def infer_context_for_node(node_kind: NodeKind) -> ExecutionContext:
