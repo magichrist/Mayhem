@@ -462,6 +462,7 @@ M0010_NETWORK_PATH = Migration(
     ),
 )
 
+
 # ── M5-1: Run and Outcome domain persistence (ADR-M5-1) ──────────────
 M0011_M5_RUN_OUTCOME = Migration(
     version=11,
@@ -504,6 +505,29 @@ M0011_M5_RUN_OUTCOME = Migration(
 )
 
 
+# ── M5-2: Coverage accounting (ADR-M5-3) ─────────────────────────────
+M0012_M5_COVERAGE = Migration(
+    version=12,
+    name="m5_coverage",
+    statements=(
+        """
+        CREATE TABLE m5_coverage (
+            cell_key TEXT PRIMARY KEY,
+            target TEXT NOT NULL,
+            fault_kind TEXT NOT NULL,
+            execution_context TEXT NOT NULL,
+            parameter_band TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            covered INTEGER NOT NULL DEFAULT 1,
+            extra_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        "CREATE INDEX idx_m5_coverage_target ON m5_coverage(target)",
+        "CREATE INDEX idx_m5_coverage_fault ON m5_coverage(fault_kind)",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -516,4 +540,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0009_FORK_ATOMICITY,
     M0010_NETWORK_PATH,
     M0011_M5_RUN_OUTCOME,
+    M0012_M5_COVERAGE,
 )
