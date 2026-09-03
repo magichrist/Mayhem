@@ -162,8 +162,10 @@ def _run_metric(args: dict[str, object]) -> ProbeResult:  # noqa: PLR0911 (one b
         return ProbeResult("metric", False, f"metric {query!r} not present")
     threshold_raw = args.get("threshold")
     threshold_num: float | None = None
-    if threshold_raw is not None and not isinstance(threshold_raw, bool) and isinstance(
-        threshold_raw, (int, float, str)
+    if (
+        threshold_raw is not None
+        and not isinstance(threshold_raw, bool)
+        and isinstance(threshold_raw, (int, float, str))
     ):
         try:
             threshold_num = float(threshold_raw)
