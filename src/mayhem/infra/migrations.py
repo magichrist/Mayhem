@@ -462,6 +462,47 @@ M0010_NETWORK_PATH = Migration(
     ),
 )
 
+# ── M5-1: Run and Outcome domain persistence (ADR-M5-1) ──────────────
+M0011_M5_RUN_OUTCOME = Migration(
+    version=11,
+    name="m5_run_outcome",
+    statements=(
+        """
+        CREATE TABLE m5_runs (
+            id TEXT PRIMARY KEY,
+            experiment_name TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            seed INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            environment_fingerprint TEXT NOT NULL DEFAULT '',
+            config_snapshot_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            ended_at TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            verdict TEXT NOT NULL DEFAULT 'pass',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            extra_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        "CREATE INDEX idx_m5_runs_status ON m5_runs(status)",
+        "CREATE INDEX idx_m5_runs_experiment ON m5_runs(experiment_name)",
+        """
+        CREATE TABLE m5_outcomes (
+            run_id TEXT PRIMARY KEY REFERENCES m5_runs(id),
+            body_json TEXT NOT NULL DEFAULT '{}',
+            body_hash TEXT NOT NULL DEFAULT '',
+            checks_passed INTEGER NOT NULL DEFAULT 0,
+            checks_failed INTEGER NOT NULL DEFAULT 0,
+            metric_deltas_json TEXT NOT NULL DEFAULT '{}',
+            residual_effect TEXT NOT NULL DEFAULT '',
+            stability_signal TEXT NOT NULL DEFAULT '',
+            extra_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+    ),
+)
+
 
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
@@ -474,4 +515,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0008_FAILED_TO_APPLY,
     M0009_FORK_ATOMICITY,
     M0010_NETWORK_PATH,
+    M0011_M5_RUN_OUTCOME,
 )
