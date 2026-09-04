@@ -119,7 +119,7 @@ class TestServeLoopOverPipes:
         responses = asyncio.run(scenario())
         assert len(responses) == 3  # notification produced no frame; bad json got an error frame
         assert responses[0]["result"]["protocol"] == rpc.PROTOCOL_VERSION
-        assert responses[1]["result"]["faults"] == ["proc"]
+        assert responses[1]["result"]["faults"] == ["proc", "process"]
         assert responses[2]["error"]["code"] == int(rpc.RpcErrorCode.PARSE_ERROR)
 
 
