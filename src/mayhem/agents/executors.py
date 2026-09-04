@@ -11,6 +11,7 @@ import json
 import os
 import signal
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
@@ -19,6 +20,23 @@ if TYPE_CHECKING:
     from mayhem.domain.leases import FaultLease
 
 os_kill = os.kill
+
+
+def read_boot_time(pid: int) -> int | None:
+    """Read a process's start time (``/proc/<pid>/stat`` field 22).
+
+    Used by the PID-reuse guard (ADR-M2 Phase 2.4 / ADR-M6-2): a PID alone is
+    not an identity because the kernel recycles PIDs after exit. The boot time
+    in clock ticks since boot disambiguates a recycled PID from the original
+    target. Returns ``None`` on platforms without procfs or when the process
+    is gone — the guard then degrades to pid-only signalling.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+        fields = raw.split(")", maxsplit=1)[1].split()
+        return int(fields[19]) if len(fields) > 19 else None
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -77,23 +95,28 @@ class ProcPauseExecutor(FaultExecutor):
         """
         import shutil  # noqa: PLC0415
 
-        _pid, cont, engine = self._signal_spec(lease)
+        _pid, cont, engine, _boot = self._signal_spec(lease)
         if cont is None or engine is None:
             return None  # host-mode signal needs no engine binary
         if shutil.which(engine) is None:
             return f"capability lost: container engine {engine!r} no longer on PATH"
         return None
 
-    def _signal_spec(self, lease: FaultLease) -> tuple[int | None, str | None, str | None]:
-        """Return (pid, container, engine) carried by the first usable undo op.
+    def _signal_spec(
+        self, lease: FaultLease
+    ) -> tuple[int | None, str | None, str | None, int | None]:
+        """Return (pid, container, engine, boot_time) carried by the first usable undo op.
 
         ``pid`` is the process to signal (``.State.Pid`` resolved at execution
         time, valid both on the host and inside the owning container's pid
-        namespace). When the op was annotated for container mode, ``container``
-        and ``engine`` (podman/docker) are present so the signal can be delivered
-        *inside* the container via ``engine exec <cont> kill`` — required when
-        the container runtime lives in a detached VM (podman-machine on macOS)
-        where a host ``os.kill`` cannot reach the container pid namespace.
+        namespace). ``boot_time`` is the process start time (``/proc/<pid>/stat``
+        field 22) recorded when the target's identity was resolved; it feeds the
+        PID-reuse guard so a recycled PID is never signalled. When the op was
+        annotated for container mode, ``container`` and ``engine`` (podman/docker)
+        are present so the signal can be delivered *inside* the container via
+        ``engine exec <cont> kill`` — required when the container runtime lives in
+        a detached VM (podman-machine on macOS) where a host ``os.kill`` cannot
+        reach the container pid namespace.
         """
         for op in lease.undo_ops:
             raw = op.args.get("pid")
@@ -102,23 +125,28 @@ class ProcPauseExecutor(FaultExecutor):
             except (TypeError, ValueError):
                 continue
             if pid is not None:
-                return pid, op.args.get("cont"), op.args.get("engine")
-        return None, None, None
+                boot_raw = op.args.get("boot_time")
+                try:
+                    boot = int(boot_raw) if boot_raw is not None else None
+                except (TypeError, ValueError):
+                    boot = None
+                return pid, op.args.get("cont"), op.args.get("engine"), boot
+        return None, None, None, None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        pid, cont, engine = self._signal_spec(lease)
+        pid, cont, engine, _boot = self._signal_spec(lease)
         if pid is None or pid <= 1:
             return StepOutcome("inject", False, f"lease {lease.id} carries no usable pid")
-        outcome = self._signal(pid, signal.SIGSTOP, cont, engine, "inject")
+        outcome = self._signal(pid, signal.SIGSTOP, cont, engine, _boot, "inject")
         if outcome.ok:
             self._paused_pids.add(pid)
         return outcome
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        pid, cont, engine = self._signal_spec(lease)
+        pid, cont, engine, boot = self._signal_spec(lease)
         if pid is None:
             return StepOutcome("undo", True, "nothing to resume")
-        outcome = self._signal(pid, signal.SIGCONT, cont, engine, "undo")
+        outcome = self._signal(pid, signal.SIGCONT, cont, engine, boot, "undo")
         self._paused_pids.discard(pid)
         if outcome.ok:
             return StepOutcome("undo", True, f"SIGCONT delivered to {pid}")
@@ -127,7 +155,13 @@ class ProcPauseExecutor(FaultExecutor):
         return outcome
 
     def _signal(
-        self, pid: int, sig: int, cont: str | None, engine: str | None, op: str
+        self,
+        pid: int,
+        sig: int,
+        cont: str | None,
+        engine: str | None,
+        boot: int | None,
+        op: str,
     ) -> StepOutcome:
         """Deliver ``sig`` to the target, inside the container when annotated.
 
@@ -135,7 +169,12 @@ class ProcPauseExecutor(FaultExecutor):
         delivered to the container's main process from the runtime side. This is
         namespace-agnostic: unlike ``engine exec ... kill <pid>`` it does not
         require the resolved pid (``.State.Pid``, a VM/host pid) to be addressable
-        inside the container's pid namespace. Host mode falls back to ``os.kill``.
+        inside the container's pid namespace. Host mode falls back to ``os.kill``,
+        guarded by the PID-reuse check (ADR-M2 Phase 2.4): when a boot time was
+        recorded at identity-resolution time, we re-read the current boot time
+        and refuse to signal on mismatch (the PID was recycled by an unrelated
+        process) — reported as ``target_drift`` rather than mutating the wrong
+        process.
         """
         if cont and engine:
             signame = signal.Signals(sig).name  # e.g. SIGSTOP / SIGCONT
@@ -151,6 +190,15 @@ class ProcPauseExecutor(FaultExecutor):
                 )
             except ToolError as exc:
                 return StepOutcome(op, False, f"engine kill failed for {cont}: {exc}")
+        drift = read_boot_time(pid)
+        if boot is not None and drift is not None and drift != boot:
+            return StepOutcome(
+                op,
+                False,
+                f"pid-reuse guard: pid {pid} boot_time {drift} != expected {boot}; "
+                "refusing to signal recycled PID",
+                tool_result=None,
+            )
         try:
             os_kill(pid, sig)
         except ProcessLookupError:

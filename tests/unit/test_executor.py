@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mayhem.agents.lease_client import LeaseClient
+from mayhem.agents.executors import read_boot_time
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.planner import plan_drill
 from mayhem.domain.experiments import (
@@ -16,6 +17,7 @@ from mayhem.domain.experiments import (
     ExecutionStep,
 )
 from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.leases import FaultLease, UndoOp
 from mayhem.domain.topology import (
     ContainerNode,
     Edge,
@@ -391,3 +393,84 @@ class TestRecovery:
         final = sink.load(recovered[0])
         assert final is not None
         assert final.state.value == "released"
+
+
+class TestProcReuseGuard:
+    """ADR-M2 Phase 2.4 / ADR-M6-2 — the process executor refuses to signal a
+    recycled PID when the recorded boot_time no longer matches."""
+
+    def _lease(self, *, pid: int, boot_time: str | None) -> FaultLease:
+        return FaultLease(
+            id="l-guard",
+            run_id="r-guard",
+            fault_id="proc.pause",
+            owner_agent="test",
+            targets=frozenset({"proc-a"}),
+            undo_ops=(
+                UndoOp(
+                    op="signal.cont",
+                    args={
+                        "pid": str(pid),
+                        **( {"boot_time": boot_time} if boot_time is not None else {}),
+                    },
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _spawn_and_read_boot():
+        proc = _spawn_sleeper()
+        return proc, read_boot_time(proc.pid)
+
+    def test_recycled_pid_guard_refuses_to_signal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mayhem.agents import executors as exec_mod
+        from mayhem.controller.executor import executor_for
+
+        from mayhem.agents.executors import StepOutcome
+
+        proc = _spawn_sleeper()
+        live = read_boot_time(proc.pid)
+        try:
+            # The PID is genuinely alive with `live` as its true boot_time, but the
+            # lease records a different (stale/recycled) boot_time.
+            real_boot = live if live is not None else 12345
+            stale = real_boot + 7777
+            exec_mod.read_boot_time = lambda pid: real_boot
+            kills: list[int] = []
+            exec_mod.os_kill = lambda pid, sig: kills.append(pid)
+
+            executor = executor_for("proc.pause")
+            outcome = executor.inject(self._lease(pid=proc.pid, boot_time=str(stale)))
+            assert isinstance(outcome, StepOutcome)
+            assert not outcome.ok
+            assert "pid-reuse guard" in outcome.detail
+            assert kills == []  # no signal was delivered to the recycled PID
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    def test_matching_boot_time_signals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mayhem.agents import executors as exec_mod
+        from mayhem.controller.executor import executor_for
+
+        from mayhem.agents.executors import StepOutcome
+
+        proc = _spawn_sleeper()
+        real_boot = read_boot_time(proc.pid) or 12345
+        try:
+            exec_mod.read_boot_time = lambda pid: real_boot
+            kills: list[int] = []
+            exec_mod.os_kill = lambda pid, sig: kills.append(pid)
+
+            executor = executor_for("proc.pause")
+            outcome = executor.inject(self._lease(pid=proc.pid, boot_time=str(real_boot)))
+            assert isinstance(outcome, StepOutcome)
+            assert outcome.ok, outcome.detail
+            assert kills == [proc.pid]  # signal delivered to the matching process
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+

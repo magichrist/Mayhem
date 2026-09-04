@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, assert_never
 from urllib.parse import urlsplit
 
-from mayhem.agents.executors import executor_for
+from mayhem.agents.executors import executor_for, read_boot_time
 from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
@@ -165,10 +165,45 @@ def _substitute_pids(
             return {}
         return {"cont": cont, "engine": engine}
 
+    def _boot_address(
+        swapped: dict[str, object], has_live_pid: bool
+    ) -> dict[str, str]:
+        """Attach the PID-reuse boot_time for host-mode process ops.
+
+        When a ``@live-pid`` placeholder was substituted for a process not
+        addressed by a container (host mode), we read the process's start time
+        (``/proc/<pid>/stat`` field 22) and record it on the op. The process
+        executor re-reads boot_time before signalling and refuses to signal a
+        recycled PID (ADR-M2 Phase 2.4 / ADR-M6-2).
+        """
+        if not has_live_pid:
+            return {}
+        if "cont" in swapped or "engine" in swapped:
+            return {}
+        raw = swapped.get("pid")
+        try:
+            pid = int(str(raw))
+        except (TypeError, ValueError):
+            return {}
+        boot = read_boot_time(pid)
+        if boot is None:
+            return {}
+        return {"boot_time": str(boot)}
+
     new_undo = tuple(
         UndoOp(
             op=op.op,
-            args={**{k: _swap(v) for k, v in op.args.items()}, **_address(_resolved_node(op))},
+            args={
+                **{k: _swap(v) for k, v in op.args.items()},
+                **_address(_resolved_node(op)),
+                **_boot_address(
+                    {k: _swap(v) for k, v in op.args.items()},
+                    any(
+                        isinstance(v, str) and _LIVE_PID in v
+                        for v in op.args.values()
+                    ),
+                ),
+            },
             idempotent=op.idempotent,
         )
         for op in undo_ops
