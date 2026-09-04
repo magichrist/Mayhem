@@ -78,12 +78,31 @@ class FaultExecutor:
 
 
 class ProcPauseExecutor(FaultExecutor):
-    """proc.pause: SIGSTOP a pid, undo with SIGCONT. Fully reversible."""
+    """Process signal faults against a live PID.
 
-    prefixes = ("proc",)
+    ``proc.pause``   SIGSTOP, fully reversible with SIGCONT.
+    ``process.stop`` SIGTERM (graceful shutdown); pid is gone — undo no-ops.
+    ``process.kill`` SIGKILL; pid is gone — undo no-ops.
+
+    All three are guarded by the PID-reuse boot_time check (ADR-M2 Phase 2.4).
+    """
+
+    prefixes = ("proc", "process")
 
     def __init__(self) -> None:
         self._paused_pids: set[int] = set()
+
+    def _signal_for(self, fault_id: str) -> int | None:
+        """Map a fault id to its signal, or ``None`` for a non-signal fault."""
+        family = fault_id.split(".", 1)[0]
+        if family == "proc" and fault_id == "proc.pause":
+            return signal.SIGSTOP
+        if family == "process":
+            if fault_id.endswith("kill"):
+                return signal.SIGKILL
+            if fault_id.endswith("stop"):
+                return signal.SIGTERM
+        return None
 
     def can_apply(self, lease: FaultLease) -> str | None:
         """Revalidate the container-mode signal capability (ADR-M2 Phase 2.3).
@@ -134,16 +153,24 @@ class ProcPauseExecutor(FaultExecutor):
         return None, None, None, None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
+        sig = self._signal_for(lease.fault_id)
+        if sig is None:
+            return StepOutcome("inject", False, f"unplannable signal fault {lease.fault_id}")
         pid, cont, engine, _boot = self._signal_spec(lease)
         if pid is None or pid <= 1:
             return StepOutcome("inject", False, f"lease {lease.id} carries no usable pid")
-        outcome = self._signal(pid, signal.SIGSTOP, cont, engine, _boot, "inject")
+        outcome = self._signal(pid, sig, cont, engine, _boot, "inject")
         if outcome.ok:
             self._paused_pids.add(pid)
         return outcome
 
     def undo(self, lease: FaultLease) -> StepOutcome:
         pid, cont, engine, boot = self._signal_spec(lease)
+        if self._signal_for(lease.fault_id) not in (signal.SIGSTOP, signal.SIGCONT):
+            # process.stop / process.kill terminate the pid; there is nothing to
+            # resume. Report idempotent success so the lease releases cleanly.
+            self._paused_pids.discard(pid or 0)
+            return StepOutcome("undo", True, "process already terminated; no resume to perform")
         if pid is None:
             return StepOutcome("undo", True, "nothing to resume")
         outcome = self._signal(pid, signal.SIGCONT, cont, engine, boot, "undo")
