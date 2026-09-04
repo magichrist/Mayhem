@@ -65,6 +65,32 @@ def _proc_pause_verify(nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ..
     )
 
 
+def _process_term_undo(nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """process.stop / process.kill terminate the pid — nothing to undo.
+
+    The single no-op op still carries the ``pid`` so the inject executor can
+    resolve the target; undo itself performs no action (the pid is gone).
+    """
+    proc = _first_process(nodes)
+    if proc is None:
+        raise NO_UNDO
+    return (UndoOp(op="noop", args={"pid": _pid_arg(proc)}),)
+
+
+def _process_term_verify(nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
+    proc = _first_process(nodes)
+    if proc is None:
+        raise NO_UNDO
+    pid = _pid_arg(proc)
+    return (
+        VerifyProbe(
+            probe="exec",
+            args={"cmd": ["ps", "-p", pid], "timeout_s": "5"},
+            expect_present=False,  # target process must be gone after termination
+        ),
+    )
+
+
 _SENTINEL = object()
 
 
@@ -904,6 +930,8 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
 
 _TEMPLATES: dict[str, CompensationTemplate] = {
     "proc.pause": _ignores_fault(_proc_pause_undo, _proc_pause_verify),
+    "process.stop": _ignores_fault(_process_term_undo, _process_term_verify),
+    "process.kill": _ignores_fault(_process_term_undo, _process_term_verify),
     **_payload_compensation_templates(),
     **_tool_compensation_templates(),
 }
