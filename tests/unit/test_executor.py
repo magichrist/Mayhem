@@ -122,6 +122,55 @@ class TestEndToEnd:
             proc.terminate()
             proc.wait(timeout=10)
 
+    def test_proc_kill_run_terminates_process_and_releases(self, tmp_path: Path) -> None:
+        proc = _spawn_sleeper()
+        pid = proc.pid
+        try:
+            assert proc.poll() is None  # running before the drill
+            engine, store = _engine(tmp_path)
+
+            def _kill_plan(run_id: str, target: int):
+                spec = DrillSpec(
+                    kind="drill",
+                    name="engine-e2e-kill",
+                    containers={
+                        "c-a": DrillContainer(
+                            faults=(DrillFault(fault="process.kill", duration="1s"),)
+                        ),
+                    },
+                    execution=(ExecutionStep(parallel=("c-a",)),),
+                )
+                return plan_drill(
+                    run_id,
+                    spec,
+                    _graph(target),
+                    config_snapshot_id="cfg-1",
+                    topology_snapshot_id="topo-1",
+                    environment_fingerprint="fp-test",
+                )
+
+            result = engine.execute(_kill_plan("r-kill", pid))
+            assert result.status == "completed", result.summary_md()
+            assert not result.dirty_leases
+
+            proc.wait(timeout=10)
+            assert proc.poll() is not None  # SIGKILL terminated the sleeper
+
+            leases = store.query(
+                "SELECT state, release_mechanism FROM fault_leases WHERE run_id = 'r-kill'"
+            )
+            assert len(leases) == 1
+            assert leases[0]["state"] == "released"
+            events = store.query("SELECT kind FROM events WHERE run_id = 'r-kill' ORDER BY id")
+            kinds = [str(row["kind"]) for row in events]
+            assert "fault.injected" in kinds
+            assert "fault.recovered" in kinds
+            assert "run.completed" in kinds
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=10)
+
     def test_first_run_row_persists_spec_and_plan(self, tmp_path: Path) -> None:
         proc = _spawn_sleeper()
         try:
