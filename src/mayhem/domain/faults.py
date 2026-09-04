@@ -56,6 +56,7 @@ _PREFIX_TO_CATEGORY: dict[str, FaultCategory] = {
     "disk": FaultCategory.STORAGE,
     "storage": FaultCategory.STORAGE,
     "proc": FaultCategory.PROCESS,
+    "process": FaultCategory.PROCESS,
     "container": FaultCategory.CONTAINER,
     "node": FaultCategory.NODE,
     "http": FaultCategory.HTTP_API,
