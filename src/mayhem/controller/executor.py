@@ -10,25 +10,42 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import signal
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from mayhem.agents.executors import executor_for, read_boot_time
 from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
+from mayhem.controller.observability_collector import (
+    SourceCollection,
+    collect_observability,
+    probe_to_verify,
+)
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
-from mayhem.domain.checks import CheckLocus, ProbeType
+from mayhem.domain.checks import CheckLocus
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
-from mayhem.domain.identity import ProcessRuntimeIdentity
 from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
+from mayhem.domain.run_outcome import RunVerdict
+from mayhem.domain.success import (
+    CriteriaEvaluation,
+    Observation,
+    evaluate_criteria,
+    observations_for_step,
+)
+
+if TYPE_CHECKING:
+    import sqlite3
+
+    from mayhem.domain.decisions import DecisionRef
 from mayhem.topology.resolve import (
     resolve_container,
     resolve_identity,
@@ -42,8 +59,9 @@ if TYPE_CHECKING:
     from mayhem.agents.sinks import LeaseSink
     from mayhem.controller.resource_manager import ResourceManager
     from mayhem.controller.safety import SafetyContext
-    from mayhem.domain.checks import Probe, SteadyStateCheck
+    from mayhem.domain.checks import SteadyStateCheck
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
+    from mayhem.domain.identity import ProcessRuntimeIdentity
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
     from mayhem.toolkit.tool_runner import ToolResult
@@ -57,6 +75,7 @@ class StepReport:
     status: str = (
         "ok"  # ok | bypassed | failed | target_drift | failed_to_apply | resource_conflict
     )
+    measured: Mapping[str, object] = field(default_factory=dict)  # ADR-M4-3 observations
 
     @property
     def bypassed(self) -> bool:
@@ -83,6 +102,10 @@ class RunResult:
     ended_at_epoch_s: float
     steps: tuple[StepReport, ...] = ()
     dirty_leases: tuple[str, ...] = field(default=())
+    verdict: RunVerdict | None = None  # criteria-derived (ADR-M4-3), None when undecided
+    criteria_evaluation: CriteriaEvaluation | None = None
+    observability: tuple[SourceCollection, ...] = ()  # collected evidence (ADR-M4-4)
+    governing_decisions: tuple[DecisionRef, ...] = ()  # decision trace (ADR-M4-1)
 
     @property
     def wall_seconds(self) -> float:
@@ -90,6 +113,18 @@ class RunResult:
 
     def summary_md(self) -> str:
         lines = [f"# Run {self.run_id}", "", f"**status**: {self.status}"]
+        if self.verdict is not None:
+            lines.append(f"**verdict**: {self.verdict.value}")
+        if self.criteria_evaluation is not None:
+            lines.append(self.criteria_evaluation.summary_md())
+        if any(not source.skipped for source in self.observability):
+            collected = sum(1 for c in self.observability if c.ok)
+            lines.append(
+                f"**observations**: {collected}/{len(self.observability)} sources collected"
+            )
+        if self.governing_decisions:
+            summary = ", ".join(d.summary() for d in self.governing_decisions)
+            lines.append(f"**decisions**: {summary}")
         lines.append(f"**wall**: {self.wall_seconds:.1f}s")
         for step in self.steps:
             mark = "bypass" if step.status == "bypassed" else "ok" if step.ok else "FAIL"
@@ -102,6 +137,20 @@ class RunResult:
 # Placeholder PID emitted by compensation templates; replaced with the live PID
 # at execution time (ADR-0020), so the value is never older than the syscall.
 _LIVE_PID = "@live-pid"
+
+_STATUS_DETAIL_RE = re.compile(r"->\s*(?P<status>\d{3})\s*$")
+
+
+def _probe_status_from_detail(detail: str) -> int | None:
+    """Extract an observed HTTP status from a probe detail like ``url -> 200``.
+
+    Returns None when the detail does not carry an observable status (probe
+    never reached the service), so a status criterion then reads *absent*.
+    """
+    match = _STATUS_DETAIL_RE.search(detail.strip())
+    if match is None:
+        return None
+    return int(match.group("status"))
 
 
 def _step_db_status(report: StepReport) -> str:
@@ -165,9 +214,7 @@ def _substitute_pids(
             return {}
         return {"cont": cont, "engine": engine}
 
-    def _boot_address(
-        swapped: dict[str, object], has_live_pid: bool
-    ) -> dict[str, str]:
+    def _boot_address(swapped: dict[str, object], has_live_pid: bool) -> dict[str, str]:
         """Attach the PID-reuse boot_time for host-mode process ops.
 
         When a ``@live-pid`` placeholder was substituted for a process not
@@ -198,10 +245,7 @@ def _substitute_pids(
                 **_address(_resolved_node(op)),
                 **_boot_address(
                     {k: _swap(v) for k, v in op.args.items()},
-                    any(
-                        isinstance(v, str) and _LIVE_PID in v
-                        for v in op.args.values()
-                    ),
+                    any(isinstance(v, str) and _LIVE_PID in v for v in op.args.values()),
                 ),
             },
             idempotent=op.idempotent,
@@ -369,7 +413,16 @@ class RunEngine:
                 recovered = ()
         if recovered and status == "aborted":
             dirty = [d for d in dirty if d not in recovered]
-        self._close_run(plan.run_id, status, ended)
+        verdict, evaluation = self._criteria_verdict(plan, reports, status)
+        collections = self._collect_observability(plan)
+        self._close_run(
+            plan.run_id,
+            status,
+            ended,
+            verdict=verdict,
+            evaluation=evaluation,
+            observability=collections,
+        )
         result = RunResult(
             run_id=plan.run_id,
             status=status,
@@ -377,6 +430,10 @@ class RunEngine:
             ended_at_epoch_s=ended,
             steps=tuple(reports),
             dirty_leases=tuple(dirty),
+            verdict=verdict,
+            criteria_evaluation=evaluation,
+            observability=collections,
+            governing_decisions=plan.decision_refs,
         )
         self._store.query(
             "UPDATE runs SET summary_md = ? WHERE id = ?",
@@ -678,7 +735,6 @@ class RunEngine:
 
         # Resource ownership tracking (ADR-0015)
         tracked_resource = None
-        journal_entry = None
         if self._resource_manager is not None:
             from mayhem.domain.leases import UndoOp, VerifyProbe  # noqa: PLC0415
             from mayhem.domain.resources import ResourceType  # noqa: PLC0415
@@ -782,7 +838,7 @@ class RunEngine:
         ):
             from mayhem.domain.leases import UndoOp as _UndoOp  # noqa: PLC0415
 
-            journal_entry = self._resource_manager.journal_mutation(
+            self._resource_manager.journal_mutation(
                 lease_id=lease.id,
                 resource_id=tracked_resource.id,
                 run_id=plan.run_id,
@@ -1087,7 +1143,7 @@ class RunEngine:
         check = self._checks.get(ref)
         if check is None:
             return StepReport(step.id, False, f"check {ref!r} not compiled into engine")
-        verify = _domain_probe_to_verify(check.probe)
+        verify = probe_to_verify(check.probe)
         if verify is not None and verify.probe == "http" and verify.args.get("url"):
             expected = verify.args.get("expect_status", 200)
             if not isinstance(expected, int):
@@ -1105,8 +1161,16 @@ class RunEngine:
         if not url:
             return StepReport(step.id, False, "check_http step missing url")
         verify = self._route_http_probe(url, int(expected) if expected is not None else 200)
+        started = time.monotonic()
         result = run_probe(verify)
-        return StepReport(step.id, result.satisfied, f"{url}: {result.detail}")
+        latency_ms = round((time.monotonic() - started) * 1000, 3)
+        measured: dict[str, object] = {"latency_ms": latency_ms}
+        status = _probe_status_from_detail(result.detail)
+        if status is not None:
+            measured["status"] = status
+        elif result.satisfied and isinstance(expected, int):
+            measured["status"] = expected  # probe contract: satisfied ⇒ status == expected
+        return StepReport(step.id, result.satisfied, f"{url}: {result.detail}", measured=measured)
 
     def _execute_check_spec(self, step: PlannedStep) -> StepReport:
         """Evaluate a :class:`CheckSpecStep` at its declared execution locus.
@@ -1124,19 +1188,63 @@ class RunEngine:
         check_locus = getattr(action, "execution", None) or self._infer_check_locus(
             getattr(action, "target", None)
         )
-        verify = _domain_probe_to_verify(probe)
+        verify = probe_to_verify(probe)
         if check_locus in (CheckLocus.CONTAINER, CheckLocus.SERVICE):
             verify = self._container_scope_verify(verify, action)
         elif check_locus is CheckLocus.PROCESS:
             pid = getattr(probe, "pid", None)
             if pid is None:
                 return StepReport(step.id, False, "process check at process locus requires a pid")
+        started = time.monotonic()
         result = run_probe(verify)
+        latency_ms = round((time.monotonic() - started) * 1000, 3)
+        measured: dict[str, object] = {"passed": result.satisfied, "latency_ms": latency_ms}
+        if verify.probe == "http":
+            status = _probe_status_from_detail(result.detail)
+            if status is not None:
+                measured["status"] = status
         return StepReport(
             step.id,
             result.satisfied,
             f"{check_locus.value}:{getattr(probe, 'type', 'check')} -> {result.detail}",
+            measured=measured,
         )
+
+    def _criteria_verdict(
+        self,
+        plan: ExecutionPlan,
+        reports: Sequence[StepReport],
+        status: str,
+    ) -> tuple[RunVerdict | None, CriteriaEvaluation | None]:
+        """Derive the drill's machine verdict from its success criteria (ADR-M4-3).
+
+        A verdict is only ever derived for a run that actually *completed*; an
+        aborted/failed run leaves the verdict undecided (None) even when some
+        observations would satisfy criteria — partial evidence is not success.
+        Absent or empty criteria also yield no verdict (existing behaviour).
+        """
+        if plan.success is None or plan.success.empty or status != "completed":
+            return None, None
+        observations: dict[str, Observation] = {}
+        for report in reports:
+            for observation in observations_for_step(
+                report.step_id, ok=report.ok, measured=report.measured, detail=report.detail
+            ):
+                observations[observation.source_id] = observation
+        evaluation = evaluate_criteria(plan.success, observations)
+        verdict = RunVerdict.PASS if evaluation.all_satisfied else RunVerdict.FAIL
+        self._emit(
+            Event(
+                kind=EventKind.CRITERIA_EVALUATED,
+                run_id=plan.run_id,
+                detail={
+                    "verdict": verdict.value,
+                    "all_satisfied": evaluation.all_satisfied,
+                    "results": [r.model_dump() for r in evaluation.results],
+                },
+            )
+        )
+        return verdict, evaluation
 
     def _infer_check_locus(self, target: str | None) -> CheckLocus:
         """Infer a bare check's locus from its fault target (ADR-M4-2)."""
@@ -1196,8 +1304,9 @@ class RunEngine:
             conn.execute(
                 """
                 INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json, seed,
-                    status, environment_fingerprint, config_snapshot_id, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
+                    status, environment_fingerprint, config_snapshot_id, started_at,
+                    governing_decisions_json)
+                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
                 """,
                 (
                     plan.run_id,
@@ -1209,6 +1318,7 @@ class RunEngine:
                     plan.environment_fingerprint,
                     config_id,
                     now_iso,
+                    json.dumps([d.model_dump() for d in plan.decision_refs]),
                 ),
             )
             conn.execute(
@@ -1247,13 +1357,70 @@ class RunEngine:
             conn.execute("DELETE FROM run_fork_staging WHERE phase = 'planning'")
         return []
 
-    def _close_run(self, run_id: str, status: str, ended_epoch_s: float) -> None:
+    def _collect_observability(self, plan: ExecutionPlan) -> tuple[SourceCollection, ...]:
+        """Collect declared observability sources into evidence (ADR-M4-4).
+
+        Best-effort and bounded: each source has its own timeout and the whole
+        pass respects total_timeout. A failing source is recorded as a failed
+        collection — never raised — so evidence gathering cannot break the run.
+        """
+        if plan.observability is None or plan.observability.empty:
+            return ()
+        return collect_observability(plan.observability, engine=self._engine or "podman")
+
+    def _spool_observability_events(
+        self,
+        conn: sqlite3.Connection,
+        run_id: str,
+        collections: tuple[SourceCollection, ...],
+    ) -> None:
+        """Journal each collected source (ADR-M4-4: the journal is the source)."""
+        for collection in collections:
+            kind = (
+                EventKind.OBSERVABILITY_SOURCE_FAILED
+                if not collection.ok and not collection.skipped
+                else EventKind.OBSERVABILITY_COLLECTED
+            )
+            conn.execute(
+                "INSERT INTO events (run_id, ts, kind, payload_json) VALUES (?, ?, ?, ?)",
+                (
+                    run_id,
+                    utc_now().isoformat(),
+                    kind.value,
+                    json.dumps(collection.to_jsonable()),
+                ),
+            )
+
+    def _close_run(
+        self,
+        run_id: str,
+        status: str,
+        ended_epoch_s: float,
+        *,
+        verdict: RunVerdict | None = None,
+        evaluation: CriteriaEvaluation | None = None,
+        observability: tuple[SourceCollection, ...] = (),
+    ) -> None:
         ended_iso = datetime.fromtimestamp(ended_epoch_s, tz=UTC).isoformat()
+        criteria_json = evaluation.model_dump_json() if evaluation is not None else None
+        observability_json = (
+            json.dumps([c.to_jsonable() for c in observability]) if observability else None
+        )
         with self._store.write() as conn:
             conn.execute(
-                "UPDATE runs SET status = ?, ended_at = ? WHERE id = ?",
-                (status, ended_iso, run_id),
+                "UPDATE runs SET status = ?, ended_at = ?, verdict = ?, criteria_json = ?,"
+                " observability_json = ?"
+                " WHERE id = ?",
+                (
+                    status,
+                    ended_iso,
+                    verdict.value if verdict is not None else None,
+                    criteria_json,
+                    observability_json,
+                    run_id,
+                ),
             )
+            self._spool_observability_events(conn, run_id, observability)
 
     def _insert_step(self, run_id: str, step: PlannedStep) -> None:
         with self._store.write() as conn:
@@ -1381,68 +1548,6 @@ class RunEngine:
         if self._on_event is not None:
             with contextlib.suppress(Exception):
                 self._on_event(event)
-
-
-def _domain_probe_to_verify(probe: Probe) -> VerifyProbe:
-    """Map a domain checks.Probe onto the agents VerifyProbe runner."""
-    if probe.type is ProbeType.EXEC:
-        return VerifyProbe(
-            probe="exec",
-            args={"cmd": list(probe.cmd), "timeout_s": float(probe.timeout)},
-            expect_present=True,
-        )
-    if probe.type is ProbeType.TCP:
-        return VerifyProbe(
-            probe="tcp",
-            args={
-                "host": probe.host,
-                "port": int(probe.port),
-                "timeout_s": float(probe.timeout),
-            },
-            expect_present=True,
-        )
-    if probe.type is ProbeType.HTTP:
-        return VerifyProbe(
-            probe="http",
-            args={
-                "url": probe.url,
-                "expect_status": int(probe.expected_status),
-                "timeout_s": float(probe.timeout),
-            },
-            expect_present=True,
-        )
-    if probe.type is ProbeType.PROCESS:
-        return VerifyProbe(
-            probe="process",
-            args={
-                "name": probe.name,
-                "pid": probe.pid,
-                "timeout_s": float(probe.timeout),
-            },
-            expect_present=True,
-        )
-    if probe.type is ProbeType.METRIC:
-        return VerifyProbe(
-            probe="metric",
-            args={
-                "endpoint": probe.endpoint,
-                "query": probe.query,
-                "threshold": probe.threshold,
-                "timeout_s": float(probe.timeout),
-            },
-            expect_present=True,
-        )
-    if probe.type is ProbeType.FILE:
-        return VerifyProbe(
-            probe="file",
-            args={
-                "path": probe.path,
-                "contains": probe.contains,
-                "timeout_s": float(probe.timeout),
-            },
-            expect_present=True,
-        )
-    assert_never(probe)  # exhaustive over the Probe union
 
 
 class _AbortMatrix:
