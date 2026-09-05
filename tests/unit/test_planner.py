@@ -4,6 +4,8 @@ Drill planning compiles :class:`DrillSpec` into a frozen :class:`ExecutionPlan`.
 Refusals are part of the contract.
 """
 
+import json
+
 import pytest
 
 from mayhem.controller.planner import PlanningError, plan_drill
@@ -82,6 +84,60 @@ class TestDrillPlanning:
         assert step.fault.fault_id == "proc.pause"
         assert step.fault.undo_ops  # write-ahead undo present
         assert step.fault.verify_probes
+
+    def test_net_load_embeds_user_script_against_spec_dir(self, tmp_path) -> None:
+        from mayhem.domain.experiments import (
+            DrillConfig,
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+        )
+
+        script = tmp_path / "k6" / "script.js"
+        script.parent.mkdir()
+        script.write_text(
+            "import http from 'k6/http';\n"
+            "export default function () {\n"
+            '  http.get("http://10.0.0.5:8080/");\n'
+            "}\n",
+            encoding="utf-8",
+        )
+        spec = DrillSpec(
+            kind="drill",
+            name="load-drill",
+            config=DrillConfig(),
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(
+                        DrillFault(
+                            fault="net.load",
+                            duration="120s",
+                            users=10000,
+                            script="k6/script.js",
+                        ),
+                    )
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-drill",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+            spec_dir=str(tmp_path),
+        )
+        step = plan.steps[0]
+        assert step.fault is not None
+        assert step.fault.fault_id == "net.load"
+        assert step.fault.params["script"] == "k6/script.js"
+        assert "http://10.0.0.5:8080/" in step.fault.params["script_content"]
+        inject = json.loads(step.fault.undo_ops[0].args["inject_argv"])
+        assert "k6 run -u 10000 -d 120s" in inject[-1]
+        assert "http://10.0.0.5:8080/;" in inject[-1] or "http://10.0.0.5:8080/" in inject[-1]
 
     def test_container_target_carries_planned_runtime_identity(self) -> None:
         from mayhem.domain.experiments import ExecutionStep
@@ -169,6 +225,135 @@ class TestDrillPlanning:
         assert probe.args["pid"] == "ctr-api:@live-pid"
         assert "test ! -e" in str(probe.args["cmd"])
         assert probe.args["incontainer"] is True
+
+    def test_recovery_defaults_true_from_config(self) -> None:
+        from mayhem.domain.experiments import (
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+        )
+
+        spec = DrillSpec(
+            kind="drill",
+            name="recover-on",
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(DrillFault(fault="proc.pause", duration="3s"),)
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-rec-default",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        assert plan.steps[0].fault is not None
+        assert plan.steps[0].fault.recovery is True
+        assert spec.config.recovery is True
+
+    def test_config_recovery_false_propagates_to_plan(self) -> None:
+        from mayhem.domain.experiments import (
+            DrillConfig,
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+        )
+
+        spec = DrillSpec(
+            kind="drill",
+            name="recover-off",
+            config=DrillConfig(recovery=False),
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(DrillFault(fault="proc.pause", duration="3s"),)
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-rec-off",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        fault = plan.steps[0].fault
+        assert fault is not None
+        assert fault.recovery is False
+        assert fault.undo_ops  # write-ahead undo must still be carried
+
+    def test_per_fault_recovery_overrides_config(self) -> None:
+        from mayhem.domain.experiments import (
+            DrillConfig,
+            DrillContainer,
+            DrillFault,
+            DrillSpec,
+            ExecutionStep,
+        )
+
+        spec = DrillSpec(
+            kind="drill",
+            name="recover-mixed",
+            config=DrillConfig(recovery=False),
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(
+                        DrillFault(fault="proc.pause", duration="3s"),
+                        DrillFault(fault="proc.pause", duration="3s", recovery=True),
+                    )
+                )
+            },
+            execution=(ExecutionStep(sequential=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-rec-mixed",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        faults = [s.fault for s in plan.steps if s.fault is not None]
+        assert [f.recovery for f in faults] == [False, True]
+
+    def test_grouped_params_map_honored(self) -> None:
+        from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
+
+        spec = DrillSpec(
+            kind="drill",
+            name="grouped-params",
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(
+                        DrillFault(
+                            fault="net.latency",
+                            duration="10s",
+                            params={"seconds": "5s", "jitter_ms": 10},
+                        ),
+                    )
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        plan = plan_drill(
+            "r-grouped",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        fault = plan.steps[0].fault
+        assert fault is not None
+        assert fault.params["seconds"] == 5.0
+        assert fault.params["jitter_ms"] == 10
 
     def test_missing_container_name_raises(self) -> None:
         from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
