@@ -8,6 +8,10 @@ config:
   max_faults: 1
   timeout: 30m
   log_level: INFO
+  # true (default): auto-recover the container after each fault.
+  # false: keep the fault in place — downstream checks observe whether
+  #        the stack self-heals without the engine reviving anything.
+  recovery: false 
 
 containers:
   testcase-api:
@@ -16,9 +20,12 @@ containers:
         duration: 10s
         on_failure: abort_and_recover
       - fault: mem.exhaust
-        amount: 256M
+        params:
+          amount: 256M
         duration: 20s
-  
+      - fault: container.restart
+        duration: 10s
+
   testcase-lb:
     faults:
       - fault: proc.pause
@@ -47,7 +54,10 @@ containers:
       - fault: net.partition
         duration: 10s
       - fault: container.kill
-        signal: SIGKILL
+        params:
+          signal: SIGKILL
+        duration: 30s
+      - fault: container.pause
         duration: 10s
       - fault: node.service_stop
         duration: 10s
@@ -82,6 +92,42 @@ execution:
         expect: { status: 200 }
   - sequential: [testcase-lb]
   - wait: 3s
-  - check:
-      - http: http://testcase-api:8080/
-        expect: { status: 200 }
+  - check_spec:
+      - id: api-health
+        probe:
+          type: http
+          url: http://testcase-api:8080/
+          method: GET
+          timeout: 5s
+          expected_status: 200
+        execution: container
+        target: testcase-lb
+        expect:
+          status: 200
+
+success:
+  criteria:
+    - type: status
+      source_id: check-0004-0.status
+      expected: 200
+  require_all: true
+
+observability:
+  sources:
+    - kind: logs
+      source_id: api.logs
+      container: testcase-api
+      tail: 100
+      timeout: 10s
+    - kind: probe
+      source_id: api.http
+      probe:
+        type: http
+        url: http://testcase-api:8080/
+        method: GET
+        timeout: 5s
+        expected_status: 200
+      cadence: 5s
+      timeout: 10s
+  cadence: 5s
+  total_timeout: 30s
