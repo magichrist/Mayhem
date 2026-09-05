@@ -34,6 +34,8 @@ class FaultCategory(StrEnum):
     TLS = "tls"
     CLOCK = "clock"
     FD = "fd"
+    DEPENDENCY = "dependency"
+    K8S = "k8s"  # ADR-M7-3: capacity / network / preemption sub-categories
 
     @classmethod
     def from_fault_id(cls, fault_id: str) -> FaultCategory:
@@ -67,6 +69,8 @@ _PREFIX_TO_CATEGORY: dict[str, FaultCategory] = {
     "tls": FaultCategory.TLS,
     "clock": FaultCategory.CLOCK,
     "fd": FaultCategory.FD,
+    "dependency": FaultCategory.DEPENDENCY,
+    "k8s": FaultCategory.K8S,
 }
 
 
