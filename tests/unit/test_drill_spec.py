@@ -235,6 +235,36 @@ class TestDrillSpec:
         with pytest.raises(ValidationError):
             spec.name = "other"  # type: ignore[misc]
 
+    def test_recovery_flag_defaults_true(self) -> None:
+        spec = DrillSpec(
+            kind="drill",
+            name="rec",
+            containers={"api": DrillContainer(faults=(DrillFault(fault="proc.pause"),))},
+            execution=(ExecutionStep(parallel=("api",)),),
+        )
+        assert spec.config.recovery is True
+        assert spec.containers["api"].faults[0].recovery is None  # inherits config
+
+    def test_recovery_flag_explicit_and_per_fault(self) -> None:
+        spec = DrillSpec(
+            kind="drill",
+            name="rec",
+            config=DrillConfig(recovery=False),
+            containers={
+                "api": DrillContainer(
+                    faults=(
+                        DrillFault(fault="proc.pause"),
+                        DrillFault(fault="proc.pause", recovery=True),
+                    )
+                )
+            },
+            execution=(ExecutionStep(sequential=("api",)),),
+        )
+        assert spec.config.recovery is False
+        faults = spec.containers["api"].faults
+        assert faults[0].recovery is None  # inherit config
+        assert faults[1].recovery is True  # explicit override
+
     def test_empty_containers_rejected(self) -> None:
         with pytest.raises(InvariantViolationError):
             DrillSpec(
