@@ -891,6 +891,39 @@ class RunEngine:
             else "no impact observed by recovery probe"
         )
 
+        if not fault.recovery:
+            # recovery: false — keep the perturbation in place on purpose. The
+            # undo contract is deliberately NOT executed: the container stays
+            # faulted so downstream check steps (and the operator) observe
+            # whether the stack self-heals. The lease is terminally released
+            # with an explicit mechanism, never marked dirty.
+            inject_ok = inject_outcome is None or inject_outcome.ok
+            still = verify_all(tuple(lease.verify_probes), lease.id)
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="kept_faulted")
+            self._record_recovery(
+                lease.id,
+                mechanism="kept_faulted",
+                undo_results_json=json.dumps(
+                    {
+                        "inject": (inject_outcome.detail if inject_outcome else "no-executor"),
+                        "undo": "skipped (recovery: false)",
+                        "impact_observed": impact_observed,
+                        "impact_note": impact_note,
+                        "still_faulted_after_duration": not still.all_satisfied,
+                    }
+                ),
+                verified=False,
+                runtime_identity=lease.runtime_identity,
+            )
+            if tracked_resource is not None and self._resource_manager is not None:
+                self._resource_manager.mark_recovered(tracked_resource.id, verified=False)
+            detail = (
+                f"{fault.fault_id} injected; recovery disabled (recovery: false), "
+                f"container left faulted — {impact_part}"
+            )
+            return StepReport(step.id, inject_ok, detail), []
+
         self._client.mark_releasing(lease.id)
         undo_outcome = executor.undo(lease) if executor is not None else None
         self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
