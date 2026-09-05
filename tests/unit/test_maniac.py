@@ -184,10 +184,7 @@ class TestManiacCoverageModel:
 
     def test_all_cells_covered_early_termination(self) -> None:
         candidates = _make(8, bands=tuple(f"c{i}" for i in range(8)))
-        covered = frozenset({
-            coverage_cell_for_candidate(c).key
-            for c in candidates
-        })
+        covered = frozenset({coverage_cell_for_candidate(c).key for c in candidates})
         result = select_next(
             SelectionInputs(
                 candidates=candidates,
