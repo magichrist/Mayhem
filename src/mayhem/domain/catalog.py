@@ -109,19 +109,6 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
     ),
     FaultDefinition(
-        id="container.kill",
-        category=FaultCategory.CONTAINER,
-        risk=RiskLevel.MEDIUM,
-        required_caps=frozenset({Capability.DOCKER_ENGINE}),
-        # A compose service is a SERVICE-kind node backed by a container; killing
-        # the backing container is the intended action, so a SERVICE target must
-        # be accepted (matching sibling container-level faults like mem.exhaust),
-        # not just a bare CONTAINER node.
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
-        max_duration_s=60.0,
-        params_schema=(ParamSpec(name="signal", type=ParamType.STRING, default="SIGKILL"),),
-    ),
-    FaultDefinition(
         id="node.service_stop",
         category=FaultCategory.NODE,
         risk=RiskLevel.HIGH,
@@ -191,15 +178,77 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(),
     ),
     FaultDefinition(
+        id="container.kill",
+        category=FaultCategory.CONTAINER,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.DOCKER_ENGINE}),
+        # A compose service is a SERVICE-kind node backed by a container whose
+        # container.kill restarts, so accept SERVICE like sibling faults.
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=60.0,
+        params_schema=(ParamSpec(name="signal", type=ParamType.STRING, default="SIGKILL"),),
+    ),
+    FaultDefinition(
+        id="container.restart",
+        category=FaultCategory.CONTAINER,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.DOCKER_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=60.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="container.pause",
+        category=FaultCategory.CONTAINER,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.DOCKER_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
         id="clock.skew",
         category=FaultCategory.CLOCK,
         risk=RiskLevel.HIGH,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        # A compose service (SERVICE kind) is backed by a container whose clock is
-        # skewed, so accept SERVICE like sibling container-backing faults.
         applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER, NodeKind.SERVICE}),
         max_duration_s=300.0,
         params_schema=(ParamSpec(name="offset_ms", type=ParamType.INTEGER, required=True),),
+    ),
+    FaultDefinition(
+        id="dependency.block",
+        category=FaultCategory.DEPENDENCY,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+            ParamSpec(name="protocol", type=ParamType.STRING, default="tcp"),
+        ),
+    ),
+    FaultDefinition(
+        id="dependency.timeout",
+        category=FaultCategory.DEPENDENCY,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+            ParamSpec(
+                name="delay_ms",
+                type=ParamType.INTEGER,
+                required=True,
+                minimum=1,
+                maximum=30000,
+            ),
+            ParamSpec(name="protocol", type=ParamType.STRING, default="tcp"),
+        ),
     ),
     FaultDefinition(
         id="fd.exhaust",
@@ -208,6 +257,107 @@ CATALOG: tuple[FaultDefinition, ...] = (
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
         max_duration_s=120.0,
         params_schema=(ParamSpec(name="limit", type=ParamType.INTEGER, default=64),),
+    ),
+    # ── Kubernetes archetypes (ADR-M7-3, ADR-M7-4) ──────────────────────────
+    # All k8s archetypes are UNSUPPORTED (no live cluster driver); they exist so
+    # the planner + capability matrix can reason about k8s targets without
+    # executing.  Fingerprints reuse M2/M3 patterns for future k8s drivers.
+    #
+    # Capacity-stress sub-category (ADR-M7-3)
+    FaultDefinition(
+        id="k8s.node_pressure",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="resource", type=ParamType.STRING, default="cpu"),
+            ParamSpec(name="target_percent", type=ParamType.PERCENT, minimum=1, maximum=100),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.pod_oom",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=120.0,
+        params_schema=(ParamSpec(name="memory_limit", type=ParamType.STRING, default="64Mi"),),
+    ),
+    FaultDefinition(
+        id="k8s.pod_pressure",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="resource", type=ParamType.STRING, default="cpu"),
+            ParamSpec(name="target_percent", type=ParamType.PERCENT, minimum=1, maximum=100),
+        ),
+    ),
+    # Network sub-category (ADR-M7-3)
+    FaultDefinition(
+        id="k8s.network_policy",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD, NodeKind.K8S_NODE}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="policy_name", type=ParamType.STRING),
+            ParamSpec(name="direction", type=ParamType.STRING, default="ingress"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.pod_latency",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            _S,
+            ParamSpec(name="jitter_ms", type=ParamType.FLOAT, minimum=0, maximum=5000),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.pod_partition",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(_S,),
+    ),
+    # Preemption sub-category (ADR-M7-3)
+    FaultDefinition(
+        id="k8s.pod_evict",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=120.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="k8s.pod_kill",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=60.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="k8s.node_drain",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.CRITICAL,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=600.0,
+        params_schema=(ParamSpec(name="grace_period", type=ParamType.INTEGER, default=30),),
     ),
 )
 
