@@ -114,5 +114,7 @@ def infer_context_for_node(node_kind: NodeKind) -> ExecutionContext:
         NK.SERVICE: ExecutionContext.CONTAINER,
         NK.PROCESS: ExecutionContext.PROCESS,
         NK.EXTERNAL_DEPENDENCY: ExecutionContext.REMOTE_HOST,
+        NK.POD: ExecutionContext.REMOTE_HOST,
+        NK.K8S_NODE: ExecutionContext.REMOTE_HOST,
     }
     return mapping.get(node_kind, ExecutionContext.HOST)
