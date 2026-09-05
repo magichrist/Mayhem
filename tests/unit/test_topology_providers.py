@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pydantic_core
@@ -23,6 +23,9 @@ from mayhem.domain.topology import (
 )
 from mayhem.topology.providers.base import PartialGraph, TopologyProvider
 from mayhem.topology.service import TopologyService
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Test fixtures
