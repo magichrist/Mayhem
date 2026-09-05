@@ -181,7 +181,14 @@ def plan_from_spec(
         "topology_snapshot_id": prepared.topology_snapshot_id,
         "environment_fingerprint": prepared.fingerprint,
     }
-    plan = plan_drill(run_id, spec, graph, **common, engine=engine)
+    plan = plan_drill(
+        run_id,
+        spec,
+        graph,
+        **common,
+        engine=engine,
+        spec_dir=str(Path(spec_path).parent),
+    )
     return CompiledPlan(run_id=run_id, plan=plan)
 
 
