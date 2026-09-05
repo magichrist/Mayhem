@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestCancellationLevel:
@@ -66,7 +69,7 @@ class TestEngineLadder:
     def test_grace_aborts_without_signaling_payloads(self, tmp_path: Path) -> None:
         """A grace-level cancellation stops at the next boundary but does NOT
         SIGTERM live payload processes (cooperative safe-abort)."""
-        store, engine = _mk_engine(tmp_path)
+        _store, engine = _mk_engine(tmp_path)
         engine._cancellation.request(CancellationLevel.GRACE)
         signaled: list[tuple[int, int]] = []
 
@@ -144,7 +147,7 @@ class TestEngineLadder:
         """Host-addressed payload gets SIGTERM on TERM, SIGKILL on KILL."""
         import signal
 
-        store, engine = _mk_engine(tmp_path)
+        _store, engine = _mk_engine(tmp_path)
         from mayhem.domain.cancellation import CancellationLevel
 
         sigs: list[int] = []
@@ -157,7 +160,7 @@ class TestEngineLadder:
 
     def test_abort_file_escalates_to_kill(self, tmp_path: Path) -> None:
         """Legacy abort file path still works: presence requests KILL."""
-        store, engine = _mk_engine(tmp_path)
+        _store, engine = _mk_engine(tmp_path)
         from mayhem.domain.cancellation import CancellationLevel
 
         abort = tmp_path / "run.abort"
