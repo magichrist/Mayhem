@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.executors import read_boot_time
+from mayhem.agents.lease_client import LeaseClient
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.planner import plan_drill
 from mayhem.domain.experiments import (
@@ -274,7 +274,7 @@ class TestTargetDrift:
 
         proc = _spawn_sleeper()
         try:
-            engine, store = _engine(
+            engine, _store = _engine(
                 tmp_path,
                 live_graph=lambda: _graph(proc.pid),
             )
@@ -460,7 +460,7 @@ class TestProcReuseGuard:
                     op="signal.cont",
                     args={
                         "pid": str(pid),
-                        **( {"boot_time": boot_time} if boot_time is not None else {}),
+                        **({"boot_time": boot_time} if boot_time is not None else {}),
                     },
                 ),
             ),
@@ -471,13 +471,10 @@ class TestProcReuseGuard:
         proc = _spawn_sleeper()
         return proc, read_boot_time(proc.pid)
 
-    def test_recycled_pid_guard_refuses_to_signal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_recycled_pid_guard_refuses_to_signal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from mayhem.agents import executors as exec_mod
-        from mayhem.controller.executor import executor_for
-
         from mayhem.agents.executors import StepOutcome
+        from mayhem.controller.executor import executor_for
 
         proc = _spawn_sleeper()
         live = read_boot_time(proc.pid)
@@ -502,9 +499,8 @@ class TestProcReuseGuard:
 
     def test_matching_boot_time_signals(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from mayhem.agents import executors as exec_mod
-        from mayhem.controller.executor import executor_for
-
         from mayhem.agents.executors import StepOutcome
+        from mayhem.controller.executor import executor_for
 
         proc = _spawn_sleeper()
         real_boot = read_boot_time(proc.pid) or 12345
@@ -521,5 +517,3 @@ class TestProcReuseGuard:
         finally:
             proc.terminate()
             proc.wait(timeout=10)
-
-
