@@ -9,6 +9,7 @@ container so the executor can run them concurrently (Phase 5, ADR-0019/0021).
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from mayhem.controller.compensation import compensated
@@ -54,6 +55,26 @@ class PlanningError(Exception):
     """Raised when a spec cannot be compiled into an honest plan."""
 
 
+def _embed_load_script(
+    params: dict[str, object], fault_id: str, spec_dir: str | None
+) -> dict[str, object]:
+    """Embed a ``net.load`` ``script`` param into the frozen plan as content."""
+    script_ref = params.get("script")
+    if fault_id != "net.load" or not isinstance(script_ref, str) or not script_ref.strip():
+        return params
+    base = Path(spec_dir) if spec_dir else Path.cwd()
+    script_path = Path(script_ref) if Path(script_ref).is_absolute() else base / script_ref
+    try:
+        content = script_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PlanningError(f"fault net.load script {script_path!s} unreadable: {exc}") from None
+    except UnicodeDecodeError as exc:
+        raise PlanningError(
+            f"fault net.load script {script_path!s} must be UTF-8 text: {exc}"
+        ) from None
+    return {**params, "script_content": content}
+
+
 def plan_drill(
     run_id: str,
     spec: DrillSpec,
@@ -63,6 +84,7 @@ def plan_drill(
     topology_snapshot_id: str,
     environment_fingerprint: str,
     engine: str = "podman",
+    spec_dir: str | None = None,
 ) -> ExecutionPlan:
     """Compile a :class:`DrillSpec` into an :class:`ExecutionPlan`.
 
@@ -70,7 +92,9 @@ def plan_drill(
     selectors. Each fault on a container is resolved to its topology node and
     the relevant compensation contract is attached (write-ahead undo). Wait and
     check blocks compile to non-fault steps; parallel blocks emit one step per
-    container so the executor can run them concurrently (Phase 5).
+    container so the executor can run them concurrently (Phase 5). ``spec_dir``
+    anchors assets referenced by the spec (e.g. the ``net.load`` ``script``
+    parameter) so relative paths resolve against the drill file.
     """
     _validate_container_names(spec, graph)
 
@@ -84,13 +108,29 @@ def plan_drill(
             emitted = 0
             for container_name in block.parallel:
                 container = spec.containers[container_name]
-                planned = _plan_container_faults(container_name, container, graph, steps, seq)
+                planned = _plan_container_faults(
+                    container_name,
+                    container,
+                    graph,
+                    steps,
+                    seq,
+                    recovery_default=spec.config.recovery,
+                    spec_dir=spec_dir,
+                )
                 emitted = max(emitted, planned)
             seq += emitted
         elif block.sequential:
             for container_name in block.sequential:
                 container = spec.containers[container_name]
-                seq += _plan_container_faults(container_name, container, graph, steps, seq)
+                seq += _plan_container_faults(
+                    container_name,
+                    container,
+                    graph,
+                    steps,
+                    seq,
+                    recovery_default=spec.config.recovery,
+                    spec_dir=spec_dir,
+                )
         elif block.wait is not None:
             steps.append(
                 PlannedStep(
@@ -213,6 +253,9 @@ def _plan_container_faults(
     graph: TopologyGraph,
     out: list[PlannedStep],
     seq: int,
+    *,
+    recovery_default: bool = True,
+    spec_dir: str | None = None,
 ) -> int:
     """Plan every fault on the container as its own compensatable step.
 
@@ -251,7 +294,11 @@ def _plan_container_faults(
                 seq + i,
                 execution_group_id=group_id,
                 group_mode=mode,
+                spec_dir=spec_dir,
                 group_path=path,
+                recovery=(
+                    drill_fault.recovery if drill_fault.recovery is not None else recovery_default
+                ),
             )
         )
     return len(container.faults)
@@ -267,6 +314,8 @@ def _plan_fault_step(
     execution_group_id: str | None = None,
     group_mode: GroupMode | None = None,
     group_path: str | None = None,
+    recovery: bool = True,
+    spec_dir: str | None = None,
 ) -> PlannedStep:
     """Compile one drill fault into a compensatable :class:`PlannedStep`."""
     try:
@@ -318,9 +367,17 @@ def _plan_fault_step(
     if isinstance(explicit, dict):
         raw_params.update(explicit)
     for key, value in (getattr(drill_fault, "model_extra", None) or {}).items():
+        if key == "params":
+            continue  # already merged from the explicit ``params:`` group
         if value is not None:
             raw_params.setdefault(key, value)
     params = definition.validate_params(raw_params)
+
+    # ``net.load`` accepts a host-side k6 ``script.js`` (param ``script``). The
+    # script runs inside the target container, so its content is embedded into
+    # the frozen plan here — resolved relative to the drill spec directory —
+    # rather than read at execution time.
+    params = _embed_load_script(params, definition.id, spec_dir)
 
     selectors = tuple(TargetSelector(kind=node.kind, expr=node.name) for node in nodes)
     planned = PlannedFault(
@@ -333,6 +390,7 @@ def _plan_fault_step(
         duration=drill_fault.duration,
         backend=None,
         runtime_identity=_resolve_planned_identity(matched),
+        recovery=recovery,
     )
     planned = compensated(planned, tuple(compensation_nodes))
     if not planned.undo_ops:
