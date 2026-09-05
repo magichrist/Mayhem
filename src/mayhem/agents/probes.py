@@ -123,9 +123,49 @@ def _run_http(args: dict[str, object]) -> ProbeResult:
     return ProbeResult("http.status", status == expected_raw, f"{url} -> {status}")
 
 
+def _process_state(pid: int) -> str | None:
+    """Kernel state of ``pid`` ('R'/'S'/'T'/'Z'/…), or None when it is gone.
+
+    Reads ``/proc/<pid>/stat`` on Linux (field 3, after the parenthesised
+    comm); falls back to ``ps -o state=`` which is portable (macOS included).
+    A process that is gone — reaped, or never there — yields None.
+    """
+    try:
+        content = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+    except OSError:
+        content = None
+    if content:
+        fields = content.rsplit(")", 1)
+        if len(fields) == 2:
+            parts = fields[1].split()
+            if parts:
+                return parts[0]
+    result = run_tool(["ps", "-o", "stat=", "-p", str(pid)], timeout_s=5.0)
+    if not result.succeeded:
+        return None
+    state = (result.stdout or "").strip()
+    return state[0] if state else None
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` is a live, non-zombie process.
+
+    ``os.kill(pid, 0)`` still succeeds for a zombie — a terminated child that
+    is merely awaiting reap — which would defeat negative process probes.
+    Treat zombies (Z/x) as not alive: the target *was* terminated.
+    """
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return _process_state(pid) not in (None, "Z", "X")
+
+
 def _run_process(args: dict[str, object]) -> ProbeResult:
     name = str(args.get("name", ""))
     raw_pid = args.get("pid")
+    engine = args.get("engine")
+    cont = args.get("cont")
     if raw_pid is not None and not isinstance(raw_pid, bool):
         if isinstance(raw_pid, int):
             pid: int = raw_pid
@@ -133,11 +173,19 @@ def _run_process(args: dict[str, object]) -> ProbeResult:
             pid = int(raw_pid)
         else:
             return ProbeResult("process", False, f"bad pid {raw_pid!r}")
-        try:
-            os.kill(pid, 0)
-            return ProbeResult("process", True, f"pid {pid} alive")
-        except OSError:
-            return ProbeResult("process", False, f"pid {pid} not running")
+        if engine and cont:
+            # Container-addressed: the resolved pid lives inside the runtime
+            # VM (podman-machine) which a host ``kill -0`` cannot reach; the
+            # container's main process is inspected host-side instead.
+            argv = [str(engine), "inspect", "--format", "{{.State.Pid}}", str(cont)]
+            result = run_tool(argv, timeout_s=_arg_float(args, "timeout_s", 5.0))
+            pid_out = result.stdout.strip()
+            present = result.succeeded and pid_out.isdigit() and int(pid_out) > 0
+            return ProbeResult("process", present, f"inspect {cont} pid={pid_out!r}")
+        alive = _pid_alive(pid)
+        return ProbeResult(
+            "process", alive, f"pid {pid} {'alive' if alive else 'gone (or zombie)'}"
+        )
     if name:
         result = run_tool(["pgrep", "-f", name], timeout_s=_arg_float(args, "timeout_s", 5.0))
         found = result.succeeded and bool((result.stdout or "").strip())
