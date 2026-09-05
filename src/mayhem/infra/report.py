@@ -198,11 +198,7 @@ def build_m5_report(
         for cell in landscape
     )
 
-    unknown = [
-        cell
-        for cell in landscape
-        if cell.key not in covered_keys
-    ]
+    unknown = [cell for cell in landscape if cell.key not in covered_keys]
 
     # Candidate backlog ranked by Maniac (deterministic greedy coverage).
     ranked: tuple[ExperimentCandidate, ...] = ()
