@@ -91,7 +91,7 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
         return _ps(self._engine)
 
     def inspect(self, container_id: str) -> tuple[RuntimeIdentity, RuntimeMetadata | None]:
-        name = _inspect_name(self._engine, container_id)
+        _inspect_name(self._engine, container_id)
         container_name, created_at, started_at = _inspect_meta(self._engine, container_id)
         metadata = RuntimeMetadata.from_inspect(
             {
