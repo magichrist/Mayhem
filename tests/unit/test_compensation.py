@@ -142,6 +142,26 @@ def test_tool_net_load_saturates_with_k6_and_pid_marker() -> None:
     assert "load.js" in probe.args["cmd"][-1] and "k6.pid" in probe.args["cmd"][-1]
 
 
+def test_tool_net_load_with_user_script_embeds_content() -> None:
+    source = (
+        "import http from 'k6/http';\n"
+        "export const options = { vus: __ENV.VU, duration: '120s' };\n"
+        "export default function () { http.get('http://10.0.0.5:8080/'); }\n"
+    )
+    ops, probes = _build("net.load", users=10000, script_content=source)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert "k6 run -u 10000 -d 10s" in inject[-1]
+    assert "http://10.0.0.5:8080/" in inject[-1]
+    assert "K6EOF" in inject[-1]
+    assert "kill" in undo[-1] and "rm -f" in undo[-1]
+    probe = probes[0]
+    assert probe.probe == "exec"
+    assert "load.js" in probe.args["cmd"][-1] and "k6.pid" in probe.args["cmd"][-1]
+
+
 def test_tool_engine_restart_families_verify_via_inspect() -> None:
     for fid, inject_verb in (
         ("container.kill", "kill"),
