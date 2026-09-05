@@ -23,6 +23,7 @@ class Locus(StrEnum):
     REMOTE = "remote"
     CONTAINER = "container"
     NETWORK_NAMESPACE = "network_namespace"
+    KUBERNETES = "kubernetes"
 
 
 @dataclass(frozen=True)
