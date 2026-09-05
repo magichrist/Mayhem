@@ -11,7 +11,6 @@ The manager is instantiated once per controller lifecycle and shared by the
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from typing import TYPE_CHECKING
 
@@ -28,6 +27,8 @@ from mayhem.domain.resources import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from mayhem.infra.store import Store
 
 
