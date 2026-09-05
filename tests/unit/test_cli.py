@@ -99,7 +99,9 @@ class TestPlanValidateRun:
             ["--db", str(db), "--skip-gate", "run", str(spec), "--compose", str(COMPOSE_FILE)]
         )
         assert rc == 0
-        assert "completed" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "completed" in out
+        assert "mayhem history r-drill-pause-" in out
 
     def test_run_bypasses_inert_fault_at_gate(
         self,
