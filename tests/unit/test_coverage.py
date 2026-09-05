@@ -133,7 +133,7 @@ class TestCoverageRepository:
     def test_migration_applied_and_queryable(self, tmp_path: Path) -> None:
         store = self._store(tmp_path)
         repo = SQLiteCoverageRepository(store)
-        assert store.schema_version == 12
+        assert store.schema_version == 14
         cells = _cells()
         repo.mark_seen(cells[0], run_id="r1")
         assert store.query("SELECT COUNT(*) AS n FROM m5_coverage")[0]["n"] == 1
