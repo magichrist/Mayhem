@@ -16,7 +16,7 @@ from mayhem.agents.executors import (
     executor_for,
 )
 from mayhem.agents.lease_client import LeaseClient, LeaseConflictError
-from mayhem.agents.probes import run_probe, verify_all
+from mayhem.agents.probes import _pid_alive, run_probe, verify_all
 from mayhem.agents.sinks import InMemoryLeaseSink
 from mayhem.domain.errors import InvalidTransitionError
 from mayhem.domain.leases import FaultLease, LeaseState, VerifyProbe
@@ -323,6 +323,44 @@ class TestProbes:
         )
         assert verify_all((good,), "l-x").all_satisfied
 
+    def test_process_probe_treats_zombie_as_gone(self) -> None:
+        """A terminated-but-unreaped child (zombie) must verify as absent.
+
+        Regression for the process.kill/stop recovery path, which left a
+        DIRTY lease because ``ps -p <pid>`` still lists a zombie child
+        (``<defunct>`` on macOS, state Z on Linux).
+        """
+        import os as _os
+
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        time.sleep(0.3)  # child exits; parent does NOT wait → zombie
+        zid = child.pid
+        try:
+            gone = VerifyProbe(
+                probe="process",
+                args={"pid": zid},
+                expect_present=False,  # we want the target to be absent
+            )
+            assert run_probe(gone).satisfied  # zombie counts as absent
+            assert not _pid_alive(zid)
+        finally:
+            _os.waitpid(zid, _os.WNOHANG)  # reap to avoid leaking a zombie
+
+    def test_process_probe_live_pid_is_present(self) -> None:
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        pid = child.pid
+        try:
+            present = VerifyProbe(
+                probe="process",
+                args={"pid": pid},
+                expect_present=True,
+            )
+            assert run_probe(present).satisfied
+            assert _pid_alive(pid)
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+
 
 def _process_state(pid: int) -> str:
     """First letter of `ps` STAT — 'T' when SIGSTOPped ('+' suffix = fg group)."""
@@ -340,6 +378,7 @@ class TestToolExecutorTokenAddressing:
         for fid in (
             "dns.resolve_delay",
             "dns.nxdomain",
+            "tls.certificate_expired",
             "clock.skew",
         ):
             assert isinstance(executor_for(fid), ToolExecutor)
