@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mayhem.config import PolicyCfg
-    from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
+    from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
 
@@ -189,6 +189,63 @@ def _check_execution_context(fault: PlannedFault, graph: TopologyGraph) -> None:
         ) from exc
 
 
+_K8S_NODE_KIND_VALUES: frozenset[str] = frozenset({"pod", "k8s_node"})
+_K8S_REFUSE_MSG = (
+    "kubernetes execution not yet supported; see the RuntimeAdapter contract at ADR-M7-1"
+)
+
+_REMOTE_NODE_KIND_VALUES: frozenset[str] = frozenset({"external_dependency"})
+_REMOTE_REFUSE_MSG = (
+    "remote execution not yet supported; ADR-M3-5 ships only the "
+    "RemoteAgentInterface contract — no transport is wired in this milestone"
+)
+
+
+def _check_k8s_targets(plan: ExecutionPlan, graph: TopologyGraph) -> None:
+    """Refuse any plan that targets K8s node kinds without a live driver (ADR-M7).
+
+    K8s execution is out-of-scope for this milestone — the adapter contract
+    exists so future drivers can implement against a stable seam, but no
+    live-cluster fault injection is wired yet.  A plan targeting K8s nodes
+    must fail loud and early with an actionable message.
+    """
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        for target in fault.targets:
+            for node_id in target.node_ids:
+                node = graph.by_id(node_id)
+                if node is not None and node.kind in _K8S_NODE_KIND_VALUES:
+                    raise SafetyRefusedError(
+                        "k8s.unsupported",
+                        f"{fault.fault_id}: {_K8S_REFUSE_MSG}",
+                    )
+
+
+def _check_remote_targets(plan: ExecutionPlan, graph: TopologyGraph) -> None:
+    """Hard planning gate for remote targets (ADR-M3-5) — defect register #4.
+
+    Remote execution is interface-only (``RemoteAgentInterface``): the adapter
+    rejects requirements at ``evaluate`` time, but that refusal was never
+    auto-wired into ``validate_plan``, so a remote spec would plan and only
+    fail mid-execution.  This gate mirrors the K8s one: a plan targeting an
+    ``external_dependency`` node fails loud and early at plan time.
+    """
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        for target in fault.targets:
+            for node_id in target.node_ids:
+                node = graph.by_id(node_id)
+                if node is not None and node.kind in _REMOTE_NODE_KIND_VALUES:
+                    raise SafetyRefusedError(
+                        "remote.unsupported",
+                        f"{fault.fault_id}: {_REMOTE_REFUSE_MSG}",
+                    )
+
+
 def validate_plan(
     plan: ExecutionPlan,
     graph: TopologyGraph,
@@ -208,6 +265,8 @@ def validate_plan(
             "plan fingerprint does not match current environment identity;"
             " re-plan against live topology",
         )
+    _check_k8s_targets(plan, graph)
+    _check_remote_targets(plan, graph)
     if adapter is not None:
         _validate_capability_requirements(plan, adapter, ctx)
     seen_faults: list[str] = []
