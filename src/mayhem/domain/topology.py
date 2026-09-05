@@ -27,6 +27,8 @@ class NodeKind(StrEnum):
     HOST = "host"
     PROCESS = "process"
     EXTERNAL_DEPENDENCY = "external_dependency"
+    POD = "pod"
+    K8S_NODE = "k8s_node"
 
 
 class _NodeBase(BaseModel):
@@ -102,8 +104,50 @@ class ExternalDependencyNode(_NodeBase):
     inferred: bool = False  # inferred nodes are never targetable until allowlisted
 
 
-TopologyNode = ServiceNode | ContainerNode | HostNode | ProcessNode | ExternalDependencyNode
-"""Public union of all node kinds."""
+class PodNode(_NodeBase):
+    """Kubernetes pod — planning-only model (ADR-M7-2).
+
+    Represents a pod discovered via the k8s adapter.  Execution is gated
+    behind ``KubernetesAdapter`` and defaults to ``UNSUPPORTED`` until a
+    live-cluster driver is implemented (M8).
+    """
+
+    kind: Literal[NodeKind.POD] = NodeKind.POD
+    namespace: str = "default"
+    node_name: str | None = None  # k8s node hosting the pod
+    pod_ip: IPvAnyAddress | None = None
+    image: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    state: str = "unknown"
+
+
+class K8sNode(_NodeBase):
+    """Kubernetes cluster node — planning-only model (ADR-M7-2).
+
+    Represents a worker or control-plane node discovered via the k8s adapter.
+    Execution is gated behind ``KubernetesAdapter`` and defaults to
+    ``UNSUPPORTED`` until a live-cluster driver is implemented (M8).
+    """
+
+    kind: Literal[NodeKind.K8S_NODE] = NodeKind.K8S_NODE
+    cluster: str = ""
+    roles: tuple[str, ...] = ()  # e.g. ("control-plane",), ("worker",)
+    ip_address: IPvAnyAddress | None = None
+    capacity_cpu: str = ""
+    capacity_memory: str = ""
+    state: str = "unknown"
+
+
+TopologyNode = (
+    ServiceNode
+    | ContainerNode
+    | HostNode
+    | ProcessNode
+    | ExternalDependencyNode
+    | PodNode
+    | K8sNode
+)
+"""Public union of all node kinds (ADR-0013 closed union, extended ADR-M7-2)."""
 
 _discriminated_nodes = Annotated[TopologyNode, Field(discriminator="kind")]
 
@@ -179,7 +223,7 @@ class NetworkTopology(BaseModel):
 
     def paths_for_node(self, node_id: str) -> tuple[NetworkPath, ...]:
         """All paths originating from or terminating at a node."""
-        return tuple(p for p in self.paths if p.src_node_id == node_id or p.dst_node_id == node_id)
+        return tuple(p for p in self.paths if node_id in (p.src_node_id, p.dst_node_id))
 
     def segment_for_node(self, node_id: str) -> NetworkSegment | None:
         """Which segment contains this node, if any."""
