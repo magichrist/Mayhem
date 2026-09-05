@@ -1,9 +1,12 @@
-"""Forward-only migration runner.
+"""Forward migration runner with down-migration support (ADR-M4-5).
 
-Every migration is an ordered, immutable Python module exposing
-``version``, ``name``, and ``statements``. Applied versions are recorded in
-``_schema_migrations``; the runner applies pending ones in a single transaction
-each and refuses out-of-order application (testing-strategy §5).
+Every migration is an ordered, immutable Python module exposing ``version``,
+``name``, ``statements``, and optionally ``down_statements``. Applied versions
+are recorded in ``_schema_migrations``; ``run_migrations`` applies pending ones
+in a single transaction each and refuses out-of-order application
+(testing-strategy §5). ``run_down_migrations`` reverses applied migrations
+back to an older version in descending order — the mechanism ADR-M4-5's
+"down-migration restores the baseline" acceptance relies on.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ class Migration:
     version: int
     name: str
     statements: tuple[str, ...]
+    down_statements: tuple[str, ...] = ()
 
     @property
     def migration_id(self) -> str:
@@ -84,3 +88,62 @@ def current_version(conn: sqlite3.Connection) -> int | None:
         return None
     row = conn.execute("SELECT MAX(version) FROM _schema_migrations").fetchone()
     return int(row[0]) if row and row[0] is not None else None
+
+
+def run_down_migrations(
+    conn: sqlite3.Connection,
+    migrations: Sequence[Migration],
+    target_version: int,
+) -> list[str]:
+    """Roll an upgraded schema back to ``target_version`` (ADR-M4-5).
+
+    Applied migrations newer than ``target_version`` are reversed in descending
+    order using their ``down_statements``; each reversal runs in its own
+    transaction and the ``_schema_migrations`` row is deleted with it. A
+    migration without a down path refuses to roll back rather than truncate
+    history. Returns the migration ids reversed.
+    """
+    by_version = {m.version: m for m in migrations}
+    applied = {
+        int(row[0]): str(row[1])
+        for row in conn.execute("SELECT version, name FROM _schema_migrations")
+    }
+    current = max(applied, default=-1)
+    if current == -1:
+        return []  # fresh database has nothing to roll back
+    if target_version >= current:
+        raise MigrationError(
+            f"target version {target_version} is not below current schema {current}; "
+            "nothing to roll back"
+        )
+    missing = set(applied) - set(by_version)
+    if missing:
+        raise MigrationError(
+            f"database has applied migrations unknown to this store: {sorted(missing)}"
+        )
+    reversed_now: list[str] = []
+    ordered = sorted(applied, reverse=True)
+    for version in ordered:
+        if version <= target_version:
+            continue
+        migration = by_version[version]
+        if not migration.down_statements:
+            raise MigrationError(
+                f"migration {migration.migration_id} has no down path; "
+                "refusing to truncate schema history"
+            )
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            with conn:
+                for statement in migration.down_statements:
+                    conn.execute(statement)
+                conn.execute(
+                    "DELETE FROM _schema_migrations WHERE version = ?",
+                    (version,),
+                )
+            conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.Error as exc:
+            conn.execute("PRAGMA foreign_keys=ON")
+            raise MigrationError(f"down-migration {migration.migration_id} failed: {exc}") from exc
+        reversed_now.append(migration.migration_id)
+    return reversed_now
