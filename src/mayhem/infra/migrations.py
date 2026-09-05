@@ -463,6 +463,43 @@ M0010_NETWORK_PATH = Migration(
 )
 
 
+# ── M4-3/4-4/4-5: Success criteria verdict + observability (ADR-M4-3/4-4) ─
+M0013_M4_SUCCESS_OBSERVABILITY = Migration(
+    version=13,
+    name="m4_success_observability",
+    statements=(
+        # A drill's machine-evaluable verdict (ADR-M4-3) and the raw criteria
+        # evaluation, persisted on the run row; both nullable — runs without
+        # declared criteria keep a NULL verdict and the existing status flow.
+        "ALTER TABLE runs ADD COLUMN verdict TEXT",
+        "ALTER TABLE runs ADD COLUMN criteria_json TEXT",
+    ),
+    down_statements=(
+        # ADR-M4-5: a DB at the M4 schema can be restored to the frozen baseline.
+        "ALTER TABLE runs DROP COLUMN criteria_json",
+        "ALTER TABLE runs DROP COLUMN verdict",
+    ),
+)
+
+
+# ── M4-4/4-1: Observability evidence + governing-decision trace (ADR-M4-4) ──
+M0014_M4_OBSERVABILITY_AND_DECISIONS = Migration(
+    version=14,
+    name="m4_observability_decisions",
+    statements=(
+        # Collected observability evidence (ADR-M4-4) and the decision refs
+        # (ADR ids + decided-on timestamps, ADR-M4-1) that produced the run,
+        # both persisted on the run row; additive and nullable.
+        "ALTER TABLE runs ADD COLUMN observability_json TEXT",
+        "ALTER TABLE runs ADD COLUMN governing_decisions_json TEXT",
+    ),
+    down_statements=(
+        "ALTER TABLE runs DROP COLUMN governing_decisions_json",
+        "ALTER TABLE runs DROP COLUMN observability_json",
+    ),
+)
+
+
 # ── M5-1: Run and Outcome domain persistence (ADR-M5-1) ──────────────
 M0011_M5_RUN_OUTCOME = Migration(
     version=11,
@@ -541,4 +578,6 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0010_NETWORK_PATH,
     M0011_M5_RUN_OUTCOME,
     M0012_M5_COVERAGE,
+    M0013_M4_SUCCESS_OBSERVABILITY,
+    M0014_M4_OBSERVABILITY_AND_DECISIONS,
 )
