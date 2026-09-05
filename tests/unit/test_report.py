@@ -113,9 +113,7 @@ class TestBuildReport:
         landscape = _landscape(3, 3)
         report = build_m5_report(
             landscape=landscape,
-            covered_records=(
-                CoverageRecord(cell=landscape[0], run_id="run-1"),
-            ),
+            covered_records=(CoverageRecord(cell=landscape[0], run_id="run-1"),),
             candidates=_candidates(9),
             seed=3,
         )
