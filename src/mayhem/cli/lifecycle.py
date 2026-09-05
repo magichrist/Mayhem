@@ -318,6 +318,11 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
             click.echo("\n".join(trailer))
         else:
             click.echo(result.summary_md())
+        # Copy-paste handle for follow-up commands: `mayhem history <run_id>`.
+        click.echo(
+            f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
+            f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
+        )
         if result.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
     finally:
