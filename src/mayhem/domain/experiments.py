@@ -17,12 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from mayhem.domain.capabilities import Identifier
 from mayhem.domain.checks import CheckLocus, CheckSpec, Probe
 from mayhem.domain.common import Duration
+from mayhem.domain.decisions import DecisionRef
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.execution_context import ExecutionContextSpec
 from mayhem.domain.faults import FaultCategory
 from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.leases import UndoOp, VerifyProbe
+from mayhem.domain.observability import ObservabilityConfig
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.success import SuccessCriteria
 from mayhem.domain.topology import TargetSelector
 
 
@@ -196,6 +199,8 @@ class DrillSpec(BaseModel):
     config: DrillConfig = Field(default_factory=DrillConfig)
     containers: dict[str, DrillContainer]  # key = container_name from docker-compose
     execution: tuple[ExecutionStep, ...]
+    success: SuccessCriteria | None = None  # optional machine verdict (ADR-M4-3)
+    observability: ObservabilityConfig | None = None  # optional evidence sources (ADR-M4-4)
 
     @field_validator("containers")
     @classmethod
@@ -262,6 +267,9 @@ class ExecutionPlan(BaseModel):
     topology_snapshot_id: str
     environment_fingerprint: str
     seed: int | None = None
+    success: SuccessCriteria | None = None  # copied from the spec (ADR-M4-3)
+    observability: ObservabilityConfig | None = None  # copied from the spec (ADR-M4-4)
+    decision_refs: tuple[DecisionRef, ...] = ()  # governing ADR ids + timestamps
 
     @model_validator(mode="after")
     def _check_plan(self) -> ExecutionPlan:
