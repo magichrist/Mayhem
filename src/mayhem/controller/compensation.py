@@ -565,8 +565,12 @@ def _net_partition_verify(
 def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Saturate container egress with a deterministic k6 HTTP load generator.
 
-    The k6 script is written under the marker path (so the verify probe can see
-    the fault while it is live), then ``k6 run`` is detached inside the
+    When ``params.script_content`` is set (content of a host-side k6
+    ``script.js`` embedded by the planner), the file is materialized into the
+    container and run as ``k6 run -u <users> -d <duration>s``; otherwise a
+    minimal inline script against ``params.url`` is written into the container.
+    Either way the script lives under the marker path (so the verify probe can
+    see the fault while it is live) and ``k6 run`` is detached inside the
     container's pid namespace. Undo SIGKILLs the recorded k6 pid and removes
     both marker files, so recovery, undo and the impact probe agree.
     """
@@ -574,22 +578,33 @@ def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tupl
     if node is None:
         raise NO_UNDO
     users = max(1, _iparam(fault, "users", 1))
-    url = str(_param(fault, "url", "http://localhost/"))
-    url = url.replace("\\", "\\\\").replace('"', '\\"')
     duration_s = max(1, int(_fault_duration_s(fault)))
     script = _tool_marker(fault, node, "load.js")
     pidfile = _tool_marker(fault, node, "k6.pid")
+    inline = _param(fault, "script_content", None)
+    if inline:
+        # User-supplied k6 script.js: materialize the embedded content into the
+        # container, then run it. The heredoc delimiter is unique per content so
+        # a user script containing a literal ``K6EOF`` line still copies intact.
+        delim = f"K6EOF_{abs(hash(inline or '') or 1):x}"
+        import_sh = f"cat > {script} <<'{delim}'\n{inline}\n{delim}\n"
+    else:
+        url = str(_param(fault, "url", "http://localhost/"))
+        url = url.replace("\\", "\\\\").replace('"', '\\"')
+        import_sh = (
+            f"cat > {script} <<'K6EOF'\n"
+            "import http from 'k6/http';\n"
+            "export default function () {\n"
+            f'  http.get("{url}");\n'
+            "}\n"
+            "K6EOF\n"
+        )
     source = (
-        f"cat > {script} <<'K6EOF'\n"
-        "import http from 'k6/http';\n"
-        "export default function () {\n"
-        f'  http.get("{url}");\n'
-        "}\n"
-        "K6EOF\n"
-        f"k6 run -u {users} -d {duration_s}s {script} >/dev/null 2>&1 &\n"
-        f"echo $! > {pidfile}\n"
-        f'[ -s {pidfile} ] && kill -0 "$(cat {pidfile})" 2>/dev/null && exit 0\n'
-        "exit 1\n"
+        import_sh
+        + f"k6 run -u {users} -d {duration_s}s {script} >/dev/null 2>&1 &\n"
+        + f"echo $! > {pidfile}\n"
+        + f'[ -s {pidfile} ] && kill -0 "$(cat {pidfile})" 2>/dev/null && exit 0\n'
+        + "exit 1\n"
     )
     undo = [
         "sh",
