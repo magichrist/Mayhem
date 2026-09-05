@@ -332,7 +332,18 @@ class ToolExecutor(FaultExecutor):
     Keeps exotic faults declarative without new executor classes.
     """
 
-    prefixes = ("net", "disk", "container", "node", "http", "db", "dns", "clock")
+    prefixes = (
+        "net",
+        "disk",
+        "container",
+        "node",
+        "http",
+        "db",
+        "dns",
+        "tls",
+        "clock",
+        "dependency",
+    )
 
     def _argv_for(self, lease: FaultLease, key: str) -> list[str]:
         for op in lease.undo_ops:
