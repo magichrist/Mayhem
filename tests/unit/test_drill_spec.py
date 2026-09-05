@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.errors import InvariantViolationError, SchemaValidationError
 from mayhem.domain.experiments import (
     CheckExpectation,
     CheckProbe,
@@ -45,7 +46,7 @@ class TestDrillFault:
 
     def test_frozen(self) -> None:
         f = DrillFault(fault="proc.pause")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             f.fault = "other"  # type: ignore[misc]
 
     def test_extra_params_allowed(self) -> None:
@@ -97,8 +98,20 @@ class TestDrillConfig:
 
     def test_frozen(self) -> None:
         c = DrillConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             c.log_level = "DEBUG"  # type: ignore[misc]
+
+    def test_string_default_serializes(self) -> None:
+        """An unpassed class default (``timeout == "30m"``) must survive
+        ``model_dump`` — the serializer normalizes strings, it never
+        crashes on them (regression: JSON export of specs)."""
+        c = DrillConfig()
+        d = c.model_dump(mode="json")
+        assert d["timeout"] == "1800s"
+
+    def test_explicit_duration_serializes_to_seconds(self) -> None:
+        c = DrillConfig(timeout="1h")
+        assert c.model_dump(mode="json")["timeout"] == "3600s"
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +161,7 @@ class TestExecutionStep:
 
     def test_frozen(self) -> None:
         s = ExecutionStep(wait="5s")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             s.wait = "10s"  # type: ignore[misc]
 
 
@@ -219,11 +232,11 @@ class TestDrillSpec:
             containers={"api": DrillContainer()},
             execution=(ExecutionStep(parallel=("api",)),),
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             spec.name = "other"  # type: ignore[misc]
 
     def test_empty_containers_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(InvariantViolationError):
             DrillSpec(
                 kind="drill",
                 name="test",
@@ -232,7 +245,7 @@ class TestDrillSpec:
             )
 
     def test_empty_execution_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(InvariantViolationError):
             DrillSpec(
                 kind="drill",
                 name="test",
