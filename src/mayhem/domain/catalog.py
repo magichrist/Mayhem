@@ -106,6 +106,10 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(
             ParamSpec(name="users", type=ParamType.INTEGER, minimum=1.0),
             ParamSpec(name="url", type=ParamType.STRING, default="http://localhost/"),
+            # ``script``: path on the drill host to a k6 ``script.js``. When set,
+            # it is copied into the target container and run instead of the
+            # built-in inline script.
+            ParamSpec(name="script", type=ParamType.STRING, default=None),
         ),
     ),
     FaultDefinition(
