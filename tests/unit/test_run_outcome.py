@@ -338,7 +338,7 @@ class TestRunOutcomeLinking:
     def test_migration_m5_1_applied(self, tmp_path: Path) -> None:
         """Acceptance: migration M5-1 applied; run/outcome queryable."""
         store = Store.open_migrated(tmp_path / "m5.db")
-        assert store.schema_version == 12
+        assert store.schema_version == 14
         # Verify tables exist by inserting and querying
         run = RunRecord(
             run_id="r-mig",
