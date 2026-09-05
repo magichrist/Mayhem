@@ -214,3 +214,166 @@ def test_tool_template_refuses_without_container_address() -> None:
     except InvariantViolationError:
         return
     raise AssertionError("expected NO_UNDO for a containerless node pool")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.3 — container.restart / container.pause
+# ---------------------------------------------------------------------------
+
+
+def test_tool_container_restart_uses_engine_restart_and_starts() -> None:
+    ops, probes = _build("container.restart")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject == ["@engine", "restart", "@cont"]
+    assert undo == ["@engine", "start", "@cont"]
+
+
+def test_tool_container_pause_uses_engine_pause_and_unpause() -> None:
+    ops, probes = _build("container.pause")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject == ["@engine", "pause", "@cont"]
+    assert undo == ["@engine", "unpause", "@cont"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.5 — dependency.block / dependency.timeout
+# ---------------------------------------------------------------------------
+
+
+def test_tool_dep_block_uses_iptables_drop() -> None:
+    ops, probes = _build("dependency.block", port=3306, protocol="tcp")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert "iptables" in inject
+    assert "DROP" in inject
+    assert "3306" in inject
+    assert "iptables" in undo
+    assert "-D" in undo
+
+
+def test_tool_dep_timeout_uses_tc_netem_delay() -> None:
+    ops, probes = _build("dependency.timeout", port=5432, delay_ms=1000)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert "tc" in inject
+    assert "delay" in inject
+    assert "1000ms" in inject
+    assert "tc" in undo
+    assert "del" in undo
+
+
+def test_tool_dep_block_refuses_without_port() -> None:
+    from mayhem.domain.catalog import definition_for
+
+    defn = definition_for("dependency.block")
+    from mayhem.domain.errors import SchemaValidationError
+
+    try:
+        defn.validate_params({})
+    except SchemaValidationError:
+        return
+    raise AssertionError("expected SchemaValidationError for missing required port param")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.6 — Arsenal regression sweep: every M6 archetype must be
+#   * in the catalog,
+#   * have a compensation template,
+#   * and build valid undo ops for a minimal fault targeting the right node kind.
+# ---------------------------------------------------------------------------
+
+# M6 core archetypes and their minimal params + expected node kind.
+_M6_ARCHETYPES: dict[str, dict[str, object]] = {
+    # Phase 6.1 — Process
+    "proc.pause": {"targets": (), "params": {}, "duration": 5.0},
+    "process.stop": {"targets": (), "params": {}, "duration": 5.0},
+    "process.kill": {"targets": (), "params": {}, "duration": 5.0},
+    # Phase 6.2 — Resource pressure
+    "cpu.saturate": {"targets": (), "params": {"percent": 50}, "duration": 5.0},
+    "mem.exhaust": {"targets": (), "params": {"percent": 30}, "duration": 5.0},
+    "fs.fill": {"targets": (), "params": {"percent": 50}, "duration": 5.0},
+    # Phase 6.3 — Container lifecycle
+    "container.kill": {"targets": (), "params": {}, "duration": 5.0},
+    "container.restart": {"targets": (), "params": {}, "duration": 5.0},
+    "container.pause": {"targets": (), "params": {}, "duration": 5.0},
+    # Phase 6.4 — Network
+    "net.latency": {"targets": (), "params": {"seconds": 2}, "duration": 5.0},
+    "net.partition": {"targets": (), "params": {}, "duration": 5.0},
+    # Phase 6.5 — Dependency / database
+    "dependency.block": {"targets": (), "params": {"port": 5432}, "duration": 5.0},
+    "dependency.timeout": {
+        "targets": (),
+        "params": {"port": 5432, "delay_ms": 500},
+        "duration": 5.0,
+    },
+    "db.slow_query": {"targets": (), "params": {"seconds": 3}, "duration": 5.0},
+}
+
+
+def test_arsenal_sweep_every_m6_archetype_has_catalog_entry() -> None:
+    from mayhem.domain.catalog import definition_for
+
+    for fault_id in _M6_ARCHETYPES:
+        defn = definition_for(fault_id)
+        assert defn.id == fault_id
+
+
+def test_arsenal_sweep_every_m6_archetype_has_compensation_template() -> None:
+    for fault_id in _M6_ARCHETYPES:
+        tmpl = template_for(fault_id)
+        assert tmpl is not None, f"no compensation template for {fault_id}"
+
+
+def test_arsenal_sweep_every_m6_template_builds_undo_ops() -> None:
+    from mayhem.domain.experiments import PlannedFault
+    from mayhem.domain.topology import (
+        ProcessNode,
+        ServiceNode,
+    )
+
+    svc = ServiceNode(id="svc-sweep", name="sweep", container_name="test-sweep")
+    proc = ProcessNode(
+        id="p-sweep", name="sweep", pid=9999, host_id="h1", container_name="test-sweep"
+    )
+    nodes = (svc, proc)
+
+    # Process faults use PID-based undo ops; payload faults (cpu/mem/fs) use
+    # payload.undo ops; tool/container/network/dependency faults use argv pairs.
+    pid_based_faults = {"proc.pause", "process.stop", "process.kill"}
+    payload_faults = {"cpu.saturate", "mem.exhaust", "fs.fill"}
+
+    for fault_id, kwargs in _M6_ARCHETYPES.items():
+        fault = PlannedFault(
+            fault_id=fault_id,
+            targets=(),
+            params=kwargs["params"],  # type: ignore[arg-type]
+            duration=kwargs["duration"],  # type: ignore[arg-type]
+        )
+        tmpl = template_for(fault_id)
+        assert tmpl is not None
+        ops, _probes = tmpl.build(fault, nodes)
+        # Every M6 archetype must produce at least one undo op
+        assert len(ops) >= 1, f"{fault_id}: template produced no undo ops"
+        for op in ops:
+            assert "pid" in op.args, f"{fault_id}: missing pid in op args"
+            if fault_id in payload_faults:
+                assert op.op == "payload.undo", f"{fault_id}: not a payload undo"
+                assert "payload" in op.args, f"{fault_id}: missing payload source"
+                continue
+            if fault_id in pid_based_faults:
+                continue
+            assert "inject_argv" in op.args, f"{fault_id}: missing inject_argv"
+            assert "undo_argv" in op.args, f"{fault_id}: missing undo_argv"
+            inject = json.loads(op.args["inject_argv"])
+            undo = json.loads(op.args["undo_argv"])
+            assert isinstance(inject, list), f"{fault_id}: inject_argv not a list"
+            assert isinstance(undo, list), f"{fault_id}: undo_argv not a list"
+            assert inject != undo, f"{fault_id}: inject == undo (no-op fault?)"
