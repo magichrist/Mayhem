@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from mayhem.domain.run_outcome import Outcome, RunRecord, RunStatus, RunVerdict
 from mayhem.infra.migrations import ALL_MIGRATIONS
-from mayhem.infra.migrator import Migration, current_version, run_migrations
+from mayhem.infra.migrator import Migration, current_version, run_down_migrations, run_migrations
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,6 +54,13 @@ class Store:
     def migrate(self, migrations: tuple[Migration, ...] = ALL_MIGRATIONS) -> list[str]:
         with self._lock:
             return run_migrations(self._conn, migrations)
+
+    def migrate_down(
+        self, target_version: int, migrations: tuple[Migration, ...] = ALL_MIGRATIONS
+    ) -> list[str]:
+        """Roll the schema back to ``target_version`` (ADR-M4-5)."""
+        with self._lock:
+            return run_down_migrations(self._conn, migrations, target_version)
 
     @property
     def schema_version(self) -> int | None:
