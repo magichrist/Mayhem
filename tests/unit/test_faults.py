@@ -87,9 +87,17 @@ class TestFaultDefinition:
         assert "tls.certificate_expired" in ids
         assert "clock.skew" in ids
         assert "fd.exhaust" in ids
+        assert "container.restart" in ids
+        assert "container.pause" in ids
+        assert "dependency.block" in ids
+        assert "dependency.timeout" in ids
 
     def test_new_fault_category_mapping(self) -> None:
         assert FaultCategory.from_fault_id("dns.resolve_delay") == FaultCategory.DNS
         assert FaultCategory.from_fault_id("tls.certificate_expired") == FaultCategory.TLS
         assert FaultCategory.from_fault_id("clock.skew") == FaultCategory.CLOCK
         assert FaultCategory.from_fault_id("fd.exhaust") == FaultCategory.FD
+        assert FaultCategory.from_fault_id("container.restart") == FaultCategory.CONTAINER
+        assert FaultCategory.from_fault_id("container.pause") == FaultCategory.CONTAINER
+        assert FaultCategory.from_fault_id("dependency.block") == FaultCategory.DEPENDENCY
+        assert FaultCategory.from_fault_id("dependency.timeout") == FaultCategory.DEPENDENCY
