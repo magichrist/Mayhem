@@ -77,7 +77,10 @@ _ENGINE_FAULTS = frozenset({"container.kill", "node.service_stop"})
 #: Faults whose recovery probe cannot see the live perturbation. The generic
 #: "recovery probe inverted during the window" observation is therefore
 #: inconclusive for these families, and must not be read as "no impact".
-OBSERVATION_BLIND: frozenset[str] = frozenset({"proc.pause"})
+#: Terminate faults (process.stop/kill) blind the probe too: the post-kill
+#: world (process gone) is indistinguishable from the post-recovery world, so
+#: the observation is inconclusive rather than "no impact".
+OBSERVATION_BLIND: frozenset[str] = frozenset({"proc.pause", "process.stop", "process.kill"})
 
 _PROBE_BINS = ("kill", "tc", "iptables", "python", "python3", "date", "sh", "k6")
 
