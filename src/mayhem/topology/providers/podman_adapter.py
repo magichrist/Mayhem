@@ -298,6 +298,28 @@ class PodmanAdapter(RuntimeAdapter, TopologyProvider):
                     Edge(src=node.id, dst=f"svc-{service_name}", kind=EdgeKind.CONTAINED_IN)
                 )
 
+            # Emit a ProcessNode for the container's main PID so process-addressed
+            # faults (proc.pause / process.stop / process.kill) resolve a real PID
+            # carried with the container's runtime address — the same contract as
+            # the docker provider (ADR-0020 / ADR-M1-1).
+            from mayhem.domain.topology import ProcessNode  # noqa: PLC0415
+
+            process_name = service_name or _container_name(row)
+            pid = _inspect_pid(self._engine, container_id)
+            if pid is not None and process_name:
+                proc_id = f"proc-{process_name}-{short_id}"
+                proc_node = ProcessNode(
+                    id=proc_id,
+                    name=process_name,
+                    pid=pid,
+                    host_id=host_id,
+                    cmdline=f"{self._engine} container {short_id}",
+                    container_id=short_id,
+                    container_name=container_name,
+                )
+                nodes.append(proc_node)
+                edges.append(Edge(src=proc_id, dst=node.id, kind=EdgeKind.RUNS_ON))
+
         return PartialGraph(
             source=self._engine,
             nodes=tuple(nodes),
