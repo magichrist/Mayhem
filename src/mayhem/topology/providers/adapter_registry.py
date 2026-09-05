@@ -50,3 +50,11 @@ from mayhem.topology.providers.podman_adapter import PodmanAdapter  # noqa: E402
 
 register("docker", DockerAdapter)
 register("podman", PodmanAdapter)
+
+# ── Kubernetes adapter (ADR-M7-1) ───────────────────────────────────────────
+# Registered so ``best_effort("kubernetes")`` can locate the contract.
+# ``KubernetesAdapter.is_available()`` always returns ``False``; the adapter
+# is purely interface-level until a live-cluster driver ships (M8).
+from mayhem.domain.k8s_adapter import KubernetesAdapter  # noqa: E402
+
+register("kubernetes", KubernetesAdapter)
