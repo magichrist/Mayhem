@@ -11,6 +11,7 @@ from mayhem.agents.lease_client import LeaseClient
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.planner import plan_drill
 from mayhem.domain.experiments import (
+    DrillConfig,
     DrillContainer,
     DrillFault,
     DrillSpec,
@@ -118,6 +119,75 @@ class TestEndToEnd:
             assert "fault.injected" in kinds
             assert "fault.recovered" in kinds
             assert "run.completed" in kinds
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    def test_recovery_false_keeps_perturbation_in_place(self, tmp_path: Path) -> None:
+        proc = _spawn_sleeper()
+        pid = proc.pid
+        try:
+            assert proc.poll() is None  # running before the drill
+            spec = DrillSpec(
+                kind="drill",
+                name="engine-e2e-norecover",
+                config=DrillConfig(recovery=False),
+                containers={
+                    "c-a": DrillContainer(faults=(DrillFault(fault="proc.pause", duration="1s"),)),
+                },
+                execution=(ExecutionStep(parallel=("c-a",)),),
+            )
+            plan = plan_drill(
+                "r-kept",
+                spec,
+                _graph(pid),
+                config_snapshot_id="cfg-1",
+                topology_snapshot_id="topo-1",
+                environment_fingerprint="fp-test",
+            )
+            assert plan.steps[0].fault is not None
+            assert plan.steps[0].fault.recovery is False
+
+            engine, store = _engine(tmp_path)
+            result = engine.execute(plan)
+            assert result.status == "completed", result.summary_md()
+            assert not result.dirty_leases
+
+            # The process must still be SIGSTOPped: the undo (SIGCONT) never ran.
+            stat = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            assert stat.startswith("T"), f"expected stopped state, got {stat!r}"
+
+            leases = store.query(
+                "SELECT state, release_mechanism FROM fault_leases WHERE run_id = 'r-kept'"
+            )
+            assert len(leases) == 1
+            assert leases[0]["state"] == "released"
+            assert leases[0]["release_mechanism"] == "kept_faulted"
+
+            recovery = store.query(
+                "SELECT mechanism, verified, undo_results_json FROM recovery_records"
+            )
+            assert len(recovery) == 1
+            assert recovery[0]["mechanism"] == "kept_faulted"
+            assert recovery[0]["verified"] == 0
+            assert "skipped (recovery: false)" in recovery[0]["undo_results_json"]
+
+            events = store.query("SELECT kind FROM events WHERE run_id = 'r-kept' ORDER BY id")
+            kinds = [str(row["kind"]) for row in events]
+            assert "fault.injected" in kinds
+            assert "fault.recovered" not in kinds  # no auto-recovery happened
+
+            # Self-healing path: the operator revives the process and the next
+            # drill can acquire the targets again (lease is terminal).
+            import os
+
+            os.kill(pid, 18)  # SIGCONT — manual recovery
+            assert proc.poll() is None
         finally:
             proc.terminate()
             proc.wait(timeout=10)
