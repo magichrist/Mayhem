@@ -72,9 +72,7 @@ class _StoreRunner:
                 ended_at="2026-09-03T00:00:01",
             )
         )
-        store.save_outcome(
-            Outcome(run_id=run_id, checks_passed=2, checks_failed=0)
-        )
+        store.save_outcome(Outcome(run_id=run_id, checks_passed=2, checks_failed=0))
         # Record coverage for the explored cell.
         self._coverage.mark_seen(cell, run_id)
         return run_id, f"out-{self._n}", cell
@@ -160,9 +158,7 @@ def test_supervised_campaign_runs_and_records_run_outcome(tmp_path: Path) -> Non
 
     # Maniac proposes a next candidate to close the remaining gap.
     landscape = tuple(
-        CoverageCell(
-            target=t, fault_kind=f, execution_context="ctx", parameter_band="b0"
-        )
+        CoverageCell(target=t, fault_kind=f, execution_context="ctx", parameter_band="b0")
         for t in TARGETS
         for f in FAULTS
         for _ in [0]
