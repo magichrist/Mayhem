@@ -34,6 +34,7 @@ class Capability(StrEnum):
     FS_CONTROL = "fs_control"
     DOCKER_ENGINE = "docker_engine"
     PODMAN_ENGINE = "podman_engine"
+    KUBERNETES_ENGINE = "kubernetes_engine"
 
 
 class ToolManifest(BaseModel):
