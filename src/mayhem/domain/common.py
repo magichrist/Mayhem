@@ -71,7 +71,8 @@ def _check_non_negative(v: float | str) -> float:
 
 
 def _serialize_duration(v: float | str) -> str:
-    return f"{float(v):g}s"
+    seconds = parse_duration(v) if isinstance(v, str) else float(v)
+    return f"{seconds:g}s"
 
 
 Duration = Annotated[
