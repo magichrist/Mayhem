@@ -14,6 +14,13 @@ from typing import TYPE_CHECKING, cast
 from mayhem.controller.compensation import compensated
 from mayhem.domain.catalog import definition_for
 from mayhem.domain.common import parse_duration
+from mayhem.domain.decisions import (
+    DECISION_M4_1_ADDITIVE_DSL,
+    DECISION_M4_3_SUCCESS_CRITERIA,
+    DECISION_M4_4_OBSERVABILITY,
+    DECISION_M4_5_SCHEMA_FREEZE,
+    DecisionRef,
+)
 from mayhem.domain.errors import (
     InvariantViolationError,
     SchemaValidationError,
@@ -135,7 +142,29 @@ def plan_drill(
         config_snapshot_id=config_snapshot_id,
         topology_snapshot_id=topology_snapshot_id,
         environment_fingerprint=environment_fingerprint,
+        success=spec.success,
+        observability=spec.observability,
+        decision_refs=_governing_decisions(spec),
     )
+
+
+def _governing_decisions(spec: DrillSpec) -> tuple[DecisionRef, ...]:
+    """Decision ids + approved timestamps captured onto the plan (ADR-M4-1).
+
+    The M4 decisions are the additivity/schema-freeze contracts every plan is
+    compiled under; success and observability sections are included only when
+    the spec actually exercises them, so each outcome records exactly the
+    decisions that produced it.
+    """
+    refs = [
+        DECISION_M4_1_ADDITIVE_DSL,
+        DECISION_M4_5_SCHEMA_FREEZE,
+    ]
+    if spec.success is not None and not spec.success.empty:
+        refs.append(DECISION_M4_3_SUCCESS_CRITERIA)
+    if spec.observability is not None and not spec.observability.empty:
+        refs.append(DECISION_M4_4_OBSERVABILITY)
+    return tuple(refs)
 
 
 def _container_names(graph: TopologyGraph) -> set[str]:
