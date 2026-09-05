@@ -59,6 +59,7 @@ its own schema freeze
 | `max_faults`   | int (≥ 0)                         | `1`     | Maximum number of faults injected concurrently. `0` lets a parallel step run unbounded. |
 | `timeout`      | duration                          | `30m`   | Whole-run timeout; the executor aborts and recovers past this. |
 | `log_level`    | `DEBUG` / `INFO` / `WARNING` / `ERROR` | `INFO` | Log verbosity for the drill run. |
+| `recovery`     | bool                              | `true`  | Automatically undo each fault after injection (restore the container). `false` keeps the perturbation in place so downstream checks observe whether the stack self-heals — see [Recovery control](#recovery-control). |
 
 ```yaml
 config:
@@ -66,7 +67,41 @@ config:
   max_faults: 1
   timeout: 30m
   log_level: INFO
+  # true (default): auto-recover the container after each fault.
+  # false: keep the fault in place and let downstream checks decide whether
+  #        the stack self-heals without the engine reviving anything.
+  recovery: true
 ```
+
+### Recovery control
+
+After each fault the engine runs its write-ahead undo contract (the
+compensation ops resolved at planning time) and verifies the container is
+healthy again before releasing its lease. Setting `config.recovery: false`
+disables that auto-recovery:
+
+- The fault is injected exactly as planned, but the undo contract is
+  **deliberately not executed** — the container stays faulted (paused, memory
+  exhausted, partitioned, …) when the step completes.
+- The step's lease is still released cleanly and terminally with mechanism
+  `kept_faulted`, and a recovery record is written with `verified=false` so a
+  later `mayhem audit` shows the container was intentionally left faulted.
+- It is **never** marked dirty: withholding recovery is the requested behavior,
+  not a compensation failure, so the watchdog/janitor will not re-enqueue it.
+- Downstream `check` / `check_spec` steps (and the `success:` criteria) then
+  report whether the stack recovered on its own — e.g. a restarting
+  orchestrator pulling the container back to healthy, or the probe still
+  failing because nothing revived it. If the checks fail, the drill ends
+  `failed` and the `summary` shows exactly which check observed the still-faulted
+  container.
+- Restore the container manually afterwards (resume the process, drop the
+  traffic rule, …); the lease is already terminal, so the next drill can
+  acquire the same targets.
+
+`recovery` can also be overridden **per fault** on the `DrillFault` itself
+(see [below](#drillfault)); the fault-level value wins over the config default.
+When you only want a specific fault observed under `recovery: false`, leave
+`config.recovery: true` set and opt out per fault.
 
 ## Containers
 
@@ -94,6 +129,7 @@ Faults listed under one container run **sequentially**.
 | `on_failure`   | `abort_and_recover`           | `abort_and_recover` | Behavior if the round fails (currently the only supported value). |
 | `targets`      | list<string>                  | `()`                | Network / partition faults only: container names this target is partitioned from. |
 | `network_path` | string                        | —                   | Optional named network path to scope a network fault against ([ADR-M3-7](adr/ADR-M3-7-network-path.md)). |
+| `recovery`     | bool                          | *inherit config*    | Per-fault override of `config.recovery`. `false` leaves this container faulted after injection (self-healing observation); overrides the config default for this fault only. |
 | *params*       | —                             | —                   | Fault parameters can be inlined as flat keys or grouped under an explicit `params:` map. The reserved keys (`fault`, `duration`, `on_failure`, `targets`, `network_path`, `params`) are never treated as fault parameters. |
 
 ```yaml
@@ -329,7 +365,7 @@ authoritative and is what `mayhem validate` enforces.
 | `load.spike` | load | low | 900s | service | — | `rps` (int ≥ 1), `seconds` (duration) |
 | `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (1–99), `amount` (bytes, e.g. `256M`) |
 | `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration), `jitter_ms` (int, default 0) |
-| `net.load` | network | medium | 600s | container, service | — | `users` (int ≥ 1), `url` (string, default `http://localhost/`) |
+| `net.load` | network | medium | 600s | container, service | — | `users` (int ≥ 1), `url` (string, default `http://localhost/`), `script` (optional string — path relative to the drill spec to a k6 `script.js`) |
 | `net.partition` | network | high | 120s | container, service | net_admin | — (use `targets:` to name the partition peers) |
 | `node.service_stop` | node | high | 120s | service | — | — |
 | `proc.pause` | process | low | 600s | container, process, service | process_control | — |
@@ -341,6 +377,32 @@ The full, authoritative catalog is available at runtime: `mayhem toolkit faults`
 lists every definition with its risk and compensatability; `mayhem toolkit list`
 probes the host for the tool capabilities (docker, podman, network tooling, …)
 the faults require.
+
+### `net.load`
+
+`net.load` saturates egress from the target container with a k6 HTTP load
+generator. When `script` is set, that file (a path relative to the drill spec)
+is copied into the container and run as `k6 run -u <users> -d <duration>s`, so
+you can drive arbitrarily shaped load functions against any URL or endpoint the
+container can reach. When `script` is omitted the fault needs no input beyond
+`users` and `url`: a minimal script that GETs `url` is generated automatically,
+exactly as before — both forms run the same marker/pid-undo contract, and both
+require the `k6` binary inside the target container (checked by the impact
+gate).
+
+```yaml
+- fault: net.load
+  duration: 120s
+  params:
+    users: 10000
+    url: http://10.0.0.5:8080/   # used by the auto-generated script only
+
+- fault: net.load
+  duration: 120s
+  params:
+    users: 10000
+    script: k6/script.js         # custom load function (relative to this drill file)
+```
 
 ## Design Rules
 
