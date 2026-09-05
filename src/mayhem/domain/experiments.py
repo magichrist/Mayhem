@@ -137,6 +137,10 @@ class DrillConfig(BaseModel):
     max_faults: int = Field(default=1, ge=0)
     timeout: Duration = "30m"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # True: auto-recover after each fault (undo contract runs, container restored).
+    # False: keep the perturbation in place after injection — the container stays
+    # faulted so downstream checks observe whether the stack self-heals.
+    recovery: bool = True
 
 
 class DrillFault(BaseModel):
@@ -149,6 +153,8 @@ class DrillFault(BaseModel):
     on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
     targets: tuple[str, ...] = ()  # for network faults: container names to partition
     network_path: str | None = None  # ADR-M3-7 optional path target for network faults
+    # Optional per-fault override of ``config.recovery``; None ⇒ inherit config.
+    recovery: bool | None = None
 
 
 class DrillContainer(BaseModel):
@@ -253,6 +259,9 @@ class PlannedFault(BaseModel):
     execution_context: ExecutionContextSpec | None = None  # ADR-0014
     runtime_identity: RuntimeIdentity | None = None  # planned identity (ADR-M1-1/1-3)
     execution_loci: dict[str, object] | None = None  # ADR-M3-3 target/agent/tool loci
+    # False ⇒ executor keeps the perturbation in place instead of undoing it
+    # after injection (self-healing observation mode).
+    recovery: bool = True
 
 
 class ExecutionPlan(BaseModel):
