@@ -1,39 +1,69 @@
 # Mayhem
 
-**Chaos engineering for Docker, Podman (and Kubernetes on the roadmap) — discover
-your system, break it on purpose, prove it recovers.**
+**Chaos engineering for Docker & Podman (Kubernetes on the roadmap): discover
+your system, break it on purpose, prove it recovers — every time, with
+evidence.**
 
-Mayhem builds a model of your running containers from the `docker-compose`
-blueprint, plans controlled fault-injection *drills* against that model,
-executes them through a capability-aware toolkit, derives a machine verdict
-from the observations it recorded, and stores an immutable evidence trail.
+Mayhem is a drill engine, not a command library. It turns your
+`docker-compose` blueprint into a live topology graph, compiles one declarative
+`kind: drill` YAML file into a frozen, safety-gated execution plan, injects
+faults through a capability-aware toolkit, and ends every run with a machine
+verdict derived from the observations it actually recorded. Steps, probes,
+criteria evaluations, and decisions all land in SQLite — nothing is "trust me,
+it worked."
 
 ```
-docker-compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ plan ─▶ inject → observe → recover → verdict
-                                                                                             └──▶ SQLite evidence + decision trace
+compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen plan
+                                                              │
+                        verdict ◀── machine criteria ◀── inject → observe → recover
+                                                              │
+                                                SQLite evidence + decision trace
 ```
+
+**Contents**
+- [Why Mayhem](#why-mayhem)
+- [What a Run Looks Like](#what-a-run-looks-like)
+- [Quickstart](#quickstart)
+- [Authoring a Drill](#authoring-a-drill)
+- [CLI Reference](#cli-reference)
+- [Configuration](#configuration)
+- [Safety Model](#safety-model)
+- [Exit Codes](#exit-codes)
+- [Architecture](#architecture)
+- [Development](#development)
 
 ---
 
 ## Why Mayhem
 
-Most chaos tools hand you a list of commands: "kill this container," "add
-latency here." Mayhem does something different — it **understands your system
-first**.
+Most chaos tooling hands you a list of commands — "kill this container," "add
+latency here" — and leaves you to figure out the blast radius, the cleanup, and
+what "healthy" means. Mayhem treats a drill as a **planned, gated, evidenced
+experiment** instead.
 
-1. **Topology-aware.** Mayhem reads your compose blueprint and discovers the
-   live services, hosts, and dependencies to build a graph. Faults are planned
-   against that graph, not applied blind. Compose project filtering keeps out
-   unrelated stacks.
+| | Hand-rolled chaos scripts | Mayhem |
+|---|---|---|
+| **Targeting** | You pick a container and hope | Faults plan against a discovered topology graph, so targets stay real |
+| **Safety** | Your discipline | Risk ceiling, `max_faults` budget, and an impact gate that re-proves every fault before anything is injected |
+| **Definition** | Throwaway shell one-liners | One `kind: drill` YAML: per-container faults, ordering, checks, success criteria, observability |
+| **Cleanup** | You remember to | Every fault ships a compensation contract; the janitor sweeps dirty leases after crashes |
+| **Verdict** | Eyeball the dashboards | `PASS`/`FAIL` from typed success criteria evaluated over recorded observations |
+| **Evidence** | Shell history | Immutable SQLite journal: steps, probes, decisions, outcome |
 
-2. **Drill specs, not scripts.** One YAML file (`kind: drill`) declares
-   per-container faults, cross-container ordering, checks, success criteria,
-   and observability sources — with safety constraints baked in. You define
-   what "healthy" looks like *before* you break anything.
+Concretely:
+
+1. **Topology-aware planning.** Mayhem reads your compose blueprint and
+   discovers the live services, hosts, and dependencies to build a graph.
+   Faults are planned against that graph, not applied blind; compose project
+   filtering keeps unrelated stacks out.
+
+2. **Drill specs, not scripts.** One YAML file declares everything — faults,
+   cross-container ordering, checks, success criteria, observability sources —
+   and you define what "healthy" looks like *before* you break anything.
 
 3. **Machine verdicts.** Optional typed success criteria turn every run into a
-   `PASS`/`FAIL` verdict derived from the observations actually recorded —
-   no eyeballing.
+   `PASS`/`FAIL` verdict derived from the observations actually recorded — no
+   eyeballing.
 
 4. **Automatic recovery.** Every fault ships a compensation contract. If a
    round fails or the controller crashes, the janitor sweeps dirty leases and
@@ -43,21 +73,19 @@ first**.
    evaluations, and a governing-decision trace in SQLite. No "trust me, it
    worked."
 
-6. **Prefix-shortened CLI.** Type `mayhem r` instead of `mayhem run`.
-   `mayhem e v` means `mayhem experiment validate`. Every level abbreviates
+6. **Prefix-shortened CLI.** Type `mayhem r` instead of `mayhem run`;
+   `mayhem e v` means `mayhem experiment validate`. Every command abbreviates
    to any unique prefix.
 
 ---
 
 ## What a Run Looks Like
 
-```
-$ mayhem run example.yaml --compose docker-compose.yml
+A clean run needs no interpretation — the verdict is one line away. Truncated
+for readability:
 
-validated r-process-drill-8f2a1c: 3 step(s), fingerprint 9f3c71ab12cd
-[ok] round-1: injected proc.pause 10s into testcase-api
-[ok] round-1-recover: recovered proc.pause from testcase-api (compensation ok)
-[ok] api-up: HTTP 200 in 40.1ms (locus service, target testcase-api)
+```
+$ mayhem run mayhem.yaml --compose docker-compose.yml
 
 # Run r-process-drill-8f2a1c
 **status**: completed
@@ -68,26 +96,64 @@ validated r-process-drill-8f2a1c: 3 step(s), fingerprint 9f3c71ab12cd
 **observations**: 2/2 sources collected
 **decisions**: ADR-M4-3 2026-09-05 (Machine-evaluable success criteria)
 **wall**: 32.4s
+
+run r-process-drill-8f2a1c — inspect with `mayhem history r-process-drill-8f2a1c`
 ```
 
-`status` reflects the run machine state; `verdict` is the criteria-derived
-outcome (undecided when a run fails/aborts, or has no `success` block). `mayhem
-history <run-id>` replays the full event journal for any run.
+Reading the transcript, top to bottom:
+
+1. **Status** — the run's machine state: `completed` (or `failed`/`aborted`
+   with a non-zero exit and dirty-lease warnings).
+2. **Verdict** — `pass`/`fail` derived from the success criteria you declared
+   in the spec; `undecided` when a run aborts or the spec has no success block.
+3. **Success criteria** — every criterion evaluated against real observations,
+   one line each, so a failure tells you exactly what drifted.
+4. **Observations** — how many configured evidence sources actually delivered
+   data (probes, logs, metrics …).
+5. **Decisions** — the governing ADR decisions that shaped this run; the
+   decision trace is queryable afterward via `mayhem history`.
+6. **Copy-paste handle** — the run id for the follow-up commands below.
+
+From there: `mayhem status` lists recent runs, `mayhem status --run <run-id>`
+shows full recorded metadata, and `mayhem history <run-id>` replays the
+complete event journal (every step, probe sample, and lease for that run).
+Add `--debug` to `mayhem run` to stream each step live as it happens (`[ok]
+injected proc.pause 10s into testcase-api`, `[ok] recovered ... (compensation
+ok)`).
 
 ---
 
 ## Quickstart
 
-A complete, self-contained example lives in `examples/testCase/` — a three-tier
-compose stack, its drill spec, and the nginx/data fixtures it relies on.
+**Prerequisites**
+
+- Python 3.12+
+- Docker with Compose v2 (or Podman, used via the `--podman` flag)
+- No host tooling required up front: `mayhem toolkit list` probes for the
+  capabilities (docker, podman, network tooling, `k6`, …) each fault needs,
+  and the impact gate refuses to run anything it cannot prove.
+
+**Install**
 
 ```bash
-# 1. Bring the stack up and confirm the topology matches the blueprint.
+pip install -e .
+```
+
+**Run the bundled example**
+
+A complete, self-contained example lives in `examples/testCase/` — a
+six-service compose stack (API, web, load balancer, dual download builders, and
+Postgres), its drill spec, and the fixtures it relies on.
+
+```bash
+# 0. Bring the stack up.
 cd examples/testCase
 docker compose up -d
+
+# 1. See the topology Mayhem will plan against (blueprint ─▶ live graph).
 mayhem topology discover --compose docker-compose.yml
 
-# 2. Compile the drill spec and run every safety gate (injects nothing).
+# 2. Compile the spec and run every safety gate — injects nothing.
 mayhem validate mayhem.yaml --compose docker-compose.yml
 
 # 3. Print the frozen execution plan as JSON.
@@ -96,23 +162,29 @@ mayhem plan mayhem.yaml --compose docker-compose.yml
 # 4. Execute the drill and print the run summary.
 mayhem run mayhem.yaml --compose docker-compose.yml
 
-# 5. Inspect the evidence.
-mayhem status
+# 5. Replay any run's evidence.
+mayhem status --run <run-id>
 mayhem history <run-id>
 ```
 
-Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or `compose.yml`)
-in the current directory. The example drill targets the stack with 17 distinct
-faults across 14 catalog categories (process pause, memory exhaust, CPU
-saturate, storage fill, fd exhaust, load spike, protocol abuse, network
-latency/partition, container kill, service stop, http error injection, db slow
-query, DNS failures, TLS expiry, clock skew) — capped at one concurrently
-injected fault (`max_faults: 1`, `risk_ceiling: critical`).
+`mayhem run` prints a copy-paste `run <run-id> — inspect with mayhem history
+<run-id>` line at the end; that id is all you need for the evidence commands.
 
-> Running the drill requires live containers. `validate`/`plan` work against the
-> compose blueprint alone; the impact gate at `run` time re-proves every fault's
-> injectability against the live graph and bypasses (or, without `--skip-gate`,
-> refuses) the ones it cannot prove.
+The example spec exercises 22 fault injections across 19 distinct catalog
+faults (CPU/memory/fd/disk pressure, load spikes, protocol abuse, network
+latency & partition, container kill/restart/pause, HTTP error injection, DB
+slow queries, DNS failures, TLS expiry, clock skew) — capped at one concurrent
+fault (`max_faults: 1`, `risk_ceiling: critical`) with auto-recovery off
+(`recovery: false`), so the downstream checks observe whether the stack
+self-heals on its own.
+
+Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
+`compose.yml`) in the current directory.
+
+> `validate` and `plan` work against the blueprint alone and never touch live
+> containers. `run` re-proves every fault at the impact gate against the live
+> graph and bypasses — or, without `--skip-gate`, refuses — anything it cannot
+> prove injectable.
 
 ---
 
