@@ -81,12 +81,14 @@ def _process_term_verify(nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, 
     proc = _first_process(nodes)
     if proc is None:
         raise NO_UNDO
-    pid = _pid_arg(proc)
     return (
         VerifyProbe(
-            probe="exec",
-            args={"cmd": ["ps", "-p", pid], "timeout_s": "5"},
-            expect_present=False,  # target process must be gone after termination
+            probe="process",
+            args={"pid": _pid_arg(proc), "timeout_s": "5"},
+            # Target must be gone after termination. The process probe treats
+            # a zombie (terminated but un-reaped) as gone, so this stays true
+            # even when the parent has not yet called wait().
+            expect_present=False,
         ),
     )
 
@@ -893,6 +895,62 @@ def _dns_nxdomain_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> 
     )
 
 
+def _dep_block_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    port = _iparam(fault, "port", 0)
+    proto = str(_param(fault, "protocol", "tcp"))
+    inject = ["iptables", "-A", "OUTPUT", "-p", proto, "--dport", str(port), "-j", "DROP"]
+    undo = ["iptables", "-D", "OUTPUT", "-p", proto, "--dport", str(port), "-j", "DROP"]
+    return (
+        _tool_op(fault, node, "iptables.sync", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _dep_block_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    port = _iparam(fault, "port", 0)
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"! iptables -S OUTPUT | grep -q -- '--dport {port}'"],
+            incontainer=True,
+        ),
+    )
+
+
+def _dep_timeout_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    delay_ms = _iparam(fault, "delay_ms", 500)
+    inject = ["tc", "qdisc", "add", "dev", "eth0", "root", "netem", "delay", f"{delay_ms}ms"]
+    undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
+    return (
+        _tool_op(fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _dep_timeout_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", "! tc qdisc show dev eth0 | grep -q netem"],
+            incontainer=True,
+        ),
+    )
+
+
 def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
     return {
         "net.latency": _tool_template(_net_latency_undo, _net_latency_verify),
@@ -900,6 +958,12 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "net.load": _tool_template(_net_load_undo, _net_load_verify),
         "container.kill": _tool_template(
             _engine_signal_undo("kill", "start"), _engine_restart_verify
+        ),
+        "container.restart": _tool_template(
+            _engine_restart_undo("restart", "start"), _engine_restart_verify
+        ),
+        "container.pause": _tool_template(
+            _engine_restart_undo("pause", "unpause"), _engine_restart_verify
         ),
         "node.service_stop": _tool_template(
             _engine_restart_undo("stop", "start"), _engine_restart_verify
@@ -925,6 +989,8 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             _file_revert_verify,
         ),
         "clock.skew": _tool_template(_clock_skew_undo, _clock_skew_verify),
+        "dependency.block": _tool_template(_dep_block_undo, _dep_block_verify),
+        "dependency.timeout": _tool_template(_dep_timeout_undo, _dep_timeout_verify),
     }
 
 
