@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.experiments import BlastRadiusBudget
+from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
 from mayhem.domain.risks import RiskLevel
 
 API_VERSION: Literal["mayhem/v1"] = "mayhem/v1"
@@ -87,6 +87,9 @@ class MayhemConfigBase(BaseModel):
     runtime: Literal["docker", "podman"] = "docker"
     target: TargetCfg = Field(default_factory=TargetCfg)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # ADR-M5-1 fallback for `mayhem maniac` when the drill spec's own
+    # `config.maniac` block is absent (spec-level settings win).
+    maniac: ManiacCfg = Field(default_factory=ManiacCfg)
 
 
 # Alias kept for readability at call sites.
