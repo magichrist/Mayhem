@@ -49,9 +49,10 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
             )
         providers = [p for p in (compose_provider, runtime_provider) if p is not None]
     else:
-        # No compose file — fall back to mayhem.yml target.containers,
+        # No compose file — fall back to mayhem.yaml target.containers,
         # or discover all running containers.
         from mayhem.config import load_config
+        from mayhem.domain.errors import SchemaValidationError
 
         cli_ctx: CliContext | None = ctx.obj
         try:
@@ -59,7 +60,7 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
                 config_path=cli_ctx.config if cli_ctx else None,
                 profile=cli_ctx.profile if cli_ctx else None,
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError, SchemaValidationError):
             config = None
 
         target_names: list[str] = []

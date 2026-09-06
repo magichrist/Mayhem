@@ -299,6 +299,44 @@ class TestManiacCommand:
         # spec-level per-fault authored durations are untouched at levels < 4
         assert all(s.fault.fault_id in ("proc.pause", "fuzz.protocol_abuse") for s in faults)
 
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_spec_named_mayhem_yaml_is_not_read_as_config(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Regression: a drill spec literally named `mayhem.yaml` in the cwd must
+        # not be re-parsed as the layered configuration file — the maniac config
+        # fallback skips the default file layer (same guard as `prepare`).
+        monkeypatch.chdir(tmp_path)
+        spec = tmp_path / "mayhem.yaml"
+        spec.write_text(DRILL_YAML)  # no `maniac:` block -> layered fallback
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--skip-gate",
+                "maniac",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "maniac mode —" in err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 10  # default config maniac.run_level when spec omits it
+
     def test_maniac_rejects_no_injectable_container(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

@@ -217,6 +217,7 @@ def plan_maniac_from_spec(
             config_path=config_path,
             profile=profile,
             environ={},
+            skip_default_file_if_spec=spec_path,
         )
         maniac = cfg.maniac
     run_id = f"r-{spec.name}-{uuid.uuid4().hex[:8]}"
