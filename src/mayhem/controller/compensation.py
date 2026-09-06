@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mayhem.domain.common import parse_duration
@@ -135,7 +136,7 @@ def _payload_marker(fault: PlannedFault, node: TopologyNode) -> str:
     return f"/tmp/mayhem.{tag}.pid"
 
 
-def _payload_source(fault: PlannedFault, marker: str) -> str:
+def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
     """Python payload that produces a *real* effect inside the target container.
 
     The payload is executed with ``python -c <source>`` from a detached engine
@@ -149,10 +150,15 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
     # pid must keep the interpreter alive once their threads are spawned —
     # otherwise ``python -c`` hits EOF, the daemon threads are killed at
     # interpreter shutdown, and the effect evaporates within milliseconds.
-    _HOLD = "while True:\n    time.sleep(3600)\n"
+    _hold = "while True:\n    time.sleep(3600)\n"
     if fid == "mem.exhaust":
         amount = _fparam(fault, "amount", 0.0)
         percent = min(_fparam(fault, "percent", 60.0), 99.0)
+        mode = str(_param(fault, "mode", "allocate")).strip().lower()
+        if mode != "allocate":
+            raise InvariantViolationError(
+                "fault_mode", f"unsupported memory-exhaust mode {mode!r}; only 'allocate' exists"
+            )
         return header + (
             # Balloon anonymous memory to the explicit ``amount`` bytes (e.g.
             # ``256M``), or to ``percent`` of the container's cgroup memory
@@ -181,6 +187,22 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "while True:\n"
             "    time.sleep(3600)\n"
         )
+    if fid == "mem.leak":
+        rate_mb = max(_iparam(fault, "rate_mb", 8), 1)
+        return header + (
+            # Leak a steady ``rate_mb`` MiB/s (one bytearray per second). The
+            # list holds each allocation forever, so the payload's RSS climbs
+            # lineally until the undo op SIGKILLs it; the loop is the hold, and
+            # the marker pid detaches undo from the allocator thread.
+            f"_chunk = bytearray({rate_mb} * 1024 * 1024)\n"
+            "_grow = []\n"
+            "try:\n"
+            "    while True:\n"
+            "        _grow.append(_chunk)\n"
+            "        time.sleep(1)\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
     if fid == "cpu.saturate":
         percent = min(_fparam(fault, "percent", 80.0), 100.0)
         return header + (
@@ -197,7 +219,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "        hashlib.sha256(buf).digest()\n"
             f"n = max(1, (os.cpu_count() or 1) * {percent:g} // 100)\n"
             "for _ in range(n):\n"
-            "    threading.Thread(target=burn, daemon=True).start()\n" + _HOLD
+            "    threading.Thread(target=burn, daemon=True).start()\n" + _hold
         )
     if fid == "fs.fill":
         percent = min(_fparam(fault, "percent", 45.0), 99.0)
@@ -223,7 +245,105 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "        f.close()\n"
             "    except OSError:\n"
             "        time.sleep(0.3)\n"
-            "    i += 1\n" + _HOLD
+            "    i += 1\n" + _hold
+        )
+    if fid == "fs.inode_exhaust":
+        percent = min(_fparam(fault, "percent", 50.0), 99.0)
+        return header + (
+            # Exhaust free inodes, not capacity: create zero-byte marker files
+            # until ``percent`` of the filesystem's free inodes are consumed,
+            # never beyond a hard count cap so an e2e run cannot brick the
+            # podman VM's root filesystem. The filesystem is restored when undo
+            # SIGKILLs the payload and removes the ``marker.*`` siblings, each
+            # of which frees one inode.
+            "st = os.statvfs('/tmp')\n"
+            "free0 = st.f_ffree\n"
+            "def used():\n"
+            "    s = os.statvfs('/tmp')\n"
+            "    return s.f_files - s.f_ffree\n"
+            f"goal = min(free0 * {percent} / 100, 200000)\n"
+            "i = 0\n"
+            "while used() - free0 < goal:\n"
+            "    try:\n"
+            "        open(marker + '.' + str(i), 'w').close()\n"
+            "    except OSError:\n"
+            "        time.sleep(0.3)\n"
+            "    i += 1\n" + _hold
+        )
+    if fid == "fs.io_stress":
+        workers = max(_iparam(fault, "workers", 1), 1)
+        io_bytes = _fparam(fault, "io_bytes", 64.0 * 1024 * 1024)
+        read_mb_s = _iparam(fault, "read_mb_s", 0)
+        write_mb_s = _iparam(fault, "write_mb_s", 0)
+        if read_mb_s or write_mb_s:
+            # Spec twin (fs.io_stress): sustained read()/write() throughput on
+            # twin marker working files (``marker.rN``/``marker.wN``) paced to
+            # ``read_mb_s``/``write_mb_s`` per worker. Files are marker siblings,
+            # so undo removes them with the payload pid via the ``marker.*`` glob.
+            rd = max(read_mb_s, 0) * 1024 * 1024
+            wr = max(write_mb_s, 0) * 1024 * 1024
+            return header + (
+                "import threading\n"
+                f"rd = {rd}\n"
+                f"wr = {wr}\n"
+                "blk = 65536\n"
+                "def pace(r):\n"
+                "    return (blk / r) if r > 0 else 0.0\n"
+                "def reader(w):\n"
+                "    p = marker + '.r' + str(w)\n"
+                "    try:\n"
+                "        f = open(p, 'wb'); f.truncate(64 * 1024 * 1024); f.close()\n"
+                "        with open(p, 'rb') as f:\n"
+                "            while True:\n"
+                "                if not f.read(blk):\n"
+                "                    f.seek(0)\n"
+                "                    continue\n"
+                "                time.sleep(pace(rd))\n"
+                "    except OSError:\n"
+                "        pass\n"
+                "def writer(w):\n"
+                "    p = marker + '.w' + str(w)\n"
+                "    try:\n"
+                "        with open(p, 'wb') as f:\n"
+                "            while True:\n"
+                "                f.write(os.urandom(blk))\n"
+                "                f.flush()\n"
+                "                time.sleep(pace(wr))\n"
+                "    except OSError:\n"
+                "        pass\n"
+                f"if rd > 0:\n"
+                f"    for w in range({workers}):\n"
+                "        threading.Thread(target=reader, args=(w,), daemon=True).start()\n"
+                f"if wr > 0:\n"
+                f"    for w in range({workers}):\n"
+                "        threading.Thread(target=writer, args=(w,), daemon=True).start()\n" + _hold
+            )
+        return header + (
+            # Bound I/O churn: ``workers`` writers hammer their marker working
+            # file (``marker.wN``) with buffered 64 KiB writes, looping once the
+            # per-worker ``io_bytes`` budget is spent (truncate + rewind so the
+            # write stays bounded). Working files are marker siblings, so undo
+            # removes them with the payload pid via the ``marker.*`` glob.
+            "import threading\n"
+            f"total = min({io_bytes:.0f}, 1024 ** 3)\n"
+            "def writer(w):\n"
+            "    written = 0\n"
+            "    f = open(marker + '.w' + str(w), 'wb')\n"
+            "    try:\n"
+            "        while True:\n"
+            "            f.write(os.urandom(65536))\n"
+            "            f.flush()\n"
+            "            written += 65536\n"
+            "            if written >= total:\n"
+            "                f.truncate(0)\n"
+            "                f.seek(0)\n"
+            "                written = 0\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    finally:\n"
+            "        f.close()\n"
+            f"for w in range({workers}):\n"
+            "    threading.Thread(target=writer, args=(w,), daemon=True).start()\n" + _hold
         )
     if fid == "fd.exhaust":
         limit = max(_iparam(fault, "limit", 64), 1)
@@ -239,7 +359,7 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:
             "try:\n"
             f"    open({marker!r} + '.count', 'w').write(str(opened))\n"
             "except Exception:\n"
-            "    pass\n" + _HOLD
+            "    pass\n" + _hold
         )
     if fid == "load.spike":
         seconds = min(_fparam(fault, "seconds", 8.0), 60.0)
@@ -395,8 +515,11 @@ def _payload_verify(
 _PAYLOAD_FAULTS = frozenset(
     {
         "mem.exhaust",
+        "mem.leak",
         "cpu.saturate",
         "fs.fill",
+        "fs.inode_exhaust",
+        "fs.io_stress",
         "fd.exhaust",
         "load.spike",
         "fuzz.protocol_abuse",
@@ -516,13 +639,10 @@ def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> t
         raise NO_UNDO
     delay_ms = _iparam(fault, "seconds", 5) * 1000
     jitter_ms = _iparam(fault, "jitter_ms", 0)
-    inject = ["tc", "qdisc", "add", "dev", "eth0", "root", "netem", "delay", f"{delay_ms}ms"]
+    tail = ["netem", "delay", f"{delay_ms}ms"]
     if jitter_ms > 0:
-        inject += [f"{jitter_ms}ms"]
-    undo = ["tc", "qdisc", "del", "dev", "eth0", "root"]
-    return (
-        _tool_op(fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
-    )
+        tail.append(f"{jitter_ms}ms")
+    return _tc_qdisc_undo(fault, node, tail)
 
 
 def _net_latency_verify(
@@ -531,11 +651,156 @@ def _net_latency_verify(
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "netem")
+
+
+# ── Direction-aware tc qdisc infra (egress / ingress / both) ──────────────
+#
+# tc cannot shape inbound traffic directly; standard practice is to mirror the
+# container's egress into an ``ifb`` device and attach the qdisc there. The
+# ``both`` direction composes both paths in one inject. Undo removes exactly
+# the devices/qdiscs this fault added (net_admin scope), so a drill never
+# leaves a queue discipline behind: egress delete, ifb + ingress teardown.
+
+_EGRESS_DEV = "eth0"
+_IFB_DEV = "ifb0"
+_DIRECTIONS = frozenset({"egress", "ingress", "both"})
+
+_INGRESS_SETUP = (
+    f"ip link add {_IFB_DEV} type ifb 2>/dev/null; "
+    f"ip link set {_IFB_DEV} up; "
+    f"tc qdisc del dev {_EGRESS_DEV} ingress 2>/dev/null; "
+    f"tc qdisc add dev {_EGRESS_DEV} handle ffff: ingress; "
+    f"tc filter add dev {_EGRESS_DEV} parent ffff: protocol ip u32 match u32 0 0 "
+    f"action mirred egress redirect dev {_IFB_DEV}"
+)
+
+_INGRESS_UNDO = (
+    f"tc qdisc del dev {_IFB_DEV} root 2>/dev/null; "
+    f"tc qdisc del dev {_EGRESS_DEV} ingress 2>/dev/null; "
+    f"ip link del {_IFB_DEV} 2>/dev/null"
+)
+
+
+def _direction(fault: PlannedFault, default: str = "egress") -> str:
+    value = str(_param(fault, "direction", default)).strip().lower()
+    if value not in _DIRECTIONS:
+        raise InvariantViolationError(
+            "fault_direction",
+            f"unsupported net direction {value!r}; expected one of {sorted(_DIRECTIONS)}",
+        )
+    return value
+
+
+def _tc_qdisc_undo(
+    fault: PlannedFault, node: TopologyNode, qdisc_tail: list[str]
+) -> tuple[UndoOp, ...]:
+    """Build inject/undo for a root tc qdisc, honoring ``direction``.
+
+    ``qdisc_tail`` is the ``tc qdisc add dev <dev> root <tail>`` argument list
+    that follows the root keyword (e.g. ``["netem", "loss", "10%"]``).
+    """
+    direction = _direction(fault)
+    egress_add = ["tc", "qdisc", "add", "dev", _EGRESS_DEV, "root", *qdisc_tail]
+    ifb_add = ["tc", "qdisc", "add", "dev", _IFB_DEV, "root", *qdisc_tail]
+    if direction == "egress":
+        inject = egress_add
+        undo = ["tc", "qdisc", "del", "dev", _EGRESS_DEV, "root"]
+    elif direction == "ingress":
+        inject = ["sh", "-c", f"{_INGRESS_SETUP}; {' '.join(ifb_add)}"]
+        undo = ["sh", "-c", _INGRESS_UNDO]
+    else:  # both
+        inject = [
+            "sh",
+            "-c",
+            f"{' '.join(egress_add)}; {_INGRESS_SETUP}; {' '.join(ifb_add)}",
+        ]
+        undo = ["sh", "-c", f"tc qdisc del dev {_EGRESS_DEV} root; {_INGRESS_UNDO}"]
+    return (
+        _tool_op(fault, node, "tc.del_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _tc_verify_cmd(fault: PlannedFault, qdisc_grep: str) -> str:
+    direction = _direction(fault)
+    if direction == "egress":
+        return f"! tc qdisc show dev {_EGRESS_DEV} | grep -q {qdisc_grep}"
+    if direction == "ingress":
+        return f"! ip link show {_IFB_DEV} 2>/dev/null | grep -q {_IFB_DEV}"
+    return (
+        f"! tc qdisc show dev {_EGRESS_DEV} | grep -q {qdisc_grep} "
+        f"&& ! ip link show {_IFB_DEV} 2>/dev/null | grep -q {_IFB_DEV}"
+    )
+
+
+def _tc_qdisc_verify(
+    fault: PlannedFault, node: TopologyNode, qdisc_grep: str
+) -> tuple[VerifyProbe, ...]:
     return (
         _exec_verify(
-            node, ["sh", "-c", "! tc qdisc show dev eth0 | grep -q netem"], incontainer=True
+            node,
+            ["sh", "-c", _tc_verify_cmd(fault, qdisc_grep)],
+            incontainer=True,
         ),
     )
+
+
+def _net_packet_loss_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    percent = min(_iparam(fault, "percent", 10), 100)
+    return _tc_qdisc_undo(fault, node, ["netem", "loss", f"{percent}%"])
+
+
+def _net_packet_loss_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "netem")
+
+
+_RATE_RE = re.compile(r"^[1-9][0-9]*(kbit|mbit|gbit|kbps|mbps|gbps)?$")
+
+
+def _bandwidth_tokens(fault: PlannedFault) -> tuple[str, str]:
+    rate = str(_param(fault, "rate", "")).strip().lower()
+    if not _RATE_RE.match(rate):
+        raise InvariantViolationError(
+            "fault_rate",
+            f"invalid net.bandwidth rate {rate!r}; expected e.g. '10mbit' / '2kbps'",
+        )
+    burst = str(_param(fault, "burst", "10k")).strip().lower()
+    if not re.match(r"^[1-9][0-9]*k?$", burst):
+        raise InvariantViolationError(
+            "fault_burst", f"invalid net.bandwidth burst {burst!r}; expected bytes like '10k'"
+        )
+    return rate, burst
+
+
+def _net_bandwidth_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    rate, burst = _bandwidth_tokens(fault)
+    return _tc_qdisc_undo(
+        fault, node, ["tbf", "rate", rate, "burst", burst, "latency", "50ms"]
+    )
+
+
+def _net_bandwidth_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "tbf")
 
 
 def _net_partition_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
@@ -687,77 +952,18 @@ def _engine_restart_verify(
 
 def _netfilter_undo(
     dport: str,
+    *,
+    proto: str = "tcp",
+    jump: str = "DROP",
+    extra: list[str] | None = None,
 ) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
     def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
         node = _tool_node(fault, nodes)
         if node is None:
             raise NO_UNDO
-        inject = [
-            "iptables",
-            "-I",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--dport",
-            dport,
-            "-j",
-            "DROP",
-        ]
-        undo = [
-            "iptables",
-            "-D",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--dport",
-            dport,
-            "-j",
-            "DROP",
-        ]
-        return (
-            _tool_op(
-                fault,
-                node,
-                "iptables.sync",
-                _incontainer_argv(inject),
-                _incontainer_argv(undo),
-            ),
-        )
-
-    return build
-
-
-def _http_error_inject() -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
-    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
-        node = _tool_node(fault, nodes)
-        if node is None:
-            raise NO_UNDO
-        inject = [
-            "iptables",
-            "-I",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--dport",
-            "80",
-            "-j",
-            "REJECT",
-            "--reject-with",
-            "tcp-reset",
-        ]
-        undo = [
-            "iptables",
-            "-D",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--dport",
-            "80",
-            "-j",
-            "REJECT",
-            "--reject-with",
-            "tcp-reset",
-        ]
+        body = ["-p", proto, "--dport", dport]
+        inject = ["iptables", "-I", "OUTPUT", *body, "-j", jump, *(extra or [])]
+        undo = ["iptables", "-D", "OUTPUT", *body, "-j", jump, *(extra or [])]
         return (
             _tool_op(
                 fault,
@@ -789,19 +995,700 @@ def _netfilter_verify(
     return build
 
 
-def _http_error_verify(
+def _port_rule(
+    fault: PlannedFault,
+    *,
+    port_param: str,
+    default_port: int,
+    proto: str,
+    jump: str,
+    extra: list[str],
+) -> tuple[list[str], list[str]]:
+    port = _iparam(fault, port_param, default_port)
+    body = ["-p", proto, "--dport", str(port)]
+    return (
+        ["iptables", "-I", "OUTPUT", *body, "-j", jump, *extra],
+        ["iptables", "-D", "OUTPUT", *body, "-j", jump, *extra],
+    )
+
+
+def _param_netfilter(
+    port_param: str,
+    proto: str,
+    jump: str,
+    extra: list[str],
+    default_port: int,
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        inject, undo = _port_rule(
+            fault,
+            port_param=port_param,
+            default_port=default_port,
+            proto=proto,
+            jump=jump,
+            extra=extra,
+        )
+        return (
+            _tool_op(
+                fault,
+                node,
+                "iptables.sync",
+                _incontainer_argv(inject),
+                _incontainer_argv(undo),
+            ),
+        )
+
+    return build
+
+
+def _param_netfilter_verify(
+    port_param: str,
+    default_port: int,
+) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        port = _iparam(fault, port_param, default_port)
+        return (
+            _exec_verify(
+                node,
+                ["sh", "-c", f"! iptables -S OUTPUT | grep -q -- '--dport {port}'"],
+                incontainer=True,
+            ),
+        )
+
+    return build
+
+
+def _pulse_rule(
+    fault: PlannedFault,
+    node: TopologyNode,
+    *,
+    proto: str,
+    dport: int,
+    jump: str,
+    extra: list[str],
+    probability: float,
+    marker_suffix: str,
+    tick_s: float = 5.0,
+) -> tuple[str, str, str]:
+    """Deterministic ``probability``-% rule, re-asserted by a background loop.
+
+    The loop keeps a single OUTPUT rule present ``probability``% of the time by
+    keying the tick on ``date +%s % 100`` — no random source, so two agents on
+    the same second agree. Returns ``(inject, undo, verify_cmd)`` shell snippets;
+    the undo kills the loop pid and deletes the rule deterministically.
+    """
+    marker = _tool_marker(fault, node, marker_suffix)
+    pidf = f"{marker}.pid"
+    prob = max(0, min(int(probability), 99))
+    body = " ".join(["-p", proto, "--dport", str(dport), "-j", jump, *extra])
+    inject = f"""P={prob}; M={marker}
+loop() {{
+  if [ $(( $(date +%s) % 100 )) -lt $P ]; then
+    iptables -C OUTPUT {body} 2>/dev/null || iptables -A OUTPUT {body}
+  else
+    iptables -D OUTPUT {body} 2>/dev/null
+  fi
+  sleep {tick_s}
+}}
+loop & echo $! > {pidf}
+kill -0 "$(cat {pidf})" 2>/dev/null && exit 0
+exit 1"""
+    undo = f"""p={pidf}
+[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null
+iptables -D OUTPUT {body} 2>/dev/null
+rm -f {pidf}; true"""
+    verify = f"test ! -e {pidf} && ! iptables -S OUTPUT | grep -q -- '--dport {dport}'"
+    return inject, undo, verify
+
+
+def _pulse_undo_op(
+    fault: PlannedFault,
+    nodes: tuple[TopologyNode, ...],
+    *,
+    proto: str,
+    dport: int,
+    jump: str,
+    extra: list[str],
+    probability: float,
+    marker_suffix: str,
+    tick_s: float = 5.0,
+    op_name: str = "iptables.sync",
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    inject, undo, _ = _pulse_rule(
+        fault,
+        node,
+        proto=proto,
+        dport=dport,
+        jump=jump,
+        extra=extra,
+        probability=probability,
+        marker_suffix=marker_suffix,
+        tick_s=tick_s,
+    )
+    return (
+        _tool_op(
+            fault,
+            node,
+            op_name,
+            _incontainer_argv(["sh", "-c", inject]),
+            _incontainer_argv(["sh", "-c", undo]),
+        ),
+    )
+
+
+def _pulse_verify(
+    fault: PlannedFault,
+    nodes: tuple[TopologyNode, ...],
+    *,
+    dport: int,
+    marker_suffix: str,
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    pidf = _tool_marker(fault, node, marker_suffix) + ".pid"
+    check = (
+        f"test ! -e {pidf} && "
+        f"! iptables -S OUTPUT | grep -q -- '--dport {dport}'"
+    )
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", check],
+            incontainer=True,
+        ),
+    )
+
+
+def _pulse_netfilter(
+    proto: str,
+    dport: int,
+    *,
+    jump: str,
+    extra: list[str],
+    probability: float,
+    marker_suffix: str,
+    tick_s: float = 5.0,
+) -> tuple[
+    Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]],
+    Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]],
+]:
+    def undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        return _pulse_undo_op(
+            fault,
+            nodes,
+            proto=proto,
+            dport=dport,
+            jump=jump,
+            extra=extra,
+            probability=probability,
+            marker_suffix=marker_suffix,
+            tick_s=tick_s,
+        )
+
+    def verify(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
+        return _pulse_verify(fault, nodes, dport=dport, marker_suffix=marker_suffix)
+
+    return undo, verify
+
+
+def _http_proxy_source(
+    *,
+    target: int,
+    prob: float,
+    marker_port: str,
+    delay_ms: int | None = None,
+    status: int | None = None,
+    rate: int | None = None,
+    burst: int = 200,
+    code: int = 429,
+) -> str:
+    """In-container python passthrough proxy serving a fault mode.
+
+    Binds an ephemeral port on loopback and reports it under ``marker_port``; the
+    wrapping shell inserts an OUTPUT REDIRECT rule to it. Modes:
+      * status — responded calls get canned HTTP ``status``
+      * delay  — responded calls are held ``delay_ms`` before relaying
+      * rate   — responded calls consume a token bucket (``rate``/s, ``burst``
+                 tokens, ``code`` when dry)
+    Unresponded calls (outside ``prob``) relay through untouched. The accept
+    loop blocks, keeping the interpreter alive for the whole lease.
+    """
+    lines = [
+        "import socket, threading, time, random",
+        f"TARGET = {target}",
+        f"PROB = {min(max(prob, 0.0), 100.0) / 100.0:.3f}",
+        "status = 0",
+        "rate = 0",
+        "delay_s = 0.0",
+        "ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+        "ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)",
+        "ls.bind(('127.0.0.1', 0))",
+        "ls.listen(128)",
+        f"open({marker_port!r}, 'w').write(str(ls.getsockname()[1]))",
+    ]
+    if status is not None:
+        lines.append(f"status = {max(int(status), 100)}")
+        lines.append(f"code = {max(int(status), 100)}")
+    if rate is not None:
+        lines += [
+            f"rate = {max(int(rate), 1)}",
+            f"burst = {max(int(burst), 1)}",
+            f"code = {max(int(code), 100)}",
+            "bucket = float(burst)",
+            "last = time.monotonic()",
+            "def acquire():",
+            "    global bucket, last",
+            "    now = time.monotonic()",
+            "    bucket = min(bucket + (now - last) * rate, float(burst))",
+            "    last = now",
+            "    if bucket < 1.0:",
+            "        return False",
+            "    bucket -= 1.0",
+            "    return True",
+        ]
+    if delay_ms is not None and int(delay_ms) > 0:
+        lines.append(f"delay_s = {max(int(delay_ms), 1) / 1000.0:.3f}")
+    lines += [
+        "def relay(a, b):",
+        "    try:",
+        "        while True:",
+        "            d = a.recv(65536)",
+        "            if not d:",
+        "                break",
+        "            b.sendall(d)",
+        "    except OSError:",
+        "        pass",
+        "    finally:",
+        "        try:",
+        "            b.shutdown(socket.SHUT_WR)",
+        "        except OSError:",
+        "            pass",
+        "def forward(c):",
+        "    s = socket.create_connection(('127.0.0.1', TARGET), timeout=30)",
+        "    t1 = threading.Thread(target=relay, args=(c, s), daemon=True)",
+        "    t2 = threading.Thread(target=relay, args=(s, c), daemon=True)",
+        "    t1.start(); t2.start(); t1.join(); t2.join()",
+        "    s.close()",
+        "def canned(c, n):",
+        "    line = f'HTTP/1.1 {n} X\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'",
+        "    c.sendall(line.encode('ascii'))",
+        "def handle(c):",
+        "    try:",
+        "        if random.random() >= PROB:",
+        "            forward(c)",
+        "            return",
+        "        if status:",
+        "            canned(c, status)",
+        "            return",
+        "        if rate and not acquire():",
+        "            canned(c, code)",
+        "            return",
+        "        if delay_s:",
+        "            time.sleep(delay_s)",
+        "        forward(c)",
+        "    except OSError:",
+        "        pass",
+        "while True:",
+        "    try:",
+        "        conn, _ = ls.accept()",
+        "    except OSError:",
+        "        break",
+        "    threading.Thread(target=handle, args=(conn,), daemon=True).start()",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class _HttpEffect:
+    delay_ms: int | None = None
+    status: int | None = None
+    rate: int | None = None
+    burst: int = 200
+    code: int = 429
+
+
+def _http_proxy_ops(
+    fault: PlannedFault,
+    nodes: tuple[TopologyNode, ...],
+    *,
+    effect: _HttpEffect | None = None,
+    op_name: str = "http.proxy",
+) -> tuple[UndoOp, ...]:
+    """In-container python proxy + OUTPUT REDIRECT, addressed by a marker pid.
+
+    The proxy owns no state of its own: undo kills the marker pid, deletes the
+    nat OUTPUT REDIRECT rule, and removes the marker files, so recovery, undo,
+    and the verify probe all agree on the same files (ADR-0021 pattern).
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    if effect is None:
+        effect = _HttpEffect()
+    marker = _tool_marker(fault, node, "http")
+    pidf = f"{marker}.pid"
+    portf = f"{marker}.port"
+    srcf = f"{marker}.src"
+    target = _iparam(fault, "port", 80)
+    prob = _fparam(fault, "probability", 100.0)
+    source = _http_proxy_source(
+        target=target,
+        prob=prob,
+        marker_port=portf,
+        delay_ms=effect.delay_ms,
+        status=effect.status,
+        rate=effect.rate,
+        burst=effect.burst,
+        code=effect.code,
+    )
+    inject = (
+        f"cat > {srcf} <<'MAYHEM_PY_EOF'\n{source}MAYHEM_PY_EOF\n"
+        f"python3 {srcf} >/dev/null 2>&1 &\n"
+        f"echo $! > {pidf}\n"
+        f"i=0\n"
+        f"while [ ! -s {portf} ] && [ $i -lt 60 ]; do sleep 0.1; i=$((i + 1)); done\n"
+        f"[ -s {portf} ] || exit 1\n"
+        f"PORT=$(cat {portf})\n"
+        f"iptables -t nat -A OUTPUT -p tcp --dport {target} -j REDIRECT --to-ports $PORT\n"
+        f"exit 0\n"
+    )
+    undo = (
+        f"p={pidf}\n"
+        f'[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\n'
+        f"PORT=$(cat {portf} 2>/dev/null)\n"
+        f"RULE='-t nat -D OUTPUT -p tcp --dport {target} -j REDIRECT --to-ports $PORT'\n"
+        f'[ -z "$PORT" ] || iptables $RULE 2>/dev/null\n'
+        f"rm -f {pidf} {portf} {srcf}\n"
+        f"true\n"
+    )
+    return (
+        _tool_op(
+            fault,
+            node,
+            op_name,
+            _incontainer_argv(["sh", "-c", inject]),
+            _incontainer_argv(["sh", "-c", undo]),
+        ),
+    )
+
+
+def _http_proxy_verify(
     fault: PlannedFault, nodes: tuple[TopologyNode, ...]
 ) -> tuple[VerifyProbe, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
+    marker = _tool_marker(fault, node, "http")
+    target = _iparam(fault, "port", 80)
     return (
         _exec_verify(
             node,
-            ["sh", "-c", "! iptables -S OUTPUT | grep -q -- '--dport 80'"],
+            [
+                "sh",
+                "-c",
+                f"test ! -e {marker}.pid && test ! -e {marker}.port "
+                f"&& ! iptables -t nat -S OUTPUT | grep -q -- '--dport {target}'",
+            ],
             incontainer=True,
         ),
     )
+
+
+def _http_error_inject() -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
+    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        prob = _fparam(fault, "probability", 0.0)
+        if prob < 1.0:
+            # Legacy deterministic fault: hard TCP reset on outgoing 80.
+            inject = [
+                "iptables",
+                "-I",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                str(_iparam(fault, "port", 80)),
+                "-j",
+                "REJECT",
+                "--reject-with",
+                "tcp-reset",
+            ]
+            undo = [
+                "iptables",
+                "-D",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                str(_iparam(fault, "port", 80)),
+                "-j",
+                "REJECT",
+                "--reject-with",
+                "tcp-reset",
+            ]
+            return (
+                _tool_op(
+                    fault,
+                    node,
+                    "iptables.sync",
+                    _incontainer_argv(inject),
+                    _incontainer_argv(undo),
+                ),
+            )
+        # Probabilistic / canned-status mode: proxy serves ``status`` to a
+        # ``probability``% slice of the traffic (see http.latency).
+        return _http_proxy_ops(
+            fault,
+            nodes,
+            effect=_HttpEffect(status=_iparam(fault, "status", 500)),
+        )
+
+    return build
+
+
+def _http_error_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    if _fparam(fault, "probability", 0.0) < 1.0:
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return (
+            _exec_verify(
+                node,
+                [
+                    "sh",
+                    "-c",
+                    f"! iptables -S OUTPUT | grep -q -- '--dport {_iparam(fault, 'port', 80)}'",
+                ],
+                incontainer=True,
+            ),
+        )
+    return _http_proxy_verify(fault, nodes)
+
+
+def _http_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    return _http_proxy_ops(
+        fault, nodes, effect=_HttpEffect(delay_ms=_iparam(fault, "delay_ms", 100))
+    )
+
+
+def _http_latency_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _http_proxy_verify(fault, nodes)
+
+
+def _dep_rate_limit_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    rate = _iparam(fault, "rate", 0)
+    if rate < 1:
+        raise InvariantViolationError(
+            "fault_rate", "dependency.rate_limit requires a positive rate"
+        )
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(
+            rate=rate,
+            burst=_iparam(fault, "burst", 200),
+            code=_iparam(fault, "code", 429),
+        ),
+    )
+
+
+def _dep_rate_limit_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _http_proxy_verify(fault, nodes)
+
+
+def _dep_flap_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    port = _iparam(fault, "port", 0)
+    interval = max(_fparam(fault, "interval", 10.0), 1.0)
+    prob = _fparam(fault, "failure_probability", 50.0)
+    proto = str(_param(fault, "protocol", "tcp"))
+    return _pulse_undo_op(
+        fault,
+        nodes,
+        proto=proto,
+        dport=port,
+        jump="DROP",
+        extra=[],
+        probability=prob,
+        marker_suffix="flap",
+        tick_s=interval,
+    )
+
+
+def _dep_flap_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _pulse_verify(
+        fault, nodes, dport=_iparam(fault, "port", 0), marker_suffix="flap"
+    )
+
+
+def _db_query_error_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    prob = _fparam(fault, "probability", 100.0)
+    if prob >= 100.0:
+        return _param_netfilter(
+            "port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 3306
+        )(fault, nodes)
+    return _pulse_undo_op(
+        fault,
+        nodes,
+        proto="tcp",
+        dport=_iparam(fault, "port", 3306),
+        jump="REJECT",
+        extra=["--reject-with", "tcp-reset"],
+        probability=prob,
+        marker_suffix="db",
+    )
+
+
+def _db_query_error_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    if _fparam(fault, "probability", 100.0) >= 100.0:
+        return _param_netfilter_verify("port", 3306)(fault, nodes)
+    return _pulse_verify(
+        fault, nodes, dport=_iparam(fault, "port", 3306), marker_suffix="db"
+    )
+
+
+def _tls_failure_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    return _param_netfilter(
+        "port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 443
+    )(fault, nodes)
+
+
+def _tls_failure_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _param_netfilter_verify("port", 443)(fault, nodes)
+
+
+def _conn_exhaust_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Exhaust the target's connection pool by holding real sockets open from
+    inside the container. Marker-addressed, same lifecycle as the http proxy."""
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    connections = max(_iparam(fault, "connections", 32), 1)
+    host = str(_param(fault, "host", "localhost"))
+    port = _iparam(fault, "port", 3306)
+    marker = _tool_marker(fault, node, "conn")
+    pidf = f"{marker}.pid"
+    srcf = f"{marker}.src"
+    source = (
+        "import socket, time\n"
+        f"host = {host!r}\n"
+        f"port = {port}\n"
+        f"total = {connections}\n"
+        "left = []\n"
+        "while len(left) < total:\n"
+        "    try:\n"
+        "        s = socket.create_connection((host, port), timeout=10)\n"
+        "        left.append(s)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "while True:\n"
+        "    time.sleep(3600)\n"
+    )
+    inject = (
+        f"cat > {srcf} <<'MAYHEM_PY_EOF'\n{source}MAYHEM_PY_EOF\n"
+        f"python3 {srcf} >/dev/null 2>&1 &\n"
+        f"echo $! > {pidf}\n"
+        f'[ -s {pidf} ] && kill -0 "$(cat {pidf})" 2>/dev/null && exit 0\n'
+        "exit 1\n"
+    )
+    undo = (
+        f"p={pidf}\n"
+        f'[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\n'
+        f"rm -f {pidf} {srcf}\n"
+        f"true\n"
+    )
+    return (
+        _tool_op(
+            fault,
+            node,
+            "http.proxy",
+            _incontainer_argv(["sh", "-c", inject]),
+            _incontainer_argv(["sh", "-c", undo]),
+        ),
+    )
+
+
+def _conn_exhaust_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _tool_marker(fault, node, "conn")
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"test ! -e {marker}.pid && test ! -e {marker}.src"],
+            incontainer=True,
+        ),
+    )
+
+
+def _cpu_throttle_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Cap the container's CPU share at ``percent``% of one core.
+
+    Routed to the argv-pair ToolExecutor (executor override), so this must be a
+    pure argv-pair op — same shape as container.restart. Undo lifts the cap back
+    to unlimited (documented deviation: the pre-fault share is not re-read).
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    percent = max(min(_fparam(fault, "percent", 50.0), 100.0), 1.0)
+    return (
+        _tool_op(
+            fault,
+            node,
+            "engine.update",
+            [_ENGINE_TOKEN, "update", "--cpus", f"{percent / 100:.2f}", _CONTAINER_TOKEN],
+            [_ENGINE_TOKEN, "update", "--cpus", "0", _CONTAINER_TOKEN],
+        ),
+    )
+
+
+def _cpu_throttle_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (_exec_verify(node, ["true"], incontainer=False),)
 
 
 def _file_revert_undo(
@@ -984,6 +1871,11 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             _engine_restart_undo("stop", "start"), _engine_restart_verify
         ),
         "http.error_injection": _tool_template(_http_error_inject(), _http_error_verify),
+        "http.latency": _tool_template(_http_latency_undo, _http_latency_verify),
+        "net.packet_loss": _tool_template(_net_packet_loss_undo, _net_packet_loss_verify),
+        "net.bandwidth": _tool_template(_net_bandwidth_undo, _net_bandwidth_verify),
+        "db.connection_exhaust": _tool_template(_conn_exhaust_undo, _conn_exhaust_verify),
+        "db.query_error": _tool_template(_db_query_error_undo, _db_query_error_verify),
         "db.slow_query": _tool_template(
             _netfilter_undo("3306"),
             _netfilter_verify("3306"),
@@ -996,6 +1888,22 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             _file_revert_verify,
         ),
         "dns.nxdomain": _tool_template(_dns_nxdomain_undo, _file_revert_verify),
+        "dns.timeout": _tool_template(
+            *_pulse_netfilter(
+                "udp", 53, jump="DROP", extra=[], probability=80, marker_suffix="dns", tick_s=2.0
+            )
+        ),
+        "dns.servfail": _tool_template(
+            *_pulse_netfilter(
+                "udp",
+                53,
+                jump="REJECT",
+                extra=["--reject-with", "icmp-port-unreachable"],
+                probability=80,
+                marker_suffix="dns",
+                tick_s=2.0,
+            )
+        ),
         "tls.certificate_expired": _tool_template(
             _file_revert_undo(
                 "/etc/ssl/certs/ca-certificates.crt",
@@ -1003,9 +1911,13 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             ),
             _file_revert_verify,
         ),
+        "tls.handshake_failure": _tool_template(_tls_failure_undo, _tls_failure_verify),
         "clock.skew": _tool_template(_clock_skew_undo, _clock_skew_verify),
         "dependency.block": _tool_template(_dep_block_undo, _dep_block_verify),
         "dependency.timeout": _tool_template(_dep_timeout_undo, _dep_timeout_verify),
+        "dependency.flap": _tool_template(_dep_flap_undo, _dep_flap_verify),
+        "dependency.rate_limit": _tool_template(_dep_rate_limit_undo, _dep_rate_limit_verify),
+        "cpu.throttle": _tool_template(_cpu_throttle_undo, _cpu_throttle_verify),
     }
 
 
