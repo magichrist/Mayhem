@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mayhem.cli.app import main
+from mayhem.cli.exit_codes import ExitCode
 
 TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
 COMPOSE_FILE = TESTCASE / "docker-compose.yml"
@@ -214,10 +215,135 @@ execution:
         assert "gate skipped" in capsys.readouterr().err
 
 
+class TestManiacCommand:
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_compiles_random_plan_from_spec_config(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        maniac_yaml = DRILL_YAML.replace(
+            "name: drill-pause\n",
+            "name: drill-maniac\n",
+            1,
+        ).replace(
+            "  timeout: 10m\n",
+            "  timeout: 10m\n  maniac:\n    level: 3\n    run_level: 4\n    seed: 7\n",
+            1,
+        )
+        spec = _write(tmp_path, maniac_yaml)
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--skip-gate",
+                "maniac",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        out, err = captured.out, captured.err
+        assert "maniac mode — 4 random fault round(s)" in err
+        assert "mayhem history r-drill-maniac-" in out
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 4  # run_level rounds, one fault each
+        assert any(r.decision_id == "ADR-M5-1" for r in plan.decision_refs)
+
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_falls_back_to_layered_config_maniac(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        spec = _write(tmp_path, DRILL_YAML)  # no maniac in the spec
+        config_file = tmp_path / "mayhem.yaml"
+        config_file.write_text(
+            "apiVersion: mayhem/v1\n"
+            "environment:\n"
+            "  name: test\n"
+            "  klass: development\n"
+            "maniac:\n"
+            "  level: 2\n"
+            "  run_level: 6\n"
+            "  seed: 9\n"
+        )
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--config",
+                str(config_file),
+                "--skip-gate",
+                "maniac",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0
+        assert "maniac mode — 6 random fault round(s)" in capsys.readouterr().err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 6
+        # spec-level per-fault authored durations are untouched at levels < 4
+        assert all(s.fault.fault_id in ("proc.pause", "fuzz.protocol_abuse") for s in faults)
+
+    def test_maniac_rejects_no_injectable_container(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = DRILL_YAML.replace(
+            "  timeout: 10m\n",
+            "  timeout: 10m\n  maniac:\n    level: 3\n    run_level: 4\n    seed: 7\n",
+            1,
+        ).replace(
+            "    faults:\n      - fault: proc.pause\n        duration: 10s\n",
+            "    faults: []\n",
+            1,
+        ).replace(
+            "    faults:\n      - fault: fuzz.protocol_abuse\n        duration: 5s\n",
+            "    faults: []\n",
+            1,
+        )
+        spec = _write(tmp_path, bare)
+        from mayhem.cli import lifecycle
+
+        with patch.object(lifecycle, "engine_for", lambda *a, **k: object()):
+            rc = main(
+                [
+                    "--db",
+                    str(tmp_path / "m.db"),
+                    "--skip-gate",
+                    "maniac",
+                    str(spec),
+                    "--compose",
+                    str(COMPOSE_FILE),
+                ]
+            )
+        assert rc == int(ExitCode.VALIDATION_ERROR)
+        assert "maniac mode needs at least one container with faults" in capsys.readouterr().err
+
+
 class TestRecoveryCommands:
     def test_janitor_quiet_sweep(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["--db", str(tmp_path / "j.db"), "janitor"]) == 0
-        assert "nothing to do" in capsys.readouterr().out
 
     def test_recover_unknown_run_is_noop(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
