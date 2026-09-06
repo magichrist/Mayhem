@@ -20,7 +20,7 @@ def _write(tmp_path, name, text):
 def test_defaults_when_no_file(tmp_path):
     cfg, sources = load_config(config_path=None, environ={})
     assert cfg.api_version == API_VERSION
-    assert cfg.storage.path == ".mayhem/state.db"
+    assert cfg.storage.path == "mayhem.db"
     assert all(v == "defaults" for v in sources.values())
 
 
@@ -32,8 +32,8 @@ def test_file_layer_and_profile_overlay(tmp_path):
 apiVersion: {API_VERSION}
 policy:
   risk_ceiling: medium
-environment:
-  name: shop
+storage:
+  path: /var/mayhem.db
 """,
     )
     overlay = _write(
@@ -43,17 +43,17 @@ environment:
 apiVersion: {API_VERSION}
 policy:
   risk_ceiling: low
-environment:
-  klass: staging
+storage:
+  artifacts_dir: /var/mayhem-artifacts
 """,
     )
     assert overlay.exists()
     cfg, sources = load_config(config_path=base, profile="staging", environ={})
     assert cfg.policy.risk_ceiling is RiskLevel.LOW  # profile wins over file
-    assert cfg.environment.name == "shop"  # untouched by overlay
-    assert cfg.environment.klass == "staging"
+    assert cfg.storage.path == "/var/mayhem.db"  # untouched by overlay
+    assert cfg.storage.artifacts_dir == "/var/mayhem-artifacts"
     assert sources["policy"] == "profile:staging"
-    assert sources["environment"] == "profile:staging"  # last writer wins per section
+    assert sources["storage"] == "profile:staging"  # last writer wins per section
 
 
 def test_env_layer_only_allowlisted_keys(tmp_path):

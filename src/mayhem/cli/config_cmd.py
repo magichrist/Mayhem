@@ -24,12 +24,12 @@ def show(ctx: click.Context, as_json: bool) -> None:
     assert isinstance(obj, CliContext)
     cfg, sources = effective_config(obj.config, obj.profile)
     if as_json:
-        payload = {"config": cfg.model_dump(mode="json"), "sources": sources}
+        payload = {"config": cfg.model_dump(mode="json", by_alias=True), "sources": sources}
         click.echo(json.dumps(payload, indent=2))
         return
     import yaml
 
-    click.echo(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
+    click.echo(yaml.safe_dump(cfg.model_dump(mode="json", by_alias=True), sort_keys=False))
     click.echo("# sources:")
     for layer, origin in sources.items():
         click.echo(f"#   {layer}: {origin}")

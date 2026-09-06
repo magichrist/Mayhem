@@ -31,6 +31,23 @@ authored execution with random (container, fault) rounds. Omit `--compose` to
 auto-detect a compose file in the current directory (`docker-compose.yml`,
 `compose.yml`, …).
 
+`run` accepts one or more specs through a **campaign** (ADR-0022 / ADR-0023):
+group specs under a campaign, add each spec file, then execute them
+sequentially with a single policy and window:
+
+```bash
+mayhem campaign create weekly-drill --description "Weekly single-fault sweep"
+mayhem campaign add-experiment weekly-drill mayhem.yaml
+mayhem campaign add-experiment weekly-drill checkout-recovery.yaml
+mayhem campaign run weekly-drill --compose examples/testCase/docker-compose.yml
+```
+
+Each spec still compiles and gates exactly as `mayhem run` would; the campaign
+only layers execution policy on top (failure action, deadlines, cooldowns) and
+records per-experiment observations under the campaign id. See
+[`campaign`](README.md#campaigns) in the README for the lifecycle and policy
+options.
+
 ---
 
 ## Top-Level Fields

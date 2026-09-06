@@ -34,13 +34,6 @@ _ENV_ALLOWED = {
 }
 
 
-class EnvironmentCfg(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str = "default"
-    klass: Literal["development", "staging", "production"] = "development"
-
-
 class PolicyCfg(BaseModel):
     """G1 config-policy gate (ADR-0012 §4)."""
 
@@ -55,7 +48,7 @@ class PolicyCfg(BaseModel):
 class StorageCfg(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    path: str = ".mayhem/state.db"
+    path: str = "mayhem.db"
     artifacts_dir: str = ".mayhem/artifacts"
 
 
@@ -78,8 +71,7 @@ class TargetCfg(BaseModel):
 class MayhemConfigBase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    api_version: Literal["mayhem/v1"] = API_VERSION
-    environment: EnvironmentCfg = Field(default_factory=EnvironmentCfg)
+    api_version: Literal["mayhem/v1"] = Field(default=API_VERSION, serialization_alias="apiVersion")
     policy: PolicyCfg = Field(default_factory=PolicyCfg)
     blast_radius: BlastRadiusBudget = Field(default_factory=BlastRadiusBudget)
     storage: StorageCfg = Field(default_factory=StorageCfg)
@@ -156,7 +148,7 @@ def load_config(
     """
     env = dict(os.environ if environ is None else environ)
     sources: dict[str, str] = dict.fromkeys(
-        ("environment", "policy", "blast_radius", "storage", "toolkit", "log_level"),
+        ("policy", "blast_radius", "storage", "toolkit", "log_level"),
         "defaults",
     )
     merged: dict[str, Any] = {"api_version": API_VERSION}

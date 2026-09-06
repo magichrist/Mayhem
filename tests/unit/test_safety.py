@@ -151,24 +151,21 @@ def test_duration_cap_and_forbidden_pairs():
 # -- fingerprint + G3 --------------------------------------------------------------
 
 
-def test_fingerprint_is_order_insensitive_and_sensitive_to_env():
+def test_fingerprint_is_order_insensitive_and_sensitive_to_profile():
     a = environment_fingerprint(
         host_names=["h2", "h1"],
         compose_digest="d",
-        environment_name="e",
-        environment_class="staging",
+        profile="staging",
     )
     b = environment_fingerprint(
         host_names=["h1", "h2"],
         compose_digest="d",
-        environment_name="e",
-        environment_class="staging",
+        profile="staging",
     )
     c = environment_fingerprint(
         host_names=["h1", "h2"],
         compose_digest="d",
-        environment_name="e",
-        environment_class="production",
+        profile="production",
     )
     assert a == b
     assert a != c

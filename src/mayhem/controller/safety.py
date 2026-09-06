@@ -1,4 +1,5 @@
-"""Mechanical safety gates between planner and executor (ADR-0012, ADR-0014, architecture/safety.md).
+"""Mechanical safety gates between planner and executor (ADR-0012, ADR-0014,
+architecture/safety.md).
 
 Gate stack enforced here:
   G1 config policy      — allowlists/denylists, risk ladder, critical opt-in
@@ -45,16 +46,14 @@ def environment_fingerprint(
     *,
     host_names: Iterable[str],
     compose_digest: str,
-    environment_name: str,
-    environment_class: str,
+    profile: str | None = None,
 ) -> str:
-    """SHA256(sorted host set + compose digest + env name + env class)."""
+    """SHA256(sorted host set + compose digest + profile name)."""
     payload = "|".join(
         (
             ",".join(sorted(host_names)),
             compose_digest,
-            environment_name,
-            environment_class,
+            profile or "default",
         )
     )
     return hashlib.sha256(payload.encode()).hexdigest()

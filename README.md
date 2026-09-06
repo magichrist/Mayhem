@@ -252,6 +252,37 @@ Validate with `mayhem validate mayhem.yaml`; unknown parameters, out-of-range
 durations, untargetable node kinds, and capability gaps are all compile-time
 errors — before anything is injected.
 
+### Campaigns
+
+A campaign groups drill specs under one execution umbrella (ADR-0022/0023):
+experiments run sequentially in priority order, and the campaign's failure
+policy and time window govern the whole run.
+
+```bash
+mayhem campaign create black-friday \
+  --description "BFCM chaos" --hypothesis "checkout survives every single-fault failure"
+mayhem campaign add-experiment black-friday mayhem.yaml
+mayhem campaign add-experiment black-friday checkout-recovery.yaml
+mayhem campaign start black-friday                      # draft -> running
+mayhem campaign run black-friday --compose docker-compose.yml
+```
+
+A campaign is born `draft` and moves through
+`scheduled → running → paused → completed / aborted` (`archive` closes a
+finished campaign). Per-experiment results land in the observations table
+under the campaign id, and the failure policy selects the next action when
+one experiment fails:
+
+| `on_experiment_failure` | Meaning |
+|-------------------------|---------|
+| `abort_campaign` (default) | Stop the remaining experiments. |
+| `skip_and_continue` | Record the failure and run the next experiment. |
+| `retry_then_abort` | Retry the failed experiment once, then abort the campaign. |
+
+Window fields (`window_json`): `start_epoch_s` / `end_epoch_s`,
+`max_duration_s` (hard stop), and `cooldown_between_experiments_s` between
+successive experiments.
+
 ---
 
 ## CLI Reference
@@ -276,6 +307,7 @@ Commands:
 | `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
 | `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
 | `mayhem run SPEC` | Compile and execute a drill; print the run summary. |
+| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). |
 | `mayhem status` | Show runs recorded in the database (`--json` supported). |
 | `mayhem history RUN_ID` | Replay steps, events, and leases recorded for one run. |
 | `mayhem recover RUN_ID` | Recover every orphaned fault lease belonging to a run. |
@@ -284,8 +316,13 @@ Commands:
 | `mayhem toolkit list` | Probe the host for the tools/capabilities faults require. |
 | `mayhem experiment show SPEC` | Print the parsed drill spec as JSON. |
 | `mayhem experiment validate` | Alias of `validate`. |
-| `mayhem cfg show` / `mayhem cfg validate` | Inspect / validate the effective layered configuration. |
-| `mayhem campaign …` | Create, list, and inspect chaos campaigns. |
+| `mayhem config show` / `mayhem config validate` | Inspect / validate the effective layered configuration (alias `cfg`). `show --json` also reports each section's provenance. |
+| `mayhem campaign list` | List campaigns (draft/scheduled/running/…; `--json`). |
+| `mayhem campaign create NAME` | Create a draft campaign (`--description`, `--hypothesis`). |
+| `mayhem campaign show / status / delete ID` | Inspect, poll, or delete a campaign. |
+| `mayhem campaign add-experiment ID SPEC` | Append a drill spec file to a campaign. |
+| `mayhem campaign start / abort / archive ID` | Move a campaign through its lifecycle. |
+| `mayhem campaign run ID` | Execute every experiment sequentially against the compose topology, honoring the campaign policy and window (`--no-gate` bypasses the impact gate). |
 
 Every command (and the whole tree) abbreviates to any unique prefix: `mayhem
 ex valid`, `mayhem t f`.
@@ -294,23 +331,56 @@ ex valid`, `mayhem t f`.
 
 ## Configuration
 
-Policy lives in `mayhem.yaml` (the *configuration* file — distinct from a
-`kind: drill` spec), auto-detected in the cwd or given with `--config`:
+Runtime policies live in `mayhem.yaml` — the *configuration* file, distinct
+from a `kind: drill` spec — auto-detected in the cwd or given with
+`--config`. The effective view is one command away: `mayhem config show`
+(alias `cfg`) prints the resolved configuration and the provenance of every
+section; `mayhem config validate` refuses unknown keys, a missing or wrong
+`apiVersion`, and out-of-range sections before anything runs.
 
 ```yaml
+apiVersion: mayhem/v1        # required; anything else is rejected
 policy:
-  risk_ceiling: high
-profiles:
-  prod:
-    policy:
-      risk_ceiling: medium
+  allow_faults: null         # null = whole catalog; set to restrict
+  deny_faults: []            # fault ids never injectable
+  risk_ceiling: null         # tightened by the drill ceiling at plan time
+  allow_critical: false      # config-side half of the critical opt-in
+blast_radius:
+  max_services_pct: 50.0
+  max_hosts: 2
+  max_concurrent_faults: 3
+  max_duration_per_fault_s: 300.0
+  forbidden_fault_pairs: []  # e.g. ["net.packet_loss", "net.bandwidth"]
+storage:
+  path: mayhem.db            # SQLite database (same default as --db)
+  artifacts_dir: .mayhem/artifacts
+toolkit:
+  binaries: {}               # pin a named tool's binary, keyed by fault backend
+runtime: docker              # docker | podman (CLI: --podman)
+target:
+  containers: []             # explicit targets when no compose file is used
+log_level: INFO              # DEBUG | INFO | WARNING | ERROR
+maniac:                      # fallback for `mayhem maniac` when the spec omits config.maniac
+  level: 2
+  run_level: 10
+  seed: null                 # null = fresh random seed each run
 ```
 
 Layering, in increasing precedence: **built-in defaults → `mayhem.yaml` →
-selected profile → environment variables (`MAYHEM_*`) → CLI flags**. The
-effective view is always one command away: `mayhem cfg show` (and
-`mayhem cfg validate`). Drill-level `config.risk_ceiling` composes with the
-policy ceiling and can only tighten it.
+`mayhem.{profile}.yaml` → environment variables → CLI flags**. Profile
+overlays are separate per-profile files (selected with `--profile NAME`) —
+there is no `profiles:` key inside `mayhem.yaml`. The environment layer only
+honours allowlisted variables: `MAYHEM_STORAGE_PATH`,
+`MAYHEM_ARTIFACTS_DIR`, `MAYHEM_LOG_LEVEL`.
+
+```bash
+mayhem config show            # YAML + sourced-from comments
+mayhem config show --json     # {"config": …, "sources": …}
+mayhem config validate        # exit 0 / 3 on invalid layers
+```
+
+Drill-level `config.risk_ceiling` composes with the policy ceiling and can
+only tighten it.
 
 ---
 

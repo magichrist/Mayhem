@@ -270,14 +270,7 @@ class TestManiacCommand:
         spec = _write(tmp_path, DRILL_YAML)  # no maniac in the spec
         config_file = tmp_path / "mayhem.yaml"
         config_file.write_text(
-            "apiVersion: mayhem/v1\n"
-            "environment:\n"
-            "  name: test\n"
-            "  klass: development\n"
-            "maniac:\n"
-            "  level: 2\n"
-            "  run_level: 6\n"
-            "  seed: 9\n"
+            "apiVersion: mayhem/v1\nmaniac:\n  level: 2\n  run_level: 6\n  seed: 9\n"
         )
         engine = mock_engine_cls.return_value
         result = engine.execute.return_value

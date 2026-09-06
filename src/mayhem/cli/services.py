@@ -127,8 +127,7 @@ def prepare(
     fingerprint = environment_fingerprint(
         host_names=[n.name for n in graph.of_kind(NodeKind.HOST)],
         compose_digest=_compose_digest(compose),
-        environment_name=cfg.environment.name,
-        environment_class=cfg.environment.klass,
+        profile=profile,
     )
     topo_snapshot_id = "topo-" + fingerprint[:12]
     with store.write() as conn:
