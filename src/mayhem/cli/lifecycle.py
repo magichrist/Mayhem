@@ -18,6 +18,7 @@ from mayhem.cli.services import (
     engine_for,
     open_store,
     plan_from_spec,
+    plan_maniac_from_spec,
     prepare,
     recent_runs,
     run_detail,
@@ -319,6 +320,85 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
         else:
             click.echo(result.summary_md())
         # Copy-paste handle for follow-up commands: `mayhem history <run_id>`.
+        click.echo(
+            f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
+            f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
+        )
+        if result.status != "completed":
+            ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
+    finally:
+        store.close()
+
+
+@click.command("maniac")
+@_compose_option
+@click.argument("experiment", type=click.Path(), required=False, default=None)
+@click.pass_context
+def maniac(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+    """Run a drill spec as random fault injection (ADR-M5-1).
+
+    Compiles the spec exactly like ``mayhem run`` but replaces the authored
+    execution with ``config.maniac.run_level`` random (container, fault)
+    rounds dialed by ``config.maniac.level`` (1-5). Safety gates, per-round
+    compensation, success criteria and observability are unchanged; ``seed``
+    makes the draw reproducible.
+    """
+    graph, resolved_compose = _graph_from(ctx, compose)
+    experiment = _resolve_spec(experiment)
+    obj = _ctx(ctx)
+    store = open_store(obj.db)
+    try:
+        prepared = prepare(
+            config_path=obj.config,
+            profile=obj.profile,
+            allow_critical=obj.allow_critical,
+            store=store,
+            graph=graph,
+            compose=resolved_compose,
+            spec_path=experiment,
+        )
+        compiled = plan_maniac_from_spec(
+            experiment,
+            graph,
+            prepared=prepared,
+            engine=_resolve_engine_from_state(),
+            config_path=obj.config,
+            profile=obj.profile,
+        )
+        draws = sum(1 for step in compiled.plan.steps if step.fault is not None)
+        click.echo(
+            style.info("info:") + f" maniac mode — {draws} random fault round(s) drawn",
+            err=True,
+        )
+        engine_name = _resolve_engine_from_state()
+        bypass: dict[tuple[str, str], str] = {}
+        if _gate_enabled():
+            bypass = _gate_bypasses(engine_name, compiled.plan, graph)
+        else:
+            click.echo(
+                style.warn("warning:") + " impact gate skipped (--skip-gate); inert faults may run",
+                err=True,
+            )
+        engine = engine_for(
+            store,
+            engine_name,
+            live_graph=lambda: build_graph(resolved_compose),
+            on_event=_debug_progress() if obj.debug else None,
+            bypass=bypass,
+        )
+        result = engine.execute(compiled.plan)
+        if obj.debug:
+            trailer = [
+                f"**status**: {style.state(result.status)}",
+                f"**wall**: {style.ts(f'{result.wall_seconds:.1f}s')}",
+            ]
+            trailer.extend(
+                style.danger(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
+                for lease_id in result.dirty_leases
+            )
+            click.echo("\n".join(trailer))
+        else:
+            click.echo(result.summary_md())
         click.echo(
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
             f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
