@@ -49,3 +49,9 @@ DECISION_M4_5_SCHEMA_FREEZE = DecisionRef(
     decided_on="2026-09-02",
     title="Schema freeze + versioned migrations with up/down",
 )
+
+DECISION_M5_1_MANIAC = DecisionRef(
+    decision_id="ADR-M5-1",
+    decided_on="2026-09-06",
+    title="Maniac mode: random fault injection dialed by config",
+)
