@@ -19,7 +19,7 @@ from mayhem.cli.config_cmd import config
 from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.experiment import experiment
-from mayhem.cli.lifecycle import history, janitor, plan, recover, run, status, validate
+from mayhem.cli.lifecycle import history, janitor, maniac, plan, recover, run, status, validate
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
 from mayhem.cli.toolkit import toolkit
 from mayhem.cli.topology import topology
@@ -32,6 +32,7 @@ from mayhem.domain.errors import (
     TargetDriftError,
     TargetResolutionError,
 )
+from mayhem.domain.maniac import ManiacError
 from mayhem.toolkit.tool_runner import ToolError
 
 if TYPE_CHECKING:
@@ -83,7 +84,7 @@ def app(
     )
 
 
-for _cmd in (validate, plan, run, status, history, recover, janitor):
+for _cmd in (validate, plan, run, maniac, status, history, recover, janitor):
     app.add_command(_cmd)
 for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)
@@ -125,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fail(str(exc), int(code))
     except (
         InvariantViolationError,
+        ManiacError,
         PlanningError,
         TargetResolutionError,
         TargetDriftError,
