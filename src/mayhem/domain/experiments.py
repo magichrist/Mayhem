@@ -128,6 +128,34 @@ StepAction = Annotated[InjectFault | Wait | CheckHttp | CheckSpecStep, Field(dis
 # -- drill spec (ADR-0019) ------------------------------------------------------------------
 
 
+class ManiacCfg(BaseModel):
+    """Maniac-mode tuning — ``config.maniac`` in a drill spec or ``maniac:``
+    in the layered ``mayhem.yaml`` config (spec-level wins, ADR-M5-1).
+
+    ``level`` — the "level of randomness" dial:
+
+    =====  ==================================================================
+    level  behaviour
+    =====  ==================================================================
+    1      random container, first authored fault on it; no duration jitter
+    2      random container, random one of its authored faults; no jitter
+    3      random container, any fault from the whole spec (cross-locus); no jitter
+    4      cross-locus pool + duration jitter of ±10 %
+    5      cross-locus pool + duration jitter of ±20 % (full chaos)
+    =====  ==================================================================
+
+    Jitter is clamped to the fault's catalog maximum duration and never drops
+    below 1 second; the spec's own safety gates (risk ceiling, blast radius,
+    ``max_faults``, timeout) still apply to every round.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    level: int = Field(default=2, ge=1, le=5)
+    run_level: int = Field(default=10, ge=1, le=500)  # injection rounds
+    seed: int | None = Field(default=None, ge=0)  # reproducible draws
+
+
 class DrillConfig(BaseModel):
     """Configuration for a drill spec — replaces the separate mayhem.yml."""
 
@@ -141,6 +169,10 @@ class DrillConfig(BaseModel):
     # False: keep the perturbation in place after injection — the container stays
     # faulted so downstream checks observe whether the stack self-heals.
     recovery: bool = True
+    # ADR-M5-1: when set, `mayhem maniac` replaces the authored execution with
+    # `maniac.run_level` random (container, fault) rounds dialed by `maniac.level`.
+    # Leave unset to keep `mayhem run` fully deterministic.
+    maniac: ManiacCfg | None = None
 
 
 class DrillFault(BaseModel):
