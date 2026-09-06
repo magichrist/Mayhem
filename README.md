@@ -94,7 +94,7 @@ $ mayhem run mayhem.yaml --compose docker-compose.yml
 - [PASS] status:api-up.status PASS (expected 200, got 200)
 - [PASS] latency:api-up.latency_ms PASS (31.2 <= 500.0)
 **observations**: 2/2 sources collected
-**decisions**: ADR-M4-3 2026-09-05 (Machine-evaluable success criteria)
+**decisions**: 5 governing decision revisions (snapshot in the run row)
 **wall**: 32.4s
 
 run r-process-drill-8f2a1c — inspect with `mayhem history r-process-drill-8f2a1c`
@@ -110,7 +110,7 @@ Reading the transcript, top to bottom:
    one line each, so a failure tells you exactly what drifted.
 4. **Observations** — how many configured evidence sources actually delivered
    data (probes, logs, metrics …).
-5. **Decisions** — the governing ADR decisions that shaped this run; the
+5. **Decisions** — the governing decision revisions that shaped this run; the
    decision trace is queryable afterward via `mayhem history`.
 6. **Copy-paste handle** — the run id for the follow-up commands below.
 
@@ -213,13 +213,13 @@ containers:
 
 execution:
   - parallel: [cart-api]
-  - check_spec:           # locus-aware checks (ADR-M4-2)
+  - check_spec:           # locus-aware checks
       - id: cart-health
         probe: { type: http, url: http://cart-api:8080/_health, expected_status: 200 }
         execution: service
         target: cart-api
 
-success:                  # machine verdict (ADR-M4-3)
+success:                  # machine verdict
   require_all: true
   criteria:
     - type: status
@@ -229,7 +229,7 @@ success:                  # machine verdict (ADR-M4-3)
       source_id: cart-health.latency_ms
       lt_ms: 800
 
-observability:            # evidence sources (ADR-M4-4)
+observability:            # evidence sources
   sources:
     - kind: logs
       source_id: cart-logs
@@ -315,7 +315,7 @@ policy ceiling and can only tighten it.
 - **Concurrency budget.** `max_faults` caps simultaneously-injected faults;
   a wider `parallel:` step queues into rounds.
 - **Duration caps.** Per-fault `duration` beyond the catalog maximum is a
-  compile error ([ADR-M3-8](docs/adr/ADR-M3-8-fault-registry.md)).
+  compile error.
 - **Capability gating.** Faults declare the capabilities they need
   (docker engine, net_admin, process control, …); the plan is proven against
   the live graph by the impact gate before run — never assumed.
@@ -355,21 +355,16 @@ The pipeline is staged so everything expensive is done up front and execution
 is as small as possible:
 
 1. **Discover** — the topology provider builds a graph (services, hosts,
-   dependency edges) from the compose blueprint and live containers
-   ([ADR-0020](docs/adr/ADR-0020-container-name-pid-resolution.md),
-   [ADR-M1-1](docs/adr/ADR-M1-1-runtime-identity-is-the-identity.md)).
+   dependency edges) from the compose blueprint and live containers.
 2. **Prepare** — `mayhem config` layering (defaults → `mayhem.yaml` → profile →
-   env → flags) plus topology, drift detection, and target revalidation
-   ([ADR-M1-3](docs/adr/ADR-M1-3-target-drift-and-identity-persistence.md)).
+   env → flags) plus topology, drift detection, and target revalidation.
 3. **Compile & plan** — the drill spec becomes a frozen `ExecutionPlan` with
    step sequences, per-fault compensations, success criteria, and observability
    sources; every fault, target kind, capability, and duration is validated
-   against the catalog ([ADR-M3-8](docs/adr/ADR-M3-8-fault-registry.md)).
+   against the catalog.
 4. **Execute** — the engine runs rounds (inject → observe → compensate) through
    the runtime adapter, evaluates criteria, collects observability, and writes
-   step/event/lease rows with the governing-decision trace
-   ([ADR-M1-2](docs/adr/ADR-M1-2-runtime-metadata-is-descriptive.md),
-   [ADR-M4-1](docs/adr/ADR-M4-1-additive-duration.md)).
+   step/event/lease rows with the governing-decision trace.
 5. **Recover & report** — the janitor sweeps orphaned leases; `status`,
    `history`, and run summaries replay the evidence.
 
@@ -379,22 +374,6 @@ is as small as possible:
 |----------|----------|
 | [README.md](README.md) | This file. |
 | [docs/drill-spec.md](docs/drill-spec.md) | **The drill DSL reference** — config, containers, execution, checks, success criteria, observability, and the full fault catalog. |
-| [docs/adr/](docs/adr/) | Architecture Decision Records (20 accepted). |
-
-The living decision index (drill DSL → ADR):
-
-| ADR | Title |
-|-----|-------|
-| [ADR-0019](docs/adr/ADR-0019-unified-drill-spec.md) | Unified drill spec (the DSL) |
-| [ADR-0020](docs/adr/ADR-0020-container-name-pid-resolution.md) | Container-name → process resolution |
-| [ADR-0021](docs/adr/ADR-0021-clean-break.md) | Clean break (older ADRs dropped; 0019/0020 consolidated) |
-| [ADR-M1-1 … M1-4](docs/adr/) | Runtime identity, descriptive metadata, target drift, backward compatibility |
-| [ADR-M3-1 … M3-8](docs/adr/) | Runtime adapter, capabilities, execution loci, network paths, fault registry |
-| [ADR-M4-1](docs/adr/ADR-M4-1-additive-duration.md) | Additive DSL + typed Duration |
-| [ADR-M4-2](docs/adr/ADR-M4-2-execution-locus-checks.md) | Execution-locus checks |
-| [ADR-M4-3](docs/adr/ADR-M4-3-success-criteria.md) | Success criteria / run verdict |
-| [ADR-M4-4](docs/adr/ADR-M4-4-observability.md) | Declarative observability |
-| [ADR-M4-5](docs/adr/ADR-M4-5-schema-freeze-migrations.md) | Schema freeze + versioned migrations |
 
 ### Status
 
@@ -405,15 +384,15 @@ The living decision index (drill DSL → ADR):
 | Fault catalog + registry + capability probing (`toolkit`) | Complete |
 | Drill spec DSL (config / containers / execution / checks) | Complete |
 | Deterministic + random planners, frozen plans | Complete |
-| Success criteria + machine verdict (ADR-M4-3) | Complete |
-| Declarative observability sources (ADR-M4-4) | Complete |
+| Success criteria + machine verdict | Complete |
+| Declarative observability sources | Complete |
 | Run engine with compensation + leases + janitor + recover | Complete |
 | Safety gates + impact gate | Complete |
 | CLI with prefix abbreviation, stable exit codes | Complete |
-| SQLite persistence + restart, migrations (schema freeze, ADR-M4-5) | Complete |
+| SQLite persistence + restart, migrations (schema freeze) | Complete |
 | Campaigns (multi-spec runs) | Complete |
 | Tests (825 collected: 718 unit + 107 e2e), ruff, mypy (per-file strict) | Complete |
-| Kubernetes execution | Planned (interface-only per ADR-M3-6) |
+| Kubernetes execution | Planned (interface-only) |
 | Web UI / REST API | Planned |
 
 ---
