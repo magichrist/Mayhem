@@ -386,6 +386,16 @@ class ToolExecutor(FaultExecutor):
         return StepOutcome("undo", result.succeeded, result.stderr[:200], result)
 
 
+# cpu.throttle applies a container-engine CPU share (``update --cpus``), which
+# is argv-pair work; it is not a burner payload, so it must not be claimed by
+# the prefix-based PayloadExecutor. Registered faults bypass prefix matching.
+_FAULT_EXECUTOR_OVERRIDES: dict[str, FaultExecutor] = {}
+
+
+def _register_fault_executor(fault_id: str, executor: FaultExecutor) -> None:
+    _FAULT_EXECUTOR_OVERRIDES[fault_id] = executor
+
+
 EXECUTORS: tuple[FaultExecutor, ...] = (
     ProcPauseExecutor(),
     PayloadExecutor(),
@@ -393,9 +403,15 @@ EXECUTORS: tuple[FaultExecutor, ...] = (
     ToolExecutor(),
 )
 
+_register_fault_executor("cpu.throttle", EXECUTORS[-1])
+
 
 def executor_for(fault_id: str) -> FaultExecutor | None:
-    """First registered executor claiming this prefix wins."""
+    """Explicit fault-level override wins; otherwise first registered executor
+    claiming this fault's prefix."""
+    override = _FAULT_EXECUTOR_OVERRIDES.get(fault_id)
+    if override is not None:
+        return override
     for executor in EXECUTORS:
         if executor.supports(fault_id):
             return executor
