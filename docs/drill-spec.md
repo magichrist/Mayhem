@@ -1,22 +1,18 @@
 # Drill Spec DSL Reference
 
-The **drill spec** is the single, unified description of a chaos drill
-([ADR-0019](adr/ADR-0019-unified-drill-spec.md)). One YAML file (`kind: drill`)
-replaces the old arrangement of a separate `mayhem.yml` config plus a step-based
-fault spec. It declares:
+The **drill spec** is the single, unified description of a chaos drill. One YAML
+file (`kind: drill`) replaces the old arrangement of a separate `mayhem.yml`
+config plus a step-based fault spec. It declares:
 
 - **config** — safety and runtime settings (risk ceiling, fault budget, timeout, log level)
+- **config.maniac** — optional random-injection dial for `mayhem maniac`
+  (random container/fault rounds instead of the authored plan)
 - **containers** — per-container faults, keyed by the stable `container_name:`
 - **execution** — cross-container ordering (parallel, sequential, wait, check)
 - **success** — optional machine-evaluable criteria that turn the run into a
   PASS/FAIL verdict
-  ([ADR-M4-3](adr/ADR-M4-3-success-criteria.md))
 - **observability** — optional declarative evidence sources collected into the
   outcome record
-  ([ADR-M4-4](adr/ADR-M4-4-observability.md))
-
-`ADR-M4-3` and `ADR-M4-4` are approved governing decisions recorded on every
-run row (see [`src/mayhem/domain/decisions.py`](../src/mayhem/domain/decisions.py)).
 
 The spec is consumed by the lifecycle commands:
 
@@ -24,13 +20,16 @@ The spec is consumed by the lifecycle commands:
 mayhem validate examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 mayhem plan     examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
+mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 ```
 
 `validate` compiles the spec and runs every safety gate without injecting
 anything. `plan` prints the frozen execution plan as JSON. `run` executes it
 end-to-end and prints the run summary (status, verdict, observations, per-step
-results). Omit `--compose` to auto-detect a compose file in the current
-directory (`docker-compose.yml`, `compose.yml`, …).
+results). `maniac` [compiles the same way](#maniac-mode) but replaces the
+authored execution with random (container, fault) rounds. Omit `--compose` to
+auto-detect a compose file in the current directory (`docker-compose.yml`,
+`compose.yml`, …).
 
 ---
 
@@ -44,12 +43,11 @@ directory (`docker-compose.yml`, `compose.yml`, …).
 | `config`        | [DrillConfig](#config)             | no       | `DrillConfig()` | Safety / runtime settings. |
 | `containers`    | map<string, [DrillContainer](#containers)> | yes | — | Faults per container. At least one required. |
 | `execution`     | list<[ExecutionStep](#execution)>  | yes      | —               | Ordering of fault rounds. At least one step required. |
-| `success`       | [SuccessCriteria](#success)        | no       | —               | Machine verdict criteria ([ADR-M4-3]). |
-| `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record ([ADR-M4-4]). |
+| `success`       | [SuccessCriteria](#success)        | no       | —               | Machine verdict criteria. |
+| `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record. |
 
 `apiVersion: mayhem/v1` is tolerated and ignored — the drill spec is versioned by
-its own schema freeze
-([ADR-M4-5](adr/ADR-M4-5-schema-freeze-migrations.md)), not by `apiVersion`.
+its own schema freeze, not by `apiVersion`.
 
 ## Config
 
@@ -60,6 +58,7 @@ its own schema freeze
 | `timeout`      | duration                          | `30m`   | Whole-run timeout; the executor aborts and recovers past this. |
 | `log_level`    | `DEBUG` / `INFO` / `WARNING` / `ERROR` | `INFO` | Log verbosity for the drill run. |
 | `recovery`     | bool                              | `true`  | Automatically undo each fault after injection (restore the container). `false` keeps the perturbation in place so downstream checks observe whether the stack self-heals — see [Recovery control](#recovery-control). |
+| `maniac`       | [ManiacConfig](#maniac-mode)      | —       | Random-injection tuning for `mayhem maniac` (level, run count, seed). Falls back to the `maniac:` key in the layered `mayhem.yaml` when the drill spec omits it; a spec-level block always wins. |
 
 ```yaml
 config:
@@ -72,6 +71,37 @@ config:
   #        the stack self-heals without the engine reviving anything.
   recovery: true
 ```
+
+### Maniac mode
+
+`mayhem maniac` compiles a spec exactly like `mayhem run`, but replaces the
+authored `execution:` steps with `run_level` random (container, fault) rounds
+([ADR-M5-1](#maniac-mode)). Every other contract is unchanged: the risk
+ceiling, blast radius budget and conflict checks still gate each drawn fault;
+each round runs its own compensation (or opts out via `recovery: false`); the
+spec's `check` / `check_spec` steps still replay between rounds; success
+criteria still produce the run verdict; and observability sources are still
+collected.
+
+| Field       | Type            | Default | Description |
+|-------------|-----------------|---------|-------------|
+| `level`     | int (1-5)       | `2`     | How far a draw strays from the spec's authored intent — see the table below. |
+| `run_level` | int (1–500)     | `10`    | Number of random (container, fault) rounds to inject. |
+| `seed`      | int / null      | `null`  | Seeding the PRNG makes the draw reproducible across runs. |
+
+Level semantics:
+
+| Level | Behaviour |
+|-------|-----------|
+| 1     | Random container, first authored fault on it; no duration jitter. |
+| 2     | Random container, random one of its authored faults; no jitter. |
+| 3     | Random container, any fault from the whole spec (cross-locus pool); no jitter. |
+| 4     | Cross-locus pool + duration jitter of ±10 %. |
+| 5     | Cross-locus pool + duration jitter of ±20 % (full chaos). |
+
+Jitter is clamped to the fault's catalog maximum and never drops below
+1 second. `validate` and `plan` accept `config.maniac` but `run` ignores it —
+only `mayhem maniac` draws rounds.
 
 ### Recovery control
 
@@ -106,17 +136,11 @@ When you only want a specific fault observed under `recovery: false`, leave
 ## Containers
 
 Each key of `containers:` **is** a `container_name:` value from the
-`docker-compose.yml` — the stable identity anchor
-([ADR-0020](adr/ADR-0020-container-name-pid-resolution.md),
-[ADR-M1-1](adr/ADR-M1-1-runtime-identity-is-the-identity.md)). Mayhem resolves
-PIDs and addresses from this name at **execution time**, immediately before
-injection, so a fault always targets the live process even if a container
-restarted in the meantime
-([ADR-M1-3](adr/ADR-M1-3-target-drift-and-identity-persistence.md),
-[ADR-M3-3](adr/ADR-M3-3-three-locus-execution-context.md)).
-[ADR-M1-2](adr/ADR-M1-2-runtime-metadata-is-descriptive.md) keeps everything
-else the drill records descriptive — what gates a fault is the catalog and the
-impact gate, not runtime hints.
+`docker-compose.yml` — the stable identity anchor. Mayhem resolves PIDs and
+addresses from this name at **execution time**, immediately before injection,
+so a fault always targets the live process even if a container restarted in the
+meantime. Everything else the drill records stays descriptive — what gates a
+fault is the catalog and the impact gate, not runtime hints.
 
 Faults listed under one container run **sequentially**.
 
@@ -128,7 +152,7 @@ Faults listed under one container run **sequentially**.
 | `duration`     | duration                      | `10s`               | How long to keep the fault injected before running its compensation. Capped per fault by the catalog. |
 | `on_failure`   | `abort_and_recover`           | `abort_and_recover` | Behavior if the round fails (currently the only supported value). |
 | `targets`      | list<string>                  | `()`                | Network / partition faults only: container names this target is partitioned from. |
-| `network_path` | string                        | —                   | Optional named network path to scope a network fault against ([ADR-M3-7](adr/ADR-M3-7-network-path.md)). |
+| `network_path` | string                        | —                   | Optional named network path to scope a network fault against. |
 | `recovery`     | bool                          | *inherit config*    | Per-fault override of `config.recovery`. `false` leaves this container faulted after injection (self-healing observation); overrides the config default for this fault only. |
 | *params*       | —                             | —                   | Fault parameters can be inlined as flat keys or grouped under an explicit `params:` map. The reserved keys (`fault`, `duration`, `on_failure`, `targets`, `network_path`, `params`) are never treated as fault parameters. |
 
@@ -154,8 +178,7 @@ containers:
 ```
 
 Unknown parameters are rejected with a schema error (`mayhem validate` fails);
-every fault validates its parameters against the catalog `params_schema`
-([ADR-M3-8](adr/ADR-M3-8-fault-registry.md)).
+every fault validates its parameters against the catalog `params_schema`.
 
 ## Execution
 
@@ -167,8 +190,8 @@ the action to take. Steps run left to right, top to bottom.
 | `parallel`  | list of container names             | Inject this step's fault on all named containers concurrently (subject to `max_faults`). |
 | `sequential`| list of container names             | Run this step's faults against each container one after another. |
 | `wait`      | `{duration}` (or `{until_check_passes, timeout}`) | Wait before the next step. |
-| `check`     | list of inline probes               | Inline health probe(s) evaluated between rounds (legacy shorthand from [ADR-0019](adr/ADR-0019-unified-drill-spec.md); prefer `check_spec` for new drills). |
-| `check_spec`| list of [locus-aware checks](#checks-and-check_spec) | Fully-declared checks with an explicit or inferred execution locus ([ADR-M4-2](adr/ADR-M4-2-execution-locus-checks.md)). |
+| `check`     | list of inline probes               | Inline health probe(s) evaluated between rounds (legacy shorthand; prefer `check_spec` for new drills). |
+| `check_spec`| list of [locus-aware checks](#checks-and-check_spec) | Fully-declared checks with an explicit or inferred execution locus. |
 
 ```yaml
 execution:
@@ -214,7 +237,7 @@ Each entry is a probe:
 
 ## Checks and `check_spec`
 
-`check_spec` carries the full check model ([ADR-M4-2](adr/ADR-M4-2-execution-locus-checks.md)):
+`check_spec` carries the full check model:
 
 | Field       | Type                            | Description |
 |-------------|---------------------------------|-------------|
@@ -241,9 +264,8 @@ the locus from the fault target. An explicit locus is honored as-is.
 
 ## Success Criteria
 
-An optional `success:` block turns a run into a machine verdict
-([ADR-M4-3](adr/ADR-M4-3-success-criteria.md)): the executor evaluates typed
-criteria against the observations a drill recorded — never a human eyeball.
+An optional `success:` block turns a run into a machine verdict: the executor
+evaluates typed criteria against the observations a drill recorded — never a human eyeball.
 A criterion evaluated against a **missing** observation is **false** (absence
 of evidence is not success) and never raises.
 
@@ -282,7 +304,7 @@ success:
 ## Observability
 
 An optional `observability:` section collects **evidence** into the outcome
-record — the values an evaluator later needs ([ADR-M4-4](adr/ADR-M4-4-observability.md)).
+record — the values an evaluator later needs.
 Every source is named (`source_id`, for cross-referencing), bounded
 (per-source `timeout` and an overall `total_timeout`), and best-effort (a
 failing source is recorded as a skip note, never fatal).
@@ -329,13 +351,13 @@ rejected at validate time.
 
 ## Fault Catalog
 
-`fault:` values reference the registry shipped in `mayhem.domain.catalog`
-([ADR-M3-8](adr/ADR-M3-8-fault-registry.md)). Each definition carries a risk
-level (gated by `risk_ceiling`), a maximum duration, the node kinds it applies
-to, and the runtime capability it needs (checked against the compute engine at
-validate time). Parameters and their types are catalog-native; table entries
-below are normative only as of this writing — the catalog implementation is
-authoritative and is what `mayhem validate` enforces.
+`fault:` values reference the registry shipped in `mayhem.domain.catalog`.
+Each definition carries a risk level (gated by `risk_ceiling`), a maximum
+duration, the node kinds it applies to, and the runtime capability it needs
+(checked against the compute engine at validate time). Parameters and their
+types are catalog-native; table entries below are normative only as of this
+writing — the catalog implementation is authoritative and is what
+`mayhem validate` enforces.
 
 | Fault | Category | Risk | Max | Applicable node kinds | Capability | Parameters |
 |---|---|---|---|---|---|---|
@@ -351,6 +373,8 @@ authoritative and is what `mayhem validate` enforces.
 | `dns.resolve_delay` | dns | medium | 300s | host, service | net_admin | `seconds` (duration) |
 | `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (int, default 64) |
 | `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (1–99) |
+| `fs.inode_exhaust` | storage | medium | 300s | container, host, service | — | `percent` (1–99) |
+| `fs.io_stress` | storage | low | 120s | container, host, service | — | `seconds`, `workers` (1–8, default 1), `io_bytes` (1M–1G, default 64M) |
 | `fuzz.protocol_abuse` | fuzz | high | 180s | external_dependency, service | — | — |
 | `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (int, default 500) |
 | `k8s.network_policy` | k8s | high | 300s | k8s_node, pod | kubernetes_engine | `policy_name` (string), `direction` (string, default `ingress`) |
@@ -407,11 +431,8 @@ gate).
 ## Design Rules
 
 - **Identity is the container name.** Fault targets and check loci resolve from
-  `container_name:` against the compose blueprint
-  ([ADR-M1-1](adr/ADR-M1-1-runtime-identity-is-the-identity.md),
-  [ADR-0020](adr/ADR-0020-container-name-pid-resolution.md)). Compose project
-  filtering and drift detection keep the discovered topology aligned with the
-  blueprint.
+  `container_name:` against the compose blueprint. Compose project filtering and
+  drift detection keep the discovered topology aligned with the blueprint.
 - **The fault applies only if the catalog says it can.** Applicable node kinds
   (container / service / host / k8s_node / pod / process / external_dependency)
   and required capabilities gate injection at validate and plan time.
@@ -422,48 +443,11 @@ gate).
 - **Every fault is compensated.** Reversible faults run their declared inverse;
   irreversible ones (`container.kill`, `k8s.pod_evict`, …) are followed by a
   container-spec reconciliation that restores the faulted workload
-  (ADR "compensation contract" in
-  [docs/adr/ADR-0019-unified-drill-spec.md](adr/ADR-0019-unified-drill-spec.md)).
+  (the compensation contract).
 - **Rounds recover independently.** A failed round aborts-and-recovers its own
   faults first, then propagates; orphaned leases are swept by the janitor.
 - **The spec schema is frozen.** Evolution happens through migrations on the
-  database side, not by editing the DSL shape
-  ([ADR-M4-5](adr/ADR-M4-5-schema-freeze-migrations.md)).
+  database side, not by editing the DSL shape.
 - **Decisions are recorded on the run.** Each run row snapshots the governing
   decision revisions it executed under, so an old run is reproducible even after
-  the catalog moves on
-  ([ADR-M4-1](adr/ADR-M4-1-additive-duration.md)).
-
-## Index of Governing Design Decisions
-
-The current drill DSL is the cumulative expression of this decision set (all
-accepted; the older 0002–0008 era documents were dropped as a unit by
-[ADR-0021](adr/ADR-0021-clean-break.md), whose rationale text is preserved in
-the surviving records below):
-
-| ADR | Title |
-|-----|-------|
-| [ADR-0019](adr/ADR-0019-unified-drill-spec.md) | unified drill spec (this file is its normative reference) |
-| [ADR-0020](adr/ADR-0020-container-name-pid-resolution.md) | container-name → process resolution |
-| [ADR-0021](adr/ADR-0021-clean-break.md) | clean break (dropped 0002–0008, consolidated to 0019/0020) |
-| [ADR-M1-1](adr/ADR-M1-1-runtime-identity-is-the-identity.md) | runtime identity is the identity |
-| [ADR-M1-2](adr/ADR-M1-2-runtime-metadata-is-descriptive.md) | runtime metadata is descriptive, never gating |
-| [ADR-M1-3](adr/ADR-M1-3-target-drift-and-identity-persistence.md) | target drift and identity persistence |
-| [ADR-M1-4](adr/ADR-M1-4-backward-compatibility.md) | backward compatibility of the DSL and records |
-| [ADR-M3-1](adr/ADR-M3-1-runtime-adapter-contract.md) | runtime adapter contract |
-| [ADR-M3-2](adr/ADR-M3-2-capability-requirements.md) | capability requirements for fault gating |
-| [ADR-M3-3](adr/ADR-M3-3-three-locus-execution-context.md) | three-locus execution context |
-| [ADR-M3-4](adr/ADR-M3-4-rootless-capability-matrix.md) | rootless capability matrix |
-| [ADR-M3-5](adr/ADR-M3-5-remote-execution-interface-only.md) | remote execution is interface-only |
-| [ADR-M3-6](adr/ADR-M3-6-kubernetes-interface-only.md) | kubernetes is interface-only |
-| [ADR-M3-7](adr/ADR-M3-7-network-path.md) | named network paths |
-| [ADR-M3-8](adr/ADR-M3-8-fault-registry.md) | fault registry contract |
-| [ADR-M4-1](adr/ADR-M4-1-additive-duration.md) | additive, non-breaking DSL + typed Duration |
-| [ADR-M4-2](adr/ADR-M4-2-execution-locus-checks.md) | execution-locus checks |
-| [ADR-M4-3](adr/ADR-M4-3-success-criteria.md) | success criteria / machine verdict |
-| [ADR-M4-4](adr/ADR-M4-4-observability.md) | declarative observability |
-| [ADR-M4-5](adr/ADR-M4-5-schema-freeze-migrations.md) | schema freeze + migrations-only evolution |
-
-The surviving records are reconciled in
-[src/mayhem/domain/decisions.py](../src/mayhem/domain/decisions.py); consult
-that file first when extending the DSL.
+  the catalog moves on.
