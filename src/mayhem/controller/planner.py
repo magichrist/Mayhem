@@ -20,6 +20,7 @@ from mayhem.domain.decisions import (
     DECISION_M4_3_SUCCESS_CRITERIA,
     DECISION_M4_4_OBSERVABILITY,
     DECISION_M4_5_SCHEMA_FREEZE,
+    DECISION_M5_1_MANIAC,
     DecisionRef,
 )
 from mayhem.domain.errors import (
@@ -35,12 +36,14 @@ from mayhem.domain.experiments import (
     ExperimentKind,
     GroupMode,
     InjectFault,
+    ManiacCfg,
     PlannedFault,
     PlannedStep,
     ResolvedTarget,
     Wait,
 )
 from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.maniac import draw_maniac_rounds
 from mayhem.domain.topology import (
     TargetSelector,
     TopologyNode,
@@ -186,6 +189,121 @@ def plan_drill(
         observability=spec.observability,
         decision_refs=_governing_decisions(spec),
     )
+
+
+def plan_maniac(
+    run_id: str,
+    spec: DrillSpec,
+    graph: TopologyGraph,
+    *,
+    config_snapshot_id: str,
+    topology_snapshot_id: str,
+    environment_fingerprint: str,
+    engine: str = "podman",
+    spec_dir: str | None = None,
+    maniac: ManiacCfg,
+) -> ExecutionPlan:
+    """Compile a maniac (random) drill into an :class:`ExecutionPlan` (ADR-M5-1).
+
+    ``mayhem maniac`` compiles the spec exactly like ``plan_drill`` — container
+    names resolved against the topology, compensation contracts attached — but
+    replaces the authored ``execution`` with ``maniac.run_level`` random
+    (container, fault) rounds drawn from the spec's own container map. Each
+    round injects one fault, then replays the spec's authored check/check_spec
+    steps so the M4 success criteria and observability sources produce the same
+    machine verdict and evidence as a deterministic run. The spec's safety
+    gates (risk ceiling, blast radius, ``max_faults``, timeout) apply unchanged
+    to every round (ADR-M5-1).
+    """
+    _validate_container_names(spec, graph)
+    draws = draw_maniac_rounds(
+        spec, level=maniac.level, run_level=maniac.run_level, seed=maniac.seed
+    )
+
+    steps: list[PlannedStep] = []
+    seq = 0
+    for draw in draws:
+        matched = tuple(_find_container_nodes(graph, draw.container))
+        steps.append(
+            _plan_fault_step(
+                draw.container,
+                matched,
+                draw.fault,
+                graph,
+                seq,
+                execution_group_id=f"grp-{uuid.uuid4().hex[:12]}",
+                group_mode=GroupMode.SEQUENTIAL,
+                group_path=f"/{draw.container}",
+                recovery=(
+                    draw.fault.recovery
+                    if draw.fault.recovery is not None
+                    else spec.config.recovery
+                ),
+                spec_dir=spec_dir,
+            )
+        )
+        seq += 1
+        seq = _plan_maniac_checks(steps, spec, seq)
+
+    if not any(s.fault for s in steps):
+        raise PlanningError(f"maniac drill {spec.name!r} drew no fault injection")
+
+    return ExecutionPlan(
+        run_id=run_id,
+        kind=ExperimentKind.DRILL,
+        steps=tuple(steps),
+        config_snapshot_id=config_snapshot_id,
+        topology_snapshot_id=topology_snapshot_id,
+        environment_fingerprint=environment_fingerprint,
+        success=spec.success,
+        observability=spec.observability,
+        decision_refs=(*_governing_decisions(spec), DECISION_M5_1_MANIAC),
+    )
+
+
+def _plan_maniac_checks(
+    steps: list[PlannedStep], spec: DrillSpec, seq: int
+) -> int:
+    """Replay the spec's authored check steps after a maniac round (ADR-M5-1).
+
+    Waits, parallel/sequential grouping and the faults themselves are maniac's
+    own business; only the check/check_spec blocks carry over so the success
+    criteria can be evaluated per round. Ids keep the ``check-{seq:04d}-{i}``
+    shape used by deterministic plans.
+    """
+    for block in spec.execution:
+        if block.check:
+            for i, probe in enumerate(block.check):
+                expected = probe.expect.status if probe.expect else None
+                steps.append(
+                    PlannedStep(
+                        id=f"check-{seq:04d}-{i}",
+                        seq=seq,
+                        raw_action=CheckHttp(
+                            type="check_http",
+                            url=probe.http or "",
+                            expected_status=expected,
+                        ),
+                    )
+                )
+                seq += 1
+        elif block.check_spec:
+            for i, cspec in enumerate(block.check_spec):
+                steps.append(
+                    PlannedStep(
+                        id=f"check-{seq:04d}-{i}",
+                        seq=seq,
+                        raw_action=CheckSpecStep(
+                            type="check_spec",
+                            check_id=cspec.id,
+                            probe=cspec.probe,
+                            execution=cspec.execution,
+                            target=cspec.target,
+                        ),
+                    )
+                )
+                seq += 1
+    return seq
 
 
 def _governing_decisions(spec: DrillSpec) -> tuple[DecisionRef, ...]:
