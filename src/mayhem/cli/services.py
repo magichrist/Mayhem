@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from mayhem.config import load_config, save_snapshot
 from mayhem.controller.executor import RunEngine
-from mayhem.controller.planner import plan_drill
+from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
 from mayhem.domain.topology import (
@@ -188,6 +188,50 @@ def plan_from_spec(
         **common,
         engine=engine,
         spec_dir=str(Path(spec_path).parent),
+    )
+    return CompiledPlan(run_id=run_id, plan=plan)
+
+
+def plan_maniac_from_spec(
+    spec_path: str,
+    graph: TopologyGraph,
+    *,
+    prepared: Prepared,
+    engine: str = "podman",
+    config_path: str | None = None,
+    profile: str | None = None,
+) -> CompiledPlan:
+    """Compile a drill spec into a random maniac plan (ADR-M5-1).
+
+    Behaves like :func:`plan_from_spec` (schema validation, topology
+    resolution) but replaces the authored execution with ``run_level`` random
+    rounds. The maniac settings come from the spec's own ``config.maniac``
+    block when present, otherwise from the layered ``mayhem.yaml`` config
+    (``maniac:`` key); the spec wins when both exist (ADR-M5-1).
+    """
+    spec = load_drill(spec_path)
+    maniac = spec.config.maniac
+    if maniac is None:
+        cfg, _sources = load_config(
+            config_path=config_path,
+            profile=profile,
+            environ={},
+        )
+        maniac = cfg.maniac
+    run_id = f"r-{spec.name}-{uuid.uuid4().hex[:8]}"
+    common: dict[str, str] = {
+        "config_snapshot_id": prepared.config_snapshot_id,
+        "topology_snapshot_id": prepared.topology_snapshot_id,
+        "environment_fingerprint": prepared.fingerprint,
+    }
+    plan = plan_maniac(
+        run_id,
+        spec,
+        graph,
+        **common,
+        engine=engine,
+        spec_dir=str(Path(spec_path).parent),
+        maniac=maniac,
     )
     return CompiledPlan(run_id=run_id, plan=plan)
 
