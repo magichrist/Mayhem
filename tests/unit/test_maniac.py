@@ -1,198 +1,147 @@
-"""Tests for Maniac selection/optimization engine (ADR-M5-3)."""
+"""Maniac mode: random draw logic, config wiring (ADR-M5-1)."""
 
-from mayhem.domain.candidates import ExperimentCandidate
-from mayhem.infra.candidate_gates import CandidateGatePipeline, FeasibilityGate
-from mayhem.infra.maniac import (
-    SelectionInputs,
-    SelectionResult,
-    coverage_cell_for_candidate,
-    select_next,
-)
+from __future__ import annotations
 
+import copy
 
-class _DenyFault:
-    """FeasibilityGate that rejects candidates whose fault matches."""
+import pytest
+from pydantic import ValidationError
 
-    def __init__(self, fault: str) -> None:
-        self._fault = fault
+from mayhem.domain.experiments import ManiacCfg
+from mayhem.domain.maniac import ManiacError, draw_maniac_rounds
+from mayhem.spec import parse_drill
 
-    def check(self, candidate: ExperimentCandidate) -> str | None:
-        if candidate.primary_fault == self._fault:
-            return f"fault {self._fault!r} blocked"
-        return None
-
-
-def _make(
-    n: int = 6,
-    *,
-    targets: tuple[str, ...] = ("web-0", "web-1"),
-    faults: tuple[str, ...] = ("net.delay",),
-    bands: tuple[str, ...] = ("b0", "b1"),
-    seed: int = 0,
-) -> tuple[ExperimentCandidate, ...]:
-    result: list[ExperimentCandidate] = []
-    for i in range(n):
-        result.append(
-            ExperimentCandidate(
-                target=targets[i % len(targets)],
-                fault_kinds=(faults[i % len(faults)],),
-                params={"band": bands[i % len(bands)]},
-                seed_hint=i,
-            )
-        )
-    return tuple(result)
+TWO_CONTAINER = {
+    "kind": "drill",
+    "name": "maniac-spec",
+    "config": {"risk_ceiling": "critical", "max_faults": 1, "timeout": "30m"},
+    "containers": {
+        "api": {"faults": [{"fault": "proc.pause", "duration": "10s"}]},
+        "lb": {"faults": [{"fault": "fuzz.protocol_abuse", "duration": "50s"}]},
+    },
+    "execution": [{"parallel": ["api"]}, {"wait": "1s"}],
+}
 
 
-class TestManiacDeterministic:
-    def test_identical_inputs_yield_identical_selection(self) -> None:
-        candidates = _make(8, seed=42)
-        inputs = SelectionInputs(
-            candidates=candidates,
-            max_runs=4,
-            coverage_target=4,
-            seed=77,
-        )
-        a = select_next(inputs)
-        b = select_next(inputs)
-        assert a.selected == b.selected
-        assert a.predicted_new_coverage == b.predicted_new_coverage
-
-    def test_different_seed_may_yield_different_selection(self) -> None:
-        candidates = _make(12)
-        a = select_next(SelectionInputs(candidates=candidates, seed=1))
-        b = select_next(SelectionInputs(candidates=candidates, seed=9999))
-        # Different seeds can produce different orderings; at minimum
-        # the coverage predictions may differ (or be equal if coverage
-        # target is reached before ordering matters). Just verify both
-        # are valid results and the engine didn't crash.
-        assert isinstance(a, SelectionResult)
-        assert isinstance(b, SelectionResult)
-
-    def test_stateless_across_calls(self) -> None:
-        candidates = _make(6)
-        a = select_next(SelectionInputs(candidates=candidates, max_runs=3))
-        b = select_next(SelectionInputs(candidates=candidates, max_runs=3))
-        assert a.selected == b.selected
-        # Mutating a result doesn't affect the next call.
-        assert a.predicted_new_coverage == b.predicted_new_coverage
+def _spec(**config_overrides):
+    data = copy.deepcopy(TWO_CONTAINER)
+    if config_overrides:
+        data["config"].update(config_overrides)
+    return parse_drill(data)
 
 
-class TestManiacRespectsBounds:
-    def test_respects_max_runs_budget(self) -> None:
-        candidates = _make(20, bands=tuple(f"b{i}" for i in range(20)))
-        result = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                max_runs=3,
-                coverage_target=100,
-            )
-        )
-        assert len(result.selected) <= 3
-        assert result.selected_count == len(result.selected)
-
-    def test_respects_coverage_target(self) -> None:
-        candidates = _make(12, bands=tuple(f"c{i}" for i in range(12)))
-        result = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                max_runs=100,
-                coverage_target=3,
-            )
-        )
-        assert result.predicted_new_coverage <= 3
-        assert len(result.selected) <= 3
-
-    def test_respects_gates(self) -> None:
-        candidates = _make(8)
-        # "net.delay" candidates exist (target + fault combo covers web-0,
-        # web-1 with 2 unique cells). After 2 runs both cells are
-        # covered, so with coverage_target=2 the engine stops early.
-        gates = CandidateGatePipeline(
-            feasibility=_DenyFault("net.delay"),
-        )
-        result = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                gates=gates,
-                max_runs=10,
-                coverage_target=100,
-            )
-        )
-        # All candidates are net.delay → all denied → nothing selected.
-        assert len(result.selected) == 0
-        assert len(result.rejected) > 0
-
-    def test_gated_candidates_excluded_from_selection(self) -> None:
-        candidates = _make(6)
-        # Only allow "net.delay" through (default fault).
-        # Also keep coverage_target small so the engine can finish.
-        gates = CandidateGatePipeline(
-            feasibility=FeasibilityGate(supported=("net.delay",)),
-        )
-        result = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                gates=gates,
-                max_runs=10,
-                coverage_target=10,
-            )
-        )
-        # With all candidates net.delay and the gate allows it, selection
-        # proceeds normally — at most max_runs candidates selected.
-        assert len(result.selected) <= 6
+def test_level_1_takes_first_authored_fault_without_jitter() -> None:
+    spec = _spec(maniac={"level": 1, "run_level": 8, "seed": 1})
+    draws = draw_maniac_rounds(spec, level=1, run_level=8, seed=1)
+    assert len(draws) == 8
+    for i, draw in enumerate(draws):
+        assert draw.round == i + 1
+        assert draw.container in ("api", "lb")
+        expected = {"api": 10.0, "lb": 50.0}[draw.container]
+        assert draw.fault.fault == {
+            "api": "proc.pause",
+            "lb": "fuzz.protocol_abuse",
+        }[draw.container]
+        assert draw.fault.duration == expected
 
 
-class TestManiacCoverageModel:
-    def test_prefer_uncovered_cells(self) -> None:
-        """Cells already covered should be deprioritized."""
-        candidates = _make(4)
-        covered_keys = frozenset({coverage_cell_for_candidate(candidates[0]).key})
-        without = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                covered_keys=frozenset(),
-                max_runs=4,
-                coverage_target=10,
-            )
-        )
-        with_covered = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                covered_keys=covered_keys,
-                max_runs=4,
-                coverage_target=10,
-            )
-        )
-        # When one cell is already covered, the engine predicts less new
-        # coverage (at least one fewer new cell).
-        assert with_covered.predicted_new_coverage <= without.predicted_new_coverage
-        # The already-covered cell may still be selected but it contributes
-        # nothing new; the selection count can be smaller or equal.
-        assert len(with_covered.selected) <= len(without.selected)
+def test_level_2_draws_only_from_authored_faults() -> None:
+    spec = _spec()
+    draws = draw_maniac_rounds(spec, level=2, run_level=60, seed=3)
+    for draw in draws:
+        assert draw.fault.fault == {
+            "api": "proc.pause",
+            "lb": "fuzz.protocol_abuse",
+        }[draw.container]
 
-    def test_empty_candidate_set(self) -> None:
-        result = select_next(
-            SelectionInputs(
-                candidates=(),
-                max_runs=10,
-                coverage_target=5,
-            )
-        )
-        assert result.selected == ()
-        assert result.predicted_new_coverage == 0
-        assert result.rejected == ()
 
-    def test_all_cells_covered_early_termination(self) -> None:
-        candidates = _make(8, bands=tuple(f"c{i}" for i in range(8)))
-        covered = frozenset({coverage_cell_for_candidate(c).key for c in candidates})
-        result = select_next(
-            SelectionInputs(
-                candidates=candidates,
-                covered_keys=covered,
-                max_runs=100,
-                coverage_target=100,
-            )
-        )
-        # All cells already covered → nothing selected, no new coverage.
-        assert len(result.selected) == 0
-        assert result.predicted_new_coverage == 0
+def test_level_3_spans_loci() -> None:
+    spec = _spec(maniac={"level": 3, "run_level": 400, "seed": 11})
+    draws = draw_maniac_rounds(spec, level=3, run_level=400, seed=11)
+    pairs = {(d.container, d.fault.fault) for d in draws}
+    assert ("api", "fuzz.protocol_abuse") in pairs
+    assert ("lb", "proc.pause") in pairs
+
+
+def test_level_4_jitters_duration_within_catalog_cap() -> None:
+    spec = _spec(maniac={"level": 4, "run_level": 300, "seed": 5})
+    draws = draw_maniac_rounds(spec, level=4, run_level=300, seed=5)
+    assert any(d.fault.duration != {"api": 10.0, "lb": 50.0}[d.container] for d in draws)
+    for d in draws:
+        cap = {"proc.pause": 600.0, "fuzz.protocol_abuse": 180.0}[d.fault.fault]
+        assert d.fault.duration <= cap
+        assert d.fault.duration >= 1.0
+
+
+def test_jitter_never_drops_below_one_second() -> None:
+    data = copy.deepcopy(TWO_CONTAINER)
+    data["containers"]["api"]["faults"][0]["duration"] = "1s"
+    spec = parse_drill(data)
+    draws = draw_maniac_rounds(spec, level=5, run_level=60, seed=2)
+    assert all(d.fault.duration >= 1.0 for d in draws)
+
+
+def test_containers_without_faults_are_excluded() -> None:
+    data = copy.deepcopy(TWO_CONTAINER)
+    data["containers"]["empty"] = {"faults": []}
+    spec = parse_drill(data)
+    draws = draw_maniac_rounds(spec, level=5, run_level=50, seed=7)
+    assert all(d.container != "empty" for d in draws)
+
+
+def test_no_injectable_containers_raises() -> None:
+    data = copy.deepcopy(TWO_CONTAINER)
+    data["containers"] = {"api": {"faults": []}, "lb": {"faults": []}}
+    spec = parse_drill(data)
+    with pytest.raises(ManiacError):
+        draw_maniac_rounds(spec, level=3, run_level=5, seed=1)
+
+
+def test_seed_makes_draws_reproducible() -> None:
+    spec = _spec()
+    a = draw_maniac_rounds(spec, level=3, run_level=40, seed=42)
+    b = draw_maniac_rounds(spec, level=3, run_level=40, seed=42)
+    c = draw_maniac_rounds(spec, level=3, run_level=40, seed=43)
+    assert a == b
+    assert a != c
+
+
+class TestManiacCfg:
+    def test_defaults(self) -> None:
+        cfg = ManiacCfg()
+        assert cfg.level == 2
+        assert cfg.run_level == 10
+        assert cfg.seed is None
+
+    def test_level_bounds(self) -> None:
+        for bad in (0, 6):
+            with pytest.raises(ValidationError):
+                ManiacCfg(level=bad)
+        for good in (1, 5):
+            assert ManiacCfg(level=good).level == good
+
+    def test_run_level_bounds(self) -> None:
+        with pytest.raises(ValidationError):
+            ManiacCfg(run_level=0)
+        assert ManiacCfg(run_level=1).run_level == 1
+
+    def test_extra_keys_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            ManiacCfg(level=3, surge=True)
+
+    def test_spec_config_maniac_parses(self) -> None:
+        spec = _spec(maniac={"level": 3, "run_level": 4, "seed": 7})
+        assert spec.config.maniac is not None
+        assert spec.config.maniac.level == 3
+        assert spec.config.maniac.run_level == 4
+        assert spec.config.maniac.seed == 7
+
+    def test_absent_by_default(self) -> None:
+        assert _spec().config.maniac is None
+
+    def test_layered_config_exposes_maniac(self) -> None:
+        from mayhem.config import MayhemConfigBase
+
+        cfg = MayhemConfigBase(api_version="mayhem/v1", maniac={"level": 4, "run_level": 3})
+        assert cfg.maniac.level == 4
+        assert cfg.maniac.run_level == 3
