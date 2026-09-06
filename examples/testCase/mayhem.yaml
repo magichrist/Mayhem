@@ -28,30 +28,8 @@ containers:
 
   testcase-lb:
     faults:
-      - fault: proc.pause
-        duration: 10s
-      - fault: mem.exhaust
-        amount: 256M
-        duration: 20s
-      - fault: cpu.saturate
-        percent: 75
-        duration: 10s
-      - fault: fs.fill
-        percent: 60
-        duration: 10s
-      - fault: fd.exhaust
-        limit: 128
-        duration: 10s
-      - fault: load.spike
-        rps: 100
-        seconds: 10s
-      - fault: fuzz.protocol_abuse
-        duration: 5s
-      - fault: net.latency
-        seconds: 5s
-        jitter_ms: 10
-        duration: 10s
-      - fault: net.partition
+      - fault: clock.skew
+        offset_ms: 1000
         duration: 10s
       - fault: container.kill
         params:
@@ -59,24 +37,113 @@ containers:
         duration: 30s
       - fault: container.pause
         duration: 10s
-      - fault: node.service_stop
+      - fault: container.restart
         duration: 10s
-      - fault: http.error_injection
-        status: 500
+      - fault: cpu.saturate
+        percent: 75
+        duration: 10s
+      - fault: cpu.throttle
+        percent: 50
+        duration: 10s
+      - fault: db.connection_exhaust
+        params:
+          connections: 32
+          host: testcase-db
+          port: 3306
+        duration: 10s
+      - fault: db.query_error
+        params:
+          probability: 100
+          error: deadlock
+          port: 3306
         duration: 10s
       - fault: db.slow_query
         seconds: 5s
         duration: 10s
-      - fault: dns.resolve_delay
-        seconds: 5s
+      - fault: dependency.block
+        port: 5432
+        duration: 10s
+      - fault: dependency.flap
+        port: 5432
+        duration: 10s
+      - fault: dependency.rate_limit
+        rate: 20
+        duration: 10s
+      - fault: dependency.timeout
+        params:
+          port: 5432
+          delay_ms: 500
         duration: 10s
       - fault: dns.nxdomain
         domain: example.com
         duration: 10s
+      - fault: dns.resolve_delay
+        seconds: 5s
+        duration: 10s
+      - fault: dns.servfail
+        duration: 10s
+      - fault: dns.timeout
+        duration: 10s
+      - fault: fd.exhaust
+        limit: 128
+        duration: 10s
+      - fault: fs.fill
+        percent: 60
+        duration: 10s
+      - fault: fs.inode_exhaust
+        percent: 60
+        duration: 10s
+      - fault: fs.io_stress
+        params:
+          seconds: 5s
+          workers: 2
+          io_bytes: 64M
+        duration: 10s
+      - fault: fuzz.protocol_abuse
+        duration: 5s
+      - fault: http.error_injection
+        status: 500
+        duration: 10s
+      - fault: http.latency
+        delay_ms: 200
+        duration: 10s
+      - fault: load.spike
+        rps: 100
+        seconds: 10s
+      - fault: mem.exhaust
+        amount: 256M
+        duration: 20s
+      - fault: mem.leak
+        rate_mb: 8
+        duration: 10s
+      - fault: net.bandwidth
+        rate: 10mbit
+        duration: 10s
+      - fault: net.latency
+        seconds: 5s
+        jitter_ms: 10
+        duration: 10s
+      - fault: net.load
+        users: 10
+        url: http://testcase-api:8080/
+        duration: 10s
+      - fault: net.packet_loss
+        percent: 10
+        duration: 10s
+      - fault: net.partition
+        duration: 10s
+      - fault: node.service_stop
+        duration: 10s
+      - fault: proc.pause
+        duration: 10s
+      - fault: process.kill
+        duration: 10s
+      - fault: process.stop
+        duration: 10s
       - fault: tls.certificate_expired
         duration: 10s
-      - fault: clock.skew
-        offset_ms: 1000
+      - fault: tls.handshake_failure
+        port: 443
         duration: 10s
 
   testcase-download-1:

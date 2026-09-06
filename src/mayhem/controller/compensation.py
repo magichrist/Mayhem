@@ -782,16 +782,12 @@ def _bandwidth_tokens(fault: PlannedFault) -> tuple[str, str]:
     return rate, burst
 
 
-def _net_bandwidth_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _net_bandwidth_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
     rate, burst = _bandwidth_tokens(fault)
-    return _tc_qdisc_undo(
-        fault, node, ["tbf", "rate", rate, "burst", burst, "latency", "50ms"]
-    )
+    return _tc_qdisc_undo(fault, node, ["tbf", "rate", rate, "burst", burst, "latency", "50ms"])
 
 
 def _net_bandwidth_verify(
@@ -902,6 +898,99 @@ def _net_load_verify(
             incontainer=True,
         ),
     )
+
+
+# ── net.connection_reset / net.connection_refuse ──────────────────────────
+
+
+def _net_conn_reset_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """iptables REJECT with tcp-reset on the target port."""
+    return _param_netfilter("port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 80)(
+        fault, nodes
+    )
+
+
+def _net_conn_reset_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _param_netfilter_verify("port", 80)(fault, nodes)
+
+
+def _net_conn_refuse_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """iptables REJECT with icmp-port-unreachable on the target port."""
+    return _param_netfilter(
+        "port", "tcp", "REJECT", ["--reject-with", "icmp-port-unreachable"], 80
+    )(fault, nodes)
+
+
+def _net_conn_refuse_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _param_netfilter_verify("port", 80)(fault, nodes)
+
+
+# ── net.reorder / net.duplicate ───────────────────────────────────────────
+
+
+def _net_reorder_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """tc netem reorder: reorder <percent>% with delay_ms base delay."""
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    percent = max(1, min(_iparam(fault, "percent", 30), 100))
+    delay_ms = max(1, _iparam(fault, "delay_ms", 50))
+    tail = ["netem", "delay", f"{delay_ms}ms", "reorder", f"{percent}%"]
+    return _tc_qdisc_undo(fault, node, tail)
+
+
+def _net_reorder_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "netem")
+
+
+def _net_duplicate_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """tc netem duplicate: duplicate <percent>% of packets."""
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    percent = max(1, min(_iparam(fault, "percent", 10), 100))
+    tail = ["netem", "duplicate", f"{percent}%"]
+    return _tc_qdisc_undo(fault, node, tail)
+
+
+def _net_duplicate_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "netem")
+
+
+# ── dependency.connection_refuse ──────────────────────────────────────────
+
+
+def _dep_conn_refuse_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """iptables REJECT on the dependency's port (fast-fail vs DROP in block)."""
+    return _param_netfilter(
+        "port", "tcp", "REJECT", ["--reject-with", "icmp-port-unreachable"], 80
+    )(fault, nodes)
+
+
+def _dep_conn_refuse_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    return _param_netfilter_verify("port", 80)(fault, nodes)
 
 
 def _engine_restart_undo(
@@ -1156,10 +1245,7 @@ def _pulse_verify(
     if node is None:
         raise NO_UNDO
     pidf = _tool_marker(fault, node, marker_suffix) + ".pid"
-    check = (
-        f"test ! -e {pidf} && "
-        f"! iptables -S OUTPUT | grep -q -- '--dport {dport}'"
-    )
+    check = f"test ! -e {pidf} && ! iptables -S OUTPUT | grep -q -- '--dport {dport}'"
     return (
         _exec_verify(
             node,
@@ -1540,9 +1626,7 @@ def _dep_flap_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tupl
 def _dep_flap_verify(
     fault: PlannedFault, nodes: tuple[TopologyNode, ...]
 ) -> tuple[VerifyProbe, ...]:
-    return _pulse_verify(
-        fault, nodes, dport=_iparam(fault, "port", 0), marker_suffix="flap"
-    )
+    return _pulse_verify(fault, nodes, dport=_iparam(fault, "port", 0), marker_suffix="flap")
 
 
 def _db_query_error_undo(
@@ -1550,9 +1634,9 @@ def _db_query_error_undo(
 ) -> tuple[UndoOp, ...]:
     prob = _fparam(fault, "probability", 100.0)
     if prob >= 100.0:
-        return _param_netfilter(
-            "port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 3306
-        )(fault, nodes)
+        return _param_netfilter("port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 3306)(
+            fault, nodes
+        )
     return _pulse_undo_op(
         fault,
         nodes,
@@ -1570,17 +1654,13 @@ def _db_query_error_verify(
 ) -> tuple[VerifyProbe, ...]:
     if _fparam(fault, "probability", 100.0) >= 100.0:
         return _param_netfilter_verify("port", 3306)(fault, nodes)
-    return _pulse_verify(
-        fault, nodes, dport=_iparam(fault, "port", 3306), marker_suffix="db"
+    return _pulse_verify(fault, nodes, dport=_iparam(fault, "port", 3306), marker_suffix="db")
+
+
+def _tls_failure_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    return _param_netfilter("port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 443)(
+        fault, nodes
     )
-
-
-def _tls_failure_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
-    return _param_netfilter(
-        "port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 443
-    )(fault, nodes)
 
 
 def _tls_failure_verify(
@@ -1589,9 +1669,7 @@ def _tls_failure_verify(
     return _param_netfilter_verify("port", 443)(fault, nodes)
 
 
-def _conn_exhaust_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _conn_exhaust_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Exhaust the target's connection pool by holding real sockets open from
     inside the container. Marker-addressed, same lifecycle as the http proxy."""
     node = _tool_node(fault, nodes)
@@ -1625,12 +1703,7 @@ def _conn_exhaust_undo(
         f'[ -s {pidf} ] && kill -0 "$(cat {pidf})" 2>/dev/null && exit 0\n'
         "exit 1\n"
     )
-    undo = (
-        f"p={pidf}\n"
-        f'[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\n'
-        f"rm -f {pidf} {srcf}\n"
-        f"true\n"
-    )
+    undo = f'p={pidf}\n[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\nrm -f {pidf} {srcf}\ntrue\n'
     return (
         _tool_op(
             fault,
@@ -1658,9 +1731,7 @@ def _conn_exhaust_verify(
     )
 
 
-def _cpu_throttle_undo(
-    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
-) -> tuple[UndoOp, ...]:
+def _cpu_throttle_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Cap the container's CPU share at ``percent``% of one core.
 
     Routed to the argv-pair ToolExecutor (executor override), so this must be a
@@ -1731,6 +1802,88 @@ def _file_revert_verify(
             incontainer=True,
         ),
     )
+
+
+def _fs_read_only_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """Remount the target filesystem read-only; undo restores read-write.
+
+    A write-probe marker confirms the fs accepts writes again, guarding against
+    a remount that silently wedged the container.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    path = str(_param(fault, "path", "/"))
+    marker = _tool_marker(fault, node, "rwprobe")
+    inject = ["sh", "-c", f"mount -o remount,ro {path}"]
+    undo = [
+        "sh",
+        "-c",
+        f"mount -o remount,rw {path} && touch {marker} && rm -f {marker}",
+    ]
+    return (
+        _tool_op(
+            fault,
+            node,
+            "fs.remount",
+            _incontainer_argv(inject),
+            _incontainer_argv(undo),
+        ),
+    )
+
+
+def _fs_read_only_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    marker = _tool_marker(fault, node, "rwprobe")
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"touch {marker} && rm -f {marker}"],
+            incontainer=True,
+        ),
+    )
+
+
+# ── process.crash_loop ─────────────────────────────────────────────────────
+
+
+def _process_crash_loop_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Drive a restart cadence via engine stop/start argv-pairs.
+
+    Inject runs ``<engine> stop <cont>; <engine> start <cont>`` once; undo
+    ``start``s the container so it recovers to a running state.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    restart_n = max(1, _iparam(fault, "restarts", 10))
+    interval_s = str(_param(fault, "interval", "2s"))
+    # Shell loop of stop→start ``restart_n`` times at the engine level; undo
+    # just starts the container so the service returns to a running baseline.
+    step = (
+        f"{_ENGINE_TOKEN} stop {_CONTAINER_TOKEN}; "
+        f"{_ENGINE_TOKEN} start {_CONTAINER_TOKEN}; sleep {interval_s}"
+    )
+    loop = " && ".join([step] * restart_n)
+    inject = ["sh", "-c", loop]
+    undo = _engine_argv("start")
+    return (_tool_op(fault, node, "engine.restart", inject, undo),)
+
+
+def _process_crash_loop_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    # Undo started the container; the engine start action is the recovery.
+    return (_exec_verify(node, ["true"], incontainer=False),)
 
 
 def _clock_skew_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
@@ -1917,6 +2070,15 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "dependency.timeout": _tool_template(_dep_timeout_undo, _dep_timeout_verify),
         "dependency.flap": _tool_template(_dep_flap_undo, _dep_flap_verify),
         "dependency.rate_limit": _tool_template(_dep_rate_limit_undo, _dep_rate_limit_verify),
+        "dependency.connection_refuse": _tool_template(
+            _dep_conn_refuse_undo, _dep_conn_refuse_verify
+        ),
+        "net.connection_reset": _tool_template(_net_conn_reset_undo, _net_conn_reset_verify),
+        "net.connection_refuse": _tool_template(_net_conn_refuse_undo, _net_conn_refuse_verify),
+        "net.reorder": _tool_template(_net_reorder_undo, _net_reorder_verify),
+        "net.duplicate": _tool_template(_net_duplicate_undo, _net_duplicate_verify),
+        "fs.read_only": _tool_template(_fs_read_only_undo, _fs_read_only_verify),
+        "process.crash_loop": _tool_template(_process_crash_loop_undo, _process_crash_loop_verify),
         "cpu.throttle": _tool_template(_cpu_throttle_undo, _cpu_throttle_verify),
     }
 

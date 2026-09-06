@@ -49,6 +49,18 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(),
     ),
     FaultDefinition(
+        id="process.crash_loop",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.DOCKER_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=120.0,
+        params_schema=(
+            ParamSpec(name="restarts", type=ParamType.INTEGER, minimum=1, maximum=1000, default=10),
+            ParamSpec(name="interval", type=ParamType.STRING, default="2s"),
+        ),
+    ),
+    FaultDefinition(
         id="cpu.saturate",
         category=FaultCategory.CPU,
         risk=RiskLevel.MEDIUM,
@@ -138,6 +150,16 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
     ),
     FaultDefinition(
+        id="fs.read_only",
+        category=FaultCategory.STORAGE,
+        risk=RiskLevel.HIGH,
+        reversible=True,
+        required_caps=frozenset({Capability.FS_CONTROL}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(ParamSpec(name="path", type=ParamType.STRING, default="/"),),
+    ),
+    FaultDefinition(
         id="net.latency",
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
@@ -197,6 +219,55 @@ CATALOG: tuple[FaultDefinition, ...] = (
             # it is copied into the target container and run instead of the
             # built-in inline script.
             ParamSpec(name="script", type=ParamType.STRING, default=None),
+        ),
+    ),
+    FaultDefinition(
+        id="net.connection_reset",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+            ParamSpec(name="protocol", type=ParamType.STRING, default="tcp"),
+        ),
+    ),
+    FaultDefinition(
+        id="net.connection_refuse",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+            ParamSpec(name="protocol", type=ParamType.STRING, default="tcp"),
+        ),
+    ),
+    FaultDefinition(
+        id="net.reorder",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            _pct(minimum=1.0, maximum=100.0),
+            ParamSpec(name="delay_ms", type=ParamType.INTEGER, default=50),
+            ParamSpec(name="direction", type=ParamType.STRING, default="egress"),
+        ),
+    ),
+    FaultDefinition(
+        id="net.duplicate",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            _pct(minimum=1.0, maximum=100.0),
+            ParamSpec(name="direction", type=ParamType.STRING, default="egress"),
         ),
     ),
     FaultDefinition(
@@ -272,7 +343,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
         max_duration_s=120.0,
         params_schema=(
-            ParamSpec(name="connections", type=ParamType.INTEGER, required=True, minimum=1, maximum=256),
+            ParamSpec(
+                name="connections", type=ParamType.INTEGER, required=True, minimum=1, maximum=256
+            ),
             ParamSpec(name="host", type=ParamType.STRING, required=True),
             ParamSpec(
                 name="port",
@@ -293,7 +366,13 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(name="probability", type=ParamType.PERCENT, minimum=1.0, maximum=100.0, default=100.0),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
             ParamSpec(name="error", type=ParamType.STRING, default="deadlock"),
             ParamSpec(
                 name="port",
@@ -500,6 +579,20 @@ CATALOG: tuple[FaultDefinition, ...] = (
                 maximum=65535,
                 default=80,
             ),
+        ),
+    ),
+    FaultDefinition(
+        id="dependency.connection_refuse",
+        category=FaultCategory.DEPENDENCY,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+            ParamSpec(name="protocol", type=ParamType.STRING, default="tcp"),
         ),
     ),
     FaultDefinition(

@@ -359,43 +359,62 @@ types are catalog-native; table entries below are normative only as of this
 writing — the catalog implementation is authoritative and is what
 `mayhem validate` enforces.
 
-| Fault | Category | Risk | Max | Applicable node kinds | Capability | Parameters |
+| Fault | Category | Risk | Max | Node kinds | Capability | Parameters |
 |---|---|---|---|---|---|---|
-| `clock.skew` | clock | high | 300s | container, host, service | net_admin | `offset_ms` (int, required) |
+| `clock.skew` | clock | high | 300s | container, host, service | net_admin | `offset_ms` (integer, **required**) |
 | `container.kill` | container | medium | 60s | container, service | docker_engine | `signal` (string, default `SIGKILL`) |
 | `container.pause` | container | medium | 300s | container, service | docker_engine | — |
 | `container.restart` | container | medium | 60s | container, service | docker_engine | — |
-| `cpu.saturate` | cpu | medium | 300s | host, service | — | `percent` (1–100) |
+| `cpu.saturate` | cpu | medium | 300s | host, service | — | `percent` (percent, min 1, max 100) |
+| `cpu.throttle` | cpu | medium | 300s | container, service | docker_engine | `percent` (percent, min 1, max 100) |
+| `db.connection_exhaust` | database | high | 120s | container, external_dependency, service | — | `connections` (integer, min 1, max 256, **required**); `host` (string, **required**); `port` (integer, min 1, max 65535, default `3306`) |
+| `db.query_error` | database | high | 300s | container, external_dependency, service | net_admin | `probability` (percent, min 1, max 100, default `100.0`); `error` (string, default `deadlock`); `port` (integer, min 1, max 65535, default `3306`) |
 | `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration) |
-| `dependency.block` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (int 1–65535, required), `protocol` (string, default `tcp`) |
-| `dependency.timeout` | dependency | medium | 300s | container, external_dependency, service | net_admin | `port` (int, required), `delay_ms` (int 1–30000, required), `protocol` (string, default `tcp`) |
+| `dependency.block` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
+| `dependency.connection_refuse` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
+| `dependency.flap` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `interval` (duration, default `10.0`); `failure_probability` (percent, default `50.0`); `protocol` (string, default `tcp`) |
+| `dependency.rate_limit` | dependency | medium | 300s | container, external_dependency, service | — | `rate` (integer, **required**); `burst` (integer, default `200`); `code` (integer, min 100, max 599, default `429`); `port` (integer, min 1, max 65535, default `80`) |
+| `dependency.timeout` | dependency | medium | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `delay_ms` (integer, min 1, max 30000, **required**); `protocol` (string, default `tcp`) |
 | `dns.nxdomain` | dns | high | 300s | host, service | net_admin | `domain` (string) |
 | `dns.resolve_delay` | dns | medium | 300s | host, service | net_admin | `seconds` (duration) |
-| `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (int, default 64) |
-| `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (1–99) |
-| `fs.inode_exhaust` | storage | medium | 300s | container, host, service | — | `percent` (1–99) |
-| `fs.io_stress` | storage | low | 120s | container, host, service | — | `seconds`, `workers` (1–8, default 1), `io_bytes` (1M–1G, default 64M) |
+| `dns.servfail` | dns | medium | 120s | host, service | net_admin | — |
+| `dns.timeout` | dns | high | 120s | host, service | net_admin | — |
+| `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (integer, default `64`) |
+| `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99) |
+| `fs.inode_exhaust` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99) |
+| `fs.io_stress` | storage | medium | 120s | container, host, service | — | `seconds` (duration); `workers` (integer, min 1, max 8, default `1`); `io_bytes` (bytes, default `64M`); `read_mb_s` (integer, min 1, max 512); `write_mb_s` (integer, min 1, max 512); `block_size` (string, default `64k`) |
+| `fs.read_only` | storage | high | 120s | container, host, service | fs_control | `path` (string, default `/`) |
 | `fuzz.protocol_abuse` | fuzz | high | 180s | external_dependency, service | — | — |
-| `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (int, default 500) |
-| `k8s.network_policy` | k8s | high | 300s | k8s_node, pod | kubernetes_engine | `policy_name` (string), `direction` (string, default `ingress`) |
-| `k8s.node_drain` | k8s | critical | 600s | k8s_node | kubernetes_engine | `grace_period` (int, default 30) |
-| `k8s.node_pressure` | k8s | high | 300s | k8s_node | kubernetes_engine | `resource` (string, default `cpu`), `target_percent` (1–100) |
+| `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (integer, default `500`); `probability` (percent, min 0, max 100, default `0.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `http.latency` | http_api | medium | 300s | external_dependency, service | — | `delay_ms` (integer, min 1, max 30000); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `k8s.network_policy` | k8s | high | 300s | k8s_node, pod | kubernetes_engine | `policy_name` (string); `direction` (string, default `ingress`) |
+| `k8s.node_drain` | k8s | critical | 600s | k8s_node | kubernetes_engine | `grace_period` (integer, default `30`) |
+| `k8s.node_pressure` | k8s | high | 300s | k8s_node | kubernetes_engine | `resource` (string, default `cpu`); `target_percent` (percent, min 1, max 100) |
 | `k8s.pod_evict` | k8s | high | 120s | pod | kubernetes_engine | — |
 | `k8s.pod_kill` | k8s | high | 60s | pod | kubernetes_engine | — |
-| `k8s.pod_latency` | k8s | medium | 300s | pod | kubernetes_engine | `seconds` (duration), `jitter_ms` (float 0–5000) |
+| `k8s.pod_latency` | k8s | medium | 300s | pod | kubernetes_engine | `seconds` (duration); `jitter_ms` (float, min 0, max 5000) |
 | `k8s.pod_oom` | k8s | medium | 120s | pod | kubernetes_engine | `memory_limit` (string, default `64Mi`) |
 | `k8s.pod_partition` | k8s | high | 300s | pod | kubernetes_engine | `seconds` (duration) |
-| `k8s.pod_pressure` | k8s | medium | 300s | pod | kubernetes_engine | `resource` (string, default `cpu`), `target_percent` (1–100) |
-| `load.spike` | load | low | 900s | service | — | `rps` (int ≥ 1), `seconds` (duration) |
-| `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (1–99), `amount` (bytes, e.g. `256M`) |
-| `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration), `jitter_ms` (int, default 0) |
-| `net.load` | network | medium | 600s | container, service | — | `users` (int ≥ 1), `url` (string, default `http://localhost/`), `script` (optional string — path relative to the drill spec to a k6 `script.js`) |
-| `net.partition` | network | high | 120s | container, service | net_admin | — (use `targets:` to name the partition peers) |
+| `k8s.pod_pressure` | k8s | medium | 300s | pod | kubernetes_engine | `resource` (string, default `cpu`); `target_percent` (percent, min 1, max 100) |
+| `load.spike` | load | low | 900s | service | — | `rps` (integer, min 1); `seconds` (duration) |
+| `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (percent, min 1, max 99); `amount` (bytes); `mode` (string, default `allocate`) |
+| `mem.leak` | memory | high | 300s | container, service | — | `rate_mb` (integer, min 1, max 512, default `8`) |
+| `net.bandwidth` | network | medium | 300s | container, service | net_admin | `rate` (string, **required**); `burst` (string, default `10k`); `direction` (string, default `egress`) |
+| `net.connection_refuse` | network | high | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
+| `net.connection_reset` | network | medium | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
+| `net.duplicate` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `direction` (string, default `egress`) |
+| `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration); `jitter_ms` (integer, default `0`); `direction` (string, default `egress`) |
+| `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default `http://localhost/`); `script` (string) |
+| `net.packet_loss` | network | medium | 300s | container, service | net_admin | `percent` (percent, max 100); `direction` (string, default `egress`) |
+| `net.partition` | network | high | 120s | container, service | net_admin | — |
+| `net.reorder` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `delay_ms` (integer, default `50`); `direction` (string, default `egress`) |
 | `node.service_stop` | node | high | 120s | service | — | — |
 | `proc.pause` | process | low | 600s | container, process, service | process_control | — |
+| `process.crash_loop` | process | high | 120s | container, service | docker_engine | `restarts` (integer, min 1, max 1000, default `10`); `interval` (string, default `2s`) |
 | `process.kill` | process | high | 60s | container, process, service | process_control | — |
 | `process.stop` | process | medium | 300s | container, process, service | process_control | — |
 | `tls.certificate_expired` | tls | high | 120s | external_dependency, service | — | — |
+| `tls.handshake_failure` | tls | high | 120s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, default `443`) |
 
 The full, authoritative catalog is available at runtime: `mayhem toolkit faults`
 lists every definition with its risk and compensatability; `mayhem toolkit list`
@@ -427,6 +446,44 @@ gate).
     users: 10000
     script: k6/script.js         # custom load function (relative to this drill file)
 ```
+
+### Compensation lifecycle
+
+Every compensatable fault resolves to a `CompensationTemplate` (see
+`controller.compensation`). A template pairs an **undo builder** with a
+**verify builder**. The undo leg produces one or more `UndoOp`s that reverse
+the injection; the verify leg produces `VerifyProbe`s that prove the fault is
+gone. Both are generated from the same `PlannedFault` parameters and address
+the same marker artifacts the inject leg created, so what was injected is
+exactly what gets removed and verified.
+
+Undo strategies are grouped by mechanism (executor routing and the full
+per-fault template table live in `docs/compensation.md`):
+
+| Mechanism | Representative faults | Undo | Verify |
+|---|---|---|---|
+| Payload marker (pid) | `mem.exhaust`, `mem.leak`, `cpu.saturate`, `fs.fill`, `fs.inode_exhaust`, `fs.io_stress`, `fd.exhaust`, `load.spike`, `fuzz.protocol_abuse` | `kill -9` on marker pid (plus `rm` of marker siblings for the `fs.*` faults) | pidfile absent |
+| tc qdisc | `net.latency`, `net.packet_loss`, `net.bandwidth`, `net.reorder`, `net.duplicate`, `net.load`, `dependency.timeout` | `tc qdisc del` | tc chain absent |
+| iptables rule | `db.query_error`, `db.slow_query`, `tls.handshake_failure`, `dependency.block` | `iptables -D` rule removal | rule absent |
+| iptables reject | `net.connection_reset`, `net.connection_refuse`, `dependency.connection_refuse` | `iptables -D` rule removal (`tcp-reset` / `icmp-port-unreachable`) | rule absent |
+| Pulsing rule | `dns.timeout`, `dns.servfail`, `dependency.flap` | Time-gated rule removal (marker-suffixed) | iptables rule absent |
+| In-container proxy | `http.latency`, `http.error_injection` (prob = 100), `dependency.rate_limit`, `db.connection_exhaust` | Kill proxy pid, delete nat REDIRECT, remove markers | pidfile + rule absent |
+| Engine state | `cpu.throttle`, `clock.skew`, `process.crash_loop` | Engine `update --cpus` / clock restore / engine `start` | engine state restored |
+| Filesystem remount | `fs.read_only` | `mount -o remount,rw` restore | write-probe succeeds |
+| File revert | `dns.nxdomain`, `tls.certificate_expired` | Restore original file from backup marker | file content restored |
+| Container network | `net.partition` | Engine network disconnect / connect restore | connectivity restored |
+
+`http.error_injection` is a dual personality at plan time (ADR note in
+`docs/compensation.md`): `probability < 100` uses a synchronous iptables
+`REJECT` (undo deletes the rule), while `probability == 100` (the default)
+uses the in-container proxy track.
+
+The inject path, the undo path, and the verify probe are generated from the
+same plan-level parameters and address the same marker artifacts — this
+"same-contract" invariant is what makes verification check the full lifecycle
+rather than a partial teardown.
+
+Full details: [docs/compensation.md](compensation.md).
 
 ## Design Rules
 

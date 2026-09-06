@@ -58,9 +58,14 @@ _STATE: dict[str, str] = {"debug": "", "engine": ""}
     help="Run even when the impact gate proved some faults inert.",
 )
 @click.option(
-    "--podman", "podman", is_flag=True, default=False, help="Use Podman instead of Docker."
+    "-p",
+    "--podman",
+    "podman",
+    is_flag=True,
+    default=False,
+    help="Use Podman instead of Docker.",
 )
-@click.option("--debug", is_flag=True, help="Re-raise errors instead of rendering them.")
+@click.option("-d", "--debug", is_flag=True, help="Re-raise errors instead of rendering them.")
 @click.pass_context
 def app(
     ctx: click.Context,

@@ -8,13 +8,15 @@ layer can reuse it verbatim.
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mayhem.config import load_config, save_snapshot
-from mayhem.controller.executor import RunEngine
+from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
@@ -302,6 +304,142 @@ def probe_capabilities(host: str) -> CapabilityReport:
     from mayhem.toolkit.registry import default_registry
 
     return default_registry().probe(host=host)
+
+
+class CampaignExecutionError(Exception):
+    """Raised when a campaign abort-campaign policy hits an unexpected error."""
+
+
+class ObservationSink(Protocol):
+    """Anything able to append rows to the observations table."""
+
+    def save_observation(
+        self,
+        kind: str,
+        *,
+        run_id: str = "",
+        source: str = "",
+        data: dict[str, object] | None = None,
+    ) -> None: ...
+
+
+@dataclass
+class CampaignRunEntry:
+    """Outcome of one experiment spec executed within a campaign."""
+
+    spec_path: str
+    run_id: str
+    status: str  # completed | failed
+    verdict: str = ""
+
+
+@dataclass
+class CampaignRunResult:
+    """Aggregate result of executing a campaign's experiment sequence."""
+
+    campaign_id: str
+    status: str  # completed | failed | aborted
+    runs: list[CampaignRunEntry] = field(default_factory=list)
+
+    def summary_md(self) -> str:
+        lines = [f"# Campaign {self.campaign_id}", "", f"**status**: {self.status}"]
+        lines.append(f"**runs**: {len(self.runs)}")
+        for entry in self.runs:
+            mark = "ok" if entry.status == "completed" else "FAIL"
+            lines.append(f"- [{mark}] {entry.spec_path} → {entry.run_id}")
+        return "\n".join(lines)
+
+
+def run_campaign_sequence(
+    *,
+    campaign_id: str,
+    experiments: list[str],
+    policy: dict[str, Any],
+    window: dict[str, Any],
+    store: ObservationSink,
+    run_one: Callable[[str], RunResult],
+    now_fn: Callable[[], float] = time.time,
+) -> CampaignRunResult:
+    """Execute one spec at a time in order, honoring campaign policy and window.
+
+    ``run_one(spec_path)`` is the injectable per-spec executor, returning a
+    :class:`RunResult` or raising on failure. The on_failure policy is
+    ``abort_campaign`` (stop at first failure), ``skip_and_continue``, or
+    ``retry_then_abort`` (one bounded retry, then abort). ``window.max_duration_s``
+    is a hard deadline; ``window.cooldown_between_experiments_s`` is slept
+    between specs.
+    """
+    on_failure = policy.get("on_experiment_failure", "abort_campaign")
+    max_duration_s = float(window.get("max_duration_s") or 3600.0)
+    cooldown_s = max(0.0, float(window.get("cooldown_between_experiments_s") or 0.0))
+
+    started = now_fn()
+    result = CampaignRunResult(campaign_id=campaign_id, status="completed")
+    for i, spec_path in enumerate(experiments):
+        elapsed = now_fn() - started
+        if elapsed >= max_duration_s:
+            result.status = "aborted"
+            store.save_observation(
+                "campaign_stop",
+                source=campaign_id,
+                data={"reason": "deadline_passed", "elapsed_s": elapsed},
+            )
+            break
+
+        def _attempt(path: str) -> RunResult | None:
+            try:
+                return run_one(path)
+            except Exception as exc:
+                if on_failure == "abort_campaign":
+                    raise CampaignExecutionError(path, exc) from exc
+                return None
+
+        def _record(ran: RunResult, _sp: str = spec_path, _i: int = i) -> None:
+            result.runs.append(
+                CampaignRunEntry(
+                    spec_path=_sp,
+                    run_id=ran.run_id,
+                    status=ran.status,
+                    verdict=ran.verdict.value if ran.verdict else "",
+                )
+            )
+            store.save_observation(
+                "campaign_run",
+                run_id=ran.run_id,
+                source=campaign_id,
+                data={"spec": _sp, "status": ran.status, "index": _i},
+            )
+
+        ran = _attempt(spec_path)
+        if ran is not None:
+            _record(ran)
+
+        if ran is not None and ran.status == "completed":
+            pass  # continue; cooldown after non-final specs below
+        elif ran is not None:  # failed / aborted
+            if on_failure == "skip_and_continue":
+                continue
+            if on_failure == "retry_then_abort":
+                retry = _attempt(spec_path)
+                if retry is not None and retry.status == "completed":
+                    _record(retry)
+                    continue
+            result.status = "failed"
+            break
+        elif on_failure != "skip_and_continue":
+            result.status = "failed"
+            break
+
+        if i < len(experiments) - 1 and cooldown_s > 0:
+            time.sleep(cooldown_s)
+
+    if result.status == "completed":
+        store.save_observation(
+            "campaign_done",
+            source=campaign_id,
+            data={"runs": len(result.runs)},
+        )
+    return result
 
 
 def _compose_digest(graph_source: str | None) -> str:

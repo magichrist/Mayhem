@@ -65,9 +65,12 @@ Concretely:
    `PASS`/`FAIL` verdict derived from the observations actually recorded — no
    eyeballing.
 
-4. **Automatic recovery.** Every fault ships a compensation contract. If a
+4. **Automatic recovery.** Every fault ships a compensation contract: an undo
+   op plus a verification probe generated from the same plan parameters, so
+   what was injected is exactly what gets removed and re-proven healthy. If a
    round fails or the controller crashes, the janitor sweeps dirty leases and
-   reconciles the workload — no manual cleanup.
+   reconciles the workload — no manual cleanup. The per-fault lifecycle is
+   documented in [`docs/compensation.md`](docs/compensation.md).
 
 5. **Honest evidence.** Runs persist an immutable event journal, criteria
    evaluations, and a governing-decision trace in SQLite. No "trust me, it
@@ -170,13 +173,17 @@ mayhem history <run-id>
 `mayhem run` prints a copy-paste `run <run-id> — inspect with mayhem history
 <run-id>` line at the end; that id is all you need for the evidence commands.
 
-The example spec exercises 22 fault injections across 19 distinct catalog
-faults (CPU/memory/fd/disk pressure, load spikes, protocol abuse, network
-latency & partition, container kill/restart/pause, HTTP error injection, DB
-slow queries, DNS failures, TLS expiry, clock skew) — capped at one concurrent
-fault (`max_faults: 1`, `risk_ceiling: critical`) with auto-recovery off
-(`recovery: false`), so the downstream checks observe whether the stack
-self-heals on its own.
+The example spec exercises **38 distinct faults** (every catalog entry that
+applies to a Docker/Podman compose service) across the `testcase-lb`
+load-balancer — CPU/memory/fd/disk pressure, load spikes, protocol abuse,
+network latency/bandwidth/packet-loss, dependency and database and DNS faults,
+TLS failure, container kill/restart/pause, HTTP error injection —
+capped at one concurrent fault (`max_faults: 1`, `risk_ceiling: critical`)
+with auto-recovery off (`recovery: false`), so the downstream checks observe
+whether the stack self-heals on its own. The remaining nine `k8s.*` catalog
+faults are exercised against a Kubernetes blueprint in
+[`examples/k8s`](examples/k8s) (planning-only until the M8 driver lands), so
+**every fault in the catalog has an example**.
 
 Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
 `compose.yml`) in the current directory.
@@ -374,6 +381,7 @@ is as small as possible:
 |----------|----------|
 | [README.md](README.md) | This file. |
 | [docs/drill-spec.md](docs/drill-spec.md) | **The drill DSL reference** — config, containers, execution, checks, success criteria, observability, and the full fault catalog. |
+| [docs/compensation.md](docs/compensation.md) | **Fault compensation lifecycle** — inject / undo / verify contracts, executor routing, marker conventions, and the per-fault template table. |
 
 ### Status
 
@@ -391,8 +399,8 @@ is as small as possible:
 | CLI with prefix abbreviation, stable exit codes | Complete |
 | SQLite persistence + restart, migrations (schema freeze) | Complete |
 | Campaigns (multi-spec runs) | Complete |
-| Tests (825 collected: 718 unit + 107 e2e), ruff, mypy (per-file strict) | Complete |
-| Kubernetes execution | Planned (interface-only) |
+| Tests (859 collected: 752 unit + 95 e2e + 12 integration), ruff, mypy (per-file strict) | Complete |
+| Kubernetes execution | Planned (interface-only; see [`examples/k8s`](examples/k8s)) |
 | Web UI / REST API | Planned |
 
 ---

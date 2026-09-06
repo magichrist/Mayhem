@@ -235,9 +235,7 @@ def plan_maniac(
                 group_mode=GroupMode.SEQUENTIAL,
                 group_path=f"/{draw.container}",
                 recovery=(
-                    draw.fault.recovery
-                    if draw.fault.recovery is not None
-                    else spec.config.recovery
+                    draw.fault.recovery if draw.fault.recovery is not None else spec.config.recovery
                 ),
                 spec_dir=spec_dir,
             )
@@ -261,9 +259,7 @@ def plan_maniac(
     )
 
 
-def _plan_maniac_checks(
-    steps: list[PlannedStep], spec: DrillSpec, seq: int
-) -> int:
+def _plan_maniac_checks(steps: list[PlannedStep], spec: DrillSpec, seq: int) -> int:
     """Replay the spec's authored check steps after a maniac round (ADR-M5-1).
 
     Waits, parallel/sequential grouping and the faults themselves are maniac's

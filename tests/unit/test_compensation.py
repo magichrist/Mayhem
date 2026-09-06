@@ -127,6 +127,82 @@ def test_tool_partition_and_slow_query_are_netfilter_reversible() -> None:
         assert "iptables" in inject or "tc" in inject
 
 
+def test_tool_net_connection_reset_rejects_with_tcp_reset() -> None:
+    ops, probes = _build("net.connection_reset", port=8080)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert "--dport" in inject and "8080" in inject
+    assert "-j" in inject and "REJECT" in inject
+    assert "tcp-reset" in inject
+    assert "-I" in inject and "-D" in undo
+
+
+def test_tool_net_connection_refuse_rejects_with_port_unreachable() -> None:
+    ops, probes = _build("net.connection_refuse", port=8080)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert "REJECT" in inject and "icmp-port-unreachable" in inject
+    assert "-I" in inject and "-D" in undo
+
+
+def test_tool_net_reorder_uses_tc_netem_reorder_with_delay() -> None:
+    ops, probes = _build("net.reorder", percent=30, delay_ms=50)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert "tc" in inject and "qdisc" in inject and "add" in inject
+    assert "netem" in inject and "delay" in inject and "50ms" in inject
+    assert "reorder" in inject and "30%" in inject
+    assert "del" in undo and "root" in undo
+
+
+def test_tool_net_duplicate_uses_tc_netem_duplicate() -> None:
+    ops, probes = _build("net.duplicate", percent=25)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert "netem" in inject and "duplicate" in inject and "25%" in inject
+    assert "-I" not in inject and "del" in undo
+
+
+def test_tool_dependency_connection_refuse_netfilter() -> None:
+    ops, probes = _build("dependency.connection_refuse", port=3306)
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert "REJECT" in inject and "icmp-port-unreachable" in inject
+    assert "--dport" in inject and "3306" in inject
+    assert "-I" in inject and "-D" in undo
+    probe = probes[0]
+    assert probe.probe
+
+
+def test_tool_fs_read_only_remounts_and_restores_rw() -> None:
+    ops, probes = _build("fs.read_only", path="/")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert "mount -o remount,ro /" in inject
+    assert any("remount,rw" in part for part in undo)
+    assert any("rwprobe" in part for part in undo)
+
+
+def test_tool_process_crash_loop_engine_restart_cadence() -> None:
+    ops, probes = _build("process.crash_loop", restarts=3, interval="2s")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    undo = json.loads(ops[0].args["undo_argv"])
+    assert undo[1] == "start" and undo[0] == "@engine" and undo[-1] == "@cont"
+    body = inject[-1]
+    assert body.startswith("@engine stop @cont; @engine start @cont")
+    assert body.count("stop") == 3
+    assert body.count("start") == 3
+    assert "sleep 2s" in body
+
+
 def test_tool_net_load_saturates_with_k6_and_pid_marker() -> None:
     ops, probes = _build("net.load", users=8, url="http://api/health")
     assert len(ops) == 1 and len(probes) == 1

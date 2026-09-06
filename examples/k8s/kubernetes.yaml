@@ -1,0 +1,74 @@
+# Kubernetes cluster blueprint (planning-only)
+#
+# This is the declarative shape a Kubernetes blueprint will take once the M8
+# k8s driver is wired. Kubernetes fault targets resolve by namespace + name
+# (or label selector) rather than docker `container_name`. This file is a
+# reference model only — it is not consumed at runtime in the current
+# milestone (see ../README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testcase-api
+  namespace: mayhem
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: testcase-api
+  template:
+    metadata:
+      labels:
+        app: testcase-api
+    spec:
+      containers:
+        - name: api
+          image: docker.io/library/python:3.13-alpine
+          command: ["python", "-m", "http.server", "8080"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testcase-api
+  namespace: mayhem
+spec:
+  selector:
+    app: testcase-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testcase-lb
+  namespace: mayhem
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testcase-lb
+  template:
+    metadata:
+      labels:
+        app: testcase-lb
+    spec:
+      containers:
+        - name: lb
+          image: docker.io/library/nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi

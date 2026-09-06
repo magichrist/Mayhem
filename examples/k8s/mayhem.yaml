@@ -1,0 +1,76 @@
+# Kubernetes drill spec (planning-only).
+#
+# Exercises the nine `k8s.*` catalog faults against the declarative blueprint in
+# kubernetes.yaml. When the M8 k8s driver lands, Kubernetes targets are keyed by
+# namespace + name/labels instead of compose container_name, and this spec
+# becomes runnable. In the current milestone it is NOT executable: the planner
+# and the k8s.unsupported safety gate refuse k8s node kinds (ADR-M7).
+apiVersion: "mayhem/v1"
+kind: drill
+name: k8s-fault-drill
+hypothesis: "kubernetes workload and node recover from every injected k8s fault"
+
+config:
+  risk_ceiling: critical
+  # k8s.node_drain is critical-risk; require explicit acknowledgment to plan.
+  max_faults: 1
+  timeout: 60m
+  log_level: INFO
+  recovery: false
+
+containers:
+  # Node-level faults target k8s worker/control-plane nodes.
+  node-group:
+    faults:
+      - fault: k8s.node_drain
+        params:
+          grace_period: 30
+        duration: 15s
+      - fault: k8s.node_pressure
+        params:
+          resource: cpu
+          target_percent: 80
+        duration: 15s
+
+  # Pod-level faults target workload pods selected by label.
+  testcase-api:
+    faults:
+      - fault: k8s.pod_evict
+        duration: 15s
+      - fault: k8s.pod_kill
+        duration: 15s
+      - fault: k8s.pod_latency
+        params:
+          seconds: 3s
+          jitter_ms: 50
+        duration: 15s
+      - fault: k8s.pod_oom
+        params:
+          memory_limit: 64Mi
+        duration: 15s
+      - fault: k8s.pod_partition
+        params:
+          seconds: 3s
+        duration: 15s
+      - fault: k8s.pod_pressure
+        params:
+          resource: cpu
+          target_percent: 80
+        duration: 15s
+      - fault: k8s.network_policy
+        params:
+          policy_name: deny-egress
+          direction: egress
+        duration: 15s
+
+execution:
+  - parallel: [node-group]
+  - wait: 5s
+  - sequential: [testcase-api]
+
+success:
+  criteria:
+    - type: status
+      source_id: k8s-check.status
+      expected: 200
+  require_all: true

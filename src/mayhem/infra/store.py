@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mayhem.domain.common import utc_now
 from mayhem.domain.run_outcome import Outcome, RunRecord, RunStatus, RunVerdict
 from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.migrator import Migration, current_version, run_down_migrations, run_migrations
@@ -155,6 +156,28 @@ class Store:
                     outcome.residual_effect,
                     outcome.stability_signal,
                     json.dumps(outcome.extra),
+                ),
+            )
+
+    def save_observation(
+        self,
+        kind: str,
+        *,
+        run_id: str = "",
+        source: str = "",
+        data: dict[str, object] | None = None,
+    ) -> None:
+        """Persist one row to the observations table (ADR-M5 phase-gated)."""
+        with self.write() as conn:
+            conn.execute(
+                """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    kind,
+                    run_id,
+                    source,
+                    json.dumps(data or {}),
+                    utc_now().isoformat(),
                 ),
             )
 

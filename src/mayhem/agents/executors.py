@@ -404,6 +404,13 @@ EXECUTORS: tuple[FaultExecutor, ...] = (
 )
 
 _register_fault_executor("cpu.throttle", EXECUTORS[-1])
+# fs.read_only remounts the filesystem in-place; it is argv-pair work, not a
+# burner payload, so it must bypass the prefix-based PayloadExecutor (prefix
+# ``fs``). process.crash_loop drives a container-engine restart cadence, which
+# is also argv-pair work; the process-prefix ProcPauseExecutor only handles
+# SIGSTOP/SIGTERM/SIGKILL, so it is bypassed the same way.
+_register_fault_executor("fs.read_only", EXECUTORS[-1])
+_register_fault_executor("process.crash_loop", EXECUTORS[-1])
 
 
 def executor_for(fault_id: str) -> FaultExecutor | None:

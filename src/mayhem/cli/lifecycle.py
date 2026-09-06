@@ -152,6 +152,7 @@ def _compose_option[F: Callable[..., object]](fn: F) -> F:
     Omit ``--compose`` to auto-detect a compose file in the cwd.
     """
     return click.option(
+        "-c",
         "--compose",
         type=str,
         default=None,

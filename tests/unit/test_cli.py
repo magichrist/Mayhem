@@ -309,18 +309,22 @@ class TestManiacCommand:
     def test_maniac_rejects_no_injectable_container(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        bare = DRILL_YAML.replace(
-            "  timeout: 10m\n",
-            "  timeout: 10m\n  maniac:\n    level: 3\n    run_level: 4\n    seed: 7\n",
-            1,
-        ).replace(
-            "    faults:\n      - fault: proc.pause\n        duration: 10s\n",
-            "    faults: []\n",
-            1,
-        ).replace(
-            "    faults:\n      - fault: fuzz.protocol_abuse\n        duration: 5s\n",
-            "    faults: []\n",
-            1,
+        bare = (
+            DRILL_YAML.replace(
+                "  timeout: 10m\n",
+                "  timeout: 10m\n  maniac:\n    level: 3\n    run_level: 4\n    seed: 7\n",
+                1,
+            )
+            .replace(
+                "    faults:\n      - fault: proc.pause\n        duration: 10s\n",
+                "    faults: []\n",
+                1,
+            )
+            .replace(
+                "    faults:\n      - fault: fuzz.protocol_abuse\n        duration: 5s\n",
+                "    faults: []\n",
+                1,
+            )
         )
         spec = _write(tmp_path, bare)
         from mayhem.cli import lifecycle

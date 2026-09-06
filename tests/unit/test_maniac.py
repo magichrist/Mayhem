@@ -38,10 +38,13 @@ def test_level_1_takes_first_authored_fault_without_jitter() -> None:
         assert draw.round == i + 1
         assert draw.container in ("api", "lb")
         expected = {"api": 10.0, "lb": 50.0}[draw.container]
-        assert draw.fault.fault == {
-            "api": "proc.pause",
-            "lb": "fuzz.protocol_abuse",
-        }[draw.container]
+        assert (
+            draw.fault.fault
+            == {
+                "api": "proc.pause",
+                "lb": "fuzz.protocol_abuse",
+            }[draw.container]
+        )
         assert draw.fault.duration == expected
 
 
@@ -49,10 +52,13 @@ def test_level_2_draws_only_from_authored_faults() -> None:
     spec = _spec()
     draws = draw_maniac_rounds(spec, level=2, run_level=60, seed=3)
     for draw in draws:
-        assert draw.fault.fault == {
-            "api": "proc.pause",
-            "lb": "fuzz.protocol_abuse",
-        }[draw.container]
+        assert (
+            draw.fault.fault
+            == {
+                "api": "proc.pause",
+                "lb": "fuzz.protocol_abuse",
+            }[draw.container]
+        )
 
 
 def test_level_3_spans_loci() -> None:
