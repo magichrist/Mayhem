@@ -30,6 +30,7 @@ from mayhem.domain.events import Event, EventKind
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 
 if TYPE_CHECKING:
+    from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
     from mayhem.domain.topology import TopologyGraph
 
@@ -160,6 +161,13 @@ def _echo_install_hints(engine_name: str, plan: object, graph: object) -> None:
         f"  {style.cyan('mayhem dependency install')} applies the above automatically.",
         err=True,
     )
+
+
+def _resilience_trailer_lines(result: RunResult) -> list[str]:
+    """Resilience score + post-run diagnosis lines for the debug trailer."""
+    if result.resilience_report is None:
+        return []
+    return [line for line in result.resilience_report.summary_md().splitlines() if line]
 
 
 def _debug_progress() -> Callable[[Event], None]:
@@ -381,6 +389,7 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
                 style.danger(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
                 for lease_id in result.dirty_leases
             )
+            trailer.extend(_resilience_trailer_lines(result))
             click.echo("\n".join(trailer))
         else:
             click.echo(result.summary_md())
@@ -461,6 +470,7 @@ def maniac(ctx: click.Context, experiment: str | None, compose: str | None) -> N
                 style.danger(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
                 for lease_id in result.dirty_leases
             )
+            trailer.extend(_resilience_trailer_lines(result))
             click.echo("\n".join(trailer))
         else:
             click.echo(result.summary_md())

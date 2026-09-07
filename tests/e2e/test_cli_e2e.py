@@ -810,7 +810,10 @@ class TestCaseTopology:
 
     def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        with patch(
+            "mayhem.topology.providers.adapter_registry.best_effort", return_value=None
+        ):
+            rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         drift = data.get("drift", {})

@@ -254,9 +254,7 @@ def test_tool_net_load_loopback_binding_targets_localhost_host_port() -> None:
         ports=(
             # Loopback host binding: host reaches the container via localhost,
             # and the published host port differs from the container port.
-            PortBinding(
-                host_address="127.0.0.1", host_port=54321, container_port=8080
-            ),
+            PortBinding(host_address="127.0.0.1", host_port=54321, container_port=8080),
             PortBinding(host_address="0.0.0.0", host_port=8080, container_port=8080),
         ),
     )

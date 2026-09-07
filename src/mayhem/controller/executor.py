@@ -28,6 +28,10 @@ from mayhem.controller.observability_collector import (
     collect_observability,
     probe_to_verify,
 )
+from mayhem.controller.resilience_report import (
+    ResilienceReport,
+    build_resilience_report,
+)
 from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
 from mayhem.domain.checks import CheckLocus
@@ -106,6 +110,7 @@ class RunResult:
     criteria_evaluation: CriteriaEvaluation | None = None
     observability: tuple[SourceCollection, ...] = ()  # collected evidence (ADR-M4-4)
     governing_decisions: tuple[DecisionRef, ...] = ()  # decision trace (ADR-M4-1)
+    resilience_report: ResilienceReport | None = None  # end-of-run score + diagnosis
 
     @property
     def wall_seconds(self) -> float:
@@ -131,6 +136,9 @@ class RunResult:
             lines.append(f"- [{mark}] {step.step_id}: {step.detail}")
         for lease_id in self.dirty_leases:
             lines.append(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
+        if self.resilience_report is not None:
+            lines.append("")
+            lines.append(self.resilience_report.summary_md())
         return "\n".join(lines)
 
 
@@ -423,6 +431,18 @@ class RunEngine:
             evaluation=evaluation,
             observability=collections,
         )
+        resilience: ResilienceReport | None = None
+        try:
+            live = self._live_graph() if self._live_graph is not None else None
+            resilience = build_resilience_report(
+                plan,
+                reports,
+                dirty,
+                live,
+                self._engine,
+            )
+        except Exception:
+            resilience = None
         result = RunResult(
             run_id=plan.run_id,
             status=status,
@@ -434,6 +454,7 @@ class RunEngine:
             criteria_evaluation=evaluation,
             observability=collections,
             governing_decisions=plan.decision_refs,
+            resilience_report=resilience,
         )
         self._store.query(
             "UPDATE runs SET summary_md = ? WHERE id = ?",

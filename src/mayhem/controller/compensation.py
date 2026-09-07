@@ -943,9 +943,7 @@ def _net_load_verify(
         raise NO_UNDO
     script = _tool_marker(fault, node, "load.js")
     pidfile = _tool_marker(fault, node, "k6.pid")
-    return (
-        _host_exec_verify(["sh", "-c", f"test ! -e {script} && test ! -e {pidfile}"]),
-    )
+    return (_host_exec_verify(["sh", "-c", f"test ! -e {script} && test ! -e {pidfile}"]),)
 
 
 # ── net.connection_reset / net.connection_refuse ──────────────────────────
