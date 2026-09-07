@@ -242,6 +242,104 @@ class TestBypass:
         assert bypass_from_verdicts([]) == {}
 
 
+PYTHON_FAMILY = (
+    "db.connection_exhaust",
+    "http.latency",
+    "dependency.rate_limit",
+    "mem.leak",
+    "fs.inode_exhaust",
+    "fs.io_stress",
+)
+TC_FAMILY = (
+    "net.packet_loss",
+    "net.bandwidth",
+    "net.reorder",
+    "net.duplicate",
+    "dependency.timeout",
+)
+NETFILTER_FAMILY = (
+    "net.connection_reset",
+    "net.connection_refuse",
+    "dependency.block",
+    "dependency.flap",
+    "dependency.connection_refuse",
+    "dns.timeout",
+    "dns.servfail",
+    "tls.handshake_failure",
+    "db.query_error",
+)
+
+
+class TestGateCoverage:
+    """Every in-container fault family must be gated on its real tooling —
+    regressions here are exactly the "inert injection fails at exec time" bug
+    class (db.connection_exhaust ran on a python-less image and died in
+    inject, because the gate defaulted it to "no tooling required")."""
+
+    @pytest.mark.parametrize("fault_id", PYTHON_FAMILY)
+    def test_python_payload_family_requires_python(self, fault_id: str) -> None:
+        run = _runtime(bins={"sh": True, "python": False})
+        verdict = gate_fault(fault_id, "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert "bin:python" in verdict.missing
+
+    @pytest.mark.parametrize("fault_id", TC_FAMILY)
+    def test_tc_family_requires_tc_and_net_admin(self, fault_id: str) -> None:
+        run = _runtime(bins={"tc": True})
+        verdict = gate_fault(fault_id, "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert verdict.missing == ("cap:NET_ADMIN",)
+        rich = _runtime(bins={"tc": True}, cap_eff=1 << 12)
+        assert gate_fault(fault_id, "testcase-api", "podman", rich).impact_possible is True
+
+    @pytest.mark.parametrize("fault_id", NETFILTER_FAMILY)
+    def test_netfilter_family_requires_iptables_and_net_admin(self, fault_id: str) -> None:
+        run = _runtime(bins={"iptables": False})
+        verdict = gate_fault(fault_id, "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert "bin:iptables" in verdict.missing
+        rich = _runtime(bins={"iptables": True}, cap_eff=1 << 12)
+        assert (
+            gate_fault(fault_id, "testcase-api", "podman", rich).impact_possible is True
+        )
+
+    def test_connection_exhaust_is_not_trusted_without_python(self) -> None:
+        run = _runtime(bins={"sh": True, "python": False})
+        verdict = gate_fault("db.connection_exhaust", "testcase-api", "podman", run)
+        assert verdict.missing == ("bin:python",)
+
+    @pytest.mark.parametrize(
+        "fault_id",
+        ("container.restart", "container.pause", "process.crash_loop", "cpu.throttle"),
+    )
+    def test_engine_addressed_family_is_never_gated(self, fault_id: str) -> None:
+        assert fault_id in impact._ENGINE_FAULTS
+        verdict = gate_fault(fault_id, "testcase-api", "podman", _runtime(bins={}))
+        assert verdict.impact_possible is True
+
+    def test_fs_read_only_requires_root(self) -> None:
+        run = _runtime(bins={"sh": True}, uid=1000)
+        verdict = gate_fault("fs.read_only", "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert "uid(0)" in verdict.missing
+
+    def test_every_catalog_fault_is_classified_by_the_gate(self) -> None:
+        """No fault may fall through to the "no in-image tooling required"
+        default unless it is provably engine/host-side (no container tooling
+        exists to gate on)."""
+        from mayhem.domain.catalog import all_definitions
+
+        host_side = impact._ENGINE_FAULTS | {"process.stop", "process.kill"}
+        uncovered = sorted(
+            d.id
+            for d in all_definitions()
+            if d.id not in host_side
+            and not d.id.startswith("k8s.")
+            and d.id not in impact.REQUIREMENTS
+        )
+        assert uncovered == []
+
+
 class TestCatalogDose:
     def test_net_load_catalog_entries(self) -> None:
         from mayhem.domain.catalog import definition_for

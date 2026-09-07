@@ -51,28 +51,73 @@ class FaultRequirement:
 REQUIREMENTS: dict[str, FaultRequirement] = {
     "proc.pause": FaultRequirement(bins=frozenset({"kill"})),
     "mem.exhaust": FaultRequirement(bins=frozenset({"python"})),
+    "mem.leak": FaultRequirement(bins=frozenset({"python"})),
     "cpu.saturate": FaultRequirement(bins=frozenset({"python"})),
     "fs.fill": FaultRequirement(bins=frozenset({"python"})),
+    "fs.inode_exhaust": FaultRequirement(bins=frozenset({"python"})),
+    "fs.io_stress": FaultRequirement(bins=frozenset({"python"})),
+    "fs.read_only": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "fd.exhaust": FaultRequirement(bins=frozenset({"python"})),
     "load.spike": FaultRequirement(bins=frozenset({"python"})),
     "fuzz.protocol_abuse": FaultRequirement(bins=frozenset({"python"})),
+    "http.latency": FaultRequirement(bins=frozenset({"python"})),
+    "db.connection_exhaust": FaultRequirement(bins=frozenset({"python"})),
+    "dependency.rate_limit": FaultRequirement(bins=frozenset({"python"})),
     "net.latency": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.packet_loss": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.bandwidth": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.partition": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.reorder": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.duplicate": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "dependency.timeout": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.load": FaultRequirement(bins=frozenset({"k6"})),
     "http.error_injection": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
+    "net.connection_reset": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "net.connection_refuse": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
     "db.slow_query": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
+    "db.query_error": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dns.timeout": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
+    "dns.servfail": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
+    "tls.handshake_failure": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dependency.block": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dependency.flap": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dependency.connection_refuse": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
     "dns.resolve_delay": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "dns.nxdomain": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "tls.certificate_expired": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "clock.skew": FaultRequirement(bins=frozenset({"date"}), caps=frozenset({"SYS_TIME"})),
 }
 
-# Engine-addressed faults (kill/stop/start the runtime itself): no in-image
-# tooling is needed, so they are never gated on container binaries — the
-# engine being reachable and the container being resolvable is sufficient.
-_ENGINE_FAULTS = frozenset({"container.kill", "node.service_stop"})
+# Engine-addressed faults (kill/stop/start the runtime itself, or drive the
+# host engine: ``update --cpus``, restart cadence): no in-image tooling is
+# needed, so they are never gated on container binaries — the engine being
+# reachable and the container being resolvable is sufficient.
+_ENGINE_FAULTS = frozenset(
+    {
+        "container.kill",
+        "container.restart",
+        "container.pause",
+        "process.crash_loop",
+        "cpu.throttle",
+        "node.service_stop",
+    }
+)
 
 #: Faults whose recovery probe cannot see the live perturbation. The generic
 #: "recovery probe inverted during the window" observation is therefore
