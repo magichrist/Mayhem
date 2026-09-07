@@ -421,7 +421,7 @@ writing — the catalog implementation is authoritative and is what
 | `net.connection_reset` | network | medium | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `net.duplicate` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `direction` (string, default `egress`) |
 | `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration); `jitter_ms` (integer, default `0`); `direction` (string, default `egress`) |
-| `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default `http://localhost/`); `script` (string) |
+| `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default container `ip:port`); `script` (string) |
 | `net.packet_loss` | network | medium | 300s | container, service | net_admin | `percent` (percent, max 100); `direction` (string, default `egress`) |
 | `net.partition` | network | high | 120s | container, service | net_admin | — |
 | `net.reorder` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `delay_ms` (integer, default `50`); `direction` (string, default `egress`) |
@@ -441,14 +441,20 @@ the faults require.
 ### `net.load`
 
 `net.load` saturates egress from the target container with a k6 HTTP load
-generator. When `script` is set, that file (a path relative to the drill spec)
-is copied into the container and run as `k6 run -u <users> -d <duration>s`, so
-you can drive arbitrarily shaped load functions against any URL or endpoint the
-container can reach. When `script` is omitted the fault needs no input beyond
-`users` and `url`: a minimal script that GETs `url` is generated automatically,
-exactly as before — both forms run the same marker/pid-undo contract, and both
-require the `k6` binary inside the target container (checked by the impact
-gate).
+generator running on the drill host. When `script` is set, that file (a path
+relative to the drill spec) is materialized on the host and run as
+`k6 run -u <users> -d <duration>s`, so you can drive arbitrarily shaped load
+functions against any URL or endpoint the container can reach. When `script`
+is omitted the target is derived from the first TCP port binding: a binding on
+a loopback host address (`127.0.0.1`/`::1`) is reached through the host at
+`http://localhost:<host-port>/` (host port may differ from the container
+port), while any other binding is reached at the container's own live IP and
+container-side port (`http://<container-ip>:<port>/`). Either way `url`
+overrides the derived target. Both forms run the same marker/pid-undo contract. The
+impact gate treats `k6` as **host-side tooling**: `net.load` is gated on the
+`k6` binary being present on the drill host (never inside the container), and
+`mayhem dependency` never lists or installs it as a container package — install
+k6 on the host directly.
 
 ```yaml
 - fault: net.load

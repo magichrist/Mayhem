@@ -6,6 +6,7 @@ import re
 from mayhem.controller.compensation import _payload_source, _payload_undo_ops, template_for
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.experiments import PlannedFault
+from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.topology import ProcessNode, ServiceNode
 
 
@@ -99,8 +100,26 @@ def _svc_api() -> tuple[ServiceNode, ProcessNode]:
     )
 
 
-def _build(fid: str, **params: object):
+def _build(fid: str, **params: object) -> tuple[tuple[UndoOp, ...], tuple[VerifyProbe, ...]]:
     return template_for(fid).build(_tool_fault(fid, **params), _svc_api())
+
+
+def _build_net_load_ip(
+    fid: str, **params: object
+) -> tuple[tuple[UndoOp, ...], tuple[VerifyProbe, ...]]:
+    from mayhem.domain.identity import RuntimeIdentity
+    from mayhem.domain.topology import ContainerNode, PortBinding
+
+    node = ContainerNode(
+        id="svc-api",
+        name="api",
+        engine="podman",
+        runtime_identity=RuntimeIdentity(runtime="podman", host_id="h1", runtime_id="api"),
+        container_name="testcase-api",
+        ip_address="10.0.0.5",
+        ports=(PortBinding(host_port=8080, container_port=8080),),
+    )
+    return template_for(fid).build(_tool_fault(fid, **params), (node,))
 
 
 def test_tool_net_latency_binds_delay_and_address() -> None:
@@ -203,19 +222,58 @@ def test_tool_process_crash_loop_engine_restart_cadence() -> None:
     assert "sleep 2s" in body
 
 
-def test_tool_net_load_saturates_with_k6_and_pid_marker() -> None:
-    ops, probes = _build("net.load", users=8, url="http://api/health")
+def test_tool_net_load_saturates_from_host_into_container_ip() -> None:
+    ops, probes = _build_net_load_ip("net.load", users=8)
     assert len(ops) == 1 and len(probes) == 1
     inject = json.loads(ops[0].args["inject_argv"])
     undo = json.loads(ops[0].args["undo_argv"])
-    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert ops[0].op == "k6.host"
+    assert "@engine" not in inject and "exec" not in inject[:3]
+    assert inject[0] == "sh"  # runs on the drill host, not in the container
     assert "k6 run -u 8 -d 10s" in inject[-1]
-    assert "http://api/health" in inject[-1]
+    assert "http://10.0.0.5:8080/" in inject[-1]
     assert "load.js" in inject[-1]
     assert "kill" in undo[-1] and "rm -f" in undo[-1]
     probe = probes[0]
     assert probe.probe == "exec"
+    assert "engine" not in probe.args and "cont" not in probe.args
     assert "load.js" in probe.args["cmd"][-1] and "k6.pid" in probe.args["cmd"][-1]
+
+
+def test_tool_net_load_loopback_binding_targets_localhost_host_port() -> None:
+    from mayhem.domain.identity import RuntimeIdentity
+    from mayhem.domain.topology import ContainerNode, PortBinding
+
+    node = ContainerNode(
+        id="svc-api",
+        name="api",
+        engine="podman",
+        runtime_identity=RuntimeIdentity(runtime="podman", host_id="h1", runtime_id="api"),
+        container_name="testcase-api",
+        ip_address="10.0.0.5",
+        ports=(
+            # Loopback host binding: host reaches the container via localhost,
+            # and the published host port differs from the container port.
+            PortBinding(
+                host_address="127.0.0.1", host_port=54321, container_port=8080
+            ),
+            PortBinding(host_address="0.0.0.0", host_port=8080, container_port=8080),
+        ),
+    )
+    ops, probes = template_for("net.load").build(_tool_fault("net.load", users=4), (node,))
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    assert "@engine" not in inject and "exec" not in inject[:3]
+    assert "http://localhost:54321/" in inject[-1]
+
+
+def test_tool_net_load_falls_back_to_explicit_url() -> None:
+    ops, probes = _build("net.load", users=8, url="http://api/health")
+    assert len(ops) == 1 and len(probes) == 1
+    inject = json.loads(ops[0].args["inject_argv"])
+    assert "@engine" not in inject and "exec" not in inject[:3]
+    assert "http://api/health" in inject[-1]
+    assert "k6 run -u 8 -d 10s" in inject[-1]
 
 
 def test_tool_net_load_with_user_script_embeds_content() -> None:
@@ -228,7 +286,7 @@ def test_tool_net_load_with_user_script_embeds_content() -> None:
     assert len(ops) == 1 and len(probes) == 1
     inject = json.loads(ops[0].args["inject_argv"])
     undo = json.loads(ops[0].args["undo_argv"])
-    assert inject[:3] == ["@engine", "exec", "@cont"]
+    assert "@engine" not in inject and "exec" not in inject[:3]
     assert "k6 run -u 10000 -d 10s" in inject[-1]
     assert "http://10.0.0.5:8080/" in inject[-1]
     assert "K6EOF" in inject[-1]

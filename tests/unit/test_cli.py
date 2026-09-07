@@ -138,6 +138,7 @@ execution:
             cap_eff=0,
         )
         monkeypatch.setattr(impact_mod, "probe_container_runtime", lambda *a, **k: runtime)
+        monkeypatch.setattr(impact_mod, "_host_bin_present", lambda name: False)
         captured: dict[str, object] = {}
 
         def _stub_engine(*args: object, **kwargs: object):
@@ -157,10 +158,10 @@ execution:
         assert rc == 0
         err = capsys.readouterr().err
         assert "impact gate — bypassing" in err
-        assert "net.load → testcase-api: bypass due to missing bin:k6" in err
+        assert "net.load → testcase-api: bypass due to missing host tooling: bin:k6" in err
         bypass = captured["bypass"]
         assert isinstance(bypass, dict)
-        assert bypass[("net.load", "testcase-api")] == "missing bin:k6"
+        assert bypass[("net.load", "testcase-api")] == "missing host tooling: bin:k6"
 
     def test_skip_gate_bypasses_inert_refusal(
         self,

@@ -214,10 +214,14 @@ CATALOG: tuple[FaultDefinition, ...] = (
         max_duration_s=600.0,
         params_schema=(
             ParamSpec(name="users", type=ParamType.INTEGER, minimum=1.0),
-            ParamSpec(name="url", type=ParamType.STRING, default="http://localhost/"),
-            # ``script``: path on the drill host to a k6 ``script.js``. When set,
-            # it is copied into the target container and run instead of the
-            # built-in inline script.
+            # ``url``: target for the generated load script. Defaults to the
+            # target container's own network address (live IP + first TCP
+            # serving port); ``http://localhost/`` only when no address is
+            # known at plan time.
+            ParamSpec(name="url", type=ParamType.STRING, default=None),
+            # ``script``: path on the drill host to a k6 ``script.js`` run by
+            # the host k6 against the target; when set it replaces the built-in
+            # inline script instead of ``url``.
             ParamSpec(name="script", type=ParamType.STRING, default=None),
         ),
     ),

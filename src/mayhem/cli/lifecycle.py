@@ -87,6 +87,7 @@ def _gate_bypasses(engine_name: str, plan: object, graph: object) -> dict[tuple[
                 style.yellow(f"  - {fid} → {cont}: bypass due to {why}"),
                 err=True,
             )
+        _echo_install_hints(engine_name, plan, graph)
     if unreachable:
         click.echo(
             style.warn("warning:")
@@ -96,6 +97,69 @@ def _gate_bypasses(engine_name: str, plan: object, graph: object) -> dict[tuple[
             err=True,
         )
     return bypass
+
+
+def _echo_install_hints(engine_name: str, plan: object, graph: object) -> None:
+    """Per-container install guidance for the bypassed tooling (best effort).
+
+    Detects each container's package manager from the live probe (apt-get /
+    apk / dnf / yum / microdnf / zypper), prints the concrete ``engine exec``
+    command that restores the tooling, and points at ``mayhem dependency
+    install`` — which runs the same commands automatically. Probe or detection
+    hiccups must never fail the run: the whole helper degrades to a no-op.
+    """
+    from mayhem.agents.impact import dependency_plan as _dep_plan
+    from mayhem.agents.impact import host_tooling_gaps as _host_gaps
+    from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.topology import TopologyGraph
+
+    if not isinstance(plan, ExecutionPlan) or not isinstance(graph, TopologyGraph):
+        return
+    try:
+        host_gaps = _host_gaps(plan)
+        deps = _dep_plan(plan, graph, engine_name)
+    except Exception:
+        return
+    if host_gaps:
+        click.echo(
+            style.info("info:") + " host tooling missing for bypassed faults:",
+            err=True,
+        )
+        for name in host_gaps:
+            click.echo(
+                f"  {style.yellow('*')} {name}: runs on the drill host, not in a container — "
+                "install it on the host (mayhem cannot install host packages)",
+                err=True,
+            )
+    if not deps:
+        return
+    click.echo(
+        style.info("info:") + " install missing tooling to un-bypass those faults:",
+        err=True,
+    )
+    for dp in deps:
+        if dp.installable:
+            cmd = " && ".join(" ".join(argv) for argv in dp.install_argv())
+            click.echo(
+                f"  {style.yellow('*')} {dp.container}: "
+                f"install {', '.join(dp.packages)} via {dp.pm} — {cmd}",
+                err=True,
+            )
+        if dp.manual:
+            click.echo(
+                f"  {style.yellow('*')} {dp.container}: manual tooling — {', '.join(dp.manual)}",
+                err=True,
+            )
+        if dp.caps_missing:
+            click.echo(
+                f"  {style.yellow('*')} {dp.container}: {', '.join(dp.caps_missing)} are runtime "
+                "flags, not packages — restart with --cap-add",
+                err=True,
+            )
+    click.echo(
+        f"  {style.cyan('mayhem dependency install')} applies the above automatically.",
+        err=True,
+    )
 
 
 def _debug_progress() -> Callable[[Event], None]:

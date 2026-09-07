@@ -46,7 +46,7 @@ drive undo, recovery, and verification.
 | `net.packet_loss`          | `tc qdisc del` leaving the target intact             | tc chain absent                    |
 | `net.bandwidth`            | `tc qdisc del`                                       | tc chain absent                    |
 | `net.partition`            | container engine network disconnect                  | connectivity restored              |
-| `net.load`                 | `tc` delay replay removal                            | tc chain absent                    |
+| `net.load`                 | host k6 SIGKILL + `rm` of marker script/pid         | host markers absent                |
 | `http.latency`             | proxy kill + nat REDIRECT delete + marker removal    | pidfile absent + rule absent       |
 | `http.error_injection`     | probability <100: iptables REJECT rule delete; else proxy tear-down | rule absent / pidfile absent |
 | `mem.exhaust`              | payload SIGKILL (marker pid)                         | pidfile absent                     |

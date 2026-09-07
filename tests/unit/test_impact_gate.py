@@ -93,11 +93,19 @@ class TestGate:
         verdict = gate_fault("net.latency", "testcase-api", "podman", run)
         assert verdict.impact_possible is True
 
-    def test_net_load_needs_k6(self) -> None:
-        run = _runtime(bins={"k6": False, "python": True})
-        verdict = gate_fault("net.load", "testcase-api", "podman", run)
+    def test_net_load_gates_on_host_k6(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(impact, "_host_bin_present", lambda name: False)
+        verdict = gate_fault("net.load", "testcase-api", "podman", _runtime(bins={}))
         assert verdict.impact_possible is False
+        assert verdict.host is True
         assert verdict.missing == ("bin:k6",)
+        assert "host tooling" in verdict.note
+
+    def test_net_load_passes_when_host_has_k6(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(impact, "_host_bin_present", lambda name: True)
+        verdict = gate_fault("net.load", "testcase-api", "podman", _runtime(bins={}))
+        assert verdict.impact_possible is True
+        assert verdict.host is True
 
     def test_root_required_family_fails_for_nonroot(self) -> None:
         run = _runtime(bins={"sh": True}, uid=1000)
@@ -201,13 +209,13 @@ class TestScan:
     def test_dead_fault_is_flagged_and_engine_is_probed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        run = _runtime(bins={"k6": False})
+        run = _runtime(bins={"tc": False}, cap_eff=0)
         monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
-        verdicts, probed = scan_plan_faults(_plan("net.load"), _graph(), "podman")
+        verdicts, probed = scan_plan_faults(_plan("net.latency"), _graph(), "podman")
         assert probed is True
         dead = [v for v in verdicts if not v.impact_possible]
         assert len(dead) == 1
-        assert dead[0].fault_id == "net.load" and dead[0].container == "testcase-api"
+        assert dead[0].fault_id == "net.latency" and dead[0].container == "testcase-api"
 
     def test_healthy_fault_passes_with_no_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = _runtime(bins={"kill": True})
@@ -217,9 +225,22 @@ class TestScan:
 
     def test_engine_unreachable_warns_not_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: None)
-        verdicts, probed = scan_plan_faults(_plan("net.load"), _graph(), "podman")
+        verdicts, probed = scan_plan_faults(_plan("net.latency"), _graph(), "podman")
         assert probed is False
         assert all(v.probed is False for v in verdicts)
+
+    def test_host_fault_needs_no_container_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        probe_calls: list[tuple[str, str]] = []
+
+        def _fake_probe(eng, cont, timeout_s=10):
+            probe_calls.append((eng, cont))
+
+        monkeypatch.setattr(impact, "probe_container_runtime", _fake_probe)
+        monkeypatch.setattr(impact, "_host_bin_present", lambda name: True)
+        verdicts, _ = scan_plan_faults(_plan("net.load"), _graph(), "podman")
+        assert probe_calls == []  # net.load is host-addressed — no container probe
+        assert verdicts[0].impact_possible is True
+        assert verdicts[0].host is True
 
 
 class TestBypass:
@@ -299,9 +320,7 @@ class TestGateCoverage:
         assert verdict.impact_possible is False
         assert "bin:iptables" in verdict.missing
         rich = _runtime(bins={"iptables": True}, cap_eff=1 << 12)
-        assert (
-            gate_fault(fault_id, "testcase-api", "podman", rich).impact_possible is True
-        )
+        assert gate_fault(fault_id, "testcase-api", "podman", rich).impact_possible is True
 
     def test_connection_exhaust_is_not_trusted_without_python(self) -> None:
         run = _runtime(bins={"sh": True, "python": False})
@@ -349,3 +368,101 @@ class TestCatalogDose:
         names = {p.name for p in d.params_schema}
         assert {"users", "url"} <= names
         assert d.reversible is True
+
+
+class TestPackageManager:
+    def test_detects_apt_get(self) -> None:
+        run = _runtime(bins={"apt-get": True, "apk": False})
+        assert run.package_manager() == "apt-get"
+
+    def test_priority_apt_over_alpine(self) -> None:
+        run = _runtime(bins={"apt-get": True, "apk": True})
+        assert run.package_manager() == "apt-get"
+
+    def test_none_when_no_manager(self) -> None:
+        assert _runtime(bins={}).package_manager() is None
+
+    def test_pm_bins_appear_in_probe_output(self) -> None:
+        parsed = impact.parse_runtime_output(
+            "podman", "c1", "BINS python:0 apt-get:1 sh:1\nUID 0\nCAPEFF 0\n"
+        )
+        assert parsed is not None
+        assert parsed.has_bin("apt-get") is True
+        assert parsed.package_manager() == "apt-get"
+
+    def test_alpine_apk_survives_hyphenated_bins(self) -> None:
+        # Regression: the BINS regex must not truncate on the first hyphenated
+        # bin (apt-get) and silently drop apk — Alpine reported "pm: none".
+        parsed = impact.parse_runtime_output(
+            "podman",
+            "testcase-lb",
+            "BINS kill:1 tc:0 iptables:0 python:0 python3:0 date:1 sh:1 "
+            "apt-get:0 apk:1 dnf:0 yum:0 microdnf:0 zypper:0\n"
+            "UID 0\nCAPEFF 0\n",
+        )
+        assert parsed is not None
+        assert parsed.has_bin("ash-alias-check") is False  # sanity: unknown name
+        assert parsed.has_bin("apk") is True
+        assert parsed.package_manager() == "apk"
+        assert parsed.has_bin("sh") is True  # Alpine's busybox ash
+
+
+class TestDependencyPlan:
+    def test_apt_get_tc_and_net_admin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = _runtime(
+            bins={"apt-get": True, "tc": False, "sh": True},
+            cap_eff=0,
+        )
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        dp = impact.dependency_plan(_plan("net.latency"), _graph(), "podman")[0]
+        assert dp.pm == "apt-get"
+        assert dp.packages == ("iproute2",)
+        assert dp.bins == ("tc",)
+        assert dp.caps_missing == ("cap:NET_ADMIN",)
+        assert dp.install_argv() == [
+            ["podman", "exec", "testcase-api", "apt-get", "update"],
+            ["podman", "exec", "testcase-api", "apt-get", "install", "-y", "iproute2"],
+        ]
+
+    def test_alpine_python(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = _runtime(bins={"apk": True, "python3": False, "sh": True})
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        dp = impact.dependency_plan(_plan("mem.exhaust"), _graph(), "podman")[0]
+        assert dp.pm == "apk"
+        assert dp.packages == ("python3",)
+        assert dp.install_argv() == [
+            ["podman", "exec", "testcase-api", "apk", "add", "--no-cache", "python3"]
+        ]
+
+    def test_host_k6_never_becomes_a_container_dependency(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _runtime(bins={"k6": False, "apt-get": True}, cap_eff=0)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        assert impact.dependency_plan(_plan("net.load"), _graph(), "podman") == []
+        monkeypatch.setattr(impact, "_host_bin_present", lambda name: False)
+        assert impact.host_tooling_gaps(_plan("net.load")) == ["k6"]
+        monkeypatch.setattr(impact, "_host_bin_present", lambda name: True)
+        assert impact.host_tooling_gaps(_plan("net.load")) == []
+
+    def test_sh_and_root_run_as_user_0(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = _runtime(bins={"sh": False, "apt-get": True}, uid=1000)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        dp = impact.dependency_plan(_plan("dns.nxdomain"), _graph(), "podman")[0]
+        assert dp.need_root is True
+        assert dp.packages == ("dash",)
+        for argv in dp.install_argv():
+            assert "--user" in argv and "0" in argv
+
+    def test_healthy_container_produces_no_plan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = _runtime(bins={"python": True, "sh": True, "apt-get": False})
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        assert impact.dependency_plan(_plan("cpu.saturate"), _graph(), "podman") == []
+
+
+class TestDependencyCli:
+    def test_group_has_check_and_install(self) -> None:
+        from mayhem.cli.dependency import dependency
+
+        names = {cmd.name for cmd in dependency.commands.values()}
+        assert {"check", "install"} <= names

@@ -17,6 +17,7 @@ from mayhem.cli import style
 from mayhem.cli.campaign import campaign
 from mayhem.cli.config_cmd import config
 from mayhem.cli.context import CliContext
+from mayhem.cli.dependency import dependency
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.experiment import experiment
 from mayhem.cli.lifecycle import history, janitor, maniac, plan, recover, run, status, validate
@@ -89,7 +90,7 @@ def app(
     )
 
 
-for _cmd in (validate, plan, run, maniac, status, history, recover, janitor):
+for _cmd in (validate, plan, run, maniac, status, history, recover, janitor, dependency):
     app.add_command(_cmd)
 for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)

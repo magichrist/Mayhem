@@ -11,7 +11,7 @@ config:
   # true (default): auto-recover the container after each fault.
   # false: keep the fault in place — downstream checks observe whether
   #        the stack self-heals without the engine reviving anything.
-  recovery: false 
+  recovery: true 
 
 containers:
   testcase-api:
@@ -136,8 +136,8 @@ containers:
         duration: 10s
       - fault: proc.pause
         duration: 10s
-      - fault: process.kill
-        duration: 10s
+#      - fault: process.kill
+#        duration: 10s
       - fault: process.stop
         duration: 10s
       - fault: tls.certificate_expired

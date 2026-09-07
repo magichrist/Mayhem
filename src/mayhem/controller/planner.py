@@ -488,9 +488,9 @@ def _plan_fault_step(
     params = definition.validate_params(raw_params)
 
     # ``net.load`` accepts a host-side k6 ``script.js`` (param ``script``). The
-    # script runs inside the target container, so its content is embedded into
-    # the frozen plan here — resolved relative to the drill spec directory —
-    # rather than read at execution time.
+    # script runs on the drill host at the target container's ip:port, so its
+    # content is embedded into the frozen plan here — resolved relative to
+    # the drill spec directory — rather than read at execution time.
     params = _embed_load_script(params, definition.id, spec_dir)
 
     selectors = tuple(TargetSelector(kind=node.kind, expr=node.name) for node in nodes)

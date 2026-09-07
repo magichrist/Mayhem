@@ -823,17 +823,77 @@ def _net_partition_verify(
     )
 
 
-def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
-    """Saturate container egress with a deterministic k6 HTTP load generator.
+def _host_op(
+    fault: PlannedFault, name: str, inject_argv: list[str], undo_argv: list[str]
+) -> UndoOp:
+    """A tool op whose argv runs on the drill host (no ``@engine`` tokens).
 
-    When ``params.script_content`` is set (content of a host-side k6
-    ``script.js`` embedded by the planner), the file is materialized into the
-    container and run as ``k6 run -u <users> -d <duration>s``; otherwise a
-    minimal inline script against ``params.url`` is written into the container.
-    Either way the script lives under the marker path (so the verify probe can
-    see the fault while it is live) and ``k6 run`` is detached inside the
-    container's pid namespace. Undo SIGKILLs the recorded k6 pid and removes
-    both marker files, so recovery, undo and the impact probe agree.
+    Host-addressed faults (``net.load``) get no container address and no
+    ``@live-pid``, so pid substitution leaves the command a plain host process.
+    """
+    return UndoOp(
+        op=name,
+        args={
+            "fault": fault.fault_id,
+            "inject_argv": json.dumps(inject_argv),
+            "undo_argv": json.dumps(undo_argv),
+        },
+    )
+
+
+def _host_exec_verify(cmd: list[str], *, timeout_s: str = "5") -> VerifyProbe:
+    """A verify probe that runs on the drill host (no container address)."""
+    return VerifyProbe(
+        probe="exec",
+        args={"cmd": list(cmd), "timeout_s": timeout_s},
+        expect_present=True,
+    )
+
+
+def _net_load_target_url(fault: PlannedFault, node: TopologyNode) -> str:
+    """Resolve the URL k6 drives from the host.
+
+    An explicit ``params.url`` wins. Otherwise the first TCP port binding
+    selects the address: a binding on a loopback host address
+    (``127.0.0.1``/``::1``) is reached through the host's ``localhost:<host_port>``
+    (host_port can differ from container_port), while any other binding is
+    reached directly at the container's own live IP and container-side port —
+    so the host load generator can always reach the container. Blueprint-only
+    topology (no live ``ip_address``) or portless nodes fall back to the
+    documented ``http://localhost/`` default.
+    """
+    explicit = _param(fault, "url", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
+    ip = getattr(node, "ip_address", None)
+    ports: tuple[object, ...] = tuple(
+        getattr(node, "ports", ()) or getattr(node, "exposed_ports", ())
+    )
+    for binding in ports:
+        if getattr(binding, "protocol", "tcp") != "tcp":
+            continue
+        host_addr = str(getattr(binding, "host_address", "") or "0.0.0.0")
+        host_port = int(getattr(binding, "host_port", 0) or 0)
+        if host_port and host_addr.strip("[]") in {"127.0.0.1", "::1", "localhost"}:
+            return f"http://localhost:{host_port}/"
+        container_port = int(getattr(binding, "container_port", 0) or 0)
+        if container_port and ip is not None:
+            return f"http://{ip}:{container_port}/"
+    return "http://localhost/"
+
+
+def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """Saturate the target container with a host-driven k6 HTTP load generator.
+
+    When ``params.script_content`` is set (content of a k6 ``script.js``
+    embedded by the planner), the file is materialized on the drill host and
+    run as ``k6 run -u <users> -d <duration>s``; otherwise a minimal inline
+    script against the container's ``ip:serving-port`` is written. Either way
+    the script lives under the marker path (so the verify probe can see the
+    fault while it is live) and ``k6 run`` is detached on the host, driving
+    load at the container over the network — k6 never runs inside the target.
+    Undo SIGKILLs the recorded k6 pid and removes both marker files, so
+    recovery, undo and the verify probe agree.
     """
     node = _tool_node(fault, nodes)
     if node is None:
@@ -844,13 +904,13 @@ def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tupl
     pidfile = _tool_marker(fault, node, "k6.pid")
     inline = _param(fault, "script_content", None)
     if inline:
-        # User-supplied k6 script.js: materialize the embedded content into the
-        # container, then run it. The heredoc delimiter is unique per content so
-        # a user script containing a literal ``K6EOF`` line still copies intact.
+        # User-supplied k6 script.js: materialize the embedded content on the
+        # host, then run it. The heredoc delimiter is unique per content so a
+        # user script containing a literal ``K6EOF`` line still copies intact.
         delim = f"K6EOF_{abs(hash(inline or '') or 1):x}"
         import_sh = f"cat > {script} <<'{delim}'\n{inline}\n{delim}\n"
     else:
-        url = str(_param(fault, "url", "http://localhost/"))
+        url = _net_load_target_url(fault, node)
         url = url.replace("\\", "\\\\").replace('"', '\\"')
         import_sh = (
             f"cat > {script} <<'K6EOF'\n"
@@ -872,15 +932,7 @@ def _net_load_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tupl
         "-c",
         f'p={pidfile}; [ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null; rm -f "$p" {script}',
     ]
-    return (
-        _tool_op(
-            fault,
-            node,
-            "k6.sync",
-            _incontainer_argv(["sh", "-c", source]),
-            _incontainer_argv(undo),
-        ),
-    )
+    return (_host_op(fault, "k6.host", ["sh", "-c", source], undo),)
 
 
 def _net_load_verify(
@@ -892,11 +944,7 @@ def _net_load_verify(
     script = _tool_marker(fault, node, "load.js")
     pidfile = _tool_marker(fault, node, "k6.pid")
     return (
-        _exec_verify(
-            node,
-            ["sh", "-c", f"test ! -e {script} && test ! -e {pidfile}"],
-            incontainer=True,
-        ),
+        _host_exec_verify(["sh", "-c", f"test ! -e {script} && test ! -e {pidfile}"]),
     )
 
 

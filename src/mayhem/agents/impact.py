@@ -3,18 +3,24 @@
 Faults are functional only when the runtime the flavour injects into is real:
 `net.latency` needs ``tc`` *and* the ``NET_ADMIN`` capability to add a netem
 qdisc inside the container, `http.error_injection` needs ``iptables``, payload
-faults need a Python interpreter, `net.load` needs a ``k6`` binary. A fault
-whose tooling is absent still *completes* (inject exits 0) but produces zero
-perturbation — the run degrades into a survey instead of a drill.
+faults need a Python interpreter, `net.load` needs a ``k6`` binary **on the
+drill host** (the load generator drives the container from outside; it is not
+a container package). A fault whose tooling is absent still *completes* (inject
+exits 0) but produces zero perturbation — the run degrades into a survey
+instead of a drill.
 
 This module probes the live container once (read-only), decides per family
 whether the injection can physically take effect, and lets the planner gate
-refuse definitively inert faults before they ever execute.
+refuse definitively inert faults before they ever execute. Requirements marked
+``host=True`` are resolved against the drill host instead of the container —
+the container-tooling probe and ``mayhem dependency install`` never see them.
 """
 
 from __future__ import annotations
 
+import functools
 import re
+import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -34,14 +40,20 @@ _CAP_BITS: dict[str, int] = {
 
 @dataclass(frozen=True)
 class FaultRequirement:
-    """Runtime capability a fault family needs inside the target container."""
+    """Runtime capability a fault family needs inside the target container.
+
+    ``host=True`` moves the ``bins`` check to the drill host (e.g. ``k6`` for
+    ``net.load`` — host-side load generator, not container tooling). The
+    container probe and ``mayhem dependency install`` ignore host requirements.
+    """
 
     bins: frozenset[str] = frozenset()
     caps: frozenset[str] = frozenset()
     need_root: bool = False
+    host: bool = False
 
     def describe(self) -> str:
-        parts = [f"bin({b})" for b in sorted(self.bins)]
+        parts = [f"bin({b}{'@host' if self.host else ''})" for b in sorted(self.bins)]
         parts += [f"cap({c})" for c in sorted(self.caps)]
         if self.need_root:
             parts.append("uid(0)")
@@ -70,7 +82,7 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "net.reorder": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.duplicate": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "dependency.timeout": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
-    "net.load": FaultRequirement(bins=frozenset({"k6"})),
+    "net.load": FaultRequirement(bins=frozenset({"k6"}), host=True),
     "http.error_injection": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
@@ -81,9 +93,7 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
     "db.slow_query": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
-    "db.query_error": FaultRequirement(
-        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
-    ),
+    "db.query_error": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "dns.timeout": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "dns.servfail": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "tls.handshake_failure": FaultRequirement(
@@ -127,7 +137,28 @@ _ENGINE_FAULTS = frozenset(
 #: the observation is inconclusive rather than "no impact".
 OBSERVATION_BLIND: frozenset[str] = frozenset({"proc.pause", "process.stop", "process.kill"})
 
-_PROBE_BINS = ("kill", "tc", "iptables", "python", "python3", "date", "sh", "k6")
+#: Package-manager binaries probed so the CLI can tell the user — and offer to
+#: run — the right ``<pm> install`` command when a fault's tooling is missing.
+#: ``package_manager()`` resolves the first present manager (priority order).
+_PACKAGE_MANAGERS = ("apt-get", "apk", "dnf", "yum", "microdnf", "zypper")
+#: In-container binaries a fault family may need. ``k6`` is deliberately absent:
+#: ``net.load`` drives the container from the drill host, so it is gated there
+#: (``host=True``) and never shows up in container dependency management.
+_PROBE_BINS: tuple[str, ...] = (
+    "kill",
+    "tc",
+    "iptables",
+    "python",
+    "python3",
+    "date",
+    "sh",
+    *_PACKAGE_MANAGERS,
+)
+
+#: Host-side tooling required by some fault family, checked once via
+#: ``shutil.which`` (cached). Container ``mayhem dependency`` only reports these,
+#: never installs them.
+_HOST_TOOL_BINS: tuple[str, ...] = ("k6",)
 
 
 @dataclass(frozen=True)
@@ -149,6 +180,17 @@ class ContainerRuntime:
         bit = _CAP_BITS.get(name)
         return bit is not None and bool(self.cap_eff & (1 << bit))
 
+    def package_manager(self) -> str | None:
+        """First package-manager binary present, in priority order.
+
+        ``apt-get`` (Debian/Ubuntu), ``apk`` (Alpine), ``dnf`` (Fedora/RHEL9),
+        ``yum`` (RHEL7/8), ``microdnf`` (minimal RHEL/UBI), ``zypper`` (SUSE).
+        """
+        for pm in _PACKAGE_MANAGERS:
+            if self.has_bin(pm):
+                return pm
+        return None
+
 
 _PROBE_SH = (
     "printf 'BINS'"
@@ -160,7 +202,7 @@ _PROBE_SH = (
     + " printf 'CAPEFF %s\\n' \"$(awk '/CapEff/{print $2}' /proc/1/status 2>/dev/null || echo 0)\""
 )
 
-_BINS_RE = re.compile(r"BINS((?:\s+[a-z0-9]+:[01])+)")
+_BINS_RE = re.compile(r"BINS((?:\s+[a-z0-9-]+:[01])+)")
 _UID_RE = re.compile(r"UID (\d+)")
 _CAPEFF_RE = re.compile(r"CAPEFF ([0-9a-fA-F]+)")
 
@@ -197,6 +239,29 @@ def parse_runtime_output(engine: str, container: str, text: str) -> ContainerRun
     return ContainerRuntime(container=container, engine=engine, bins=bins, uid=uid, cap_eff=cap_eff)
 
 
+@functools.lru_cache(maxsize=32)
+def _host_bin_present(name: str) -> bool:
+    """Cached host ``which`` check (host tooling, e.g. k6 for net.load)."""
+    return shutil.which(name) is not None
+
+
+def host_tooling_gaps(plan: ExecutionPlan) -> list[str]:
+    """Host-side binaries the plan needs but the drill host lacks (e.g. k6).
+
+    Container ``mayhem dependency`` reports these but never installs them —
+    the load generator lives on the host, not in a distro package.
+    """
+    needed: set[str] = set()
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        requirement = REQUIREMENTS.get(fault.fault_id)
+        if requirement is not None and requirement.host:
+            needed.update(requirement.bins)
+    return sorted(b for b in needed if not _host_bin_present(b))
+
+
 @dataclass(frozen=True)
 class GateVerdict:
     """Per fault/container: can the injection physically take effect?"""
@@ -206,6 +271,7 @@ class GateVerdict:
     impact_possible: bool
     missing: tuple[str, ...] = ()
     probed: bool = True
+    host: bool = False
     note: str = ""
 
 
@@ -221,6 +287,8 @@ def gate_fault(
     requirement = REQUIREMENTS.get(fault_id)
     if requirement is None:
         return GateVerdict(fault_id, container, True, note="no in-image tooling required")
+    if requirement.host:
+        return _gate_host_requirement(fault_id, container, requirement)
     run = runtime if runtime is not None else probe_container_runtime(engine, container)
     if run is None:
         return GateVerdict(
@@ -242,6 +310,21 @@ def gate_fault(
     possible = not missing
     note = "" if possible else f"missing {', '.join(missing)}"
     return GateVerdict(fault_id, container, possible, tuple(missing), note=note)
+
+
+def _gate_host_requirement(
+    fault_id: str, container: str, requirement: FaultRequirement
+) -> GateVerdict:
+    """Host-addressed requirements (e.g. net.load → k6 on the drill host).
+
+    The container is irrelevant here: whether the fault perturbs depends on
+    host-side attack tooling. No container probe runs, so nothing about this
+    verdict can leak into container dependency planning.
+    """
+    missing = [f"bin:{b}" for b in sorted(requirement.bins) if not _host_bin_present(b)]
+    possible = not missing
+    note = "" if possible else f"missing host tooling: {', '.join(missing)}"
+    return GateVerdict(fault_id, container, possible, tuple(missing), host=True, note=note)
 
 
 def _container_for(graph: TopologyGraph, fault: PlannedFault) -> str | None:
@@ -287,6 +370,13 @@ def scan_plan_faults(
                 )
             )
             continue
+        requirement = REQUIREMENTS.get(fault.fault_id)
+        if requirement is not None and requirement.host:
+            # Host-addressed fault (net.load → k6): the container runtime is
+            # irrelevant, so we never probe it and never count it as engine
+            # reachability.
+            verdicts.append(gate_fault(fault.fault_id, container, engine))
+            continue
         key = (engine, container)
         if key in seen:
             runtime = seen[key]
@@ -315,3 +405,189 @@ def bypass_from_verdicts(
         for v in verdicts
         if v.probed and not v.impact_possible
     }
+
+
+# ── Missing-tooling remediation ─────────────────────────────────────────────
+# The gate marks a fault inert when its in-image tooling is absent. The bins a
+# fault family needs map onto distro packages; the right <pm> is detected from
+# the live container (package_manager()). Bare-metal knowledge:
+#   python  → python3  (the probe treats python|python3 as one requirement)
+#   tc      → iproute2  (Debian/Alpine/SUSE) / iproute (RHEL-family)
+#   kill    → procps(-ng)  (kill(1) lives in the process-utils package)
+#   date    → coreutils
+#   sh      → dash / busybox / bash depending on the family
+# ``k6`` ships in no distro repo (net.load needs the Grafana k6 binary), so it
+# is reported as a manual step, never auto-installed.
+_PM_PACKAGES: dict[str, dict[str, str]] = {
+    "python": dict.fromkeys(_PACKAGE_MANAGERS, "python3"),
+    "tc": {
+        "apt-get": "iproute2",
+        "apk": "iproute2",
+        "dnf": "iproute",
+        "yum": "iproute",
+        "microdnf": "iproute",
+        "zypper": "iproute2",
+    },
+    "iptables": dict.fromkeys(_PACKAGE_MANAGERS, "iptables"),
+    "kill": {
+        "apt-get": "procps",
+        "apk": "procps",
+        "dnf": "procps-ng",
+        "yum": "procps-ng",
+        "microdnf": "procps-ng",
+        "zypper": "procps",
+    },
+    "date": dict.fromkeys(_PACKAGE_MANAGERS, "coreutils"),
+    "sh": {
+        "apt-get": "dash",
+        "apk": "busybox",
+        "dnf": "bash",
+        "yum": "bash",
+        "microdnf": "bash",
+        "zypper": "bash",
+    },
+}
+#: Bins whose package cannot be installed from a distro repo. Reported as a
+#: manual step with guidance instead of being auto-installed. (Host-side tools
+#: like k6 are not listed here — they are covered by ``host=True`` gating and
+#: reported via ``host_tooling_gaps()``, never as container packages.)
+_MANUAL_BINS: dict[str, str] = {}
+
+#: Engine-manager → ``<pm> install`` sub-command shape. ``apt-get`` also needs
+#: an ``update`` pass first (best-effort; a missing index fails loudly).
+#: ``microdnf`` only exists in minimal RHEL-family images and is its own binary
+#: (not a dnf flag).
+
+
+def _install_argv(
+    engine: str, container: str, pm: str, packages: Sequence[str], *, as_root: bool
+) -> list[list[str]]:
+    """Exec argv list that installs ``packages`` inside ``container``.
+
+    Each inner list is one standalone ``engine exec`` invocation so the CLI can
+    report per-command results. ``as_root`` prefixes ``--user 0`` when the probe
+    showed the container's default user is non-root (package managers need
+    write access to system dirs).
+    """
+    prefix = [engine, "exec", container]
+    if as_root:
+        prefix += ["--user", "0"]
+    if pm == "apt-get":
+        return [
+            [*prefix, "apt-get", "update"],
+            [*prefix, "apt-get", "install", "-y", *packages],
+        ]
+    if pm == "apk":
+        return [[*prefix, "apk", "add", "--no-cache", *packages]]
+    if pm in ("dnf", "yum", "microdnf"):
+        return [[*prefix, pm, "install", "-y", *packages]]
+    if pm == "zypper":
+        return [[*prefix, "zypper", "-n", "install", *packages]]
+    return []
+
+
+@dataclass(frozen=True)
+class ContainerDependencyPlan:
+    """Everything the CLI needs to restore a container's fault tooling."""
+
+    container: str
+    engine: str
+    pm: str | None
+    #: Installable package names, deduplicated and sorted ('' when pm is None).
+    packages: tuple[str, ...] = ()
+    #: The missing bin names those packages provide (verification probe targets).
+    bins: tuple[str, ...] = ()
+    #: Bins with no auto-installable package — printed as guidance
+    #: (e.g. a container with no package manager at all).
+    manual: tuple[str, ...] = ()
+    #: cap:* requirements the gate flagged — must be granted at runtime, e.g.
+    #: ``podman run --cap-add=NET_ADMIN``; never installable in-image.
+    caps_missing: tuple[str, ...] = ()
+    #: A gated fault also needs uid(0); package installs are attempted as root.
+    need_root: bool = False
+
+    @property
+    def installable(self) -> bool:
+        return bool(self.packages)
+
+    @property
+    def gaps_remain(self) -> bool:
+        return not (self.installable or self.manual or self.caps_missing or self.need_root)
+
+    def install_argv(self) -> list[list[str]]:
+        if self.pm is None or not self.packages:
+            return []
+        return _install_argv(
+            self.engine, self.container, self.pm, self.packages, as_root=self.need_root
+        )
+
+
+def dependency_plan(
+    plan: ExecutionPlan, graph: TopologyGraph, engine: str
+) -> list[ContainerDependencyPlan]:
+    """Union the missing tooling over every planned fault, per container.
+
+    One plan per container that hosts at least one gated-out fault. The plan
+    carries the detected package manager, the installable package list, and the
+    non-installable gaps (caps need a runtime flag, a container without a
+    package manager can only be re-provisioned at image build time, uid(0)
+    faults need a root exec). Host-addressed faults (``net.load`` → k6 on the
+    drill host) are outside container dependency management — see
+    ``host_tooling_gaps()``. Containers that are healthy for every planned
+    fault — or unreachable — produce no entry.
+    """
+    runtimes: dict[str, ContainerRuntime | None] = {}
+    missing_by: dict[str, set[str]] = {}
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        requirement = REQUIREMENTS.get(fault.fault_id)
+        if requirement is not None and requirement.host:
+            continue  # host-addressed tooling (k6) — not a container dependency
+        container = _container_for(graph, fault)
+        if container is None:
+            continue
+        if container not in runtimes:
+            runtimes[container] = probe_container_runtime(engine, container)
+        run = runtimes[container]
+        if run is None:
+            continue  # unreachable — cannot plan tooling for it
+        verdict = gate_fault(fault.fault_id, container, engine, run)
+        if verdict.impact_possible:
+            continue
+        missing_by.setdefault(container, set()).update(verdict.missing)
+    plans: list[ContainerDependencyPlan] = []
+    for container in sorted(missing_by):
+        run = runtimes[container]
+        missing = sorted(missing_by[container])
+        pm = run.package_manager() if run else None
+        packages: set[str] = set()
+        bin_map: dict[str, str] = {}
+        manual: list[str] = []
+        caps_missing = [m for m in missing if m.startswith("cap:")]
+        need_root = "uid(0)" in missing
+        for item in missing:
+            if not item.startswith("bin:"):
+                continue
+            bin_name = item.split(":", 1)[1]
+            mapping = _PM_PACKAGES.get(bin_name, {})
+            pkg = mapping.get(pm) if pm else None
+            if pkg is not None:
+                packages.add(pkg)
+                bin_map[bin_name] = pkg
+                continue
+            manual.append(bin_name)
+        plans.append(
+            ContainerDependencyPlan(
+                container=container,
+                engine=engine,
+                pm=pm,
+                packages=tuple(sorted(packages)),
+                bins=tuple(sorted(bin_map)),
+                manual=tuple(sorted(set(manual))),
+                caps_missing=tuple(caps_missing),
+                need_root=need_root,
+            )
+        )
+    return plans
