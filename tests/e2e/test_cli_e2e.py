@@ -193,7 +193,8 @@ class TestConfigGroup:
         rc = main(["config", "show"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "api_version" in out or "environment" in out
+        assert "apiVersion: mayhem/v1" in out
+        assert "policy:" in out
 
     def test_config_show_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["config", "show", "--json"])
