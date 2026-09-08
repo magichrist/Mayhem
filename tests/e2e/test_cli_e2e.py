@@ -514,6 +514,62 @@ class TestDependencyCompile:
         assert rc == 2
         assert "refusing to overwrite" in capsys.readouterr().err
 
+    def test_compile_warns_without_stopping_when_service_has_no_program(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A service that only names an image (no command:, no entrypoint:)
+        # relies on the image CMD. Engines that reset CMD when entrypoint is
+        # overridden (podman-compose) drop it, so the bootstrap entrypoint
+        # cannot exec anything and the container exits at first start. The
+        # generator must warn loudly but still emit the file.
+        spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
+        source = COMPOSE_FILE.read_text(encoding="utf-8")
+        stripped = source.replace(
+            '\n    command: nginx -g "daemon off;"', "", 1
+        )
+        compose = _write(tmp_path, "compose.yml", stripped)
+        out_path = tmp_path / "compose.mayhem.yml"
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "mayhem.db"),
+                "dependency",
+                "compile",
+                str(spec),
+                "-c",
+                str(compose),
+                "-o",
+                str(out_path),
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "testcase-lb" in err
+        assert "Add an explicit 'command:'" in err
+        compiled = yaml.safe_load(out_path.read_text())
+        assert compiled["services"]["lb"]["entrypoint"]
+
+    def test_compile_no_program_warning_absent_when_command_declared(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression: with an explicit command the compile must stay silent.
+        spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "mayhem.db"),
+                "dependency",
+                "compile",
+                str(spec),
+                "-c",
+                str(COMPOSE_FILE),
+                "-o",
+                str(tmp_path / "compose.mayhem.yml"),
+            ]
+        )
+        assert rc == 0
+        assert "Add an explicit 'command:'" not in capsys.readouterr().err
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # 7.  plan (lifecycle)
