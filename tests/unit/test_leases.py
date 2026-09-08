@@ -72,8 +72,16 @@ class TestTransitions:
         dirty = releasing.transition(
             LeaseState.DIRTY, escalation_notes="iptables chain still present on bm-1"
         )
-        assert dirty.is_terminal
+        # DIRTY is not safe-terminal: a stuck compensation needs a human or
+        # the janitor. It may only be *surrendered* (EXPIRED) by the janitor
+        # — never released as if the fault were cleanly undone.
+        assert not dirty.is_terminal
         assert not dirty.is_safe_terminal
+        with pytest.raises(InvalidTransitionError):
+            dirty.transition(LeaseState.RELEASED)
+        surrendered = dirty.transition(LeaseState.EXPIRED, mechanism="janitor")
+        assert surrendered.is_terminal
+        assert surrendered.is_safe_terminal
 
 
 class TestInvariants:
