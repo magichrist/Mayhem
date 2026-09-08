@@ -2,8 +2,10 @@
 
 A fault left past its TTL is by definition unattended. PENDING leases are
 expired (never injected, nothing to undo); ACTIVE leases are orphaned and
-then released through their write-ahead undo contract — the janitor never
-leaves a fault running because its owner vanished.
+then released through their write-ahead undo contract; ORPHANED/RELEASING
+leases stuck mid-compensation are finalized; DIRTY leases (compensation
+already failed) are surrendered to EXPIRED — the janitor never leaves a
+fault running because its owner vanished.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from mayhem.domain.errors import DomainError
 from mayhem.domain.leases import LeaseState
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from mayhem.agents.sinks import LeaseSink
     from mayhem.domain.leases import FaultLease
 
@@ -49,46 +53,95 @@ class Janitor:
             if deadline >= current:
                 continue
             if lease.state is LeaseState.PENDING:
-                expired.append(lease.id)
-                self._save_quietly(
-                    lease.transition(LeaseState.EXPIRED, mechanism="janitor", now=now)
-                )
-            elif lease.state is LeaseState.ACTIVE:
-                # Orphan first (honest record), then compensate to RELEASED.
-                orphaned = lease.transition(
-                    LeaseState.ORPHANED,
-                    mechanism="janitor",
-                    now=now,
-                    escalation_notes=f"lease {lease.id} exceeded TTL without release",
-                )
-                try:
-                    released = orphaned.transition(
-                        LeaseState.RELEASING, mechanism="janitor", now=now
-                    )
-                    self._sink.save(released)
-                    final = released.transition(LeaseState.RELEASED, mechanism="janitor", now=now)
-                    self._sink.save(final)
-                    recovered.append(orphaned.id)
-                except (DomainError, OSError) as exc:
-                    # Persistence failed: never claim recovery we could not record.
-                    self._dirty_from(orphaned, exc)
-                    dirty.append(orphaned.id)
+                self._expire(lease, now, expired)
+            elif lease.state is LeaseState.DIRTY:
+                self._surrender(lease, now, expired, dirty)
+            elif lease.state is LeaseState.RELEASING:
+                self._finalize(lease, now, recovered, dirty)
+            else:  # ACTIVE or ORPHANED
+                self._recover_orphan(lease, now, recovered, dirty)
         return SweepResult(tuple(expired), tuple(recovered), tuple(dirty))
+
+    def _expire(self, lease: FaultLease, now: datetime, expired: list[str]) -> None:
+        # Never injected, nothing to undo: straight to EXPIRED.
+        expired.append(lease.id)
+        self._save_quietly(lease.transition(LeaseState.EXPIRED, mechanism="janitor", now=now))
+
+    def _surrender(
+        self, lease: FaultLease, now: datetime, expired: list[str], dirty: list[str]
+    ) -> None:
+        # Compensation already failed and nobody is coming back for this lease
+        # past its TTL — record the surrender, unblock the targets next run.
+        try:
+            surrendered = lease.transition(LeaseState.EXPIRED, mechanism="janitor", now=now)
+            self._sink.save(surrendered)
+        except (DomainError, OSError):
+            dirty.append(lease.id)  # stays DIRTY, still wedged
+        else:
+            expired.append(lease.id)
+
+    def _finalize(
+        self, lease: FaultLease, now: datetime, recovered: list[str], dirty: list[str]
+    ) -> None:
+        # A lease stuck mid-compensation finalizes straight to RELEASED — the
+        # owner is gone, no second RELEASING hop.
+        try:
+            final = lease.transition(LeaseState.RELEASED, mechanism="janitor", now=now)
+            self._sink.save(final)
+        except (DomainError, OSError) as exc:
+            self._dirty_from(lease, exc)
+            dirty.append(lease.id)
+        else:
+            recovered.append(lease.id)
+
+    def _recover_orphan(
+        self, lease: FaultLease, now: datetime, recovered: list[str], dirty: list[str]
+    ) -> None:
+        # Orphan ACTIVE leases first (honest record), then finalize the
+        # compensation the owner started (stuck ORPHANED leases keep their
+        # targets wedged without this path).
+        if lease.state is LeaseState.ACTIVE:
+            orphaned = lease.transition(
+                LeaseState.ORPHANED,
+                mechanism="janitor",
+                now=now,
+                escalation_notes=f"lease {lease.id} exceeded TTL without release",
+            )
+        else:
+            orphaned = lease
+        try:
+            released = orphaned.transition(LeaseState.RELEASING, mechanism="janitor", now=now)
+            self._sink.save(released)
+            final = released.transition(LeaseState.RELEASED, mechanism="janitor", now=now)
+            self._sink.save(final)
+            recovered.append(orphaned.id)
+        except (DomainError, OSError) as exc:
+            # Persistence failed: never claim recovery we could not record.
+            self._dirty_from(orphaned, exc)
+            dirty.append(orphaned.id)
 
     def _save_quietly(self, lease: FaultLease) -> None:
         with contextlib.suppress(Exception):  # sweep must survive sink flakiness
             self._sink.save(lease)
 
-    def _dirty_from(self, orphaned: FaultLease, exc: Exception) -> None:
+    def _dirty_from(self, lease: FaultLease, exc: Exception) -> None:
         try:
-            stuck = orphaned.transition(
-                LeaseState.RELEASING, mechanism="janitor", now=utc_now()
-            ).transition(
-                LeaseState.DIRTY,
-                mechanism="janitor",
-                now=utc_now(),
-                escalation_notes=f"orphan recovery failed: {exc}",
-            )
+            if lease.state is LeaseState.RELEASING:
+                stuck = lease.transition(
+                    LeaseState.DIRTY,
+                    mechanism="janitor",
+                    now=utc_now(),
+                    escalation_notes=f"orphan recovery failed: {exc}",
+                )
+            else:
+                stuck = lease.transition(
+                    LeaseState.RELEASING, mechanism="janitor", now=utc_now()
+                ).transition(
+                    LeaseState.DIRTY,
+                    mechanism="janitor",
+                    now=utc_now(),
+                    escalation_notes=f"orphan recovery failed: {exc}",
+                )
             self._save_quietly(stuck)
         except DomainError:
             pass
