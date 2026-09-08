@@ -370,12 +370,19 @@ def compile_cmd(
         if caps is not None:
             service["cap_add"] = caps
         if script:
+            source_spec = services.get(key) if key is not None else None
+            source_programless = isinstance(source_spec, dict) and not _service_has_program(
+                source_spec
+            )
             service["entrypoint"] = ["/bin/sh", "-c", script]
-            if _service_command_is_empty(service):
+            if source_programless:
                 click.echo(
-                    f"  {style.yellow('*')} {compiled.container}: no 'command' and "
-                    "no image CMD — the bootstrap entrypoint cannot exec a program; "
-                    "add a command: to the service",
+                    f"  {style.yellow('*')} {compiled.container}: the service has no "
+                    "'command' or 'entrypoint' of its own — it relies on the image "
+                    "CMD, and a container engine that resets CMD when entrypoint is "
+                    "overridden (e.g. podman-compose) drops it; the bootstrap "
+                    "cannot exec a program and the container exits at first start. "
+                    "Add an explicit 'command:' to the service.",
                     err=True,
                 )
         changed.append((key, compiled, script))
@@ -426,6 +433,6 @@ def _merge_caps(
     return merged if merged else None
 
 
-def _service_command_is_empty(service: dict[str, object]) -> bool:
-    """True when the service defines neither ``command`` nor ``entrypoint``."""
-    return service.get("command") is None and service.get("entrypoint") is None
+def _service_has_program(service: dict[str, object]) -> bool:
+    """True when the service defines its own ``command`` or ``entrypoint``."""
+    return service.get("command") is not None or service.get("entrypoint") is not None
