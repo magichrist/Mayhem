@@ -481,9 +481,17 @@ class RunEngine:
                 # no valid transition exists, so nothing to auto-recover.
                 continue
             try:
-                releasing = self._client.mark_orphaned(lease.id, notes="engine recovery pass")
-                _ = releasing
-                self._client.mark_releasing(lease.id)
+                if lease.state in (LeaseState.PENDING, LeaseState.ACTIVE):
+                    releasing = self._client.mark_orphaned(
+                        lease.id, notes="engine recovery pass"
+                    )
+                    _ = releasing
+                    self._client.mark_releasing(lease.id)
+                elif lease.state is LeaseState.ORPHANED:
+                    # Already recorded as orphaned: resume the compensation
+                    # by entering RELEASING for the confirm step.
+                    self._client.mark_releasing(lease.id)
+                # RELEASING already: jump straight to confirmation.
                 final = self._client.confirm_release(lease.id, mechanism="watchdog")
                 recovered.append(final.id)
             except Exception as exc:
