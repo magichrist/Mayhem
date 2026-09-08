@@ -1942,7 +1942,7 @@ def _clock_skew_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tu
         "sh",
         "-c",
         f"date -u '+%s' > {marker}; target=$(( $(cat {marker}) + {offset_ms} )); "
-        f"date -u -s '@$target'",
+        f'date -u -s "@$target"',
     ]
     undo = [
         "sh",
