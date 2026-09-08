@@ -33,12 +33,25 @@ if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
     from mayhem.domain.topology import TopologyGraph
+    from mayhem.infra.store import Store
 
 
 def _ctx(ctx: click.Context) -> CliContext:
     obj = ctx.obj
     assert isinstance(obj, CliContext)
     return obj
+
+
+def _sweep_before_run(store: Store) -> None:
+    """Best-effort TTL sweep so a crashed run's sticky leases do not wedge
+    the very next ``run`` (the users' reported pain: janitor 'did nothing'
+    because it had to be invoked manually). Silently skip non-terminal
+    leftovers the sweep cannot move; acquire() re-attempts the reap."""
+    sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep()
+    for lease_id in sweep.expired:
+        click.echo(style.info(f"cleaned stale lease {lease_id} (expired)"))
+    for lease_id in sweep.recovered:
+        click.echo(style.info(f"recovered orphaned lease {lease_id}"))
 
 
 def _gate_enabled() -> bool:
@@ -350,6 +363,7 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
     obj = _ctx(ctx)
     store = open_store(obj.db)
     try:
+        _sweep_before_run(store)
         prepared = prepare(
             config_path=obj.config,
             profile=obj.profile,
