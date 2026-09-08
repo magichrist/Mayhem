@@ -33,7 +33,7 @@ _TRANSITION_TABLE: dict[LeaseState, frozenset[LeaseState]] = {
     LeaseState.RELEASING: frozenset({LeaseState.RELEASED, LeaseState.DIRTY}),
     LeaseState.RELEASED: frozenset(),
     LeaseState.EXPIRED: frozenset(),
-    LeaseState.DIRTY: frozenset(),
+    LeaseState.DIRTY: frozenset({LeaseState.EXPIRED}),
     LeaseState.ORPHANED: frozenset({LeaseState.RELEASING}),
 }
 
