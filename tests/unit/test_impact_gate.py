@@ -117,6 +117,39 @@ class TestGate:
         verdict = gate_fault("container.kill", "testcase-api", "podman", _runtime(bins={}))
         assert verdict.impact_possible is True
 
+    def test_clock_skew_inert_under_rootless_engine(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Rootless engines cannot set the host CLOCK_REALTIME.
+
+        The container reports CAP_SYS_TIME in its (namespaced) CapEff, so the
+        ordinary probe approves the fault — but the realtime clock is
+        host-global and the userns bit is meaningless there. The gate must mark
+        clock.skew inert (bypassed, not doomed) so the run does not fail with
+        ``date: cannot set date: Operation not permitted``.
+        """
+        monkeypatch.setattr(impact, "_engine_is_rootless", lambda engine: True)
+        run = _runtime(bins={"date": True}, cap_eff=1 << 25)
+        verdict = gate_fault("clock.skew", "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert verdict.probed is True
+        assert "rootless" in verdict.note
+        assert (verdict.fault_id, verdict.container) in bypass_from_verdicts([verdict])
+
+    def test_clock_skew_approved_under_rootful_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(impact, "_engine_is_rootless", lambda engine: False)
+        run = _runtime(bins={"date": True}, cap_eff=1 << 25)
+        verdict = gate_fault("clock.skew", "testcase-api", "podman", run)
+        assert verdict.impact_possible is True
+
+    def test_rootless_gate_leaves_non_sys_time_faults_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(impact, "_engine_is_rootless", lambda engine: True)
+        run = _runtime(bins={"tc": True}, cap_eff=1 << 12)
+        verdict = gate_fault("net.latency", "testcase-api", "podman", run)
+        assert verdict.impact_possible is True
+
     def test_unreachable_runtime_is_inconclusive_not_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -203,6 +236,93 @@ def _plan(fault_id: str) -> ExecutionPlan:
         topology_snapshot_id="t1",
         environment_fingerprint="f",
     )
+
+
+class TestRootlessDetection:
+    def _clear(self) -> None:
+        impact._engine_is_rootless.cache_clear()
+
+    def test_podman_info_rootless_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def fake_info(*a, **k):
+            return subprocess.CompletedProcess(
+                ["podman", "info"],
+                0,
+                stdout='{"host": {"security": {"rootless": true}}}',
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_info)
+        assert impact._engine_is_rootless("podman") is True
+
+    def test_podman_info_rootful_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def fake_info(*a, **k):
+            return subprocess.CompletedProcess(
+                ["podman", "info"],
+                0,
+                stdout='{"host": {"security": {"rootless": false}}}',
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_info)
+        assert impact._engine_is_rootless("podman") is False
+
+    def test_docker_userns_security_option(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def fake_info(*a, **k):
+            return subprocess.CompletedProcess(
+                ["docker", "info"],
+                0,
+                stdout='{"SecurityOptions": ["name=seccomp,profile=default", "name=userns"]}',
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_info)
+        assert impact._engine_is_rootless("docker") is True
+
+    def test_docker_rootful_no_userns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def fake_info(*a, **k):
+            return subprocess.CompletedProcess(
+                ["docker", "info"],
+                0,
+                stdout='{"SecurityOptions": ["name=seccomp,profile=default"]}',
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_info)
+        assert impact._engine_is_rootless("docker") is False
+
+    def test_missing_engine_falls_back_to_rootful(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def boom(*a, **k):
+            raise FileNotFoundError("podman not installed")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert impact._engine_is_rootless("podman") is False
+
+    def test_unparsable_info_falls_back_to_rootful(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        self._clear()
+
+        def junk(*a, **k):
+            return subprocess.CompletedProcess(["podman", "info"], 0, stdout="not json{{")
+
+        monkeypatch.setattr(subprocess, "run", junk)
+        assert impact._engine_is_rootless("podman") is False
 
 
 class TestScan:
