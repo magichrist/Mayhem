@@ -591,3 +591,65 @@ def dependency_plan(
             )
         )
     return plans
+
+
+@dataclass(frozen=True)
+class ContainerCompilePlan:
+    """Offline (no runtime probe) tooling a compose service must carry.
+
+    Produced by ``compile_requirements``: the union of every fault family's
+    requirements for the container across the whole drill plan. Unlike
+    ``ContainerDependencyPlan`` this is state-independent — it is the join of
+    the plan, not a diff against a live container. Host-addressed tooling
+    (``net.load`` → k6) never lands here.
+    """
+
+    container: str
+    #: Bins the planned faults require *and* that map to distro packages.
+    bins: tuple[str, ...] = ()
+    #: Capability names the service must be started with (bare, e.g.
+    #: ``"NET_ADMIN"`` — maps straight onto compose ``cap_add:``).
+    caps: tuple[str, ...] = ()
+    #: Bins with no mapped distro package — reported, never compile-able.
+    manual: tuple[str, ...] = ()
+
+
+def compile_requirements(
+    plan: ExecutionPlan, graph: TopologyGraph
+) -> list[ContainerCompilePlan]:
+    """Union the tooling requirements per container over the whole plan.
+
+    The compose compiler needs the *requirement* set, not the diff against a
+    possibly-unstarted stack: the generated ``docker-compose.mayhem.yml`` must
+    carry the tooling before any container runs. Host-addressed faults are
+    skipped — they can never be compiled into a service definition.
+    """
+    bins_by: dict[str, set[str]] = {}
+    caps_by: dict[str, set[str]] = {}
+    manual_by: dict[str, set[str]] = {}
+    for step in plan.steps:
+        fault = step.fault
+        if fault is None:
+            continue
+        requirement = REQUIREMENTS.get(fault.fault_id)
+        if requirement is None or requirement.host:
+            continue
+        container = _container_for(graph, fault)
+        if container is None:
+            continue
+        manual = {b for b in requirement.bins if b not in _PM_PACKAGES}
+        bins = {b for b in requirement.bins if b in _PM_PACKAGES}
+        bins_by.setdefault(container, set()).update(bins)
+        manual_by.setdefault(container, set()).update(manual)
+        caps_by.setdefault(container, set()).update(requirement.caps)
+    plans: list[ContainerCompilePlan] = []
+    for container in sorted(set(bins_by) | set(caps_by) | set(manual_by)):
+        plans.append(
+            ContainerCompilePlan(
+                container=container,
+                bins=tuple(sorted(bins_by.get(container, ()))),
+                caps=tuple(sorted(caps_by.get(container, ()))),
+                manual=tuple(sorted(manual_by.get(container, ()))),
+            )
+        )
+    return plans

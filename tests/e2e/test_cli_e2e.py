@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from mayhem.cli.app import main
 from mayhem.cli.exit_codes import ExitCode
@@ -418,6 +419,100 @@ class TestValidateCommand:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
         rc = main(["v", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 6b. dependency compile (offline tooling bake-in)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestDependencyCompile:
+    """``mayhem dependency compile`` emits a docker-compose.mayhem.yml with
+    the drill's fault tooling baked in — no live containers required."""
+
+    def test_compile_adds_bootstrap_but_no_caps(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # DRILL_YAML only needs python — no capabilities, just a bootstrap
+        # entrypoint that installs python3 via the image's package manager.
+        spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
+        out_path = tmp_path / "docker-compose.mayhem.yml"
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "mayhem.db"),
+                "dependency",
+                "compile",
+                str(spec),
+                "-c",
+                str(COMPOSE_FILE),
+                "-o",
+                str(out_path),
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "wrote" in out
+        compiled = yaml.safe_load(out_path.read_text())
+        api = compiled["services"]["api"]
+        assert "cap_add" not in api
+        assert api["entrypoint"][0] == "/bin/sh"
+        script = api["entrypoint"][-1]
+        # proc.pause needs `kill` → the procps distro package, installed via
+        # whatever package manager the image actually ships.
+        assert "apk add --no-cache procps" in script
+        assert "apt-get install -y procps" in script
+        # the wrapper execs the service command ($0 $@ stays untouched).
+        assert 'exec "$0" "$@"' in script
+        assert api["command"] == "python -m http.server 8080"
+        # the input compose file was never modified.
+        assert "apk add" not in COMPOSE_FILE.read_text()
+
+    def test_compile_is_offline_union_of_plan(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The full testCase drill: lb needs iptables (NET_ADMIN) and clock
+        # skew (SYS_TIME) even though the stack is not running.
+        out_path = tmp_path / "compose.mayhem.yml"
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "mayhem.db"),
+                "dependency",
+                "compile",
+                str(DRILL_SPEC),
+                "-c",
+                str(COMPOSE_FILE),
+                "-o",
+                str(out_path),
+            ]
+        )
+        assert rc == 0
+        compiled = yaml.safe_load(out_path.read_text())
+        lb = compiled["services"]["lb"]
+        assert {"NET_ADMIN", "SYS_TIME"} <= set(lb["cap_add"])
+        script = lb["entrypoint"][-1]
+        assert "coreutils" in script and "iproute" in script
+
+    def test_compile_refuses_to_overwrite_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "mayhem.db"),
+                "dependency",
+                "compile",
+                str(spec),
+                "-c",
+                str(COMPOSE_FILE),
+                "-o",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 2
+        assert "refusing to overwrite" in capsys.readouterr().err
 
 
 # ────────────────────────────────────────────────────────────────────────────

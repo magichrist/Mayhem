@@ -466,3 +466,62 @@ class TestDependencyCli:
 
         names = {cmd.name for cmd in dependency.commands.values()}
         assert {"check", "install"} <= names
+
+    def test_group_has_compile(self) -> None:
+        from mayhem.cli.dependency import dependency
+
+        assert "compile" in {cmd.name for cmd in dependency.commands.values()}
+
+
+def _plan_many(*fault_ids: str) -> ExecutionPlan:
+    """A drill plan holding one step per fault id (all targeting testcase-api)."""
+    steps = tuple(_plan(fid).steps[0] for fid in fault_ids)
+    return ExecutionPlan(
+        run_id="r-union",
+        kind=ExperimentKind.DRILL,
+        steps=steps,
+        config_snapshot_id="c1",
+        topology_snapshot_id="t1",
+        environment_fingerprint="f",
+    )
+
+
+class TestCompileRequirements:
+    def test_host_fault_adds_nothing(self) -> None:
+        # net.load runs k6 on the drill host — never a compose service.
+        assert impact.compile_requirements(_plan("net.load"), _graph()) == []
+
+    def test_cap_and_packages_are_baked(self) -> None:
+        plans = impact.compile_requirements(_plan("net.latency"), _graph())
+        assert len(plans) == 1
+        plan = plans[0]
+        assert plan.container == "testcase-api"
+        assert plan.bins == ("tc",)
+        assert plan.caps == ("NET_ADMIN",)
+        assert plan.manual == ()
+
+    def test_union_across_faults_single_container(self) -> None:
+        plans = impact.compile_requirements(
+            _plan_many("net.latency", "clock.skew"), _graph()
+        )
+        assert len(plans) == 1
+        plan = plans[0]
+        assert plan.bins == ("date", "tc")
+        assert plan.caps == ("NET_ADMIN", "SYS_TIME")
+
+    def test_root_fault_compiles_packages_but_no_caps(self) -> None:
+        # dns.nxdomain needs root at runtime, not a capability; the compose
+        # compiler carries the package (sh → dash/…) but never bakes a shell
+        # entrypoint prefix or a user field here.
+        plans = impact.compile_requirements(_plan("dns.nxdomain"), _graph())
+        assert len(plans) == 1
+        assert plans[0].bins == ("sh",)
+        assert plans[0].caps == ()
+        assert plans[0].manual == ()
+
+    def test_package_union_ignores_state(self) -> None:
+        # compile_requirements is a static union of the drill plan — it must
+        # not probe or depend on the running stack, so a torn-down stack still
+        # yields the same requirement.
+        plans = impact.compile_requirements(_plan("net.latency"), _graph())
+        assert plans[0].bins == ("tc",)
