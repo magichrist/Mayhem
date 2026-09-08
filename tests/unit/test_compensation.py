@@ -1,7 +1,10 @@
 """Payload compensation templates (ADR-0020): undo ops + injected source."""
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 
 from mayhem.controller.compensation import _payload_source, _payload_undo_ops, template_for
 from mayhem.domain.errors import InvariantViolationError
@@ -356,6 +359,54 @@ def test_tool_clock_skew_applies_offset_from_param() -> None:
     inject = json.loads(ops[0].args["inject_argv"])
     assert "+ 60000" in inject[-1]
     assert "@$target" in inject[-1]
+    # regression: `date -u -s '@$target'` in single quotes never expands the
+    # variable, so the shell hands date the literal 8-char string and the
+    # injection fails with "date: invalid date '@$target'". The script must
+    # reach sh as "... 'date -u -s \"@$target\"'".
+    assert '"@$target"' in inject[-1]
+    assert "'@$target'" not in inject[-1]
+
+
+def test_tool_clock_skew_inject_script_expands_target() -> None:
+    """Execute the generated inject script under a real shell and prove
+    ``$target`` expands to a numeric epoch (it is not passed to date as the
+    literal string ``@$target``)."""
+    ops, _ = _build("clock.skew", offset_ms=60000)
+    inject = json.loads(ops[0].args["inject_argv"])
+    assert inject[-3] == "sh" and inject[-2] == "-c"
+    script = inject[-1]
+
+    with tempfile.TemporaryDirectory() as td:
+        bindir = os.path.join(td, "bin")
+        os.makedirs(bindir)
+        capture = os.path.join(td, "captured-s-arg")
+        fake_date = os.path.join(bindir, "date")
+        with open(fake_date, "w", encoding="utf-8") as fh:
+            fh.write(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = '-u' ] && [ \"$2\" = '-s' ]; then\n"
+                "  printf '%s\\n' \"$3\" > \"$CAPTURE\"\n"
+                "else\n"
+                "  # `date -u '+%s'` branch: a fixed base epoch\n"
+                "  echo 1700000000\n"
+                "fi\n"
+            )
+        os.chmod(fake_date, 0o755)
+        env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}", CAPTURE=capture)
+        proc = subprocess.run(
+            ["sh", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr
+        with open(capture, encoding="utf-8") as fh:
+            seen = fh.read().strip()
+        # base 1700000000 + offset 60000 => 1700060000 (passed to date as
+        # GNU epoch-syntax @1700060000); the regression would hand date the
+        # literal string "@$target".
+        assert seen == "@1700060000", f"date -s received {seen!r}, expected expanded epoch"
 
 
 def test_tool_template_refuses_without_container_address() -> None:
