@@ -19,8 +19,10 @@ the container-tooling probe and ``mayhem dependency install`` never see them.
 from __future__ import annotations
 
 import functools
+import json
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -275,6 +277,77 @@ class GateVerdict:
     note: str = ""
 
 
+@functools.lru_cache(maxsize=8)
+def _engine_is_rootless(engine: str) -> bool:
+    """True when the container engine runs rootless (userns).
+
+    A rootless engine maps container roots onto unprivileged host uids inside a
+    user namespace. That makes two fault families *physically* impossible no
+    matter what the container reports:
+
+    * ``CAP_SYS_TIME`` in the container's ``CapEff`` is only meaningful inside
+      its userns. Setting the host-global ``CLOCK_REALTIME`` (``clock.skew`` →
+      ``date -u -s``) needs ``CAP_SYS_TIME`` in the *initial* user namespace,
+      which a rootless engine never grants — time namespaces do not virtualize
+      the realtime clock. The kernel returns ``EPERM`` (``login: cannot set
+      date: Operation not permitted``) even when ``CAP_SYS_TIME`` is set.
+
+      The container has no way to fake a $(date) read; the fault is inert by
+      construction. Probing ``CapEff`` is not enough: the bit reads as present.
+
+    Detection reuses the engine's own ``info`` output. Best-effort — any
+    failure (engine missing, odd output) returns False (assume rootful), so a
+    detection hiccup never *blocks* a fault that could work.
+    """
+    try:
+        result = subprocess.run(
+            [engine, "info", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        info = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    host = info.get("host") or {}
+    security = host.get("security") or {}
+    if isinstance(security, dict) and "rootless" in security:
+        return bool(security["rootless"])
+    # docker: rootless mode surfaces as a userns/rootless security option
+    # (podman nests it under host.security; docker keeps access at top level).
+    options = host.get("securityOptions") or info.get("SecurityOptions") or []
+    return "userns" in " ".join(options) or "rootless" in " ".join(options)
+
+
+def _gate_sys_time_for_rootless(
+    fault_id: str, container: str, engine: str, requirement: FaultRequirement
+) -> GateVerdict | None:
+    """Rootless engines cannot set CLOCK_REALTIME: reject SYS_TIME faults.
+
+    The container reports ``CAP_SYS_TIME`` (its userns grants the bit) but the
+    realtime clock is host-global — setting it demands host-root privilege a
+    rootless engine never provides. Treat such a fault as inert (probed) so the
+    execution layer bypasses it fail-safe instead of running a doomed inject.
+    Returns ``None`` when the fault is unaffected by rootlessness.
+    """
+    if "SYS_TIME" not in requirement.caps or not _engine_is_rootless(engine):
+        return None
+    return GateVerdict(
+        fault_id,
+        container,
+        False,
+        probed=True,
+        note=(
+            "rootless engine: container CAP_SYS_TIME is namespaced; "
+            "setting the host CLOCK_REALTIME is denied (EPERM)"
+        ),
+    )
+
+
 def gate_fault(
     fault_id: str,
     container: str,
@@ -289,6 +362,9 @@ def gate_fault(
         return GateVerdict(fault_id, container, True, note="no in-image tooling required")
     if requirement.host:
         return _gate_host_requirement(fault_id, container, requirement)
+    rootless_gate = _gate_sys_time_for_rootless(fault_id, container, engine, requirement)
+    if rootless_gate is not None:
+        return rootless_gate
     run = runtime if runtime is not None else probe_container_runtime(engine, container)
     if run is None:
         return GateVerdict(
