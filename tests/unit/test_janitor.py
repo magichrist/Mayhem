@@ -9,22 +9,21 @@ from mayhem.domain.leases import FaultLease, LeaseState
 
 
 def _lease(state: LeaseState, *, age_s: float = 0.0, ttl: float = 60.0) -> FaultLease:
-    return FaultLease.model_validate(
-        {
-            "id": f"l-{state.value}-{int(age_s)}",
-            "run_id": "r-j",
-            "fault_id": "proc.pause",
-            "owner_agent": "ag-j",
-            "targets": ["n1"],
-            "undo_ops": ({"op": "noop", "args": {}},),
-            "verify_probes": (
-                {"probe": "exec", "args": {"cmd": ["true"]}, "expect_present": True},
-            ),
-            "ttl_seconds": ttl,
-            "state": state,
-            "created_at": utc_now() - timedelta(seconds=age_s),
-        }
-    )
+    payload: dict[str, object] = {
+        "id": f"l-{state.value}-{int(age_s)}",
+        "run_id": "r-j",
+        "fault_id": "proc.pause",
+        "owner_agent": "ag-j",
+        "targets": ["n1"],
+        "undo_ops": ({"op": "noop", "args": {}},),
+        "verify_probes": ({"probe": "exec", "args": {"cmd": ["true"]}, "expect_present": True},),
+        "ttl_seconds": ttl,
+        "state": state,
+        "created_at": utc_now() - timedelta(seconds=age_s),
+    }
+    if state is LeaseState.DIRTY:
+        payload["escalation_notes"] = "compensation failed while sweeping"
+    return FaultLease.model_validate(payload)
 
 
 def _janitor_with(*leases: FaultLease) -> tuple[Janitor, InMemoryLeaseSink]:
@@ -77,3 +76,52 @@ class TestSweep:
         assert stranded is not None
         assert stranded.state is LeaseState.DIRTY
         assert "sink unavailable" in str(stranded.escalation_notes)
+
+    def test_stale_dirty_surrendered_to_expired(self) -> None:
+        # A dirty lease (compensation already failed) must not wedge the
+        # targets forever: past TTL the janitor surrenders it to EXPIRED.
+        # (DIRTY needs escalation notes from the original failure.)
+        dirty = _lease(LeaseState.DIRTY, age_s=300.0, ttl=60.0)
+        janitor, sink = _janitor_with(dirty)
+        result = janitor.sweep()
+        assert result.expired == ("l-dirty-300",)
+        assert not result.recovered
+        loaded = sink.load("l-dirty-300")
+        assert loaded is not None
+        assert loaded.state is LeaseState.EXPIRED
+        assert loaded.release_mechanism == "janitor"
+
+    def test_stale_orphaned_finalized_to_released(self) -> None:
+        janitor, sink = _janitor_with(_lease(LeaseState.ORPHANED, age_s=300.0, ttl=60.0))
+        result = janitor.sweep()
+        assert result.recovered == ("l-orphaned-300",)
+        loaded = sink.load("l-orphaned-300")
+        assert loaded is not None
+        assert loaded.state is LeaseState.RELEASED
+        assert loaded.release_mechanism == "janitor"
+
+    def test_stale_releasing_finalized_to_released(self) -> None:
+        # A lease stuck in RELEASING (owner died mid-compensation) has the
+        # same recovery path: finalize RELEASED so the targets unblock.
+        janitor, sink = _janitor_with(_lease(LeaseState.RELEASING, age_s=300.0, ttl=60.0))
+        result = janitor.sweep()
+        assert result.recovered == ("l-releasing-300",)
+        loaded = sink.load("l-releasing-300")
+        assert loaded is not None
+        assert loaded.state is LeaseState.RELEASED
+
+    def test_dirty_surrender_failure_reports_dirty(self) -> None:
+        class ExplodingSink(InMemoryLeaseSink):
+            def save(self, lease):
+                if lease.state is LeaseState.EXPIRED:
+                    raise OSError("sink unavailable")
+                super().save(lease)
+
+        sink = ExplodingSink()
+        sink.save(_lease(LeaseState.DIRTY, age_s=300.0, ttl=60.0))
+        result = Janitor(sink).sweep()
+        assert result.expired == ()
+        # captive in DIRTY with the original escalation notes preserved
+        stranded = sink.load("l-dirty-300")
+        assert stranded is not None
+        assert stranded.state is LeaseState.DIRTY
