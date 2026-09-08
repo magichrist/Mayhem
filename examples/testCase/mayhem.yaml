@@ -25,6 +25,11 @@ containers:
         duration: 20s
       - fault: container.restart
         duration: 10s
+      - fault: net.load
+        users: 100
+        duration: 10s
+        url: http://testcase-api:8080/
+        
 
   testcase-lb:
     faults:
