@@ -1,0 +1,145 @@
+services:
+  api:
+    image: docker.io/library/python:3.13-alpine
+    container_name: testcase-api
+    command: python -m http.server 8080
+    expose:
+    - '8080'
+    restart: unless-stopped
+    entrypoint:
+    - /bin/sh
+    - -c
+    - "mayhem_install() {\n  command -v apt-get >/dev/null 2>&1 && { apt-get update\
+      \ && apt-get install -y procps python3; return; }\n  command -v apk >/dev/null\
+      \ 2>&1 && { apk add --no-cache procps python3; return; }\n  command -v dnf >/dev/null\
+      \ 2>&1 && { dnf install -y procps-ng python3; return; }\n  command -v yum >/dev/null\
+      \ 2>&1 && { yum install -y procps-ng python3; return; }\n  command -v microdnf\
+      \ >/dev/null 2>&1 && { microdnf install -y procps-ng python3; return; }\n  command\
+      \ -v zypper >/dev/null 2>&1 && { zypper --non-interactive install procps python3;\
+      \ return; }\n}\nif ! ( command -v kill >/dev/null 2>&1) || ! ( command -v python\
+      \ >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1); then mayhem_install;\
+      \ fi\nif [ -n \"$0\" ]; then exec \"$0\" \"$@\"; fi\necho \"mayhem: no command\
+      \ to run after dependency bootstrap\" >&2\nexit 1"
+  web:
+    container_name: testcase-web
+    image: docker.io/library/python:3.13-alpine
+    command: python -m http.server 8080
+    expose:
+    - '8080'
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+  download-1:
+    container_name: testcase-download-1
+    image: docker.io/library/python:3.13-alpine
+    command: python -m http.server 8000 --directory /srv/data
+    volumes:
+    - ./data:/srv/data:ro
+    expose:
+    - '8000'
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/')
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    entrypoint:
+    - /bin/sh
+    - -c
+    - "mayhem_install() {\n  command -v apt-get >/dev/null 2>&1 && { apt-get update\
+      \ && apt-get install -y procps; return; }\n  command -v apk >/dev/null 2>&1\
+      \ && { apk add --no-cache procps; return; }\n  command -v dnf >/dev/null 2>&1\
+      \ && { dnf install -y procps-ng; return; }\n  command -v yum >/dev/null 2>&1\
+      \ && { yum install -y procps-ng; return; }\n  command -v microdnf >/dev/null\
+      \ 2>&1 && { microdnf install -y procps-ng; return; }\n  command -v zypper >/dev/null\
+      \ 2>&1 && { zypper --non-interactive install procps; return; }\n}\nif ! ( command\
+      \ -v kill >/dev/null 2>&1); then mayhem_install; fi\nif [ -n \"$0\" ]; then\
+      \ exec \"$0\" \"$@\"; fi\necho \"mayhem: no command to run after dependency\
+      \ bootstrap\" >&2\nexit 1"
+  download-2:
+    container_name: testcase-download-2
+    image: docker.io/library/python:3.13-alpine
+    command: python -m http.server 8000 --directory /srv/data
+    volumes:
+    - ./data:/srv/data:ro
+    expose:
+    - '8000'
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/')
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+  lb:
+    container_name: testcase-lb
+    image: docker.io/library/nginx:1.27-alpine
+    command: nginx -g "daemon off;"
+    ports:
+    - 8080:80
+    volumes:
+    - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      download-1:
+        condition: service_healthy
+      download-2:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - wget -qO- http://127.0.0.1:80/ || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: always
+    cap_add:
+    - NET_ADMIN
+    - SYS_TIME
+    entrypoint:
+    - /bin/sh
+    - -c
+    - "mayhem_install() {\n  command -v apt-get >/dev/null 2>&1 && { apt-get update\
+      \ && apt-get install -y coreutils dash iproute2 iptables procps python3; return;\
+      \ }\n  command -v apk >/dev/null 2>&1 && { apk add --no-cache busybox coreutils\
+      \ iproute2 iptables procps python3; return; }\n  command -v dnf >/dev/null 2>&1\
+      \ && { dnf install -y bash coreutils iproute iptables procps-ng python3; return;\
+      \ }\n  command -v yum >/dev/null 2>&1 && { yum install -y bash coreutils iproute\
+      \ iptables procps-ng python3; return; }\n  command -v microdnf >/dev/null 2>&1\
+      \ && { microdnf install -y bash coreutils iproute iptables procps-ng python3;\
+      \ return; }\n  command -v zypper >/dev/null 2>&1 && { zypper --non-interactive\
+      \ install bash coreutils iproute2 iptables procps python3; return; }\n}\nif\
+      \ ! ( command -v date >/dev/null 2>&1) || ! ( command -v iptables >/dev/null\
+      \ 2>&1) || ! ( command -v kill >/dev/null 2>&1) || ! ( command -v python >/dev/null\
+      \ 2>&1 || command -v python3 >/dev/null 2>&1) || ! ( command -v sh >/dev/null\
+      \ 2>&1) || ! ( command -v tc >/dev/null 2>&1); then mayhem_install; fi\nif [\
+      \ -n \"$0\" ]; then exec \"$0\" \"$@\"; fi\necho \"mayhem: no command to run\
+      \ after dependency bootstrap\" >&2\nexit 1"
+  db:
+    container_name: testcase-db
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: mayhem
+      POSTGRES_PASSWORD: mayhem
+      POSTGRES_DB: mayhem
+    expose:
+    - '5432'
+    volumes:
+    - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U mayhem -d mayhem
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+volumes:
+  pg-data: null
