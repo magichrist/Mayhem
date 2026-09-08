@@ -11,7 +11,12 @@ config:
   # true (default): auto-recover the container after each fault.
   # false: keep the fault in place — downstream checks observe whether
   #        the stack self-heals without the engine reviving anything.
-  recovery: true 
+  recovery: true
+  # Default failure policy for every fault round:
+  #   continue           record the failure and keep testing the remaining faults
+  #   abort_and_recover  cancel the remaining steps and recover on first failure
+  # A fault can override this per-fault (see testcase-api's proc.pause below).
+  on_failure: continue 
 
 containers:
   testcase-api:

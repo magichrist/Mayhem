@@ -29,7 +29,7 @@ class TestDrillFault:
         f = DrillFault(fault="proc.pause")
         assert f.fault == "proc.pause"
         assert f.duration == "10s"
-        assert f.on_failure == OnFailure.ABORT_AND_RECOVER
+        assert f.on_failure is None  # inherits config.on_failure at planning time
         assert f.targets == ()
 
     def test_explicit_values(self) -> None:

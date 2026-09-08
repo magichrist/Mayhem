@@ -1498,8 +1498,7 @@ def _http_proxy_ops(
         f"p={pidf}\n"
         f'[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\n'
         f"PORT=$(cat {portf} 2>/dev/null)\n"
-        f"RULE='-t nat -D OUTPUT -p tcp --dport {target} -j REDIRECT --to-ports $PORT'\n"
-        f'[ -z "$PORT" ] || iptables $RULE 2>/dev/null\n'
+        f'[ -z "$PORT" ] || iptables -t nat -D OUTPUT -p tcp --dport {target} -j REDIRECT --to-ports "$PORT"\n'
         f"rm -f {pidf} {portf} {srcf}\n"
         f"true\n"
     )

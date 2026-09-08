@@ -524,9 +524,7 @@ class TestDependencyCompile:
         # generator must warn loudly but still emit the file.
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
         source = COMPOSE_FILE.read_text(encoding="utf-8")
-        stripped = source.replace(
-            '\n    command: nginx -g "daemon off;"', "", 1
-        )
+        stripped = source.replace('\n    command: nginx -g "daemon off;"', "", 1)
         compose = _write(tmp_path, "compose.yml", stripped)
         out_path = tmp_path / "compose.mayhem.yml"
         rc = main(
@@ -961,9 +959,7 @@ class TestCaseTopology:
 
     def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
-        with patch(
-            "mayhem.topology.providers.adapter_registry.best_effort", return_value=None
-        ):
+        with patch("mayhem.topology.providers.adapter_registry.best_effort", return_value=None):
             rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)

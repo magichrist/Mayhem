@@ -385,14 +385,16 @@ def test_tool_clock_skew_inject_script_expands_target() -> None:
             fh.write(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = '-u' ] && [ \"$2\" = '-s' ]; then\n"
-                "  printf '%s\\n' \"$3\" > \"$CAPTURE\"\n"
+                '  printf \'%s\\n\' "$3" > "$CAPTURE"\n'
                 "else\n"
                 "  # `date -u '+%s'` branch: a fixed base epoch\n"
                 "  echo 1700000000\n"
                 "fi\n"
             )
         os.chmod(fake_date, 0o755)
-        env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}", CAPTURE=capture)
+        env = dict(
+            os.environ, PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}", CAPTURE=capture
+        )
         proc = subprocess.run(
             ["sh", "-c", script],
             capture_output=True,

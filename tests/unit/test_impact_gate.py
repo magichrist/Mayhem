@@ -621,9 +621,7 @@ class TestCompileRequirements:
         assert plan.manual == ()
 
     def test_union_across_faults_single_container(self) -> None:
-        plans = impact.compile_requirements(
-            _plan_many("net.latency", "clock.skew"), _graph()
-        )
+        plans = impact.compile_requirements(_plan_many("net.latency", "clock.skew"), _graph())
         assert len(plans) == 1
         plan = plans[0]
         assert plan.bins == ("date", "tc")

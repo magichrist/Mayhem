@@ -218,9 +218,7 @@ def _bin_missing_expr(bin_name: str) -> str:
     so the generated guard checks python OR python3.
     """
     if bin_name == "python":
-        return (
-            "command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1"
-        )
+        return "command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1"
     return f"command -v {bin_name} >/dev/null 2>&1"
 
 
@@ -275,7 +273,7 @@ def _bootstrap_script(bins: Sequence[str]) -> str:
     if not arms:
         return ""
     lines = [
-        'mayhem_install() {',
+        "mayhem_install() {",
         *arms,
         "}",
         f"if {missing}; then mayhem_install; fi",
@@ -335,9 +333,7 @@ def compile_cmd(
     plan, graph, _engine = _dependency_context(ctx, compose, experiment)
     source = _resolve_compose(compose)
     if source is None:
-        raise click.UsageError(
-            "no compose file found — pass -c docker-compose.yml", ctx=ctx
-        )
+        raise click.UsageError("no compose file found — pass -c docker-compose.yml", ctx=ctx)
     source_path = Path(source)
     document = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
     services = document.get("services")
@@ -401,17 +397,14 @@ def compile_cmd(
     for svc_key, compiled, bootstrap in changed:
         caps_label = ", ".join(compiled.caps) or "—"
         script_label = "bootstrap entrypoint" if bootstrap else "no packages"
-        click.echo(
-            f"  {style.ok('[added]')} {svc_key}: cap_add {caps_label}; {script_label}"
-        )
+        click.echo(f"  {style.ok('[added]')} {svc_key}: cap_add {caps_label}; {script_label}")
     for name in _host_gaps(plan):
         click.echo(
             f"  host: {style.yellow('manual')} {name}"
             " — runs on the drill host, not in a container; install on the drill host"
         )
     click.echo(
-        f"{style.ok('wrote')} {style.cyan(str(out_path))} — extend "
-        f"{source_path.name} untouched"
+        f"{style.ok('wrote')} {style.cyan(str(out_path))} — extend {source_path.name} untouched"
     )
     click.echo(
         f"  next: {style.cyan('podman compose -f ' + str(out_path) + ' up -d')}"
@@ -419,9 +412,7 @@ def compile_cmd(
     )
 
 
-def _merge_caps(
-    service: dict[str, object], required: Sequence[str]
-) -> list[str] | None:
+def _merge_caps(service: dict[str, object], required: Sequence[str]) -> list[str] | None:
     """Union existing ``cap_add`` with the requirements; None when nothing needed."""
     existing = service.get("cap_add")
     base: list[str] = []

@@ -690,9 +690,7 @@ class ContainerCompilePlan:
     manual: tuple[str, ...] = ()
 
 
-def compile_requirements(
-    plan: ExecutionPlan, graph: TopologyGraph
-) -> list[ContainerCompilePlan]:
+def compile_requirements(plan: ExecutionPlan, graph: TopologyGraph) -> list[ContainerCompilePlan]:
     """Union the tooling requirements per container over the whole plan.
 
     The compose compiler needs the *requirement* set, not the diff against a

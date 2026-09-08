@@ -37,6 +37,7 @@ from mayhem.domain.experiments import (
     GroupMode,
     InjectFault,
     ManiacCfg,
+    OnFailure,
     PlannedFault,
     PlannedStep,
     ResolvedTarget,
@@ -118,6 +119,7 @@ def plan_drill(
                     steps,
                     seq,
                     recovery_default=spec.config.recovery,
+                    on_failure_default=spec.config.on_failure,
                     spec_dir=spec_dir,
                 )
                 emitted = max(emitted, planned)
@@ -132,6 +134,7 @@ def plan_drill(
                     steps,
                     seq,
                     recovery_default=spec.config.recovery,
+                    on_failure_default=spec.config.on_failure,
                     spec_dir=spec_dir,
                 )
         elif block.wait is not None:
@@ -236,6 +239,11 @@ def plan_maniac(
                 group_path=f"/{draw.container}",
                 recovery=(
                     draw.fault.recovery if draw.fault.recovery is not None else spec.config.recovery
+                ),
+                on_failure=(
+                    draw.fault.on_failure
+                    if draw.fault.on_failure is not None
+                    else spec.config.on_failure
                 ),
                 spec_dir=spec_dir,
             )
@@ -369,6 +377,7 @@ def _plan_container_faults(
     seq: int,
     *,
     recovery_default: bool = True,
+    on_failure_default: OnFailure = OnFailure.ABORT_AND_RECOVER,
     spec_dir: str | None = None,
 ) -> int:
     """Plan every fault on the container as its own compensatable step.
@@ -413,6 +422,11 @@ def _plan_container_faults(
                 recovery=(
                     drill_fault.recovery if drill_fault.recovery is not None else recovery_default
                 ),
+                on_failure=(
+                    drill_fault.on_failure
+                    if drill_fault.on_failure is not None
+                    else on_failure_default
+                ),
             )
         )
     return len(container.faults)
@@ -429,6 +443,7 @@ def _plan_fault_step(
     group_mode: GroupMode | None = None,
     group_path: str | None = None,
     recovery: bool = True,
+    on_failure: OnFailure | None = None,
     spec_dir: str | None = None,
 ) -> PlannedStep:
     """Compile one drill fault into a compensatable :class:`PlannedStep`."""
@@ -505,6 +520,7 @@ def _plan_fault_step(
         backend=None,
         runtime_identity=_resolve_planned_identity(matched),
         recovery=recovery,
+        on_failure=on_failure if on_failure is not None else OnFailure.ABORT_AND_RECOVER,
     )
     planned = compensated(planned, tuple(compensation_nodes))
     if not planned.undo_ops:

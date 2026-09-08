@@ -37,6 +37,7 @@ from mayhem.domain.cancellation import CancellationLevel, CancellationToken
 from mayhem.domain.checks import CheckLocus
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
+from mayhem.domain.experiments import OnFailure
 from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
 from mayhem.domain.run_outcome import RunVerdict
 from mayhem.domain.success import (
@@ -312,6 +313,17 @@ def _group_by_seq(steps: Sequence[PlannedStep]) -> list[list[PlannedStep]]:
     return groups
 
 
+def _continues_on_failure(step: PlannedStep) -> bool:
+    """True when a failed fault step names ``on_failure: continue``.
+
+    Continue keeps the drill running after a failing round so the remaining
+    faults still get tested; the run is nevertheless reported ``failed``.
+    Non-fault steps (wait/check) have no failure policy and always abort.
+    """
+    fault = step.fault
+    return fault is not None and fault.on_failure == OnFailure.CONTINUE
+
+
 def _missing_live_pids(fault: PlannedFault, live_pids: dict[str, int]) -> set[str]:
     """Target node ids that require a live PID but could not be resolved.
 
@@ -401,14 +413,21 @@ class RunEngine:
                     dirty.extend(lease_dirty)
                     if not report.ok:
                         status = "failed"
-                        break  # on_failure defaults to abort_and_recover; later steps cancelled
+                        if not _continues_on_failure(group[0]):
+                            break  # abort_and_recover; later steps cancelled
                 else:
                     batch_reports, lease_dirty = self._run_parallel(plan, group)
                     reports.extend(batch_reports)
                     dirty.extend(lease_dirty)
                     if not all(r.ok for r in batch_reports):
                         status = "failed"
-                        break
+                        failed_ids = {r.step_id for r in batch_reports if not r.ok}
+                        if any(
+                            not _continues_on_failure(step)
+                            for step in group
+                            if step.id in failed_ids
+                        ):
+                            break  # a failing abort_and_recover step; later steps cancelled
                 if self._abort_mode == "immediate":
                     status = "aborted"
                     break
@@ -482,9 +501,7 @@ class RunEngine:
                 continue
             try:
                 if lease.state in (LeaseState.PENDING, LeaseState.ACTIVE):
-                    releasing = self._client.mark_orphaned(
-                        lease.id, notes="engine recovery pass"
-                    )
+                    releasing = self._client.mark_orphaned(lease.id, notes="engine recovery pass")
                     _ = releasing
                     self._client.mark_releasing(lease.id)
                 elif lease.state is LeaseState.ORPHANED:

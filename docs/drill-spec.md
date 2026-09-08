@@ -75,6 +75,7 @@ its own schema freeze, not by `apiVersion`.
 | `timeout`      | duration                          | `30m`   | Whole-run timeout; the executor aborts and recovers past this. |
 | `log_level`    | `DEBUG` / `INFO` / `WARNING` / `ERROR` | `INFO` | Log verbosity for the drill run. |
 | `recovery`     | bool                              | `true`  | Automatically undo each fault after injection (restore the container). `false` keeps the perturbation in place so downstream checks observe whether the stack self-heals — see [Recovery control](#recovery-control). |
+| `on_failure`   | `abort_and_recover` / `continue`  | `abort_and_recover` | Default behavior if a fault round fails. `abort_and_recover` cancels the remaining steps and recovers; `continue` records the failure and keeps testing the remaining faults (the run still ends `failed`). A fault can override this per-fault — see [DrillFault](#drillfault). |
 | `maniac`       | [ManiacConfig](#maniac-mode)      | —       | Random-injection tuning for `mayhem maniac` (level, run count, seed). Falls back to the `maniac:` key in the layered `mayhem.yaml` when the drill spec omits it; a spec-level block always wins. |
 
 ```yaml
@@ -167,7 +168,7 @@ Faults listed under one container run **sequentially**.
 |----------------|-------------------------------|---------------------|-------------|
 | `fault`        | string (catalog id, e.g. `net.latency`) | — | Which fault to inject. See the [fault catalog](#fault-catalog). |
 | `duration`     | duration                      | `10s`               | How long to keep the fault injected before running its compensation. Capped per fault by the catalog. |
-| `on_failure`   | `abort_and_recover`           | `abort_and_recover` | Behavior if the round fails (currently the only supported value). |
+| `on_failure`   | `abort_and_recover` / `continue`  | *inherit config*  | Overrides `config.on_failure` for this fault only. `abort_and_recover` cancels the remaining steps if this round fails; `continue` records the failure and keeps testing the remaining faults. |
 | `targets`      | list<string>                  | `()`                | Network / partition faults only: container names this target is partitioned from. |
 | `network_path` | string                        | —                   | Optional named network path to scope a network fault against. |
 | `recovery`     | bool                          | *inherit config*    | Per-fault override of `config.recovery`. `false` leaves this container faulted after injection (self-healing observation); overrides the config default for this fault only. |

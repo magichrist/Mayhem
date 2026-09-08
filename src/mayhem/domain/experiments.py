@@ -169,6 +169,11 @@ class DrillConfig(BaseModel):
     # False: keep the perturbation in place after injection — the container stays
     # faulted so downstream checks observe whether the stack self-heals.
     recovery: bool = True
+    # Drill-wide failure policy: when a fault round fails, `abort_and_recover`
+    # cancels the remaining steps and recovers, `continue` records the failure
+    # and keeps testing the remaining faults (the run still ends `failed`).
+    # A fault can override this per-fault via its own `on_failure`.
+    on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
     # ADR-M5-1: when set, `mayhem maniac` replaces the authored execution with
     # `maniac.run_level` random (container, fault) rounds dialed by `maniac.level`.
     # Leave unset to keep `mayhem run` fully deterministic.
@@ -182,7 +187,8 @@ class DrillFault(BaseModel):
 
     fault: str
     duration: Duration = "10s"
-    on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
+    # Per-fault override of ``config.on_failure``; None ⇒ inherit config.
+    on_failure: OnFailure | None = None
     targets: tuple[str, ...] = ()  # for network faults: container names to partition
     network_path: str | None = None  # ADR-M3-7 optional path target for network faults
     # Optional per-fault override of ``config.recovery``; None ⇒ inherit config.
@@ -294,6 +300,10 @@ class PlannedFault(BaseModel):
     # False ⇒ executor keeps the perturbation in place instead of undoing it
     # after injection (self-healing observation mode).
     recovery: bool = True
+    # Resolved failure policy (config default overridden per-fault at planning
+    # time): abort_and_recover cancels the remaining steps on the first failing
+    # round; continue records the failure and keeps testing the rest.
+    on_failure: OnFailure = OnFailure.ABORT_AND_RECOVER
 
 
 class ExecutionPlan(BaseModel):
