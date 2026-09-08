@@ -59,6 +59,7 @@ services:
   lb:
     container_name: testcase-lb
     image: docker.io/library/nginx:1.27-alpine
+    command: nginx -g "daemon off;"
     ports:
       - "8080:80"
     volumes:
