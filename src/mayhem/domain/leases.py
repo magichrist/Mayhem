@@ -31,10 +31,11 @@ _TRANSITIONS: dict[LeaseState, frozenset[LeaseState]] = {
     LeaseState.ACTIVE: frozenset({LeaseState.RELEASING, LeaseState.EXPIRED, LeaseState.ORPHANED}),
     LeaseState.ORPHANED: frozenset({LeaseState.RELEASING}),
     LeaseState.RELEASING: frozenset({LeaseState.RELEASED, LeaseState.DIRTY}),
-    # Safe terminals: released, expired. Dirty is terminal-pending-acknowledgment.
+    # Safe terminals: released, expired. Dirty may only be *expired* past its
+    # TTL by the janitor — the fault is then abandoned (ADR-0007 surrender).
     LeaseState.RELEASED: frozenset(),
     LeaseState.EXPIRED: frozenset(),
-    LeaseState.DIRTY: frozenset(),
+    LeaseState.DIRTY: frozenset({LeaseState.EXPIRED}),
 }
 
 _SAFE_TERMINALS: frozenset[LeaseState] = frozenset({LeaseState.RELEASED, LeaseState.EXPIRED})
@@ -165,6 +166,7 @@ class FaultLease(BaseModel):
             LeaseState.PENDING,
             LeaseState.ACTIVE,
             LeaseState.ORPHANED,
+            LeaseState.RELEASING,
             LeaseState.DIRTY,
         )
 
