@@ -47,6 +47,15 @@ class TestFaultDefinition:
         with pytest.raises(SchemaValidationError, match="missing required"):
             _latency().validate_params({"jitter_ms": 1})
 
+    def test_duration_param_accepts_numeric_seconds(self) -> None:
+        # A DURATION param passed as a plain number means seconds; the
+        # catalog carries float defaults (e.g. dependency.flap interval=10.0),
+        # so coercing them must not stringify to "10.0" and break the grammar.
+        normalized = _latency().validate_params({"duration_s": 10.0, "delay_ms": 1})
+        assert normalized["duration_s"] == 10.0
+        normalized = _latency().validate_params({"duration_s": 30, "delay_ms": 1})
+        assert normalized["duration_s"] == 30.0
+
     def test_unknown_param(self) -> None:
         with pytest.raises(SchemaValidationError, match="unknown parameter"):
             _latency().validate_params({"delay_ms": 1, "warp_factor": 9})

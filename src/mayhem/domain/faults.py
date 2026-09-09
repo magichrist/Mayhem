@@ -206,7 +206,10 @@ def _convert(spec: ParamSpec, raw: object) -> object:
         case ParamType.DURATION:
             from mayhem.domain.common import parse_duration  # noqa: PLC0415
 
-            value = parse_duration(str(raw))
+            if isinstance(raw, (int, float)):
+                value = float(raw)  # numeric seconds (e.g. a 10.0 catalog default)
+            else:
+                value = parse_duration(str(raw))
         case ParamType.BYTES:
             from mayhem.domain.common import parse_bytes  # noqa: PLC0415
 
