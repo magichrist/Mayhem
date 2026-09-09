@@ -338,6 +338,116 @@ class TestManiacCommand:
         faults = [s for s in plan.steps if s.fault is not None]
         assert len(faults) == 10  # default config maniac.run_level when spec omits it
 
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_steps_flag_overrides_run_level(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # -s/--steps beats both the spec's config.maniac.run_level and the
+        # layered-config fallback; 12 rounds are drawn, not the authored 4.
+        maniac_yaml = DRILL_YAML.replace(
+            "name: drill-pause\n",
+            "name: drill-maniac\n",
+            1,
+        ).replace(
+            "  timeout: 10m\n",
+            "  timeout: 10m\n  maniac:\n    level: 3\n    run_level: 4\n    seed: 7\n",
+            1,
+        )
+        spec = _write(tmp_path, maniac_yaml)
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--skip-gate",
+                "maniac",
+                "-s",
+                "12",
+                str(spec),
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0
+        assert "maniac mode — 12 random fault round(s)" in capsys.readouterr().err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 12
+
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_config_flag_doubles_as_spec_path(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Regression: `mayhem --config <drill-spec> maniac` from a directory
+        # without a spec file must use the --config path as the spec (and not
+        # re-parse it as the layered config document).
+        monkeypatch.chdir(tmp_path)
+        spec = tmp_path / "mayhem.yaml"
+        spec.write_text(DRILL_YAML)
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--config",
+                str(spec),
+                "--skip-gate",
+                "maniac",
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+        assert "maniac mode —" in capsys.readouterr().err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 10  # default maniac.run_level; spec has no maniac block
+
+    def test_config_flag_spec_resolution_used_outside_cwd(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `mayhem --config <spec> plan` resolves the spec from the flag even
+        # when the cwd has no mayhem.yaml at all.
+        monkeypatch.chdir(tmp_path)  # tmp_path holds the spec, cwd is empty subdir
+        spec_dir = tmp_path / "specs"
+        spec_dir.mkdir()
+        spec = spec_dir / "drill.yaml"
+        spec.write_text(DRILL_YAML)
+        assert (
+            main(
+                [
+                    "--db",
+                    str(tmp_path / "m.db"),
+                    "--config",
+                    str(spec),
+                    "plan",
+                    "--compose",
+                    str(COMPOSE_FILE),
+                ]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        plan = json.loads(out)
+        assert plan["run_id"].startswith("r-drill-pause")
+
     def test_maniac_rejects_no_injectable_container(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -375,6 +485,123 @@ class TestManiacCommand:
             )
         assert rc == int(ExitCode.VALIDATION_ERROR)
         assert "maniac mode needs at least one container with faults" in capsys.readouterr().err
+
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_synthesizes_spec_from_compose_only(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `mayhem maniac -c compose.yml` with no drill spec anywhere derives
+        # the config from the topology: every container pools the full
+        # container-addressable catalog, and the draw still plans cleanly.
+        monkeypatch.chdir(tmp_path)  # no mayhem.yaml in cwd
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--skip-gate",
+                "maniac",
+                "--steps",
+                "3",
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "no drill spec; synthesized config from compose topology" in err
+        assert "3 random fault round(s) drawn" in err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 3
+        for step in faults:
+            assert step.fault.fault_id != "k8s.node_drain"  # k8s-only caps excluded
+            assert step.raw_action.selectors  # resolved against the topology
+
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_synthesized_spec_honors_layered_config_doc(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A cwd `mayhem.yaml` that is a plain config document (no `kind`)
+        # tunes the synthesized spec through its `maniac:` block instead of
+        # being rejected as no-spec.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mayhem.yaml").write_text(
+            "apiVersion: mayhem/v1\nmaniac:\n  level: 3\n  run_level: 4\n  seed: 7\n"
+        )
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--skip-gate",
+                "maniac",
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+        assert "4 random fault round(s) drawn" in capsys.readouterr().err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 4  # layered `maniac.run_level`
+
+    @patch("mayhem.cli.services.RunEngine")
+    def test_maniac_synthesized_spec_honors_config_doc_via_flag(
+        self,
+        mock_engine_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `--config` pointing at a plain config document (not a drill spec)
+        # layer-tunes the synthesized spec from any directory.
+        monkeypatch.chdir(tmp_path)
+        config_doc = tmp_path / "layers.yaml"
+        config_doc.write_text(
+            "apiVersion: mayhem/v1\nmaniac:\n  level: 5\n  run_level: 2\n  seed: 7\n"
+        )
+        engine = mock_engine_cls.return_value
+        result = engine.execute.return_value
+        result.status = "completed"
+        result.summary_md.return_value = "maniac complete"
+        result.wall_seconds = 1.0
+        result.dirty_leases = ()
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "m.db"),
+                "--config",
+                str(config_doc),
+                "--skip-gate",
+                "maniac",
+                "--compose",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+        assert "2 random fault round(s) drawn" in capsys.readouterr().err
+        plan = engine.execute.call_args.args[0]
+        faults = [s for s in plan.steps if s.fault is not None]
+        assert len(faults) == 2
 
 
 class TestRecoveryCommands:

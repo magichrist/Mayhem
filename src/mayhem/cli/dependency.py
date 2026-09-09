@@ -29,7 +29,7 @@ from mayhem.cli.lifecycle import (
     _compose_option,
     _graph_from,
     _resolve_engine_from_state,
-    _resolve_spec,
+    _resolve_spec_pair,
 )
 from mayhem.cli.services import open_store, plan_from_spec, prepare
 from mayhem.toolkit.tool_runner import run_tool
@@ -53,12 +53,12 @@ def _dependency_context(
 ) -> tuple[ExecutionPlan, TopologyGraph, str]:
     """Resolve graph + compiled plan the same way ``mayhem run`` does."""
     graph, resolved_compose = _graph_from(ctx, compose)
-    spec_path = _resolve_spec(experiment)
     obj = _ctx(ctx)
+    spec_path, config_for_layers = _resolve_spec_pair(experiment, obj.config)
     store = open_store(obj.db)
     try:
         prepared = prepare(
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
             allow_critical=obj.allow_critical,
             store=store,

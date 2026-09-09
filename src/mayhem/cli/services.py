@@ -19,7 +19,7 @@ from mayhem.config import load_config, save_snapshot
 from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
-from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
+from mayhem.domain.experiments import BlastRadiusBudget, DrillSpec, ExecutionPlan
 from mayhem.domain.topology import (
     Edge,
     EdgeKind,
@@ -201,6 +201,8 @@ def plan_maniac_from_spec(
     engine: str = "podman",
     config_path: str | None = None,
     profile: str | None = None,
+    steps: int | None = None,
+    spec: DrillSpec | None = None,
 ) -> CompiledPlan:
     """Compile a drill spec into a random maniac plan (ADR-M5-1).
 
@@ -208,19 +210,28 @@ def plan_maniac_from_spec(
     resolution) but replaces the authored execution with ``run_level`` random
     rounds. The maniac settings come from the spec's own ``config.maniac``
     block when present, otherwise from the layered ``mayhem.yaml`` config
-    (``maniac:`` key); the spec wins when both exist (ADR-M5-1).
+    (``maniac:`` key); the spec wins when both exist (ADR-M5-1). ``steps``
+    (CLI ``-s/--steps``) overrides the round count on top of either source.
+
+    ``spec`` supplies an already-built spec instead of loading ``spec_path``
+    — the ``mayhem maniac -c compose`` no-spec mode synthesizes its config
+    from the topology (:func:`mayhem.controller.planner.synthesize_maniac_spec`)
+    and has no file to load. ``spec_path`` then names the cwd for relative
+    artifacts (load-script embedding) and is not read.
     """
-    spec = load_drill(spec_path)
-    maniac = spec.config.maniac
+    document = spec if spec is not None else load_drill(spec_path)
+    maniac = document.config.maniac
     if maniac is None:
         cfg, _sources = load_config(
             config_path=config_path,
             profile=profile,
             environ={},
-            skip_default_file_if_spec=spec_path,
+            skip_default_file_if_spec=None if spec is not None else spec_path,
         )
         maniac = cfg.maniac
-    run_id = f"r-{spec.name}-{uuid.uuid4().hex[:8]}"
+    if steps is not None:
+        maniac = maniac.model_copy(update={"run_level": steps})
+    run_id = f"r-{document.name}-{uuid.uuid4().hex[:8]}"
     common: dict[str, str] = {
         "config_snapshot_id": prepared.config_snapshot_id,
         "topology_snapshot_id": prepared.topology_snapshot_id,
@@ -228,11 +239,11 @@ def plan_maniac_from_spec(
     }
     plan = plan_maniac(
         run_id,
-        spec,
+        document,
         graph,
         **common,
         engine=engine,
-        spec_dir=str(Path(spec_path).parent),
+        spec_dir=str(Path(spec_path).parent if spec_path else Path.cwd()),
         maniac=maniac,
     )
     return CompiledPlan(run_id=run_id, plan=plan)

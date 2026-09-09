@@ -366,6 +366,75 @@ class TopologyGraph(BaseModel):
                 result.append(node)
         return tuple(result)
 
+    def container_names(self) -> tuple[str, ...]:
+        """Distinct container identifiers usable with ``--ctr``, sorted.
+
+        Every ``container_name`` authoring key in the graph is a candidate,
+        plus the runtime container names of :class:`ContainerNode` nodes, so
+        ``--ctr`` accepts either the compose ``container_name:`` value or the
+        container's own name as reported by the runtime.
+        """
+        keys: set[str] = set()
+        for node in self.nodes:
+            container_name = getattr(node, "container_name", None)
+            if container_name is not None:
+                keys.add(str(container_name))
+            if node.kind is NodeKind.CONTAINER:
+                keys.add(node.name)
+        return tuple(sorted(keys))
+
+    def node_ids_for_container(self, container_name: str) -> frozenset[str]:
+        """Node ids in the subtree named by *container_name* (``--ctr``).
+
+        A compose service expands to a subtree (service → container →
+        process); all members share the ``container_name`` authoring key. A
+        ``container_name`` match always wins; as a fallback the name of a
+        :class:`ContainerNode` is resolved to its authoring key so the whole
+        subtree is returned either way.
+        """
+        by_key = frozenset(
+            node.id
+            for node in self.nodes
+            if getattr(node, "container_name", None) == container_name
+        )
+        if by_key:
+            return by_key
+        for node in self.nodes:
+            if node.kind is NodeKind.CONTAINER and node.name == container_name:
+                canonical = getattr(node, "container_name", None)
+                if canonical is not None:
+                    return frozenset(
+                        n.id for n in self.nodes if getattr(n, "container_name", None) == canonical
+                    )
+                return frozenset({node.id})
+        return frozenset()
+
+    def restrict_to(self, container_name: str) -> TopologyGraph:
+        """Return the subgraph scoped to one container subtree (``--ctr``).
+
+        Keeps the matched service/container/process subtree plus its host
+        parents, and only the edges among the kept nodes, so downstream
+        planning and synthesis see exactly one container. A miss raises
+        :class:`TargetResolutionError` listing the available containers —
+        ``--ctr`` is a loud guard, never a silent no-op.
+        """
+        keep: set[str] = set(self.node_ids_for_container(container_name))
+        if not keep:
+            available = ", ".join(self.container_names()) or "<none>"
+            raise TargetResolutionError(
+                container_name,
+                f"no container named {container_name!r} in topology (available: {available})",
+            )
+        by_id = {node.id: node for node in self.nodes}
+        for edge in self.edges:
+            if edge.src in keep and edge.kind in (EdgeKind.RUNS_ON, EdgeKind.CONTAINED_IN):
+                neighbor = by_id.get(edge.dst)
+                if neighbor is not None and neighbor.kind is NodeKind.HOST:
+                    keep.add(edge.dst)
+        nodes = tuple(node for node in self.nodes if node.id in keep)
+        edges = tuple(edge for edge in self.edges if edge.src in keep and edge.dst in keep)
+        return TopologyGraph(nodes=nodes, edges=edges)
+
     def dependents_closure(self, node_id: str) -> frozenset[str]:
         """All node ids that transitively depend on ``node_id`` — blast-radius input."""
         reverse: dict[str, list[str]] = {}

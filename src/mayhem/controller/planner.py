@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from mayhem.controller.compensation import compensated
-from mayhem.domain.catalog import definition_for
+from mayhem.domain.capabilities import Capability
+from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.domain.common import parse_duration
 from mayhem.domain.decisions import (
     DECISION_M4_1_ADDITIVE_DSL,
@@ -30,9 +31,11 @@ from mayhem.domain.errors import (
 from mayhem.domain.experiments import (
     CheckHttp,
     CheckSpecStep,
+    DrillContainer,
     DrillFault,
     DrillSpec,
     ExecutionPlan,
+    ExecutionStep,
     ExperimentKind,
     GroupMode,
     InjectFault,
@@ -43,20 +46,133 @@ from mayhem.domain.experiments import (
     ResolvedTarget,
     Wait,
 )
+from mayhem.domain.faults import FaultDefinition, ParamType
 from mayhem.domain.identity import RuntimeIdentity
 from mayhem.domain.maniac import draw_maniac_rounds
 from mayhem.domain.topology import (
+    PortBinding,
     TargetSelector,
     TopologyNode,
 )
 
 if TYPE_CHECKING:
-    from mayhem.domain.experiments import DrillContainer
     from mayhem.domain.topology import TopologyGraph
 
 
 class PlanningError(Exception):
     """Raised when a spec cannot be compiled into an honest plan."""
+
+
+#: Capabilities only a Kubernetes runtime can provide. ``mayhem maniac``
+#: synthesizes its config from a compose topology, so catalog faults gated on
+#: these are never pooled (a compose graph cannot satisfy them at execution
+#: time). Everything else — NET_ADMIN, PROCESS_CONTROL, engine flags, … — stays
+#: in the pool and is resolved by the impact gate, which probes each container
+#: and bypasses only the inert draws.
+_MANIAC_EXCLUDED_CAPS = frozenset({Capability.KUBERNETES_ENGINE})
+
+
+def synthesize_maniac_spec(graph: TopologyGraph, *, name: str = "maniac") -> DrillSpec:
+    """Derive a drill spec purely from a compose-derived topology graph.
+
+    ``mayhem maniac`` runs without an authored config file: this builder makes
+    the draw pool self-describing. Every container in the topology authors the
+    full container-addressable fault catalog, so
+    :func:`draw_maniac_rounds` keeps a pure random walk over (container,
+    fault) exactly like a hand-authored spec. The impact gate probes actual
+    tooling at execution time and bypasses only the draws proven inert, so
+    the compile never fails because an image lacks a binary.
+
+    Safety is inherited, not authored: the synthesized spec carries no policy
+    of its own (``config.maniac`` is left unset so the layered ``mayhem.yaml``
+    ``maniac:`` block — or the CLI defaults — tune the draw), and every
+    planned fault still passes the unchanged planner safety stack (risk
+    ceiling, blast radius, ``max_faults``, timeout, compensation contract).
+
+    Each pooled fault is authored with compile-ready parameters: catalog
+    defaults are reused verbatim, and parameters the catalog declares
+    mandatory are derived from the topology where an honest value exists
+    (``port`` from the container's own published bindings, ``host`` from the
+    container name, ``connections``/``delay_ms``/``rate``/``offset_ms`` at
+    their least-disruptive minimums). Faults with a mandatory parameter that
+    carries no derivable value (``net.bandwidth``'s host-side ``rate`` string,
+    or a portless container) are left out of that container's pool — a draw
+    must never name a fault it cannot compile. Faults that require a
+    Kubernetes-only capability are pooled for no container.
+    """
+    containers: dict[str, DrillContainer] = {}
+    for container_name in sorted(_container_names(graph)):
+        matched = _find_container_nodes(graph, container_name)
+        kinds = frozenset(node.kind for node in matched)
+        ports = tuple(
+            binding
+            for node in matched
+            for binding in (getattr(node, "exposed_ports", ()) or getattr(node, "ports", ()))
+        )
+        faults: list[DrillFault] = []
+        for definition in all_definitions():
+            if not definition.applicable_node_kinds & kinds:
+                continue
+            if not definition.required_caps.isdisjoint(_MANIAC_EXCLUDED_CAPS):
+                continue
+            params = _synthesized_params(definition, container_name, ports)
+            if params is None:
+                continue
+            # ``params`` is an undeclared pydantic extra field on DrillFault
+            # (extra="allow"), so construct through model_validate.
+            faults.append(DrillFault.model_validate({"fault": definition.id, "params": params}))
+        containers[container_name] = DrillContainer(faults=tuple(faults))
+    return DrillSpec(
+        kind="drill",
+        name=name,
+        hypothesis=(
+            f"maniac: synthesized config for {len(containers)} container(s) "
+            "from the compose topology"
+        ),
+        containers=containers,
+        # ``plan_drill`` needs one execution step; the maniac planner replaces
+        # the authored execution wholesale, so this placeholder never runs.
+        execution=(ExecutionStep(wait="1s"),),
+    )
+
+
+def _synthesized_params(
+    definition: FaultDefinition,
+    container_name: str,
+    ports: tuple[PortBinding, ...],
+) -> dict[str, object] | None:
+    """Auto-author a compile-ready param set for a synthesized fault.
+
+    Catalog defaults win; the handful of parameters the catalog marks
+    mandatory are filled from topology where an honest value exists, else
+    ``None`` (the caller drops the fault from the pool).
+    """
+    params: dict[str, object] = {}
+    mandatory: list[tuple[str, ParamType]] = []
+    for spec in definition.params_schema:
+        if spec.default is not None:
+            params[spec.name] = spec.default
+        elif spec.required:
+            mandatory.append((spec.name, spec.type))
+    for name, param_type in mandatory:
+        if param_type is ParamType.STRING and name == "host":
+            params[name] = container_name
+            continue
+        if param_type is ParamType.STRING:
+            return None
+        if name == "port":
+            port = next(
+                (binding.container_port for binding in ports if binding.protocol == "tcp"),
+                next((binding.container_port for binding in ports), None),
+            )
+            if port is None:
+                return None
+            params[name] = port
+        elif name in {"connections", "delay_ms", "rate", "offset_ms"}:
+            params[name] = {"connections": 1, "delay_ms": 1000, "rate": 1, "offset_ms": 60000}[name]
+        else:
+            return None
+    return params
 
 
 def _embed_load_script(
@@ -559,3 +675,41 @@ def _resolve_planned_identity(nodes: tuple[TopologyNode, ...]) -> RuntimeIdentit
         if isinstance(identity, RuntimeIdentity):
             return identity
     return None
+
+
+def restrict_plan_to_container(
+    plan: ExecutionPlan, container_name: str, graph: TopologyGraph
+) -> ExecutionPlan:
+    """Scope a compiled plan to one container subtree (``mayhem --ctr``).
+
+    Fault steps survive when any resolved target belongs to the container's
+    service/container/process subtree; the subtree's own orchestration steps
+    (``group_path == "/<container_name>"``) survive too. Faults, waits and
+    checks for every other container are removed, so the run executes only
+    against the requested container. All remaining steps keep their original
+    ids and sequence — skipped ids are intentional (ADR-0021 traceability).
+
+    Raises :class:`PlanningError` when the graph has no such container or the
+    plan carries no fault step against it.
+    """
+    subtree = graph.node_ids_for_container(container_name)
+    if not subtree:
+        available = ", ".join(graph.container_names()) or "<none>"
+        raise PlanningError(
+            f"container {container_name!r} not found in topology graph (available: {available})"
+        )
+
+    kept: list[PlannedStep] = []
+    for step in plan.steps:
+        if step.fault is None:
+            if step.group_path == f"/{container_name}":
+                kept.append(step)
+            continue
+        if any(target.node_ids & subtree for target in step.fault.targets):
+            kept.append(step)
+
+    if not any(step.fault is not None for step in kept):
+        raise PlanningError(
+            f"plan {plan.run_id!r} has no fault steps targeting container {container_name!r}"
+        )
+    return plan.model_copy(update={"steps": tuple(kept)})

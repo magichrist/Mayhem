@@ -23,6 +23,36 @@ mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker
 mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 ```
 
+The positional spec path may be omitted when the global ``--config`` flag
+names the drill spec itself — useful from a directory without a spec file:
+
+```bash
+mayhem --config examples/testCase/mayhem.yaml maniac --compose examples/testCase/docker-compose.yml
+```
+
+#### Scoping a run to one container (`--ctr`)
+
+`mayhem run` and `mayhem maniac` accept `--ctr CONTAINER`, which restricts the
+execution to a single container. `CONTAINER` is any `container_name:`
+value from the blueprint or the runtime container name (use
+`mayhem topology discover --compose ...` to list them); a value that matches
+nothing in the topology is rejected before anything is planned.
+
+For `run`, the frozen plan is calculated normally and then filtered: every
+fault step targeting another container is dropped, and wait/check/no-op steps
+for other containers disappear with them — the frame fault ids, ordering and
+grouping of the surviving container's steps are untouched, so downstream
+reports and observability keep working as usual. `maniac` treats `--ctr` as a
+draw-pool restriction: when no authored spec exists the synthesized pool is
+built from the single container, and with an authored spec the drawn plan is
+filtered exactly like `run`, so the run can only ever perturb the requested
+container.
+
+```bash
+mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml --ctr testcase-api
+mayhem maniac   --compose examples/testCase/docker-compose.yml --ctr testcase-api
+```
+
 `validate` compiles the spec and runs every safety gate without injecting
 anything. `plan` prints the frozen execution plan as JSON. `run` executes it
 end-to-end and prints the run summary (status, verdict, observations, per-step
@@ -94,7 +124,14 @@ config:
 
 `mayhem maniac` compiles a spec exactly like `mayhem run`, but replaces the
 authored `execution:` steps with `run_level` random (container, fault) rounds
-([ADR-M5-1](#maniac-mode)). Every other contract is unchanged: the risk
+([ADR-M5-1](#maniac-mode)). The round count can be overridden on the command
+line with `mayhem maniac -s N` (or `--steps N`); the CLI override wins over
+both the spec's `config.maniac.run_level` and the layered-config `maniac:`
+block. `--ctr CONTAINER` confines every draw to one container: the synthesized
+zero-config spec is built from that container alone, and an authored spec's
+plan is filtered down to it (see
+[Scoping a run to one container](#scoping-a-run-to-one-container-ctr)). Every
+other contract is unchanged: the risk
 ceiling, blast radius budget and conflict checks still gate each drawn fault;
 each round runs its own compensation (or opts out via `recovery: false`); the
 spec's `check` / `check_spec` steps still replay between rounds; success
@@ -514,6 +551,9 @@ Full details: [docs/compensation.md](compensation.md).
 - **Identity is the container name.** Fault targets and check loci resolve from
   `container_name:` against the compose blueprint. Compose project filtering and
   drift detection keep the discovered topology aligned with the blueprint.
+  `mayhem run --ctr` / `mayhem maniac --ctr` accept the same value (or the
+  runtime container name) to scope an entire execution to a single container, so
+  a target can be faulted in isolation without editing the spec.
 - **The fault applies only if the catalog says it can.** Applicable node kinds
   (container / service / host / k8s_node / pod / process / external_dependency)
   and required capabilities gate injection at validate and plan time.

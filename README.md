@@ -165,6 +165,14 @@ mayhem plan mayhem.yaml --compose docker-compose.yml
 # 4. Execute the drill and print the run summary.
 mayhem run mayhem.yaml --compose docker-compose.yml
 
+# (Variant) limit a run to ONE container — the pinned container's faults run,
+# every other container's rounds are dropped from the frozen plan.
+mayhem run mayhem.yaml --compose docker-compose.yml --ctr testcase-api
+
+# (Variant) `maniac` draws its random rounds against a single container too —
+# handy when you want to chaos-test one container without touching the others.
+mayhem maniac --compose docker-compose.yml --ctr testcase-api
+
 # 5. Replay any run's evidence.
 mayhem status --run <run-id>
 mayhem history <run-id>
@@ -306,8 +314,8 @@ Commands:
 | `mayhem topology discover` | Discover live services/hosts and the dependency edges from the blueprint. |
 | `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
 | `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
-| `mayhem run SPEC` | Compile and execute a drill; print the run summary. |
-| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). |
+| `mayhem run SPEC` | Compile and execute a drill; print the run summary. `--ctr CONTAINER` scopes execution to one container (any `container_name:` value or runtime container name from the blueprint). |
+| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). `--ctr CONTAINER` narrows every draw (and the zero-config synthesized pool) to one container. |
 | `mayhem status` | Show runs recorded in the database (`--json` supported). |
 | `mayhem history RUN_ID` | Replay steps, events, and leases recorded for one run. |
 | `mayhem recover RUN_ID` | Recover every orphaned fault lease belonging to a run. |

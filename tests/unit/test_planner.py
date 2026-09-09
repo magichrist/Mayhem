@@ -47,6 +47,7 @@ def _drill_graph() -> TopologyGraph:
         edges=(
             Edge(src="svc-api", dst="ctr-api", kind=EdgeKind.RUNS_ON),
             Edge(src="ctr-api", dst="proc-api", kind=EdgeKind.RUNS_ON),
+            Edge(src="ctr-api", dst="proc-api", kind=EdgeKind.RUNS_ON),
         ),
     )
 
@@ -621,3 +622,161 @@ class TestDrillPlanning:
         )
         assert len(plan.steps) == 1
         assert plan.steps[0].fault is not None
+
+
+# ---------------------------------------------------------------------------
+# restrict_plan_to_container (--ctr scoping)
+# ---------------------------------------------------------------------------
+def _two_container_graph() -> TopologyGraph:
+    from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
+    from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, ProcessNode, ServiceNode
+
+    return TopologyGraph(
+        nodes=(
+            ServiceNode(id="svc-api", name="api", container_name="testcase-api"),
+            ProcessNode(
+                id="proc-api",
+                name="api-python",
+                pid=4242,
+                host_id="h1",
+                container_name="testcase-api",
+            ),
+            ContainerNode(
+                id="ctr-api",
+                name="testcase-api",
+                engine="podman",
+                container_name="testcase-api",
+                runtime_identity=RuntimeIdentity(
+                    runtime="podman", host_id="h1", runtime_id="cid-api"
+                ),
+                runtime_metadata=RuntimeMetadata(service="api", name="testcase-api"),
+                ip_address="172.18.0.2",
+                state="running",
+            ),
+            ServiceNode(id="svc-web", name="web", container_name="testcase-web"),
+            ProcessNode(
+                id="proc-web",
+                name="web-node",
+                pid=4243,
+                host_id="h1",
+                container_name="testcase-web",
+            ),
+            ContainerNode(
+                id="ctr-web",
+                name="testcase-web",
+                engine="podman",
+                container_name="testcase-web",
+                runtime_identity=RuntimeIdentity(
+                    runtime="podman", host_id="h1", runtime_id="cid-web"
+                ),
+                runtime_metadata=RuntimeMetadata(service="web", name="testcase-web"),
+                ip_address="172.18.0.3",
+                state="running",
+            ),
+        ),
+        edges=(
+            Edge(src="svc-api", dst="ctr-api", kind=EdgeKind.RUNS_ON),
+            Edge(src="svc-web", dst="ctr-web", kind=EdgeKind.RUNS_ON),
+            Edge(src="ctr-web", dst="proc-web", kind=EdgeKind.RUNS_ON),
+        ),
+    )
+
+
+def _two_container_spec() -> DrillSpec:
+    from mayhem.domain.experiments import DrillConfig, DrillContainer, DrillFault, ExecutionStep
+
+    return DrillSpec(
+        kind="drill",
+        name="two-ctr",
+        config=DrillConfig(),
+        containers={
+            "testcase-api": DrillContainer(faults=(DrillFault(fault="proc.pause", duration="3s"),)),
+            "testcase-web": DrillContainer(faults=(DrillFault(fault="proc.pause", duration="3s"),)),
+        },
+        execution=(
+            ExecutionStep(wait=1.0),
+            ExecutionStep(parallel=("testcase-api", "testcase-web")),
+            ExecutionStep(wait=2.0),
+        ),
+    )
+
+
+class TestRestrictPlanToContainer:
+    def test_scopes_execution_to_one_container(self) -> None:
+        from mayhem.controller.planner import restrict_plan_to_container
+
+        plan = plan_drill(
+            "r-two",
+            _two_container_spec(),
+            _two_container_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        assert sum(1 for s in plan.steps if s.fault is not None) == 2
+
+        scoped = restrict_plan_to_container(plan, "testcase-api", _two_container_graph())
+        kept_faults = [s for s in scoped.steps if s.fault is not None]
+        assert len(kept_faults) == 1
+        assert kept_faults[0].fault.fault_id == "proc.pause"
+        # Plain waits/checks for other containers are dropped.
+        assert all(s.raw_action.type != "wait" for s in scoped.steps)
+        assert all(s.id.startswith("testcase-api") for s in scoped.steps)
+
+    def test_drops_other_containers_and_keeps_timeout_shape(self) -> None:
+        from mayhem.controller.planner import restrict_plan_to_container
+
+        plan = plan_drill(
+            "r-two",
+            _two_container_spec(),
+            _two_container_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        scoped = restrict_plan_to_container(plan, "testcase-web", _two_container_graph())
+        ids = {s.id for s in scoped.steps}
+        assert "testcase-api-0000" not in ids
+        assert any(i.startswith("testcase-web") for i in ids)
+        assert scoped.run_id == plan.run_id  # identity preserved
+
+    def test_missing_container_is_a_planning_error(self) -> None:
+        from mayhem.controller.planner import restrict_plan_to_container
+
+        plan = plan_drill(
+            "r-two",
+            _two_container_spec(),
+            _two_container_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        with pytest.raises(PlanningError, match="not found in topology graph"):
+            restrict_plan_to_container(plan, "unrelated", _two_container_graph())
+
+    def test_container_without_faults_is_rejected(self) -> None:
+        from mayhem.controller.planner import restrict_plan_to_container
+        from mayhem.domain.experiments import DrillConfig, DrillContainer, DrillFault
+
+        graph = _two_container_graph()
+        spec = DrillSpec(
+            kind="drill",
+            name="only-web",
+            config=DrillConfig(),
+            containers={
+                "testcase-web": DrillContainer(
+                    faults=(DrillFault(fault="proc.pause", duration="3s"),)
+                ),
+            },
+            execution=(ExecutionStep(parallel=("testcase-web",)),),
+        )
+        plan = plan_drill(
+            "r-web",
+            spec,
+            graph,
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        with pytest.raises(PlanningError, match="has no fault steps targeting"):
+            restrict_plan_to_container(plan, "testcase-api", graph)

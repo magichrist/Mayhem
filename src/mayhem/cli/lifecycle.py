@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -25,6 +27,7 @@ from mayhem.cli.services import (
     run_journal,
 )
 from mayhem.controller.janitor import Janitor
+from mayhem.controller.planner import restrict_plan_to_container, synthesize_maniac_spec
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.infra.lease_repository import SQLiteLeaseSink
@@ -32,6 +35,7 @@ from mayhem.infra.lease_repository import SQLiteLeaseSink
 if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
+    from mayhem.domain.experiments import DrillSpec
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
 
@@ -42,12 +46,51 @@ def _ctx(ctx: click.Context) -> CliContext:
     return obj
 
 
+def _pid_alive(pid: int) -> bool:
+    """Best-effort local liveness probe (kill(pid, 0))."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+
+
+def _run_liveness(store: Store, run_id: str) -> bool | None:
+    """False when the controller owning ``run_id`` is provably gone.
+
+    A terminal run (or a 'running' run whose controller pid is dead) cannot
+    ever release its leases — the janitor reclaims them before TTL instead of
+    leaving the next ``run`` to hit a ``LeaseConflictError``. Unknown runs
+    and live controllers return True/None and stay on TTL policy.
+    """
+    rows = store.query("SELECT status, controller_pid FROM runs WHERE id = ?", (run_id,))
+    if not rows:
+        return None
+    status, pid = rows[0]
+    if status in ("completed", "failed", "aborted"):
+        return False
+    if pid and not _pid_alive(pid):
+        return False
+    return None
+
+
+def _run_liveness_resolver(store: Store) -> Callable[[str], bool | None]:
+    return lambda run_id: _run_liveness(store, run_id)
+
+
 def _sweep_before_run(store: Store) -> None:
-    """Best-effort TTL sweep so a crashed run's sticky leases do not wedge
+    """Best-effort sweep so a crashed run's sticky leases do not wedge
     the very next ``run`` (the users' reported pain: janitor 'did nothing'
-    because it had to be invoked manually). Silently skip non-terminal
-    leftovers the sweep cannot move; acquire() re-attempts the reap."""
-    sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep()
+    because it had to be invoked manually, and within-TTL leases were never
+    reclaimed). Owner-gone leases are reclaimed before TTL; anything still
+    live is skipped and acquire() re-attempts the reap."""
+    sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep(
+        run_liveness=_run_liveness_resolver(store)
+    )
     for lease_id in sweep.expired:
         click.echo(style.info(f"cleaned stale lease {lease_id} (expired)"))
     for lease_id in sweep.recovered:
@@ -248,16 +291,31 @@ def _compose_option[F: Callable[..., object]](fn: F) -> F:
 _SPEC_CANDIDATES = ("mayhem.yaml", "mayhem.yml")
 
 
-def _resolve_spec(explicit: str | None) -> str:
+def _is_drill_spec_file(path: Path) -> bool:
+    """Cheap kind check: does ``path`` name a drill spec (``kind: drill``)?"""
+    import yaml
+
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    return isinstance(data, dict) and data.get("kind") == "drill"
+
+
+def _resolve_spec(explicit: str | None, config_path: str | None = None) -> str:
     """Resolve the drill spec file from user input.
 
-    Accepts two forms:
+    Accepts three forms, in order of precedence:
 
-      * ``None`` or empty — auto-detect ``mayhem.yaml`` in the cwd.
-      * A file path — use it directly (error if missing).
+      1. An explicit positional path — use it directly (error if missing).
+      2. ``--config`` — when it names a drill spec itself (``kind: drill``),
+         the config flag doubles as the spec path, so
+         ``mayhem --config drill.yaml maniac`` works from any directory.
+      3. Auto-detect ``mayhem.yaml`` / ``mayhem.yml`` in the cwd.
 
     ``mayhem run`` with no path therefore imports ``mayhem.yaml`` from the
-    directory the user invokes it from, unless an explicit spec is given.
+    directory the user invokes it from, unless an explicit spec (or a drill
+    spec passed via ``--config``) is given.
     """
     if explicit:
         target = Path(explicit)
@@ -267,11 +325,79 @@ def _resolve_spec(explicit: str | None) -> str:
             # EXIT code VALIDATION_ERROR via FileNotFoundError.
             raise FileNotFoundError(f"spec file not found: {target}")
         return str(target)
+    if config_path:
+        target = Path(config_path)
+        if target.is_file() and _is_drill_spec_file(target):
+            return str(target)
     for name in _SPEC_CANDIDATES:
         candidate = Path.cwd() / name
         if candidate.is_file():
             return str(candidate)
     raise click.UsageError(f"no spec file in cwd; expected one of: {', '.join(_SPEC_CANDIDATES)}")
+
+
+def _resolve_spec_pair(explicit: str | None, config_path: str | None) -> tuple[str, str | None]:
+    """Resolve ``(spec_path, config_path)`` for the layered config layering.
+
+    When ``--config`` doubled as the drill spec file (case 2 of
+    :func:`_resolve_spec`), the returned config path is ``None`` so the config
+    layers fall back to defaults (plus the ``skip_default_file_if_spec``
+    guard) instead of re-parsing the spec as a strictly-forbidden config
+    document.
+    """
+    spec = _resolve_spec(explicit, config_path=config_path)
+    if (
+        explicit is None
+        and config_path is not None
+        and Path(config_path).resolve() == Path(spec).resolve()
+    ):
+        return spec, None
+    return spec, config_path
+
+
+def _resolve_maniac_sources(
+    explicit: str | None,
+    config_path: str | None,
+    graph: TopologyGraph,
+    *,
+    pool: str | None = None,
+) -> tuple[str | None, str | None, DrillSpec | None]:
+    """Resolve ``(spec_path, layered_config_path, synthesized_spec)`` for maniac.
+
+    ``mayhem maniac`` is the one drill command that runs *without* an authored
+    config: with only a compose blueprint given, the drill spec is derived
+    from the topology (:func:`mayhem.controller.planner.synthesize_maniac_spec`)
+    so the draw pool always matches the running stack. Input precedence:
+
+      1. An explicit positional path — always the spec (error if missing).
+      2. ``--config`` (or a cwd ``mayhem.yaml`` / ``mayhem.yml``) that is a
+         drill spec — the spec, exactly like every other drill command.
+      3. ``--config`` (or a cwd config doc) that is a plain config document —
+         the layered config, with the spec synthesized from the topology; its
+         ``maniac:`` block tunes the random draw.
+      4. Nothing — pure defaults (no config document anywhere).
+
+    ``synthesized_spec`` is non-``None`` only when the spec was built from the
+    graph; the layered config path is then still honored (case 3), so a
+    user-supplied ``mayhem.yaml`` keeps working as the tuning dial. ``pool``
+    (``--ctr``) additionally restricts the *synthesized* draw pool to a single
+    container subtree, so every drawn round lands on the requested container.
+    """
+    pool_graph = graph.restrict_to(pool) if pool is not None else graph
+    if explicit:
+        return _resolve_spec(explicit, config_path=config_path), config_path, None
+    if config_path:
+        target = Path(config_path)
+        if target.is_file() and _is_drill_spec_file(target):
+            return str(target), None, None
+        return None, str(target), synthesize_maniac_spec(pool_graph)
+    for name in _SPEC_CANDIDATES:
+        candidate = Path.cwd() / name
+        if candidate.is_file():
+            if _is_drill_spec_file(candidate):
+                return str(candidate), config_path, None
+            return None, str(candidate), synthesize_maniac_spec(pool_graph)
+    return None, config_path, synthesize_maniac_spec(pool_graph)
 
 
 def _resolve_engine_from_state() -> str:
@@ -292,6 +418,18 @@ def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph,
         raise click.UsageError(str(exc), ctx=ctx) from None
 
 
+def _require_container(ctr: str, graph: TopologyGraph, ctx: click.Context) -> None:
+    """Loud guard for ``--ctr``: the container must exist in the topology."""
+    if not graph.node_ids_for_container(ctr):
+        available = ", ".join(graph.container_names()) or "<none>"
+        raise click.UsageError(
+            f"no container named {ctr!r} in the compose topology "
+            f"(available: {available}) — tip: use a container_name: value "
+            "from the blueprint or the runtime container name",
+            ctx=ctx,
+        )
+
+
 @click.command("validate")
 @_compose_option
 @click.argument("experiment", type=click.Path(), required=False, default=None)
@@ -299,12 +437,12 @@ def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph,
 def validate(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
     """Compile a drill spec and run every safety gate without executing it."""
     graph, resolved_compose = _graph_from(ctx, compose)
-    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
+    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
     store = open_store(obj.db)
     try:
         prepared = prepare(
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
             allow_critical=obj.allow_critical,
             store=store,
@@ -331,12 +469,12 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
 def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
     """Compile a drill spec against a topology and print the frozen plan JSON."""
     graph, resolved_compose = _graph_from(ctx, compose)
-    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
+    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
     store = open_store(obj.db)
     try:
         prepared = prepare(
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
             allow_critical=obj.allow_critical,
             store=store,
@@ -354,18 +492,29 @@ def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> Non
 
 @click.command("run")
 @_compose_option
+@click.option(
+    "--ctr",
+    "ctr",
+    type=str,
+    default=None,
+    metavar="CONTAINER",
+    help="Only execute faults on this container (container_name from the compose "
+    "blueprint, or the runtime container name).",
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+def run(ctx: click.Context, experiment: str | None, compose: str | None, ctr: str | None) -> None:
     """Compile then execute a drill spec; prints the run summary."""
     graph, resolved_compose = _graph_from(ctx, compose)
-    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
+    if ctr is not None:
+        _require_container(ctr, graph, ctx)
+    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
     store = open_store(obj.db)
     try:
         _sweep_before_run(store)
         prepared = prepare(
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
             allow_critical=obj.allow_critical,
             store=store,
@@ -376,6 +525,14 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
         compiled = plan_from_spec(
             experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
         )
+        if ctr is not None:
+            compiled = dataclasses.replace(
+                compiled, plan=restrict_plan_to_container(compiled.plan, ctr, graph)
+            )
+            click.echo(
+                style.info("info:") + f" --ctr scoped the plan to container {style.cyan(ctr)}",
+                err=True,
+            )
         engine_name = _resolve_engine_from_state()
         bypass: dict[tuple[str, str], str] = {}
         if _gate_enabled():
@@ -420,44 +577,106 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None) -> None
 
 @click.command("maniac")
 @_compose_option
+@click.option(
+    "-s",
+    "--steps",
+    "steps",
+    type=click.IntRange(1, 500),
+    default=None,
+    help="Draw exactly N random fault rounds (overrides config.maniac.run_level).",
+)
+@click.option(
+    "--ctr",
+    "ctr",
+    type=str,
+    default=None,
+    metavar="CONTAINER",
+    help="Only draw random fault rounds against this container (container_name "
+    "from the compose blueprint, or the runtime container name).",
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def maniac(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
+def maniac(
+    ctx: click.Context,
+    experiment: str | None,
+    compose: str | None,
+    steps: int | None,
+    ctr: str | None,
+) -> None:
     """Run a drill spec as random fault injection (ADR-M5-1).
 
     Compiles the spec exactly like ``mayhem run`` but replaces the authored
     execution with ``config.maniac.run_level`` random (container, fault)
-    rounds dialed by ``config.maniac.level`` (1-5). Safety gates, per-round
+    rounds dialed by ``config.maniac.level`` (1-5). ``-s/--steps`` overrides
+    the round count on the command line. Safety gates, per-round
     compensation, success criteria and observability are unchanged; ``seed``
     makes the draw reproducible.
+
+    With no spec given (positional, ``--config`` drill spec, or a cwd
+    ``mayhem.yaml`` drill spec), the spec is synthesized from the compose
+    topology — every container pooled with the full container-addressable
+    fault catalog — so ``mayhem maniac -c docker-compose.yml`` works as a
+    zero-config chaos run. A ``--config``/cwd ``mayhem.yaml`` that is a plain
+    config document still tunes the draw via its ``maniac:`` block.
+    ``--ctr`` narrows the draw pool to a single container (and, for authored
+    specs, drops every other container's rounds), so the run can only ever
+    perturbs the requested container.
     """
     graph, resolved_compose = _graph_from(ctx, compose)
-    experiment = _resolve_spec(experiment)
     obj = _ctx(ctx)
+    if ctr is not None:
+        _require_container(ctr, graph, ctx)
+    spec_path, config_for_layers, synthesized = _resolve_maniac_sources(
+        experiment, obj.config, graph, pool=ctr
+    )
+    if spec_path is None and synthesized is None:
+        raise click.UsageError("no drill spec, and nothing to synthesize")
+    if spec_path is None:
+        assert synthesized is not None  # resolver invariant, see above
+        spec_path = f"<{synthesized.name}>"
     store = open_store(obj.db)
     try:
         prepared = prepare(
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
             allow_critical=obj.allow_critical,
             store=store,
             graph=graph,
             compose=resolved_compose,
-            spec_path=experiment,
+            spec_path=spec_path,
         )
         compiled = plan_maniac_from_spec(
-            experiment,
+            spec_path,
             graph,
             prepared=prepared,
             engine=_resolve_engine_from_state(),
-            config_path=obj.config,
+            config_path=config_for_layers,
             profile=obj.profile,
+            steps=steps,
+            spec=synthesized,
         )
+        if ctr is not None:
+            compiled = dataclasses.replace(
+                compiled, plan=restrict_plan_to_container(compiled.plan, ctr, graph)
+            )
+            click.echo(
+                style.info("info:") + f" --ctr scoped the draw to container {style.cyan(ctr)}",
+                err=True,
+            )
         draws = sum(1 for step in compiled.plan.steps if step.fault is not None)
-        click.echo(
-            style.info("info:") + f" maniac mode — {draws} random fault round(s) drawn",
-            err=True,
-        )
+        if synthesized is not None:
+            click.echo(
+                style.info("info:") + " maniac mode — no drill spec; synthesized config "
+                f"from compose topology "
+                f"({len(synthesized.containers)} container(s)), "
+                f"{draws} random fault round(s) drawn",
+                err=True,
+            )
+        else:
+            click.echo(
+                style.info("info:") + f" maniac mode — {draws} random fault round(s) drawn",
+                err=True,
+            )
         engine_name = _resolve_engine_from_state()
         bypass: dict[tuple[str, str], str] = {}
         if _gate_enabled():
@@ -563,10 +782,12 @@ def recover(ctx: click.Context, run_id: str) -> None:
 @click.command("janitor")
 @click.pass_context
 def janitor(ctx: click.Context) -> None:
-    """Sweep leases past their TTL; expire pending, compensate active ones."""
+    """Reclaim leases past TTL — or owned by a controller that is gone."""
     store = open_store(_ctx(ctx).db)
     try:
-        sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep()
+        sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep(
+            run_liveness=_run_liveness_resolver(store)
+        )
     finally:
         store.close()
     if sweep.quiet:
