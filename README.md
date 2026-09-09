@@ -21,6 +21,7 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 ```
 
 **Contents**
+- [Installation](#installation)
 - [Why Mayhem](#why-mayhem)
 - [What a Run Looks Like](#what-a-run-looks-like)
 - [Quickstart](#quickstart)
@@ -31,6 +32,41 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 - [Exit Codes](#exit-codes)
 - [Architecture](#architecture)
 - [Development](#development)
+
+---
+
+## Installation
+
+Mayhem publishes to PyPI **as `mayhem-cli`** — the bare `mayhem` name is
+taken, so you install the CLI under that name. The console commands it puts on
+your `PATH` are still `mayhem` (and `mayhem-agent`).
+
+Requires **Python 3.12+**.
+
+```bash
+pip install mayhem-cli
+```
+
+That is it — `mayhem` is now on your `PATH`:
+
+```bash
+mayhem --help
+```
+
+**Isolated installs (recommended on macOS/Linux)** — keeps the CLI out of your
+global Python:
+
+```bash
+pipx install mayhem-cli        # or: uv tool install mayhem-cli
+```
+
+**Upgrading** — each git tag (`v0.5.0` or `0.5.0`) publishes that exact version:
+
+```bash
+pip install -U mayhem-cli
+```
+
+Need the source checkout instead? See [Development](#development).
 
 ---
 
@@ -139,8 +175,13 @@ ok)`).
 **Install**
 
 ```bash
-pip install -e .
+pip install mayhem-cli
 ```
+
+> The PyPI package is **`mayhem-cli`** (`mayhem` is taken); the console command
+> remains `mayhem`. Full instructions in
+> [Installation](#installation). For a source checkout use
+> `pip install -e .` (see [Development](#development)).
 
 **Run the bundled example**
 
@@ -486,14 +527,15 @@ is as small as possible:
 ## Development
 
 ```bash
-pip install -e ".[test]"
+# Clone, then sync the dev dependency group (requires https://docs.astral.sh/uv/):
+uv sync --group dev
 
 # Run all tests
-pytest
+uv run pytest
 
 # Lint
-ruff check src/
+uv run ruff check src/
 
 # Type check (strict is configured per module)
-mypy
+uv run mypy
 ```
