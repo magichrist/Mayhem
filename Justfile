@@ -202,3 +202,12 @@ e2e: stack-up topology toolkit config experiment full campaign test
     @echo "╔══════════════════════════════════════════════╗"
     @echo "║   ALL E2E RECIPES PASSED                     ║"
     @echo "╚══════════════════════════════════════════════╝"
+
+# ── changelog ─────────────────────────────────────────────────────────────────
+# Regenerate CHANGELOG.md from git history (git-cliff)
+changelog:
+    git-cliff --config cliff.toml -o CHANGELOG.md
+
+# Render notes for the current release only (used as the GitHub release body)
+changelog-release:
+    git-cliff --config cliff.toml --tag "$$(git describe --tags --abbrev=0)" --strip header
