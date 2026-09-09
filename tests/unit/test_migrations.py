@@ -182,3 +182,30 @@ def test_m0007_fault_groups_add_group_columns(tmp_path: Path) -> None:
     assert row["group_path"] == "/testcase-api"
     assert store.query("PRAGMA foreign_key_check") == []
     store.close()
+
+
+def test_m0015_run_controller_pid_forwards(tmp_path: Path) -> None:
+    """0015 adds a nullable controller_pid without disturbing prior data."""
+    store = Store.open_migrated(tmp_path / "tg.db", migrations=ALL_MIGRATIONS[:14])
+    _insert_deterministic_run(store, "r1")
+    with store.write() as conn:
+        conn.execute(
+            "INSERT INTO config_snapshots (id, resolved_json, source_map, created_at)"
+            " VALUES ('c2', '{}', '{}', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json, seed,"
+            " status, environment_fingerprint, config_snapshot_id)"
+            " VALUES ('r2', 'exp', 'deterministic', '{}', '{}', 1, 'running', 'env', 'c2')"
+        )
+    applied = store.migrate()
+    assert "0015_run_controller_pid" in applied
+    run_cols = {row["name"] for row in store.query("PRAGMA table_info(runs)")}
+    assert "controller_pid" in run_cols
+    assert store.query("SELECT controller_pid FROM runs WHERE id='r1'")[0]["controller_pid"] is None
+    assert store.query("SELECT controller_pid FROM runs WHERE id='r2'")[0]["controller_pid"] is None
+    with store.write() as conn:
+        conn.execute("UPDATE runs SET controller_pid = 4242 WHERE id = 'r2'")
+    assert store.query("SELECT controller_pid FROM runs WHERE id='r2'")[0]["controller_pid"] == 4242
+    assert store.query("PRAGMA foreign_key_check") == []
+    store.close()

@@ -157,7 +157,12 @@ class ProcPauseExecutor(FaultExecutor):
         if sig is None:
             return StepOutcome("inject", False, f"unplannable signal fault {lease.fault_id}")
         pid, cont, engine, _boot = self._signal_spec(lease)
-        if pid is None or pid <= 1:
+        # Host mode needs a numeric pid; container/exec mode (ADR-0020) signals
+        # via ``<engine> kill --signal <cont>`` and works even when the host PID
+        # is a sentinel 0 (VM-contained engines like podman-machine on macOS).
+        if cont and engine:
+            pid = pid if pid is not None else 0
+        elif pid is None or pid <= 1:
             return StepOutcome("inject", False, f"lease {lease.id} carries no usable pid")
         outcome = self._signal(pid, sig, cont, engine, _boot, "inject")
         if outcome.ok:

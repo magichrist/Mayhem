@@ -125,3 +125,71 @@ class TestSweep:
         stranded = sink.load("l-dirty-300")
         assert stranded is not None
         assert stranded.state is LeaseState.DIRTY
+
+
+class TestSweepWithRunLiveness:
+    """A lease whose owner process is provably gone is reclaimed before TTL."""
+
+    def _resolver(self, dead: set[str] = (), alive: set[str] = ()):
+        def resolve(run_id: str) -> bool | None:
+            if run_id in dead:
+                return False
+            if run_id in alive:
+                return True
+            return None  # unknown — TTL stays in charge
+
+        return resolve
+
+    def test_fresh_active_with_dead_owner_is_recovered(self) -> None:
+        lease = _lease(LeaseState.ACTIVE, age_s=0.0, ttl=120.0)  # still 2 min of TTL
+        janitor, sink = _janitor_with(lease)
+        result = janitor.sweep(
+            now_epoch_s=utc_now().timestamp(), run_liveness=self._resolver(dead={"r-j"})
+        )
+        assert result.recovered == (lease.id,)
+        released = sink.load(lease.id)
+        assert released is not None
+        assert released.state is LeaseState.RELEASED
+        assert released.release_mechanism == "janitor"
+        assert released.escalation_notes and "reclaimed before TTL" in released.escalation_notes
+
+    def test_fresh_pending_with_dead_owner_expires(self) -> None:
+        lease = _lease(LeaseState.PENDING, age_s=0.0, ttl=120.0)
+        janitor, sink = _janitor_with(lease)
+        result = janitor.sweep(
+            now_epoch_s=utc_now().timestamp(), run_liveness=self._resolver(dead={"r-j"})
+        )
+        assert result.expired == (lease.id,)
+        assert sink.load(lease.id).state is LeaseState.EXPIRED
+
+    def test_fresh_lease_with_live_owner_is_untouched(self) -> None:
+        lease = _lease(LeaseState.ACTIVE, age_s=0.0, ttl=120.0)
+        janitor, sink = _janitor_with(lease)
+        result = janitor.sweep(
+            now_epoch_s=utc_now().timestamp(), run_liveness=self._resolver(alive={"r-j"})
+        )
+        assert result.quiet
+        assert sink.load(lease.id).state is LeaseState.ACTIVE
+
+    def test_fresh_lease_with_unknown_owner_stays_on_ttl(self) -> None:
+        lease = _lease(LeaseState.ACTIVE, age_s=0.0, ttl=120.0)
+        janitor, sink = _janitor_with(lease)
+        result = janitor.sweep(now_epoch_s=utc_now().timestamp(), run_liveness=self._resolver())
+        assert result.quiet
+        assert sink.load(lease.id).state is LeaseState.ACTIVE
+
+    def test_no_resolver_keeps_old_ttl_behavior(self) -> None:
+        lease = _lease(LeaseState.ACTIVE, age_s=0.0, ttl=120.0)
+        janitor, _ = _janitor_with(lease)
+        result = janitor.sweep(now_epoch_s=utc_now().timestamp())
+        assert result.quiet
+
+    def test_resolver_lookup_error_falls_back_to_ttl(self) -> None:
+        lease = _lease(LeaseState.ACTIVE, age_s=0.0, ttl=120.0)
+
+        def explode(_run_id: str) -> bool | None:
+            raise LookupError("run row missing")
+
+        janitor, _ = _janitor_with(lease)
+        result = janitor.sweep(now_epoch_s=utc_now().timestamp(), run_liveness=explode)
+        assert result.quiet

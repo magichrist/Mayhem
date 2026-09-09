@@ -587,3 +587,118 @@ class TestProcReuseGuard:
         finally:
             proc.terminate()
             proc.wait(timeout=10)
+
+
+class TestVmContainedEngine:
+    """Regression: VM-contained engines (podman-machine on macOS, Docker
+    Desktop) report ``State.Pid == 0`` for running containers. Exec-addressed
+    faults must resolve to the sentinel pid instead of failing with
+    "cannot resolve live pid" (ADR-0020 exec addressing needs only the
+    container name + engine)."""
+
+    def test_running_container_zero_host_pid_still_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mayhem.controller import executor as executor_mod
+        from mayhem.controller.executor import (
+            _missing_live_pids,
+            _substitute_pids,
+        )
+
+        proc = _spawn_sleeper()
+        try:
+            engine, _store = _engine(tmp_path, live_graph=lambda: _graph(proc.pid))
+            plan = _plan("r-pid0", proc.pid)
+            fault = plan.steps[0].fault
+
+            monkeypatch.setattr(
+                executor_mod,
+                "resolve_container",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    RuntimeError("container c-a has no running process (pid=0)")
+                ),
+            )
+            monkeypatch.setattr(executor_mod, "resolve_status", lambda *a, **k: "running")
+
+            live_targets = engine._resolve_live_targets(fault)
+            assert live_targets == {"ctr-a": (0, "c-a")}
+
+            live_pids = {nid: pid for nid, (pid, _c) in live_targets.items()}
+            assert not _missing_live_pids(fault, live_pids)
+
+            undo_ops, _probes = _substitute_pids(
+                (UndoOp(op="signal.cont", args={"pid": "ctr-a:@live-pid"}),),
+                (),
+                live_pids,
+                engine="podman",
+                live_targets=live_targets,
+            )
+            op = undo_ops[0]
+            assert op.args.get("pid") == "0"
+            assert op.args.get("cont") == "c-a"
+            assert op.args.get("engine") == "podman"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    def test_stopped_container_still_fails_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mayhem.controller import executor as executor_mod
+
+        proc = _spawn_sleeper()
+        try:
+            engine, _store = _engine(tmp_path, live_graph=lambda: _graph(proc.pid))
+            fault = _plan("r-stopped", proc.pid).steps[0].fault
+
+            monkeypatch.setattr(
+                executor_mod,
+                "resolve_container",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    RuntimeError("container c-a has no running process (pid=0)")
+                ),
+            )
+            monkeypatch.setattr(executor_mod, "resolve_status", lambda *a, **k: "exited")
+
+            live_targets = engine._resolve_live_targets(fault)
+            assert live_targets == {}
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+class TestExecAddressedSignals:
+    def test_injection_with_sentinel_pid_uses_engine_kill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from mayhem.agents import executors as exec_mod
+        from mayhem.agents.executors import StepOutcome
+        from mayhem.controller.executor import executor_for
+
+        lease = FaultLease(
+            id="l-exec",
+            run_id="r-exec",
+            fault_id="proc.pause",
+            owner_agent="test",
+            targets=frozenset({"proc-a"}),
+            undo_ops=(
+                UndoOp(
+                    op="signal.cont",
+                    args={"pid": "0", "cont": "c-a", "engine": "podman"},
+                ),
+            ),
+        )
+        sent: list[list[str]] = []
+
+        def fake_run_tool(argv, timeout_s=30):
+            sent.append(argv)
+            return SimpleNamespace(succeeded=True, stdout="", stderr="")
+
+        monkeypatch.setattr(exec_mod, "run_tool", fake_run_tool)
+        executor = executor_for("proc.pause")
+        outcome = executor.inject(lease)
+        assert isinstance(outcome, StepOutcome)
+        assert outcome.ok, outcome.detail
+        assert sent == [["podman", "kill", "--signal", "SIGSTOP", "c-a"]]

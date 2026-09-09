@@ -83,7 +83,8 @@ class LeaseClient:
             holders = ", ".join(f"{x.id} ({x.owner_agent})" for x in live)
             raise LeaseConflictError(
                 f"targets {sorted(targets)} already leased by {holders} "
-                "-- retry after the lease owner releases them"
+                "-- the owner will release them, or run `mayhem janitor` "
+                "to reclaim leases whose controller is gone"
             )
         self._sink.save(lease)
         return lease

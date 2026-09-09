@@ -565,6 +565,18 @@ M0012_M5_COVERAGE = Migration(
 )
 
 
+# ── Run liveness: the controller records its pid so the janitor can tell
+# ── a dead owner from a live one and reclaim within-TTL leases it left.
+# ── Without this, a crashed ``run`` wedges its targets until TTL (the
+# ── reported "janitor did nothing" pain).
+M0015_RUN_CONTROLLER_PID = Migration(
+    version=15,
+    name="run_controller_pid",
+    statements=("ALTER TABLE runs ADD COLUMN controller_pid INTEGER",),
+    down_statements=("ALTER TABLE runs DROP COLUMN controller_pid",),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -580,4 +592,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0012_M5_COVERAGE,
     M0013_M4_SUCCESS_OBSERVABILITY,
     M0014_M4_OBSERVABILITY_AND_DECISIONS,
+    M0015_RUN_CONTROLLER_PID,
 )

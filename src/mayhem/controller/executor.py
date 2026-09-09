@@ -55,6 +55,7 @@ from mayhem.topology.resolve import (
     resolve_container,
     resolve_identity,
     resolve_process_identity,
+    resolve_status,
 )
 
 if TYPE_CHECKING:
@@ -118,27 +119,44 @@ class RunResult:
         return self.ended_at_epoch_s - self.started_at_epoch_s
 
     def summary_md(self) -> str:
-        lines = [f"# Run {self.run_id}", "", f"**status**: {self.status}"]
+        """End-of-run report: outcome, criteria, steps, cleanup, resilience."""
+        lines = [f"# Run {self.run_id}", "", "## outcome"]
+        lines.append(f"- **status**: {self.status}")
         if self.verdict is not None:
-            lines.append(f"**verdict**: {self.verdict.value}")
-        if self.criteria_evaluation is not None:
-            lines.append(self.criteria_evaluation.summary_md())
+            lines.append(f"- **verdict**: {self.verdict.value}")
+        if self.governing_decisions:
+            summary = "; ".join(d.summary() for d in self.governing_decisions)
+            lines.append(f"- **decisions**: {summary}")
         if any(not source.skipped for source in self.observability):
             collected = sum(1 for c in self.observability if c.ok)
             lines.append(
-                f"**observations**: {collected}/{len(self.observability)} sources collected"
+                f"- **observations**: {collected}/{len(self.observability)} sources collected"
             )
-        if self.governing_decisions:
-            summary = ", ".join(d.summary() for d in self.governing_decisions)
-            lines.append(f"**decisions**: {summary}")
-        lines.append(f"**wall**: {self.wall_seconds:.1f}s")
+        if self.started_at_epoch_s > 0:
+            start_iso = datetime.fromtimestamp(self.started_at_epoch_s, tz=UTC).isoformat(
+                timespec="seconds"
+            )
+            end_iso = datetime.fromtimestamp(self.ended_at_epoch_s, tz=UTC).isoformat(
+                timespec="seconds"
+            )
+            lines.append(f"- **window**: {start_iso} → {end_iso} ({self.wall_seconds:.1f}s)")
+        else:
+            lines.append(f"- **wall time**: {self.wall_seconds:.1f}s")
+        if self.criteria_evaluation is not None and not self.criteria_evaluation.empty:
+            lines += ["", "## success criteria"]
+            lines.append(self.criteria_evaluation.summary_md())
+        lines += ["", "## steps"]
+        if not self.steps:
+            lines.append("_no steps executed_")
         for step in self.steps:
             mark = "bypass" if step.status == "bypassed" else "ok" if step.ok else "FAIL"
             lines.append(f"- [{mark}] {step.step_id}: {step.detail}")
-        for lease_id in self.dirty_leases:
-            lines.append(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
+        if self.dirty_leases:
+            lines += ["", "## cleanup"]
+            for lease_id in self.dirty_leases:
+                lines.append(f"- **DIRTY LEASE** {lease_id}: manual remediation required")
         if self.resilience_report is not None:
-            lines.append("")
+            lines += ["", "## resilience"]
             lines.append(self.resilience_report.summary_md())
         return "\n".join(lines)
 
@@ -146,6 +164,10 @@ class RunResult:
 # Placeholder PID emitted by compensation templates; replaced with the live PID
 # at execution time (ADR-0020), so the value is never older than the syscall.
 _LIVE_PID = "@live-pid"
+
+# Sentinel for a running container whose numeric host PID is unreachable
+# (podman-machine on macOS, Docker Desktop): exec addressing still works.
+_PID_UNAVAILABLE = 0
 
 _STATUS_DETAIL_RE = re.compile(r"->\s*(?P<status>\d{3})\s*$")
 
@@ -571,7 +593,7 @@ class RunEngine:
                 pid = int(raw) if raw is not None else None
             except (TypeError, ValueError):
                 continue
-            if pid is not None and pid > 1:
+            if pid is not None and (pid > 1 or (op.args.get("cont") and op.args.get("engine"))):
                 found.append((pid, op.args.get("cont"), op.args.get("engine")))
         return found
 
@@ -1079,6 +1101,21 @@ class RunEngine:
             try:
                 info = resolve_container(container_name, self._engine)
             except RuntimeError:
+                # VM-contained engines (podman-machine on macOS, Docker Desktop)
+                # report State.Pid == 0 while the container is running: the host
+                # PID is simply unreachable, but the container stays addressable
+                # via <engine> exec (ADR-0020). Degrade to the sentinel pid when
+                # the container is verified running instead of dropping the
+                # target and failing every exec-addressed fault on the stack.
+                try:
+                    if resolve_status(container_name, self._engine) != "running":
+                        continue
+                except RuntimeError:
+                    continue
+                # Exec addressing signals the container, never a numeric pid, so
+                # there is no boot-time identity to capture (and none possible:
+                # sentinel pid 0 has no /proc entry).
+                resolved[node_id] = (_PID_UNAVAILABLE, container_name)
                 continue
             resolved[node_id] = (info.pid, container_name)
             process_ids[node_id] = resolve_process_identity(
@@ -1384,8 +1421,8 @@ class RunEngine:
                 """
                 INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json, seed,
                     status, environment_fingerprint, config_snapshot_id, started_at,
-                    governing_decisions_json)
-                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+                    governing_decisions_json, controller_pid)
+                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)
                 """,
                 (
                     plan.run_id,
@@ -1398,6 +1435,7 @@ class RunEngine:
                     config_id,
                     now_iso,
                     json.dumps([d.model_dump() for d in plan.decision_refs]),
+                    os.getpid(),
                 ),
             )
             conn.execute(

@@ -17,6 +17,7 @@ from mayhem.domain.coverage import (
     cell_key,
 )
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
+from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.store import Store
 
 if TYPE_CHECKING:
@@ -133,7 +134,7 @@ class TestCoverageRepository:
     def test_migration_applied_and_queryable(self, tmp_path: Path) -> None:
         store = self._store(tmp_path)
         repo = SQLiteCoverageRepository(store)
-        assert store.schema_version == 14
+        assert store.schema_version == ALL_MIGRATIONS[-1].version
         cells = _cells()
         repo.mark_seen(cells[0], run_id="r1")
         assert store.query("SELECT COUNT(*) AS n FROM m5_coverage")[0]["n"] == 1

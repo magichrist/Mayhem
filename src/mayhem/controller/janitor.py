@@ -19,10 +19,28 @@ from mayhem.domain.errors import DomainError
 from mayhem.domain.leases import LeaseState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from mayhem.agents.sinks import LeaseSink
     from mayhem.domain.leases import FaultLease
+
+_LOST_OWNER = "owner run no longer live; reclaimed before TTL"
+
+
+def _owner_gone(run_liveness: Callable[[str], bool | None], run_id: str) -> bool:
+    """True only when the resolver can *prove* the owning controller is gone.
+
+    Unknown (``None``) or an absent owner row never triggers the early reclaim —
+    TTL policy stays in charge of those, and a LiveLonger cycling pid can only
+    read "alive", which delays cleanup rather than wrongly reclaiming a lease
+    a live owner still needs.
+    """
+    try:
+        verdict = run_liveness(run_id)
+    except LookupError:
+        return False
+    return verdict is False
 
 
 @dataclass(frozen=True)
@@ -37,12 +55,26 @@ class SweepResult:
 
 
 class Janitor:
-    """TTL enforcement over any LeaseSink; state transitions only."""
+    """TTL enforcement over any LeaseSink; state transitions only.
+
+    ``run_liveness`` is an optional resolver (run_id -> bool | None) the
+    caller supplies when it can see the runs table. It returns ``True`` while
+    the owning controller is alive, ``False`` when the owner is provably gone,
+    and ``None`` when unknown. A lease whose owner is provably gone is
+    reclaimed *before* its TTL — without this, a crashed ``run`` wedges its
+    targets for the whole TTL and the next ``run`` conflicts with a lease the
+    janitor "did nothing about".
+    """
 
     def __init__(self, sink: LeaseSink) -> None:
         self._sink = sink
 
-    def sweep(self, *, now_epoch_s: float | None = None) -> SweepResult:
+    def sweep(
+        self,
+        *,
+        now_epoch_s: float | None = None,
+        run_liveness: Callable[[str], bool | None] | None = None,
+    ) -> SweepResult:
         now = utc_now()
         current = now.timestamp() if now_epoch_s is None else now_epoch_s
         expired: list[str] = []
@@ -50,22 +82,33 @@ class Janitor:
         dirty: list[str] = []
         for lease in self._sink.active_leases():
             deadline = lease.created_at.timestamp() + float(lease.ttl_seconds)
-            if deadline >= current:
+            owner_gone = run_liveness is not None and _owner_gone(run_liveness, lease.run_id)
+            if deadline >= current and not owner_gone:
                 continue
+            notes = _LOST_OWNER if owner_gone else None
             if lease.state is LeaseState.PENDING:
-                self._expire(lease, now, expired)
+                self._expire(lease, now, expired, notes=notes)
             elif lease.state is LeaseState.DIRTY:
                 self._surrender(lease, now, expired, dirty)
             elif lease.state is LeaseState.RELEASING:
                 self._finalize(lease, now, recovered, dirty)
             else:  # ACTIVE or ORPHANED
-                self._recover_orphan(lease, now, recovered, dirty)
+                self._recover_orphan(lease, now, recovered, dirty, notes=notes)
         return SweepResult(tuple(expired), tuple(recovered), tuple(dirty))
 
-    def _expire(self, lease: FaultLease, now: datetime, expired: list[str]) -> None:
+    def _expire(
+        self, lease: FaultLease, now: datetime, expired: list[str], *, notes: str | None = None
+    ) -> None:
         # Never injected, nothing to undo: straight to EXPIRED.
         expired.append(lease.id)
-        self._save_quietly(lease.transition(LeaseState.EXPIRED, mechanism="janitor", now=now))
+        self._save_quietly(
+            lease.transition(
+                LeaseState.EXPIRED,
+                mechanism="janitor",
+                now=now,
+                escalation_notes=notes,
+            )
+        )
 
     def _surrender(
         self, lease: FaultLease, now: datetime, expired: list[str], dirty: list[str]
@@ -95,7 +138,13 @@ class Janitor:
             recovered.append(lease.id)
 
     def _recover_orphan(
-        self, lease: FaultLease, now: datetime, recovered: list[str], dirty: list[str]
+        self,
+        lease: FaultLease,
+        now: datetime,
+        recovered: list[str],
+        dirty: list[str],
+        *,
+        notes: str | None = None,
     ) -> None:
         # Orphan ACTIVE leases first (honest record), then finalize the
         # compensation the owner started (stuck ORPHANED leases keep their
@@ -105,7 +154,7 @@ class Janitor:
                 LeaseState.ORPHANED,
                 mechanism="janitor",
                 now=now,
-                escalation_notes=f"lease {lease.id} exceeded TTL without release",
+                escalation_notes=notes or f"lease {lease.id} exceeded TTL without release",
             )
         else:
             orphaned = lease

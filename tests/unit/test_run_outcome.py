@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mayhem.domain.run_outcome import Outcome, RunRecord, RunStatus, RunVerdict
+from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.store import Store
 
 if TYPE_CHECKING:
@@ -338,7 +339,7 @@ class TestRunOutcomeLinking:
     def test_migration_m5_1_applied(self, tmp_path: Path) -> None:
         """Acceptance: migration M5-1 applied; run/outcome queryable."""
         store = Store.open_migrated(tmp_path / "m5.db")
-        assert store.schema_version == 14
+        assert store.schema_version == ALL_MIGRATIONS[-1].version
         # Verify tables exist by inserting and querying
         run = RunRecord(
             run_id="r-mig",
