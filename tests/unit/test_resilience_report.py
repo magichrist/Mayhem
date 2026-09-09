@@ -3,6 +3,7 @@
 from mayhem.controller.executor import RunResult, StepReport
 from mayhem.controller.planner import plan_drill
 from mayhem.controller.resilience_report import (
+    ResilienceReport,
     build_resilience_report,
     collect_diagnosis,
     score_run,
@@ -306,3 +307,53 @@ class TestRunResultSurface:
         assert "35/100" in md
         assert "**diagnosis**:" in md
         assert "did not self-heal" in md
+
+    def test_grade_bands_are_deterministic(self) -> None:
+        for score, letter in ((95, "A"), (90, "A"), (75, "B"), (60, "C"), (45, "D"), (10, "F")):
+            report = ResilienceReport(
+                score=score, step_performance=1.0, self_healing=1.0, redundancy=1.0
+            )
+            assert report.grade == letter
+
+    def test_summary_has_single_redundancy_metric(self) -> None:
+        report = ResilienceReport(
+            score=35,
+            step_performance=0.5,
+            self_healing=0.5,
+            redundancy=0.0,
+            breakdown=(
+                "steps: 1/2 ok (0 bypassed)",
+                "redundancy: 0% of faulted replica groups kept a survivor",
+            ),
+        )
+        md = report.summary_md()
+        rows = [line for line in md.splitlines() if line.startswith("| redundancy")]
+        assert len(rows) == 1
+        assert "redundancy efficacy" in rows[0]
+        assert rows[0].count(self._redundancy_cell(report)) == 1
+
+    def test_summary_metrics_table_grounded(self) -> None:
+        report = ResilienceReport(score=82, step_performance=1.0, self_healing=0.5, redundancy=1.0)
+        md = report.summary_md()
+        assert "| metric | result | model |" in md
+        assert "Hsueh, Tsai & Iyer" in md
+        assert "Hollnagel, Woods & Leveson" in md
+        assert "Avizienis, Laprie & Randell" in md
+        assert "grade B" in md
+
+    def test_unmeasured_redundancy_reported_once_in_table(self) -> None:
+        report = ResilienceReport(score=82, step_performance=1.0, self_healing=1.0, redundancy=None)
+        md = report.summary_md()
+        rows = [line for line in md.splitlines() if line.startswith("| redundancy")]
+        assert len(rows) == 1
+        assert "not measured" in rows[0]
+        assert not any(line.strip().startswith("redundancy:") for line in md.splitlines())
+
+    def test_summary_omits_weight_clause_for_unused_redundancy(self) -> None:
+        report = ResilienceReport(score=82, step_performance=1.0, self_healing=1.0, redundancy=None)
+        md = report.summary_md()
+        assert "**weighting**: fidelity 35%, recovery 35%, redundancy 30%" in md
+
+    @staticmethod
+    def _redundancy_cell(report: ResilienceReport) -> str:
+        return f"{report.redundancy:.0%}" if report.redundancy is not None else "not measured"

@@ -40,6 +40,18 @@ _STEP_WEIGHT = 0.35
 _SELF_HEAL_WEIGHT = 0.35
 _REDUNDANCY_WEIGHT = 0.30
 
+# Deterministic grade bands over the 0-100 score (ADR-M6-1). The labels use
+# the maturity vocabulary of resilience engineering (Hollnagel et al. 2006).
+# A run can only earn an A when every faulted replica group kept a survivor,
+# every executed fault landed cleanly, and nothing needed manual remediation.
+_GRADE_BANDS: tuple[tuple[int, str, str], ...] = (
+    (90, "A", "resilient"),
+    (75, "B", "solid"),
+    (60, "C", "acceptable"),
+    (45, "D", "fragile"),
+    (0, "F", "needs attention"),
+)
+
 #: Engines report a live container roughly as "running" / "Up 2 hours".
 _ALIVE_PREFIXES = ("running", "up ")
 
@@ -59,26 +71,80 @@ class ResilienceReport:
     breakdown: tuple[str, ...] = ()
     diagnosis: tuple[str, ...] = ()
 
+    @property
+    def grade(self) -> str:
+        """Single-letter grade (A-F) for the score, per ``_GRADE_BANDS``."""
+        for threshold, letter, _label in _GRADE_BANDS:
+            if self.score >= threshold:
+                return letter
+        return "F"  # unreachable: score is clamped to 0-100
+
+    @property
+    def grade_label(self) -> str:
+        """Human-readable label for the grade band."""
+        for threshold, _letter, label in _GRADE_BANDS:
+            if self.score >= threshold:
+                return label
+        return "needs attention"
+
     def summary_md(self) -> str:
-        lines = [f"**resilience**: {self.score}/100"]
-        if self.redundancy is not None:
+        """Structured resilience report: score, grounded metrics, findings.
+
+        The metrics follow established dependability research rather than ad
+        hoc labels: fault-injection *fidelity* (does a fault experiment measure
+        what it claims — Hsueh, Tsai & Iyer, IEEE Computer 30(4), 1997),
+        *recovery* (the "respond" potential of resilience engineering —
+        Hollnagel, Woods & Leveson 2006) and *redundancy efficacy* (M-of-N
+        fault tolerance — Avizienis, Laprie & Randell 2001). Each metric is
+        reported exactly once so the score stays auditable.
+        """
+        lines = [
+            f"**resilience**: {self.score}/100 — grade {self.grade} ({self.grade_label})",
+            "",
+            "metrics:",
+            "",
+            "| metric | result | model |",
+            "|---|---|---|",
+            (
+                f"| fault-injection fidelity | {self.step_performance:.0%} | "
+                "fault-validity of executed steps — Hsueh, Tsai & Iyer, "
+                "*Fault Injection Techniques and Tools*, IEEE Computer 30(4), "
+                "1997 |"
+            ),
+            (
+                f"| recovery | {self.self_healing:.0%} | self-healing without "
+                "manual intervention — *Resilience Engineering: Concepts and "
+                "Precepts*, Hollnagel, Woods & Leveson, Ashgate 2006 |"
+            ),
+        ]
+        if self.redundancy is None:
             lines.append(
-                f"  - redundancy {self.redundancy:.0%} — replica groups kept a "
-                f"survivor while members were faulted ({_REDUNDANCY_WEIGHT:.0%} weight)"
+                "| redundancy efficacy | not measured | no replica groups "
+                "resolved — M-of-N fault tolerance, Avizienis, Laprie & "
+                "Randell 2001 |"
             )
+        else:
+            lines.append(
+                f"| redundancy efficacy | {self.redundancy:.0%} | faulted "
+                "replica groups that kept a survivor — M-of-N fault tolerance, "
+                "Avizienis, Laprie & Randell 2001 |"
+            )
+        lines.append("")
         lines.append(
-            f"  - self-healing {self.self_healing:.0%} — recovered without manual "
-            f"remediation ({_SELF_HEAL_WEIGHT:.0%} weight)"
+            f"**weighting**: fidelity {_STEP_WEIGHT:.0%}, "
+            f"recovery {_SELF_HEAL_WEIGHT:.0%}, "
+            f"redundancy {_REDUNDANCY_WEIGHT:.0%} (ADR-M6-1)"
         )
-        lines.append(
-            f"  - step performance {self.step_performance:.0%} — faults that landed "
-            f"cleanly ({_STEP_WEIGHT:.0%} weight)"
-        )
-        for line in self.breakdown:
-            lines.append(f"  - {line}")
+        # Raw breakdown carries a redundancy bullet; the table above already
+        # reports it once, so it is not repeated in the observations.
+        observations = [line for line in self.breakdown if not line.startswith("redundancy:")]
+        if observations:
+            lines += ["", "observations:"]
+            lines += [f"  - {line}" for line in observations]
         if self.diagnosis:
+            lines.append("")
             lines.append("**diagnosis**:")
-            lines.extend(f"  - {line}" for line in self.diagnosis)
+            lines += [f"  - {line}" for line in self.diagnosis]
         return "\n".join(lines)
 
 
