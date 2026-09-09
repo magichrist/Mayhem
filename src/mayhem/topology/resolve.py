@@ -163,8 +163,20 @@ def resolve_container(container_name: str, engine: str | None = None) -> Contain
     engine = engine or _detect_engine()
     pid = resolve_pid(container_name, engine)
     ip = resolve_ip(container_name, engine)
-    state = _inspect(engine, container_name, "{{.State.Status}}")
+    state = resolve_status(container_name, engine)
     return ContainerInfo(pid=pid, ip_address=ip, state=state)
+
+
+def resolve_status(container_name: str, engine: str | None = None) -> str:
+    """Resolve the current ``State.Status`` for a named container.
+
+    Unlike :func:`resolve_container` this never inspects the host PID, so it
+    also succeeds on VM-contained engines (podman-machine on macOS, Docker
+    Desktop) where ``.State.Pid`` is ``0`` while the container is running.
+    Raises :class:`RuntimeError` only when the container itself is gone.
+    """
+    engine = engine or _detect_engine()
+    return _inspect(engine, container_name, "{{.State.Status}}")
 
 
 def resolve_all(

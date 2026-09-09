@@ -15,6 +15,7 @@ from mayhem.topology.resolve import (
     resolve_ip,
     resolve_pid,
     resolve_process_identity,
+    resolve_status,
 )
 
 
@@ -116,6 +117,23 @@ class TestResolveIp:
             patch("mayhem.topology.resolve._detect_engine", return_value="podman"),
         ):
             assert resolve_ip("testcase-api") == ""
+
+
+class TestResolveStatus:
+    def test_returns_status(self) -> None:
+        with (
+            _mock_run(stdout="running\n"),
+            patch("mayhem.topology.resolve._detect_engine", return_value="podman"),
+        ):
+            assert resolve_status("testcase-api") == "running"
+
+    def test_missing_container_raises(self) -> None:
+        with (
+            _mock_run(returncode=1, stderr="No such object: testcase-api\n"),
+            patch("mayhem.topology.resolve._detect_engine", return_value="podman"),
+        ):
+            with pytest.raises(RuntimeError, match="inspect failed"):
+                resolve_status("testcase-api")
 
 
 class TestResolveProcessIdentity:
