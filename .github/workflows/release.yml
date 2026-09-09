@@ -1,0 +1,58 @@
+name: Release to PyPI
+on:
+  push:
+    tags:
+      # Both conventions fire the release: `v0.5.0` and the repo's
+      # existing numeric tags (`0.5.0`, `0.5.0dev`). hatch-vcs strips a
+      # leading `v`, so either produces a clean PEP 440 version.
+      - "v*"
+      - "[0-9]*"
+
+permissions:
+  contents: read
+  id-token: write # trusted publishing (OIDC) — no PyPI token secret required
+
+jobs:
+  test:
+    name: Test (unit + integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install --quiet uv
+      - name: Sync dev dependencies
+        run: uv sync --group dev
+      - name: Run tests
+        run: uv run pytest tests/unit tests/integration
+      # NOTE: `ruff check src/` is NOT gated here — the repository's committed
+      # ruff config currently reports 30-49 pre-existing violations under every
+      # ruff generation (0.8-0.16); the project has no lint-green baseline in
+      # its history. Land a lint-cleanup first, then re-add `ruff check src/`.
+      - name: Architectural contracts
+        run: uv run lint-imports
+
+  build-and-publish:
+    name: Build and publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so hatch-vcs can resolve the invoking tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      # Trusted Publishing: authenticates via OIDC against the Trusted
+      # Publisher configured on pypi.org for this repository (owner
+      # magichrist, repo Mayhem, workflow release.yml). Do NOT add a
+      # username/password here — the action would try token auth.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

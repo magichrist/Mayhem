@@ -1,10 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mayhem"
-version = "0.1.0.dev0"
+# Distribution name on PyPI is `mayhem-cli` (the bare `mayhem` name is taken);
+# the installed console commands stay `mayhem` and `mayhem-agent`.
+name = "mayhem-cli"
+dynamic = ["version"]
 description = "General-purpose chaos engineering and resilience-testing framework: a chaos experiment orchestration engine."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,6 +15,7 @@ authors = [{ name = "Mayhem Engineering" }]
 dependencies = [
     "pydantic>=2.9",
     "typer>=0.12",
+    "click>=8.1",
     "pyyaml>=6.0",
     "structlog>=24.1",
 ]
@@ -31,6 +34,13 @@ dev = [
     "import-linter>=2.1",
     "types-pyyaml>=6.0",
 ]
+
+[tool.hatch.version]
+# Version flows from the nearest git tag (`v0.5.0` → 0.5.0), so a
+# tag-push release always ships a clean PEP 440 version. Untagged
+# local builds fall back to the dev version below.
+source = "vcs"
+fallback-version = "0.5.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mayhem"]
@@ -101,6 +111,7 @@ disallow_untyped_defs = false
 # --- Pytest -------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q --strict-markers"
 markers = [
     "nightly: chaos-of-the-chaos tier (deselect with '-m \"not nightly\"')",

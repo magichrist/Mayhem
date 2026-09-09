@@ -120,6 +120,24 @@ def _patch_resolve(
     monkeypatch.setattr(executor_mod, "resolve_identity", fake_resolve_identity)
 
 
+def _patch_boot_time(monkeypatch: pytest.MonkeyPatch, boot: int = 4242) -> None:
+    """Pin the PID-reuse guard's boot_time so host-mode signals are deterministic.
+
+    On Linux the guard re-reads ``/proc/<pid>/stat`` and refuses to signal a
+    recycled pid. A unit test's sleeper shares the runner's pid namespace, so
+    the pid can be recycled by an unrelated host process mid-test on busy CI —
+    the guard would (correctly) refuse and flip the run to ``failed``. Pinning
+    the value in both modules (the one that records it, the one that re-reads
+    it) keeps the guard active but deterministic, mirroring
+    ``test_executor.py::TestProcessExecutor``.
+    """
+    from mayhem.agents import executors as agents_mod
+    from mayhem.controller import executor as executor_mod
+
+    monkeypatch.setattr(agents_mod, "read_boot_time", lambda pid: boot)
+    monkeypatch.setattr(executor_mod, "read_boot_time", lambda pid: boot)
+
+
 def _patch_run_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the in-container signal delivery + inspect presence check.
 
@@ -308,6 +326,7 @@ class TestWaitStep:
         try:
             graph = _graph(pa.pid, 999998)
             _patch_resolve(monkeypatch, {"c-a": pa.pid})
+            _patch_boot_time(monkeypatch)
             store = Store.open_migrated(tmp_path / "tg.db")
             sink = SQLiteLeaseSink(store)
             calls: list[float] = []
