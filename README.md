@@ -1,16 +1,13 @@
 # Mayhem
 
-**Chaos engineering for Docker & Podman (Kubernetes on the roadmap): discover
-your system, break it on purpose, prove it recovers — every time, with
-evidence.**
-
-Mayhem is a drill engine, not a command library. It turns your
-`docker-compose` blueprint into a live topology graph, compiles one declarative
+**Chaos engineering for Docker & Podman (Kubernetes on the roadmap).** Mayhem
+discovers your system from its compose blueprint, compiles one declarative
 `kind: drill` YAML file into a frozen, safety-gated execution plan, injects
 faults through a capability-aware toolkit, and ends every run with a machine
-verdict derived from the observations it actually recorded. Steps, probes,
-criteria evaluations, and decisions all land in SQLite — nothing is "trust me,
-it worked."
+verdict derived from the observations it actually recorded.
+
+Everything lands in SQLite — steps, probes, criteria evaluations, decisions —
+so nothing is ever "trust me, it worked."
 
 ```
 compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen plan
@@ -20,108 +17,67 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
                                                 SQLite evidence + decision trace
 ```
 
-**Contents**
-- [Installation](#installation)
-- [Why Mayhem](#why-mayhem)
-- [What a Run Looks Like](#what-a-run-looks-like)
 - [Quickstart](#quickstart)
+- [A Run in One Screen](#a-run-in-one-screen)
 - [Authoring a Drill](#authoring-a-drill)
-- [CLI Reference](#cli-reference)
 - [Configuration](#configuration)
+- [CLI Reference](#cli-reference)
+- [Campaigns](#campaigns)
 - [Safety Model](#safety-model)
 - [Exit Codes](#exit-codes)
 - [Architecture](#architecture)
+- [Status](#status)
 - [Development](#development)
 
 ---
 
-## Installation
+## Quickstart
 
-Mayhem publishes to PyPI **as `mayhem-cli`** — the bare `mayhem` name is
-taken, so you install the CLI under that name. The console commands it puts on
-your `PATH` are still `mayhem` (and `mayhem-agent`).
+**Prerequisites**
 
-Requires **Python 3.12+**.
+- Python 3.12+
+- Docker with Compose v2 (or Podman, used via the `--podman` flag)
 
-```bash
-pip install mayhem-cli
-```
-
-That is it — `mayhem` is now on your `PATH`:
+**Install**
 
 ```bash
-mayhem --help
+pip install mayhem-cli        # console command is `mayhem`
 ```
 
-**Isolated installs (recommended on macOS/Linux)** — keeps the CLI out of your
-global Python:
+**Run the bundled example**
+
+A complete, self-contained six-service stack lives in
+[`examples/testCase/`](examples/testCase/).
 
 ```bash
-pipx install mayhem-cli        # or: uv tool install mayhem-cli
+cd examples/testCase
+docker compose up -d                          # 0. bring the stack up
+mayhem topology discover --compose docker-compose.yml   # 1. blueprint → live graph
+mayhem validate mayhem.yaml --compose docker-compose.yml  # 2. compile + safety gates (injects nothing)
+mayhem run mayhem.yaml --compose docker-compose.yml      # 3. inject → observe → recover → verdict
 ```
 
-**Upgrading** — each git tag (`v0.5.0` or `0.5.0`) publishes that exact version:
+Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
+`compose.yml`) in the current directory.
 
-```bash
-pip install -U mayhem-cli
-```
+`validate` and `plan` work against the blueprint alone and never touch live
+containers. `run` re-proves every fault at the impact gate against the live
+graph and bypasses — or, without `--skip-gate`, refuses — anything it cannot
+prove injectable.
 
-Need the source checkout instead? See [Development](#development).
+The bundled spec exercises **38 distinct faults** across the `testcase-lb`
+load-balancer — one concurrent fault (`max_faults: 1`, `risk_ceiling:
+critical`), auto-recovery off — so the checks observe whether the stack
+self-heals on its own. The remaining nine `k8s.*` catalog faults are exercised
+against a Kubernetes blueprint in [`examples/k8s`](examples/k8s)
+(planning-only until the M8 driver lands), so **every fault in the catalog has
+an example.**
 
 ---
 
-## Why Mayhem
+## A Run in One Screen
 
-Most chaos tooling hands you a list of commands — "kill this container," "add
-latency here" — and leaves you to figure out the blast radius, the cleanup, and
-what "healthy" means. Mayhem treats a drill as a **planned, gated, evidenced
-experiment** instead.
-
-| | Hand-rolled chaos scripts | Mayhem |
-|---|---|---|
-| **Targeting** | You pick a container and hope | Faults plan against a discovered topology graph, so targets stay real |
-| **Safety** | Your discipline | Risk ceiling, `max_faults` budget, and an impact gate that re-proves every fault before anything is injected |
-| **Definition** | Throwaway shell one-liners | One `kind: drill` YAML: per-container faults, ordering, checks, success criteria, observability |
-| **Cleanup** | You remember to | Every fault ships a compensation contract; the janitor sweeps dirty leases after crashes |
-| **Verdict** | Eyeball the dashboards | `PASS`/`FAIL` from typed success criteria evaluated over recorded observations |
-| **Evidence** | Shell history | Immutable SQLite journal: steps, probes, decisions, outcome |
-
-Concretely:
-
-1. **Topology-aware planning.** Mayhem reads your compose blueprint and
-   discovers the live services, hosts, and dependencies to build a graph.
-   Faults are planned against that graph, not applied blind; compose project
-   filtering keeps unrelated stacks out.
-
-2. **Drill specs, not scripts.** One YAML file declares everything — faults,
-   cross-container ordering, checks, success criteria, observability sources —
-   and you define what "healthy" looks like *before* you break anything.
-
-3. **Machine verdicts.** Optional typed success criteria turn every run into a
-   `PASS`/`FAIL` verdict derived from the observations actually recorded — no
-   eyeballing.
-
-4. **Automatic recovery.** Every fault ships a compensation contract: an undo
-   op plus a verification probe generated from the same plan parameters, so
-   what was injected is exactly what gets removed and re-proven healthy. If a
-   round fails or the controller crashes, the janitor sweeps dirty leases and
-   reconciles the workload — no manual cleanup. The per-fault lifecycle is
-   documented in [`docs/compensation.md`](docs/compensation.md).
-
-5. **Honest evidence.** Runs persist an immutable event journal, criteria
-   evaluations, and a governing-decision trace in SQLite. No "trust me, it
-   worked."
-
-6. **Prefix-shortened CLI.** Type `mayhem r` instead of `mayhem run`;
-   `mayhem e v` means `mayhem experiment validate`. Every command abbreviates
-   to any unique prefix.
-
----
-
-## What a Run Looks Like
-
-A clean run needs no interpretation — the verdict is one line away. Truncated
-for readability:
+A clean run needs no interpretation — the verdict is one line away.
 
 ```
 $ mayhem run mayhem.yaml --compose docker-compose.yml
@@ -156,97 +112,15 @@ Reading the transcript, top to bottom:
 From there: `mayhem status` lists recent runs, `mayhem status --run <run-id>`
 shows full recorded metadata, and `mayhem history <run-id>` replays the
 complete event journal (every step, probe sample, and lease for that run).
-Add `--debug` to `mayhem run` to stream each step live as it happens (`[ok]
-injected proc.pause 10s into testcase-api`, `[ok] recovered ... (compensation
-ok)`).
-
----
-
-## Quickstart
-
-**Prerequisites**
-
-- Python 3.12+
-- Docker with Compose v2 (or Podman, used via the `--podman` flag)
-- No host tooling required up front: `mayhem toolkit list` probes for the
-  capabilities (docker, podman, network tooling, `k6`, …) each fault needs,
-  and the impact gate refuses to run anything it cannot prove.
-
-**Install**
-
-```bash
-pip install mayhem-cli
-```
-
-> The PyPI package is **`mayhem-cli`** (`mayhem` is taken); the console command
-> remains `mayhem`. Full instructions in
-> [Installation](#installation). For a source checkout use
-> `pip install -e .` (see [Development](#development)).
-
-**Run the bundled example**
-
-A complete, self-contained example lives in `examples/testCase/` — a
-six-service compose stack (API, web, load balancer, dual download builders, and
-Postgres), its drill spec, and the fixtures it relies on.
-
-```bash
-# 0. Bring the stack up.
-cd examples/testCase
-docker compose up -d
-
-# 1. See the topology Mayhem will plan against (blueprint ─▶ live graph).
-mayhem topology discover --compose docker-compose.yml
-
-# 2. Compile the spec and run every safety gate — injects nothing.
-mayhem validate mayhem.yaml --compose docker-compose.yml
-
-# 3. Print the frozen execution plan as JSON.
-mayhem plan mayhem.yaml --compose docker-compose.yml
-
-# 4. Execute the drill and print the run summary.
-mayhem run mayhem.yaml --compose docker-compose.yml
-
-# (Variant) limit a run to ONE container — the pinned container's faults run,
-# every other container's rounds are dropped from the frozen plan.
-mayhem run mayhem.yaml --compose docker-compose.yml --ctr testcase-api
-
-# (Variant) `maniac` draws its random rounds against a single container too —
-# handy when you want to chaos-test one container without touching the others.
-mayhem maniac --compose docker-compose.yml --ctr testcase-api
-
-# 5. Replay any run's evidence.
-mayhem status --run <run-id>
-mayhem history <run-id>
-```
-
-`mayhem run` prints a copy-paste `run <run-id> — inspect with mayhem history
-<run-id>` line at the end; that id is all you need for the evidence commands.
-
-The example spec exercises **38 distinct faults** (every catalog entry that
-applies to a Docker/Podman compose service) across the `testcase-lb`
-load-balancer — CPU/memory/fd/disk pressure, load spikes, protocol abuse,
-network latency/bandwidth/packet-loss, dependency and database and DNS faults,
-TLS failure, container kill/restart/pause, HTTP error injection —
-capped at one concurrent fault (`max_faults: 1`, `risk_ceiling: critical`)
-with auto-recovery off (`recovery: false`), so the downstream checks observe
-whether the stack self-heals on its own. The remaining nine `k8s.*` catalog
-faults are exercised against a Kubernetes blueprint in
-[`examples/k8s`](examples/k8s) (planning-only until the M8 driver lands), so
-**every fault in the catalog has an example**.
-
-Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
-`compose.yml`) in the current directory.
-
-> `validate` and `plan` work against the blueprint alone and never touch live
-> containers. `run` re-proves every fault at the impact gate against the live
-> graph and bypasses — or, without `--skip-gate`, refuses — anything it cannot
-> prove injectable.
+Add `--debug` to `mayhem run` to stream each step live as it happens
+(`[ok] injected proc.pause 10s into testcase-api`,
+`[ok] recovered ... (compensation ok)`).
 
 ---
 
 ## Authoring a Drill
 
-A drill is one `kind: drill` YAML file — the DSL reference lives in
+A drill is one `kind: drill` YAML file — the complete DSL reference lives in
 [`docs/drill-spec.md`](docs/drill-spec.md). The shape:
 
 ```yaml
@@ -265,17 +139,22 @@ containers:
     faults:
       - fault: net.latency
         duration: 10s
-        params: { seconds: 5s, jitter_ms: 10 }
+        params:
+          delay_ms: 300
+          jitter_ms: 25
 
 execution:
-  - parallel: [cart-api]
-  - check_spec:           # locus-aware checks
-      - id: cart-health
-        probe: { type: http, url: http://cart-api:8080/_health, expected_status: 200 }
-        execution: service
-        target: cart-api
+  strategy: sequential    # sequential | parallel | random (ADR-M5-1)
 
-success:                  # machine verdict
+checks:
+  preconditions:          # everything must hold before anything is injected
+    - type: container_running
+      container: cart-api
+    - type: http
+      url: http://cart-api:8080/_health
+      expected: 200
+
+success:
   require_all: true
   criteria:
     - type: status
@@ -301,90 +180,20 @@ Validate with `mayhem validate mayhem.yaml`; unknown parameters, out-of-range
 durations, untargetable node kinds, and capability gaps are all compile-time
 errors — before anything is injected.
 
-### Campaigns
-
-A campaign groups drill specs under one execution umbrella (ADR-0022/0023):
-experiments run sequentially in priority order, and the campaign's failure
-policy and time window govern the whole run.
-
-```bash
-mayhem campaign create black-friday \
-  --description "BFCM chaos" --hypothesis "checkout survives every single-fault failure"
-mayhem campaign add-experiment black-friday mayhem.yaml
-mayhem campaign add-experiment black-friday checkout-recovery.yaml
-mayhem campaign start black-friday                      # draft -> running
-mayhem campaign run black-friday --compose docker-compose.yml
-```
-
-A campaign is born `draft` and moves through
-`scheduled → running → paused → completed / aborted` (`archive` closes a
-finished campaign). Per-experiment results land in the observations table
-under the campaign id, and the failure policy selects the next action when
-one experiment fails:
-
-| `on_experiment_failure` | Meaning |
-|-------------------------|---------|
-| `abort_campaign` (default) | Stop the remaining experiments. |
-| `skip_and_continue` | Record the failure and run the next experiment. |
-| `retry_then_abort` | Retry the failed experiment once, then abort the campaign. |
-
-Window fields (`window_json`): `start_epoch_s` / `end_epoch_s`,
-`max_duration_s` (hard stop), and `cooldown_between_experiments_s` between
-successive experiments.
-
----
-
-## CLI Reference
-
-Global options (accepted at any level, before or after the command):
-
-| Option | Meaning |
-|--------|---------|
-| `--db PATH` | SQLite database path (default `mayhem.db`). |
-| `--config PATH` | Path to `mayhem.yaml` (overrides auto-detection). |
-| `--profile NAME` | Configuration profile to merge. |
-| `--allow-critical` | Acknowledge `critical`-risk faults (e.g. `k8s.node_drain`). |
-| `--skip-gate` | Run even when the impact gate proved some faults inert. |
-| `--podman` | Use Podman instead of Docker. |
-| `--debug` | Re-raise errors instead of rendering them. |
-
-Commands:
-
-| Command | Description |
-|---------|-------------|
-| `mayhem topology discover` | Discover live services/hosts and the dependency edges from the blueprint. |
-| `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
-| `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
-| `mayhem run SPEC` | Compile and execute a drill; print the run summary. `--ctr CONTAINER` scopes execution to one container (any `container_name:` value or runtime container name from the blueprint). |
-| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). `--ctr CONTAINER` narrows every draw (and the zero-config synthesized pool) to one container. |
-| `mayhem status` | Show runs recorded in the database (`--json` supported). |
-| `mayhem history RUN_ID` | Replay steps, events, and leases recorded for one run. |
-| `mayhem recover RUN_ID` | Recover every orphaned fault lease belonging to a run. |
-| `mayhem janitor` | Sweep leases past their TTL; expire pending runs; compensate. |
-| `mayhem toolkit faults` | List the fault catalog with risk and compensatability. |
-| `mayhem toolkit list` | Probe the host for the tools/capabilities faults require. |
-| `mayhem experiment show SPEC` | Print the parsed drill spec as JSON. |
-| `mayhem experiment validate` | Alias of `validate`. |
-| `mayhem config show` / `mayhem config validate` | Inspect / validate the effective layered configuration (alias `cfg`). `show --json` also reports each section's provenance. |
-| `mayhem campaign list` | List campaigns (draft/scheduled/running/…; `--json`). |
-| `mayhem campaign create NAME` | Create a draft campaign (`--description`, `--hypothesis`). |
-| `mayhem campaign show / status / delete ID` | Inspect, poll, or delete a campaign. |
-| `mayhem campaign add-experiment ID SPEC` | Append a drill spec file to a campaign. |
-| `mayhem campaign start / abort / archive ID` | Move a campaign through its lifecycle. |
-| `mayhem campaign run ID` | Execute every experiment sequentially against the compose topology, honoring the campaign policy and window (`--no-gate` bypasses the impact gate). |
-
-Every command (and the whole tree) abbreviates to any unique prefix: `mayhem
-ex valid`, `mayhem t f`.
+Faults are drawn from the catalog (net.latency, proc.kill, net.packet_loss,
+TLS failure, container pause, HTTP error injection, dependency and database
+faults, …). The full per-fault reference — every id, its capabilities, risk
+level, and compensation contract — is in [`docs/drill-spec.md`](docs/drill-spec.md#fault-catalog).
 
 ---
 
 ## Configuration
 
 Runtime policies live in `mayhem.yaml` — the *configuration* file, distinct
-from a `kind: drill` spec — auto-detected in the cwd or given with
-`--config`. The effective view is one command away: `mayhem config show`
-(alias `cfg`) prints the resolved configuration and the provenance of every
-section; `mayhem config validate` refuses unknown keys, a missing or wrong
+from a `kind: drill` spec — auto-detected in the cwd or given with `--config`.
+The effective view is one command away: `mayhem config show` (alias `cfg`)
+prints the resolved configuration and the provenance of every section;
+`mayhem config validate` refuses unknown keys, a missing or wrong
 `apiVersion`, and out-of-range sections before anything runs.
 
 ```yaml
@@ -422,14 +231,89 @@ there is no `profiles:` key inside `mayhem.yaml`. The environment layer only
 honours allowlisted variables: `MAYHEM_STORAGE_PATH`,
 `MAYHEM_ARTIFACTS_DIR`, `MAYHEM_LOG_LEVEL`.
 
-```bash
-mayhem config show            # YAML + sourced-from comments
-mayhem config show --json     # {"config": …, "sources": …}
-mayhem config validate        # exit 0 / 3 on invalid layers
-```
-
 Drill-level `config.risk_ceiling` composes with the policy ceiling and can
 only tighten it.
+
+The full configuration reference is in
+[`docs/config.md`](docs/config.md).
+
+---
+
+## CLI Reference
+
+Global options (accepted at any level, before or after the command):
+
+| Option | Meaning |
+|--------|---------|
+| `--db PATH` | SQLite database path (default `mayhem.db`). |
+| `--config PATH` | Path to `mayhem.yaml` (overrides auto-detection). |
+| `--profile NAME` | Configuration profile to merge. |
+| `--allow-critical` | Acknowledge `critical`-risk faults (e.g. `k8s.node_drain`). |
+| `--skip-gate` | Run even when the impact gate proved some faults inert. |
+| `-p, --podman` | Use Podman instead of Docker. |
+| `-d, --debug` | Re-raise errors instead of rendering them. |
+
+Every command (and the whole tree) abbreviates to any unique prefix: `mayhem
+ex valid`, `mayhem t f`.
+
+| Command | Description |
+|---------|-------------|
+| `mayhem topology discover` | Discover live services/hosts and dependency edges from the blueprint. |
+| `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
+| `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
+| `mayhem run SPEC` | Compile and execute a drill; print the run summary. `--ctr CONTAINER` scopes execution to one container; `--next` prints the plan that would run. |
+| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). `--steps N` overrides the round count; `--ctr CONTAINER` narrows draws to one container. |
+| `mayhem explore [EXPERIMENT]` | Generate a ranked candidate queue from the topology, gate it, execute the highest-value cells, and report coverage gained. |
+| `mayhem next [SPEC]` | Suggest the most valuable untested cell to run next (§3.2). Deterministic under the same inputs. |
+| `mayhem coverage [SPEC]` | Show the coverage map, per-service progress, and untested/blocked lists (§3.3). Filters: `--service`, `--fault`, `--fault-category`, `--state`. |
+| `mayhem expert` | Run diagnostic probes and analyze recent failures. |
+| `mayhem dependency …` | Inspect and install in-image tooling that gates fault families (`check`, `compile`, `install`). |
+| `mayhem status` | Show runs recorded in the database (`--json` supported). |
+| `mayhem history RUN_ID` | Replay steps, events, and leases recorded for one run. |
+| `mayhem recover RUN_ID` | Recover every orphaned fault lease belonging to a run. |
+| `mayhem janitor` | Sweep leases past their TTL; expire pending runs; compensate. |
+| `mayhem toolkit faults` | List the fault catalog with risk and compensatability. |
+| `mayhem toolkit list` | Probe the host for the tools/capabilities faults require. |
+| `mayhem experiment show SPEC` | Print the parsed drill spec as JSON. |
+| `mayhem experiment validate` | Alias of `validate`. |
+| `mayhem config show` / `validate` | Inspect / validate the effective layered configuration (alias: `cfg`). `show --json` reports each section's provenance. |
+| `mayhem campaign …` | See [Campaigns](#campaigns) below. |
+
+---
+
+## Campaigns
+
+A campaign groups drill specs under one execution umbrella (ADR-0022/0023):
+experiments run sequentially in priority order, and the campaign's failure
+policy and time window govern the whole run.
+
+```bash
+mayhem campaign create black-friday \
+  --description "BFCM chaos" --hypothesis "checkout survives every single-fault failure"
+mayhem campaign add-experiment black-friday mayhem.yaml
+mayhem campaign add-experiment black-friday checkout-recovery.yaml
+mayhem campaign start black-friday                      # draft -> running
+mayhem campaign run black-friday --compose docker-compose.yml
+```
+
+A campaign is born `draft` and moves through
+`scheduled → running → paused → completed / aborted` (`archive` closes a
+finished campaign). Per-experiment results land in the observations table
+under the campaign id, and the failure policy selects the next action when
+one experiment fails:
+
+| `on_experiment_failure` | Meaning |
+|-------------------------|---------|
+| `abort_campaign` (default) | Stop the remaining experiments. |
+| `skip_and_continue` | Record the failure and run the next experiment. |
+| `retry_then_abort` | Retry the failed experiment once, then abort the campaign. |
+
+Window fields (`window_json`): `start_epoch_s` / `end_epoch_s`,
+`max_duration_s` (hard stop), and `cooldown_between_experiments_s` between
+successive experiments.
+
+**Campaign subcommands:** `create`, `list`, `show`, `status`, `delete`,
+`add-experiment`, `start`, `abort`, `archive`, `run`.
 
 ---
 
@@ -494,15 +378,17 @@ is as small as possible:
 5. **Recover & report** — the janitor sweeps orphaned leases; `status`,
    `history`, and run summaries replay the evidence.
 
-### Documentation
+**Documentation**
 
 | Document | Contents |
 |----------|----------|
-| [README.md](README.md) | This file. |
-| [docs/drill-spec.md](docs/drill-spec.md) | **The drill DSL reference** — config, containers, execution, checks, success criteria, observability, and the full fault catalog. |
-| [docs/compensation.md](docs/compensation.md) | **Fault compensation lifecycle** — inject / undo / verify contracts, executor routing, marker conventions, and the per-fault template table. |
+| [`docs/drill-spec.md`](docs/drill-spec.md) | **The drill DSL reference** — config, containers, execution, checks, success criteria, observability, and the full fault catalog. |
+| [`docs/config.md`](docs/config.md) | **Configuration reference** — discovery order, merged syntax, every field with type and default, env/CLI overrides. |
+| [`docs/compensation.md`](docs/compensation.md) | **Fault compensation lifecycle** — inject / undo / verify contracts, executor routing, marker conventions, and the per-fault template table. |
 
-### Status
+---
+
+## Status
 
 | Area | Status |
 |------|--------|
@@ -518,7 +404,7 @@ is as small as possible:
 | CLI with prefix abbreviation, stable exit codes | Complete |
 | SQLite persistence + restart, migrations (schema freeze) | Complete |
 | Campaigns (multi-spec runs) | Complete |
-| Tests (859 collected: 752 unit + 95 e2e + 12 integration), ruff, mypy (per-file strict) | Complete |
+| Tests, ruff, mypy (per-file strict) | Complete |
 | Kubernetes execution | Planned (interface-only; see [`examples/k8s`](examples/k8s)) |
 | Web UI / REST API | Planned |
 
