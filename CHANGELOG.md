@@ -1,62 +1,40 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-Conventional commits drive the grouping below; see
-https://www.conventionalcommits.org/ for the message format.
+
+This changelog is generated from the project's git history by
+[git-cliff](https://git-cliff.org). Mayhem commits are grouped both by the
+**drill phase** that produced them (Explore / Expert / Coverage / Next) and
+by conventional-commit type — see the phase map below.
+
+## 0.6.0 - 2026-09-11
+
+
+
+### 🚀 Features
+
+- Plan for 0.6.0
+
+
+
+### 📚 Documentation
+
+- **feat-1**: Ground every §1 claim in a verification log + persona design rules
+
+- New features dictation
+
+
+
+### 🧪 Testing
+
+- Verify config absorption, CLI contract, coverage, KPI + ranking
+
 
 ## 0.5.1 - 2026-09-09
 
 
 
-### Bug Fixes
-
-- **faults**: Better handling
-
-- **app**: Fix known issues in app arch
-
-- Minor change
-
-- Executor is now behaving right
-
-- Config old syntax removed, updated DSL
-
-- Maniac cli now works as it should
-
-- **impact**: Gate every in-container fault on its real tooling
-
-- Net.load uses localhost if container exposes port else must gain ip
-
-- **leases**: DIRTY is not terminal — may only be surrendered to EXPIRED
-
-- **executor**: Resume orphan recovery from any checkpoint state
-
-- **compensation**: Clock.skew inject must double-quote $target expansion
-
-- **impact**: Gate SYS_TIME faults as inert under rootless engines
-
-- **dependency**: Warn when bootstrapped service relies on image CMD only
-
-- **examples**: Give testcase-lb an explicit command
-
-- Clock.skew and process.stop are fixed, also add failure policy: fast-fail, continue
-
-- **faults**: Accept numeric seconds for DURATION params
-
-- **topology**: Container resolves as running when state inspect fails
-
-- **janitor**: Reclaim crashed controllers' leases before TTL
-
-
-
-### Docs
-
-- Update documentation for mayhem rename and add re-design/rename notes
-
-- Removed old docs, new arch plan in next commit
-
-
-
-### Features
+### 🚀 Features
 
 - Add example experiment definitions (maniac-hour, proc-pause-drill)
 
@@ -118,13 +96,51 @@ https://www.conventionalcommits.org/ for the message format.
 
 
 
-### Other
+### 🐛 Bug Fixes
+
+- **faults**: Better handling
+
+- **app**: Fix known issues in app arch
+
+- Minor change
+
+- Executor is now behaving right
+
+- Config old syntax removed, updated DSL
+
+- Maniac cli now works as it should
+
+- **impact**: Gate every in-container fault on its real tooling
+
+- Net.load uses localhost if container exposes port else must gain ip
+
+- **leases**: DIRTY is not terminal — may only be surrendered to EXPIRED
+
+- **executor**: Resume orphan recovery from any checkpoint state
+
+- **compensation**: Clock.skew inject must double-quote $target expansion
+
+- **impact**: Gate SYS_TIME faults as inert under rootless engines
+
+- **dependency**: Warn when bootstrapped service relies on image CMD only
+
+- **examples**: Give testcase-lb an explicit command
+
+- Clock.skew and process.stop are fixed, also add failure policy: fast-fail, continue
+
+- **faults**: Accept numeric seconds for DURATION params
+
+- **topology**: Container resolves as running when state inspect fails
+
+- **janitor**: Reclaim crashed controllers' leases before TTL
+
+
+
+### 💼 Other
 
 - Init
 
 - Init
-
-- Update gitignore for mayhem rename and local artifacts
 
 - Add more bugs
 
@@ -260,8 +276,6 @@ https://www.conventionalcommits.org/ for the message format.
 
 - Rewrite README: drill-engine positioning, comparison table, run transcript walkthrough, quickstart
 
-- Document recovery control and net.load script param in drill spec
-
 - Expand example drill: recovery off, check_spec, success criteria, observability sources, container.restart/pause faults
 
 - Print copy-paste run handle with mayhem history command after run
@@ -314,13 +328,11 @@ https://www.conventionalcommits.org/ for the message format.
 
 - Update unit test maniac
 
-- **examples**: Commit compiled docker-compose.mayhem.yml for testCase
-
 - Ongoing pypi release🎊
 
 
 
-### Refactor
+### 🚜 Refactor
 
 - Rename package tgondi to mayhem
 
@@ -328,13 +340,23 @@ https://www.conventionalcommits.org/ for the message format.
 
 
 
-### Style
+### 📚 Documentation
+
+- Update documentation for mayhem rename and add re-design/rename notes
+
+- Removed old docs, new arch plan in next commit
+
+- Document recovery control and net.load script param in drill spec
+
+
+
+### 🎨 Styling
 
 - Reformat threshold type-check conditional in probes.py
 
 
 
-### Testing
+### 🧪 Testing
 
 - Update and add tests for renamed mayhem package
 
@@ -381,5 +403,13 @@ https://www.conventionalcommits.org/ for the message format.
 - **impact**: Rootless detection + SYS_TIME inert gating
 
 - **e2e**: Compile warns on program-less service, silent when command declared
+
+
+
+### ⚙️ Miscellaneous Tasks
+
+- Update gitignore for mayhem rename and local artifacts
+
+- **examples**: Commit compiled docker-compose.mayhem.yml for testCase
 
 <!-- generated by git-cliff -->
