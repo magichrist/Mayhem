@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +25,50 @@ from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
 from mayhem.domain.risks import RiskLevel
+
+
+class SpecFileUsedAsConfig(Warning):
+    """A file given as ``--config`` declares ``kind: drill`` — it is a drill
+    spec, not a plain configuration.
+
+    ``mayhem.yaml`` is the single-file home for everything (ADR-M4: the drill
+    spec's ``config:`` section *replaces* the separate config file), so when a
+    spec document is found where a config was expected, the overlapping keys
+    of its embedded ``config:`` section are absorbed as the config layer. This
+    warning only fires when the spec carries nothing to absorb (defaults
+    apply)."""
+
+
+def is_spec_file(data: object) -> bool:
+    """True when a parsed document is an experiment spec, not a config.
+
+    A config document never carries a top-level ``kind``; drill specs always
+    do (``kind: drill``), so the presence of any ``kind`` value marks a spec.
+    """
+    return isinstance(data, dict) and isinstance(data.get("kind"), str)
+
+
+def _config_layer_from_spec(document: dict[str, Any]) -> dict[str, Any]:
+    """Project a drill spec's embedded ``config:`` section onto the config
+    vocabulary — the "one file for all things" contract.
+
+    Overlapping keys become config fields; spec-only knobs (``max-faults``,
+    ``timeout``, ``recovery``, ``on_failure``, ``maniac``) stay owned by the
+    spec and are deliberately *not* copied (they are not config fields and
+    would trip ``extra="forbid"``).
+    """
+    spec_cfg = document.get("config")
+    if not isinstance(spec_cfg, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if "log_level" in spec_cfg:
+        out["log_level"] = spec_cfg["log_level"]
+    policy: dict[str, Any] = {}
+    if "risk_ceiling" in spec_cfg:
+        policy["risk_ceiling"] = spec_cfg["risk_ceiling"]
+    if policy:
+        out["policy"] = policy
+    return out
 
 API_VERSION: Literal["mayhem/v1"] = "mayhem/v1"
 ENV_PREFIX = "MAYHEM_"
@@ -140,11 +185,13 @@ def load_config(
     The source map records which layer last supplied each top-level section —
     provenance is part of the snapshot.
 
-    ``skip_default_file_if_spec`` guards against the default config file
-    (``mayhem.yaml``) doubling as the drill-spec being run: when a spec is
-    executing from ``mayhem.yaml`` and no explicit ``--config`` was given, the
-    file layer is skipped (pure defaults apply) instead of re-parsing the drill
-    spec as a strictly-forbidden config document.
+    ``mayhem.yaml`` is the single-file home for everything: when the config
+    document turns out to be a drill spec (``kind: drill``), the overlapping
+    keys of its embedded ``config:`` section are absorbed as the config layer
+    (ADR-M4: the spec's ``config:`` section replaces the separate mayhem.yml)
+    instead of failing on ``extra="forbid"``. ``skip_default_file_if_spec`` is
+    kept for backward compatibility and has no effect — the spec doubling case
+    is handled by :func:`_config_layer_from_spec` directly.
     """
     env = dict(os.environ if environ is None else environ)
     sources: dict[str, str] = dict.fromkeys(
@@ -166,13 +213,23 @@ def load_config(
             sources[field_name] = layer_name
 
     base_path = Path(config_path) if config_path else Path("mayhem.yaml")
-    skip_file = (
-        config_path is None
-        and skip_default_file_if_spec is not None
-        and base_path.resolve() == Path(skip_default_file_if_spec).resolve()
-    )
-    if not skip_file and (config_path or base_path.exists()):
-        absorb(_read_document(base_path), "file")
+    if config_path or base_path.exists():
+        document = _read_document(base_path)
+        if is_spec_file(document):
+            layer = _config_layer_from_spec(document)
+            if layer:
+                absorb(layer, "file(spec)")
+            else:
+                warnings.warn(
+                    f"{base_path}: declares `kind: {document.get('kind')}` — this "
+                    "file is a drill spec without an embedded `config:` section, "
+                    "so configuration defaults apply. Add a `config:` block to the "
+                    "spec to fold configuration into the single mayhem.yaml.",
+                    SpecFileUsedAsConfig,
+                    stacklevel=2,
+                )
+        else:
+            absorb(document, "file")
     if profile:
         overlay = base_path.parent / f"mayhem.{profile}.yaml"
         absorb(_read_document(overlay), f"profile:{profile}")

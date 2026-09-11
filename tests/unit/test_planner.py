@@ -780,3 +780,79 @@ class TestRestrictPlanToContainer:
         )
         with pytest.raises(PlanningError, match="has no fault steps targeting"):
             restrict_plan_to_container(plan, "testcase-api", graph)
+
+
+# ---------------------------------------------------------------------------
+# synthesize_candidate_spec (feat-2 §A1)
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeCandidateSpec:
+    def test_produces_single_fault_spec(self) -> None:
+        from mayhem.controller.planner import synthesize_candidate_spec
+        from mayhem.domain.candidates import ExperimentCandidate
+
+        candidate = ExperimentCandidate(
+            target="testcase-api",
+            fault_kinds=("net.delay",),
+            params={"band": "default", "seconds": "5s"},
+            execution_context="container",
+            expected_effect="latency injection",
+        )
+        spec = synthesize_candidate_spec(candidate, "testcase-api")
+        assert spec.kind == "drill"
+        assert "testcase-api" in spec.containers
+        container = spec.containers["testcase-api"]
+        assert len(container.faults) == 1
+        assert container.faults[0].fault == "net.delay"
+
+    def test_hypothesis_from_candidate(self) -> None:
+        from mayhem.controller.planner import synthesize_candidate_spec
+        from mayhem.domain.candidates import ExperimentCandidate
+
+        candidate = ExperimentCandidate(
+            target="api",
+            fault_kinds=("cpu.spike",),
+            expected_effect="CPU saturation",
+        )
+        spec = synthesize_candidate_spec(candidate, "api")
+        assert spec.hypothesis == "CPU saturation"
+
+    def test_default_hypothesis_when_empty(self) -> None:
+        from mayhem.controller.planner import synthesize_candidate_spec
+        from mayhem.domain.candidates import ExperimentCandidate
+
+        candidate = ExperimentCandidate(
+            target="web",
+            fault_kinds=("fs.fill",),
+        )
+        spec = synthesize_candidate_spec(candidate, "web")
+        assert "fs.fill" in spec.hypothesis
+        assert "web" in spec.hypothesis
+
+    def test_plan_drill_compiles_candidate_spec(self) -> None:
+        """synthesize_candidate_spec output is valid input to plan_drill."""
+        from mayhem.controller.planner import synthesize_candidate_spec
+        from mayhem.domain.candidates import ExperimentCandidate
+        from mayhem.domain.experiments import ExecutionStep
+
+        candidate = ExperimentCandidate(
+            target="testcase-api",
+            fault_kinds=("proc.pause",),
+            execution_context="container",
+        )
+        spec = synthesize_candidate_spec(candidate, "testcase-api")
+        spec = spec.model_copy(
+            update={"execution": (ExecutionStep(parallel=("testcase-api",)),)}
+        )
+        plan = plan_drill(
+            "r-test",
+            spec,
+            _drill_graph(),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        assert plan.kind.value == "drill"
+        assert len(plan.steps) == 1
+        assert plan.steps[0].fault.fault_id == "proc.pause"

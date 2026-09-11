@@ -209,3 +209,31 @@ def test_m0015_run_controller_pid_forwards(tmp_path: Path) -> None:
     assert store.query("SELECT controller_pid FROM runs WHERE id='r2'")[0]["controller_pid"] == 4242
     assert store.query("PRAGMA foreign_key_check") == []
     store.close()
+
+def test_m0016_five_state_coverage_forwards(tmp_path: Path) -> None:
+    """0016 adds the five-state columns to m5_coverage with legacy defaults."""
+    store = Store.open_migrated(tmp_path / "tg.db", migrations=ALL_MIGRATIONS[:15])
+    with store.write() as conn:
+        conn.execute(
+            "INSERT INTO m5_coverage (cell_key, target, fault_kind, execution_context,"
+            " parameter_band, run_id, covered, extra_json)"
+            " VALUES ('w|net.delay|prod|50ms', 'web-1', 'net.delay', 'prod', '50ms',"
+            " 'r1', 1, '{}')"
+        )
+    applied = store.migrate()
+    assert "0016_five_state_coverage" in applied
+    assert store.schema_version == ALL_MIGRATIONS[-1].version
+    cover_cols = {row["name"] for row in store.query("PRAGMA table_info(m5_coverage)")}
+    assert {"state", "block_reason", "scaffold_tier", "updated_at", "verdict_json"} <= cover_cols
+    row = store.query("SELECT * FROM m5_coverage WHERE cell_key = 'w|net.delay|prod|50ms'")[0]
+    # Legacy row defaults: covered stays 1, five-state columns get defaults.
+    assert row["covered"] == 1
+    assert row["state"] == "covered"
+    assert row["block_reason"] == ""
+    assert row["scaffold_tier"] is None
+    assert row["updated_at"] == ""
+    assert row["verdict_json"] == "{}"
+    indexes = {r["name"] for r in store.query("PRAGMA index_list(m5_coverage)")}
+    assert "idx_m5_coverage_state" in indexes
+    assert store.query("PRAGMA foreign_key_check") == []
+    store.close()

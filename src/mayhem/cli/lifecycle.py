@@ -430,6 +430,61 @@ def _require_container(ctr: str, graph: TopologyGraph, ctx: click.Context) -> No
         )
 
 
+def _suggest_next_cell(
+    ctx: click.Context,
+    db: str,
+    graph: TopologyGraph,
+    compose: str | None,
+) -> None:
+    """After a successful run, suggest the most valuable untested cell.
+
+    This reuses the same ranking logic as ``mayhem next`` but operates on
+    the live topology graph and store already open in the run command.
+    """
+    from mayhem.cli.next_cmd import _landscape_cells
+    from mayhem.domain.faults import FaultCategory
+    from mayhem.infra.coverage_repository import SQLiteCoverageRepository
+    from mayhem.infra.ranking import rank
+
+    landscape, criticality_map, risk_map = _landscape_cells(graph)
+    if not landscape:
+        return
+
+    store = open_store(db)
+    try:
+        coverage = SQLiteCoverageRepository(store)
+        covered_keys = coverage.covered_keys()
+        state_map = coverage.states(landscape)
+
+        division_counter: dict[str, int] = {}
+        for cell in landscape:
+            if cell.key in covered_keys:
+                cat = FaultCategory.from_fault_id(cell.fault_kind).value
+                division_counter[cat] = division_counter.get(cat, 0) + 1
+
+        # Session memory: recent failures bias ranking toward retesting problem areas.
+        failed_targets, failed_faults = coverage.recent_failures()
+
+        ranked = rank(
+            landscape,
+            state_map=state_map,
+            division_map=division_counter,
+            criticality_map=criticality_map,
+            risk_map=risk_map,
+            failed_targets=failed_targets,
+            failed_faults=failed_faults,
+        )
+        if ranked:
+            rc = ranked[0]
+            click.echo(
+                f"\n{style.info('next')} {style.cyan(rc.cell.target)} — "
+                f"{style.yellow(rc.cell.fault_kind)} "
+                f"(score {rc.score:.2f})"
+            )
+    finally:
+        store.close()
+
+
 @click.command("validate")
 @_compose_option
 @click.argument("experiment", type=click.Path(), required=False, default=None)
@@ -501,9 +556,22 @@ def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> Non
     help="Only execute faults on this container (container_name from the compose "
     "blueprint, or the runtime container name).",
 )
+@click.option(
+    "--next",
+    "show_next",
+    is_flag=True,
+    default=False,
+    help="After execution, suggest the most valuable untested cell to run next.",
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def run(ctx: click.Context, experiment: str | None, compose: str | None, ctr: str | None) -> None:
+def run(
+    ctx: click.Context,
+    experiment: str | None,
+    compose: str | None,
+    ctr: str | None,
+    show_next: bool,
+) -> None:
     """Compile then execute a drill spec; prints the run summary."""
     graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
@@ -569,6 +637,8 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None, ctr: st
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
             f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
         )
+        if show_next and result.status == "completed":
+            _suggest_next_cell(ctx, obj.db, graph, resolved_compose)
         if result.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
     finally:
@@ -594,6 +664,13 @@ def run(ctx: click.Context, experiment: str | None, compose: str | None, ctr: st
     help="Only draw random fault rounds against this container (container_name "
     "from the compose blueprint, or the runtime container name).",
 )
+@click.option(
+    "--next",
+    "show_next",
+    is_flag=True,
+    default=False,
+    help="After execution, suggest the most valuable untested cell to run next.",
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
 def maniac(
@@ -602,6 +679,7 @@ def maniac(
     compose: str | None,
     steps: int | None,
     ctr: str | None,
+    show_next: bool,
 ) -> None:
     """Run a drill spec as random fault injection (ADR-M5-1).
 
@@ -711,6 +789,8 @@ def maniac(
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
             f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
         )
+        if show_next and result.status == "completed":
+            _suggest_next_cell(ctx, obj.db, graph, resolved_compose)
         if result.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
     finally:

@@ -56,6 +56,7 @@ from mayhem.domain.topology import (
 )
 
 if TYPE_CHECKING:
+    from mayhem.domain.candidates import ExperimentCandidate
     from mayhem.domain.topology import TopologyGraph
 
 
@@ -133,6 +134,47 @@ def synthesize_maniac_spec(graph: TopologyGraph, *, name: str = "maniac") -> Dri
         # ``plan_drill`` needs one execution step; the maniac planner replaces
         # the authored execution wholesale, so this placeholder never runs.
         execution=(ExecutionStep(wait="1s"),),
+    )
+
+
+def synthesize_candidate_spec(
+    candidate: ExperimentCandidate, service: str, *, name: str = "explore"
+) -> DrillSpec:
+    """Build a single-fault DrillSpec from an Explore-loop candidate (plan-feat-2 §A1).
+
+    This is the *Candidate → DrillSpec* seam: every explore cell becomes a
+    normal ``DrillSpec`` that flows through the same ``plan_drill`` →
+    ``engine.execute`` path as ``mayhem run``.  The service name is the
+    *real* compose service (from ``ComposeFileProvider.service_names`` /
+    ``build_graph``), never a host alias.
+
+    The drill targets one container with one fault drawn from the candidate's
+    ``fault_kinds`` and ``params``.  Catalog defaults are reused verbatim; no
+    safety policy is authored (inherited from the layered ``mayhem.yaml`` or
+    CLI defaults).
+    """
+    fault_id = candidate.primary_fault
+    # Map candidate params into the DrillFault's extra-keys (model_extra):
+    # the DrillSpec uses ``params:`` mapping plus ``model_extra`` for per-fault
+    # YAML-style parameters; candidates carry a flat dict that must spread as
+    # fault-level params.
+    fault_params: dict[str, object] = {
+        k: v for k, v in candidate.params.items() if k not in ("band",)
+    }
+    # DrillFault.model_validate accepts fault-level extra keys; pass params as
+    # extra for the pydantic extra="allow" field.
+    fault_dict: dict[str, object] = {"fault": fault_id, "duration": "10s"}
+    fault_dict.update(fault_params)
+
+    container = DrillContainer(faults=(DrillFault.model_validate(fault_dict),))
+    return DrillSpec(
+        kind="drill",
+        name=name,
+        hypothesis=candidate.expected_effect or f"explore: {fault_id} on {service}",
+        containers={service: container},
+        # The execution block must name the target container so ``plan_drill``
+        # emts its fault steps — a wait-only block compiles to zero faults.
+        execution=(ExecutionStep(sequential=(service,)),),
     )
 
 

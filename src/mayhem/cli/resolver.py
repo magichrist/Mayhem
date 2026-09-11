@@ -25,7 +25,7 @@ import click
 
 PREFIX_HELP = (
     "Commands may be abbreviated to any unique prefix at every level of this "
-    "tree (e.g. 'mayhem e v' for 'mayhem experiment validate'). Exact names and "
+    "tree (e.g. 'mayhem run' or 'mayhem man'). Exact names and "
     "'--help' always work."
 )
 

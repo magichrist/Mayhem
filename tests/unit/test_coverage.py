@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mayhem.domain.coverage import (
+    CellState,
     CoverageCell,
     CoverageRecord,
     CoverageSummary,
     cell_key,
+    transition,
 )
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.migrations import ALL_MIGRATIONS
@@ -154,3 +156,80 @@ class TestCoverageRepository:
             repo.mark_seen(cell, run_id=f"r{i}")
         keys = {r.cell.key for r in repo.covered_records()}
         assert keys == {c.key for c in cells}
+
+
+class TestCellStateTransition:
+    def test_unknown_enters_any_of_the_four_states(self) -> None:
+        assert transition(None, CellState.COVERED) is CellState.COVERED
+        assert transition(None, CellState.INCONCLUSIVE) is CellState.INCONCLUSIVE
+        assert transition(None, CellState.FAILED) is CellState.FAILED
+        assert transition(None, CellState.BLOCKED) is CellState.BLOCKED
+
+    def test_same_state_rerun_is_idempotent(self) -> None:
+        for state in CellState:
+            assert transition(state, state) is state
+
+    def test_blocked_unblocks_only_to_a_tested_state(self) -> None:
+        assert transition(CellState.BLOCKED, CellState.COVERED) is CellState.COVERED
+        assert transition(CellState.BLOCKED, CellState.INCONCLUSIVE) is CellState.INCONCLUSIVE
+        assert transition(CellState.BLOCKED, CellState.FAILED) is CellState.FAILED
+
+    def test_covered_to_inconclusive_allowed_as_fresh_evidence(self) -> None:
+        # §5.3 roll-up correctness: a fresh inconclusive run drops the bar.
+        assert transition(CellState.COVERED, CellState.INCONCLUSIVE) is CellState.INCONCLUSIVE
+
+    def test_failed_never_downgraded_to_inconclusive(self) -> None:
+        assert transition(CellState.FAILED, CellState.INCONCLUSIVE) is CellState.FAILED
+
+    def test_testing_uprgades_are_allowed(self) -> None:
+        assert transition(CellState.INCONCLUSIVE, CellState.COVERED) is CellState.COVERED
+        assert transition(CellState.INCONCLUSIVE, CellState.FAILED) is CellState.FAILED
+        assert transition(CellState.FAILED, CellState.COVERED) is CellState.COVERED
+
+    def test_impossible_moves_raise_value_error(self) -> None:
+        # Blocked is only ever entered from unknown — never from a tested state.
+        for state in (CellState.COVERED, CellState.INCONCLUSIVE, CellState.FAILED):
+            with pytest.raises(ValueError):
+                transition(state, CellState.BLOCKED)
+
+
+class TestCoverageSummaryFiveState:
+    def test_state_counts_default_is_backwards_compatible(self) -> None:
+        cells = _cells()
+        summary = CoverageSummary(covered_keys=frozenset({cells[0].key}), total_cells=4)
+        assert summary.unknown_count == 3
+        assert summary.fraction == pytest.approx(0.25)
+
+    def test_testable_pool_excludes_blocked(self) -> None:
+        cells = _cells()
+        summary = CoverageSummary(
+            covered_keys=frozenset({cells[0].key}),
+            total_cells=5,
+            state_counts={
+                CellState.COVERED: 1,
+                CellState.INCONCLUSIVE: 1,
+                CellState.FAILED: 0,
+                CellState.BLOCKED: 1,
+            },
+        )
+        assert summary.state_count(CellState.BLOCKED) == 1
+        assert summary.blocked_count == 1
+        assert summary.testable_count == 4
+        assert summary.unknown_count == 2
+        # blocked excluded from the denominator
+        assert summary.fraction == pytest.approx(1.0 / 4.0)
+
+    def test_untested_cells_are_the_unknown_cells(self) -> None:
+        cells = _cells()
+        summary = CoverageSummary(
+            covered_keys=frozenset({cells[0].key}),
+            total_cells=4,
+            state_counts={
+                CellState.COVERED: 1,
+                CellState.INCONCLUSIVE: 0,
+                CellState.FAILED: 0,
+                CellState.BLOCKED: 0,
+            },
+        )
+        assert summary.untested_cells(cells) == (cells[1], cells[2], cells[3])
+        assert summary.untested_cells(cells) == summary.unknown_cells(cells)

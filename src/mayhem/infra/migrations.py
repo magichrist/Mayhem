@@ -577,6 +577,32 @@ M0015_RUN_CONTROLLER_PID = Migration(
 )
 
 
+# ── M5: Five-state coverage model (feat-3 §4.2) ─────────────────────
+# Existing columns are preserved: ``covered`` stays 1 iff ``state='covered'``
+# so Maniac / report.py keep working. ``unknown`` is the absence of a row
+# and is never persisted.
+M0016_FIVE_STATE_COVERAGE = Migration(
+    version=16,
+    name="five_state_coverage",
+    statements=(
+        "ALTER TABLE m5_coverage ADD COLUMN state TEXT NOT NULL DEFAULT 'covered'",
+        "ALTER TABLE m5_coverage ADD COLUMN block_reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE m5_coverage ADD COLUMN scaffold_tier INTEGER",
+        "ALTER TABLE m5_coverage ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE m5_coverage ADD COLUMN verdict_json TEXT NOT NULL DEFAULT '{}'",
+        "CREATE INDEX idx_m5_coverage_state ON m5_coverage(state)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_m5_coverage_state",
+        "ALTER TABLE m5_coverage DROP COLUMN verdict_json",
+        "ALTER TABLE m5_coverage DROP COLUMN updated_at",
+        "ALTER TABLE m5_coverage DROP COLUMN scaffold_tier",
+        "ALTER TABLE m5_coverage DROP COLUMN block_reason",
+        "ALTER TABLE m5_coverage DROP COLUMN state",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -593,4 +619,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0013_M4_SUCCESS_OBSERVABILITY,
     M0014_M4_OBSERVABILITY_AND_DECISIONS,
     M0015_RUN_CONTROLLER_PID,
+    M0016_FIVE_STATE_COVERAGE,
 )

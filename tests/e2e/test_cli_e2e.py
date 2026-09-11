@@ -290,18 +290,20 @@ class TestExperimentGroup:
         rc = main(["experiment", "validate", "/no/such/file.yml", "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
-    def test_experiment_prefix_e_v(
+    def test_experiment_prefix_expe(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # `expe` is a unique prefix of `experiment` (since `explore` joined the tree).
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["e", "v", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["experim", "v", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
-    def test_experiment_prefix_ex_sh(
+    def test_experiment_prefix_expe_sh(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # `expe` is a unique prefix of `experiment` (since `explore` joined the tree).
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["ex", "sh", str(spec)])
+        rc = main(["experim", "sh", str(spec)])
         assert rc == 0
 
 
@@ -1041,7 +1043,7 @@ class TestPrefixResolution:
 
     def test_experiment_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["ex", "v", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["experim", "v", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:

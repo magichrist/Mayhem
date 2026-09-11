@@ -95,7 +95,9 @@ class TestCampaignRunCLI:
             ]
         )
         out = capsys.readouterr().out
-        assert rc == 0, out
+        # A campaign that ran but did not complete exits EXPERIMENT_FAILURE (6)
+        # per the campaign contract (campaign.py), not silent success.
+        assert rc == 6, out
         assert "finished with status failed" in out
         assert _status(db) == "aborted"
 

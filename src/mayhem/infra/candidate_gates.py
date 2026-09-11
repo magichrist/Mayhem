@@ -84,6 +84,13 @@ class ResourceConflictGate:
         return None
 
 
+class _PermissiveGate:
+    """A gate that passes every candidate (used when no gates are given)."""
+
+    def check(self, candidate: ExperimentCandidate) -> str | None:
+        return None
+
+
 class CandidateGatePipeline:
     """Composes the three gates; returns the first rejection, else acceptance."""
 
@@ -122,3 +129,16 @@ class CandidateGatePipeline:
         self, candidates: tuple[ExperimentCandidate, ...]
     ) -> tuple[CandidateDecision, ...]:
         return tuple(self.gate(c) for c in candidates)
+
+
+def permissive_pipeline() -> CandidateGatePipeline:
+    """Pipeline that passes every candidate.
+
+    Used as the default when a caller supplies no gates: runtime feasibility is
+    proven later by the plan/impact-gate pathway, not guessed up front.
+    """
+    return CandidateGatePipeline(
+        safety=_PermissiveGate(),
+        feasibility=_PermissiveGate(),
+        resource_conflict=_PermissiveGate(),
+    )

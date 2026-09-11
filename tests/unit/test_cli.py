@@ -53,7 +53,7 @@ class TestToolkitGroup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
-        assert main(["ex", "v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
+        assert main(["experiment", "v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
         assert "validated r-drill-pause-" in capsys.readouterr().out
 
 

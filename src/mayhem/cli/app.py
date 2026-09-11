@@ -20,6 +20,10 @@ from mayhem.cli.context import CliContext
 from mayhem.cli.dependency import dependency
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.experiment import experiment
+from mayhem.cli.explore import explore
+from mayhem.cli.coverage_cmd import coverage_cmd
+from mayhem.cli.expert import expert_cmd
+from mayhem.cli.next_cmd import next_cmd
 from mayhem.cli.lifecycle import history, janitor, maniac, plan, recover, run, status, validate
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
 from mayhem.cli.toolkit import toolkit
@@ -90,7 +94,7 @@ def app(
     )
 
 
-for _cmd in (validate, plan, run, maniac, status, history, recover, janitor, dependency):
+for _cmd in (validate, plan, run, maniac, status, history, recover, janitor, dependency, explore, next_cmd, coverage_cmd, expert_cmd):
     app.add_command(_cmd)
 for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)
@@ -104,8 +108,9 @@ def _fail(message: str, code: int) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch argv and map every failure mode onto a documented exit code."""
+    rv: int | None = None
     try:
-        app.main(
+        rv = app.main(
             args=list(argv) if argv is not None else sys.argv[1:],
             prog_name="mayhem",
             standalone_mode=False,
@@ -147,7 +152,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _STATE["debug"]:
             raise
         return _fail(f"{type(exc).__name__}: {exc}", int(ExitCode.GENERAL_FAILURE))
-    return int(ExitCode.SUCCESS)
+    # Click with ``standalone_mode=False`` returns the code from ``ctx.exit()``
+    # instead of raising; a clean return yields ``None``.
+    return int(ExitCode.SUCCESS) if rv is None else int(rv)
 
 
 if __name__ == "__main__":
