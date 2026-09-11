@@ -842,9 +842,7 @@ class TestSynthesizeCandidateSpec:
             execution_context="container",
         )
         spec = synthesize_candidate_spec(candidate, "testcase-api")
-        spec = spec.model_copy(
-            update={"execution": (ExecutionStep(parallel=("testcase-api",)),)}
-        )
+        spec = spec.model_copy(update={"execution": (ExecutionStep(parallel=("testcase-api",)),)})
         plan = plan_drill(
             "r-test",
             spec,

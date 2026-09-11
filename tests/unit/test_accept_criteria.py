@@ -36,8 +36,13 @@ def test_ac1_five_states_with_unknown_implied(tmp_path: Path) -> None:
     """AC1 - exactly five states; unknown = absent row."""
     store, coverage = _repo(tmp_path)
     states = set(CellState) | {None}  # None stands in for 'unknown'
-    assert set(states) == {CellState.COVERED, CellState.INCONCLUSIVE,
-                           CellState.FAILED, CellState.BLOCKED, None}
+    assert set(states) == {
+        CellState.COVERED,
+        CellState.INCONCLUSIVE,
+        CellState.FAILED,
+        CellState.BLOCKED,
+        None,
+    }
 
     coverage.record(_LANDSCAPE[0], CellState.COVERED, run_id="r1")
     coverage.record_blocked(_LANDSCAPE[1], reason="runtime lacks net.delay")

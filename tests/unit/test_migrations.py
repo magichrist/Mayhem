@@ -210,6 +210,7 @@ def test_m0015_run_controller_pid_forwards(tmp_path: Path) -> None:
     assert store.query("PRAGMA foreign_key_check") == []
     store.close()
 
+
 def test_m0016_five_state_coverage_forwards(tmp_path: Path) -> None:
     """0016 adds the five-state columns to m5_coverage with legacy defaults."""
     store = Store.open_migrated(tmp_path / "tg.db", migrations=ALL_MIGRATIONS[:15])

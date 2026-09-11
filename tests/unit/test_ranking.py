@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from mayhem.domain.coverage import CellState, CoverageCell
 from mayhem.domain.risks import RiskLevel
-from mayhem.infra.ranking import W_CRIT, W_DIV, W_INFO, W_RECALL, RankedCell, RankInputs, rank, score
+from mayhem.infra.ranking import (
+    W_CRIT,
+    W_DIV,
+    W_INFO,
+    W_RECALL,
+    RankedCell,
+    RankInputs,
+    rank,
+    score,
+)
 
 _CELLS = tuple(
     CoverageCell(

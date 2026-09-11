@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import click
 
@@ -27,16 +26,13 @@ from mayhem.domain.coverage import CellState, CoverageCell
 from mayhem.domain.topology import TopologyGraph
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
-if TYPE_CHECKING:
-    pass
-
 # §3.3.1 state character map (for matrix rendering).
 _STATE_CHAR: dict[str | None, str] = {
-    None: "\u00b7",       # unknown: ·
-    CellState.COVERED: "\u2588",      # covered: █
-    CellState.INCONCLUSIVE: "~",     # inconclusive: ~
-    CellState.FAILED: "!",           # failed: !
-    CellState.BLOCKED: "#",          # blocked: #
+    None: "\u00b7",  # unknown: ·
+    CellState.COVERED: "\u2588",  # covered: █
+    CellState.INCONCLUSIVE: "~",  # inconclusive: ~
+    CellState.FAILED: "!",  # failed: !
+    CellState.BLOCKED: "#",  # blocked: #
 }
 
 _STATE_LABEL: dict[str | None, str] = {
@@ -121,6 +117,7 @@ def _render_summary(
         filtered = tuple(c for c in filtered if fault_filter.lower() in c.fault_kind.lower())
     if fault_category_filter:
         from mayhem.domain.faults import FaultCategory
+
         matching = set()
         for c in filtered:
             try:
@@ -132,7 +129,13 @@ def _render_summary(
         filtered = tuple(c for c in filtered if c.key in matching)
 
     # Count states
-    counts: dict[str, int] = {"unknown": 0, "covered": 0, "inconclusive": 0, "failed": 0, "blocked": 0}
+    counts: dict[str, int] = {
+        "unknown": 0,
+        "covered": 0,
+        "inconclusive": 0,
+        "failed": 0,
+        "blocked": 0,
+    }
     for cell in filtered:
         st = state_map.get(cell.key)
         if st is None:
@@ -163,7 +166,12 @@ def _render_summary(
         for target in targets:
             target_cells = [c for c in filtered if c.target == target]
             # Pick the "worst" state per cell (blocked > failed > inconclusive > covered)
-            worst_order = [CellState.BLOCKED, CellState.FAILED, CellState.INCONCLUSIVE, CellState.COVERED]
+            worst_order = [
+                CellState.BLOCKED,
+                CellState.FAILED,
+                CellState.INCONCLUSIVE,
+                CellState.COVERED,
+            ]
             symbols: list[str] = []
             for cell in target_cells:
                 st = state_map.get(cell.key)
@@ -191,6 +199,7 @@ def _render_json(
         filtered = tuple(c for c in filtered if fault_filter.lower() in c.fault_kind.lower())
     if fault_category_filter:
         from mayhem.domain.faults import FaultCategory
+
         matching = set()
         for c in filtered:
             try:
@@ -201,20 +210,28 @@ def _render_json(
                 pass
         filtered = tuple(c for c in filtered if c.key in matching)
 
-    counts: dict[str, int] = {"unknown": 0, "covered": 0, "inconclusive": 0, "failed": 0, "blocked": 0}
+    counts: dict[str, int] = {
+        "unknown": 0,
+        "covered": 0,
+        "inconclusive": 0,
+        "failed": 0,
+        "blocked": 0,
+    }
     cells_list: list[dict[str, object]] = []
     for cell in filtered:
         st = state_map.get(cell.key)
         label = _STATE_LABEL.get(st, "unknown")
         counts[label] += 1
-        cells_list.append({
-            "cell_key": cell.key,
-            "target": cell.target,
-            "fault_kind": cell.fault_kind,
-            "execution_context": cell.execution_context,
-            "parameter_band": cell.parameter_band,
-            "state": label,
-        })
+        cells_list.append(
+            {
+                "cell_key": cell.key,
+                "target": cell.target,
+                "fault_kind": cell.fault_kind,
+                "execution_context": cell.execution_context,
+                "parameter_band": cell.parameter_band,
+                "state": label,
+            }
+        )
 
     total = len(filtered)
     testable = total - counts.get("blocked", 0)
@@ -237,7 +254,9 @@ def _render_json(
 @click.command("coverage")
 @_compose_option
 @click.argument("spec", required=False, type=click.Path(exists=True))
-@click.option("--service", default=None, help="Filter to a specific service name (substring match).")
+@click.option(
+    "--service", default=None, help="Filter to a specific service name (substring match)."
+)
 @click.option("--fault", default=None, help="Filter to a specific fault kind (substring match).")
 @click.option("--fault-category", default=None, help="Filter to an entire fault category.")
 @click.option(
@@ -299,6 +318,8 @@ def coverage_cmd(
     if as_json:
         click.echo(_render_json(landscape, state_map, service, fault, fault_category, state_filter))
     elif not quiet:
-        click.echo(_render_summary(landscape, state_map, service, fault, fault_category, state_filter))
+        click.echo(
+            _render_summary(landscape, state_map, service, fault, fault_category, state_filter)
+        )
 
     ctx.exit(int(ExitCode.SUCCESS))

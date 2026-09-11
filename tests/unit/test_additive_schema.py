@@ -26,38 +26,42 @@ VERSION_SNAPSHOT: tuple[int, ...] = tuple(sorted(m.version for m in ALL_MIGRATIO
 NAME_SNAPSHOT: tuple[str, ...] = tuple(m.name for m in ALL_MIGRATIONS)
 
 # Columns 0.6 reads from these two tables (m5_coverage / m5_runs).
-M5_COVERAGE_COLUMNS_SNAPSHOT: frozenset[str] = frozenset({
-    "cell_key",
-    "target",
-    "fault_kind",
-    "execution_context",
-    "parameter_band",
-    "run_id",
-    "covered",
-    "extra_json",
-    "state",
-    "block_reason",
-    "scaffold_tier",
-    "updated_at",
-    "verdict_json",
-})
+M5_COVERAGE_COLUMNS_SNAPSHOT: frozenset[str] = frozenset(
+    {
+        "cell_key",
+        "target",
+        "fault_kind",
+        "execution_context",
+        "parameter_band",
+        "run_id",
+        "covered",
+        "extra_json",
+        "state",
+        "block_reason",
+        "scaffold_tier",
+        "updated_at",
+        "verdict_json",
+    }
+)
 
-M5_RUNS_COLUMNS_SNAPSHOT: frozenset[str] = frozenset({
-    "id",
-    "experiment_name",
-    "spec_json",
-    "plan_json",
-    "seed",
-    "status",
-    "environment_fingerprint",
-    "config_snapshot_id",
-    "started_at",
-    "ended_at",
-    "description",
-    "verdict",
-    "tags_json",
-    "extra_json",
-})
+M5_RUNS_COLUMNS_SNAPSHOT: frozenset[str] = frozenset(
+    {
+        "id",
+        "experiment_name",
+        "spec_json",
+        "plan_json",
+        "seed",
+        "status",
+        "environment_fingerprint",
+        "config_snapshot_id",
+        "started_at",
+        "ended_at",
+        "description",
+        "verdict",
+        "tags_json",
+        "extra_json",
+    }
+)
 
 
 def _migrated_schema() -> dict[str, frozenset[str]]:
@@ -75,7 +79,7 @@ def _migrated_schema() -> dict[str, frozenset[str]]:
 
 
 def test_migration_versions_are_contiguous_ascending() -> None:
-    assert VERSION_SNAPSHOT == tuple(range(1, len(VERSION_SNAPSHOT) + 1)), (
+    assert tuple(range(1, len(VERSION_SNAPSHOT) + 1)) == VERSION_SNAPSHOT, (
         "migration versions must start at 1 and be contiguous; a removal or "
         "reorder breaks the additive contract."
     )
@@ -96,7 +100,7 @@ def test_every_new_migration_has_down_statements() -> None:
 def test_migrated_schema_keeps_m5_coverage_columns() -> None:
     schema = _migrated_schema()
     assert "m5_coverage" in schema, "m5_coverage table is gone"
-    assert M5_COVERAGE_COLUMNS_SNAPSHOT <= schema["m5_coverage"], (
+    assert schema["m5_coverage"] >= M5_COVERAGE_COLUMNS_SNAPSHOT, (
         "m5_coverage lost 0.6-needed columns: "
         f"{sorted(M5_COVERAGE_COLUMNS_SNAPSHOT - schema['m5_coverage'])}"
     )
@@ -105,9 +109,8 @@ def test_migrated_schema_keeps_m5_coverage_columns() -> None:
 def test_migrated_schema_keeps_m5_runs_columns() -> None:
     schema = _migrated_schema()
     assert "m5_runs" in schema, "m5_runs table is gone"
-    assert M5_RUNS_COLUMNS_SNAPSHOT <= schema["m5_runs"], (
-        "m5_runs lost 0.6-needed columns: "
-        f"{sorted(M5_RUNS_COLUMNS_SNAPSHOT - schema['m5_runs'])}"
+    assert schema["m5_runs"] >= M5_RUNS_COLUMNS_SNAPSHOT, (
+        f"m5_runs lost 0.6-needed columns: {sorted(M5_RUNS_COLUMNS_SNAPSHOT - schema['m5_runs'])}"
     )
 
 

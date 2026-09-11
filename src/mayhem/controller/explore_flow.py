@@ -14,18 +14,18 @@ Key seams:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mayhem.controller.cell_runner import CellRunResult
 from mayhem.domain.candidates import CandidateDecision, ExperimentCandidate
 from mayhem.domain.coverage import CoverageCell
 from mayhem.infra.candidate_generator import CandidateLandscape, SeededCandidateGenerator
-from mayhem.infra.cell_runner import CellRunResult
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.maniac import coverage_cell_for_candidate
 
 if TYPE_CHECKING:
-    from mayhem.infra.cell_runner import CellRunner
+    from mayhem.controller.cell_runner import CellRunner
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,9 @@ def dry_run(
     from mayhem.infra.maniac import coverage_cell_for_candidate
 
     queue = build_queue(landscape, seed=seed, covered_keys=covered_keys)
-    gates = gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
+    gates = (
+        gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
+    )
 
     entries: list[ExploreQueueEntry] = []
     rejected = 0
@@ -176,7 +178,9 @@ def run_explore(
 
     covered_keys = coverage.covered_keys()
     queue = build_queue(landscape, seed=seed, covered_keys=covered_keys)
-    gates = gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
+    gates = (
+        gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
+    )
 
     executed: list[CellRunResult] = []
     blocked: list[CellRunResult] = []

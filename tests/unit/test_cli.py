@@ -14,6 +14,7 @@ COMPOSE_FILE = TESTCASE / "docker-compose.yml"
 
 DRILL_YAML = """\
 kind: drill
+apiVersion: "mayhem/v1"
 name: drill-pause
 hypothesis: brief process pause is survivable
 config:

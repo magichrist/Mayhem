@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 import click
 
@@ -52,11 +52,13 @@ def _probe_compose(compose_path: str | None) -> dict[str, Any]:
         path = Path(compose_path)
         if not path.exists():
             result["status"] = "error"
-            result["checks"].append({
-                "name": "compose_file_exists",
-                "status": "error",
-                "detail": f"file not found: {compose_path}",
-            })
+            result["checks"].append(
+                {
+                    "name": "compose_file_exists",
+                    "status": "error",
+                    "detail": f"file not found: {compose_path}",
+                }
+            )
             return result
         try:
             import yaml
@@ -65,30 +67,38 @@ def _probe_compose(compose_path: str | None) -> dict[str, Any]:
                 data = yaml.safe_load(f)
             if not isinstance(data, dict):
                 result["status"] = "error"
-                result["checks"].append({
-                    "name": "compose_file_valid",
-                    "status": "error",
-                    "detail": "not a valid YAML mapping",
-                })
+                result["checks"].append(
+                    {
+                        "name": "compose_file_valid",
+                        "status": "error",
+                        "detail": "not a valid YAML mapping",
+                    }
+                )
                 return result
-            result["checks"].append({
-                "name": "compose_file_valid",
-                "status": "ok",
-                "detail": f"parsed successfully, {len(data.get('services', {}))} services",
-            })
+            result["checks"].append(
+                {
+                    "name": "compose_file_valid",
+                    "status": "ok",
+                    "detail": f"parsed successfully, {len(data.get('services', {}))} services",
+                }
+            )
         except Exception as exc:
             result["status"] = "error"
-            result["checks"].append({
-                "name": "compose_file_valid",
-                "status": "error",
-                "detail": str(exc),
-            })
+            result["checks"].append(
+                {
+                    "name": "compose_file_valid",
+                    "status": "error",
+                    "detail": str(exc),
+                }
+            )
     else:
-        result["checks"].append({
-            "name": "compose_file_provided",
-            "status": "warning",
-            "detail": "no compose file specified, using auto-detection",
-        })
+        result["checks"].append(
+            {
+                "name": "compose_file_provided",
+                "status": "warning",
+                "detail": "no compose file specified, using auto-detection",
+            }
+        )
 
     return result
 
@@ -103,11 +113,13 @@ def _probe_config(config_path: str | None, profile: str | None) -> dict[str, Any
         path = Path(config_path)
         if not path.exists():
             result["status"] = "error"
-            result["checks"].append({
-                "name": "config_file_exists",
-                "status": "error",
-                "detail": f"file not found: {config_path}",
-            })
+            result["checks"].append(
+                {
+                    "name": "config_file_exists",
+                    "status": "error",
+                    "detail": f"file not found: {config_path}",
+                }
+            )
             return result
         try:
             import warnings as _warnings
@@ -122,39 +134,49 @@ def _probe_config(config_path: str | None, profile: str | None) -> dict[str, Any
             )
             if spec_warning is not None:
                 result["status"] = "warning"
-                result["checks"].append({
-                    "name": "config_valid",
-                    "status": "warning",
-                    "detail": str(spec_warning.message),
-                })
+                result["checks"].append(
+                    {
+                        "name": "config_valid",
+                        "status": "warning",
+                        "detail": str(spec_warning.message),
+                    }
+                )
             elif any(source == "file(spec)" for source in sources.values()):
-                result["checks"].append({
-                    "name": "config_valid",
-                    "status": "ok",
-                    "detail": (
-                        "configuration loaded from the drill spec's embedded "
-                        "`config:` section (mayhem.yaml doubles as the config file)"
-                    ),
-                })
+                result["checks"].append(
+                    {
+                        "name": "config_valid",
+                        "status": "ok",
+                        "detail": (
+                            "configuration loaded from the drill spec's embedded "
+                            "`config:` section (mayhem.yaml doubles as the config file)"
+                        ),
+                    }
+                )
             else:
-                result["checks"].append({
-                    "name": "config_valid",
-                    "status": "ok",
-                    "detail": "configuration loaded and validated successfully",
-                })
+                result["checks"].append(
+                    {
+                        "name": "config_valid",
+                        "status": "ok",
+                        "detail": "configuration loaded and validated successfully",
+                    }
+                )
         except Exception as exc:
             result["status"] = "error"
-            result["checks"].append({
-                "name": "config_valid",
-                "status": "error",
-                "detail": str(exc),
-            })
+            result["checks"].append(
+                {
+                    "name": "config_valid",
+                    "status": "error",
+                    "detail": str(exc),
+                }
+            )
     else:
-        result["checks"].append({
-            "name": "config_provided",
-            "status": "warning",
-            "detail": "no config file specified, using defaults",
-        })
+        result["checks"].append(
+            {
+                "name": "config_provided",
+                "status": "warning",
+                "detail": "no config file specified, using defaults",
+            }
+        )
 
     return result
 
@@ -178,29 +200,37 @@ def _probe_docker() -> dict[str, Any]:
                 )
                 if proc.returncode == 0:
                     version = proc.stdout.strip()
-                    result["checks"].append({
-                        "name": f"{cmd}_available",
-                        "status": "ok",
-                        "detail": f"{cmd} {version} available at {path}",
-                    })
+                    result["checks"].append(
+                        {
+                            "name": f"{cmd}_available",
+                            "status": "ok",
+                            "detail": f"{cmd} {version} available at {path}",
+                        }
+                    )
                 else:
-                    result["checks"].append({
+                    result["checks"].append(
+                        {
+                            "name": f"{cmd}_available",
+                            "status": "warning",
+                            "detail": f"{cmd} found but not running: {proc.stderr.strip()[:100]}",
+                        }
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                result["checks"].append(
+                    {
                         "name": f"{cmd}_available",
                         "status": "warning",
-                        "detail": f"{cmd} found but not running: {proc.stderr.strip()[:100]}",
-                    })
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                result["checks"].append({
-                    "name": f"{cmd}_available",
-                    "status": "warning",
-                    "detail": f"{cmd} found but unresponsive",
-                })
+                        "detail": f"{cmd} found but unresponsive",
+                    }
+                )
         else:
-            result["checks"].append({
-                "name": f"{cmd}_available",
-                "status": "info",
-                "detail": f"{cmd} not found in PATH",
-            })
+            result["checks"].append(
+                {
+                    "name": f"{cmd}_available",
+                    "status": "info",
+                    "detail": f"{cmd} not found in PATH",
+                }
+            )
 
     if not any(c["status"] == "ok" for c in result["checks"]):
         result["status"] = "error"
@@ -225,18 +255,22 @@ def _analyze_recent_failures(
         )
 
         if not rows:
-            result["checks"].append({
-                "name": "recent_failures",
-                "status": "ok",
-                "detail": "no recent failures found",
-            })
+            result["checks"].append(
+                {
+                    "name": "recent_failures",
+                    "status": "ok",
+                    "detail": "no recent failures found",
+                }
+            )
             return result
 
-        result["checks"].append({
-            "name": "recent_failures",
-            "status": "warning",
-            "detail": f"found {len(rows)} recent failures",
-        })
+        result["checks"].append(
+            {
+                "name": "recent_failures",
+                "status": "warning",
+                "detail": f"found {len(rows)} recent failures",
+            }
+        )
 
         for row in rows:
             failure_info: dict[str, Any] = {
@@ -307,16 +341,21 @@ def _render_expert_human(
         ("Docker", docker_probe),
     ]:
         status_char = (
-            style.ok("✓") if probe["status"] == "ok"
-            else style.warn("⚠") if probe["status"] == "warning"
+            style.ok("✓")
+            if probe["status"] == "ok"
+            else style.warn("⚠")
+            if probe["status"] == "warning"
             else style.danger("✗")
         )
         lines.append(f"\n### {name} [{status_char}]")
         for check in probe.get("checks", []):
             check_status = (
-                style.ok("ok") if check["status"] == "ok"
-                else style.warn("warn") if check["status"] == "warning"
-                else style.danger("error") if check["status"] == "error"
+                style.ok("ok")
+                if check["status"] == "ok"
+                else style.warn("warn")
+                if check["status"] == "warning"
+                else style.danger("error")
+                if check["status"] == "error"
                 else style.info("info")
             )
             lines.append(f"  - [{check_status}] {check['name']}: {check['detail']}")
@@ -332,29 +371,19 @@ def _render_expert_human(
             if failure.get("failed_cells"):
                 lines.append("  - failed cells:")
                 for cell in failure["failed_cells"]:
-                    lines.append(
-                        f"    - {cell['target']}/{cell['fault_kind']} ({cell['state']})"
-                    )
+                    lines.append(f"    - {cell['target']}/{cell['fault_kind']} ({cell['state']})")
 
     # Recommendations
     lines.append("\n## Recommendations")
-    has_errors = any(
-        p["status"] == "error"
-        for p in [compose_probe, config_probe, docker_probe]
-    )
+    has_errors = any(p["status"] == "error" for p in [compose_probe, config_probe, docker_probe])
     has_warnings = any(
-        p["status"] == "warning"
-        for p in [compose_probe, config_probe, docker_probe]
+        p["status"] == "warning" for p in [compose_probe, config_probe, docker_probe]
     )
 
     if has_errors:
-        lines.append(
-            f"  - {style.danger('Fix the errors above before running experiments')}"
-        )
+        lines.append(f"  - {style.danger('Fix the errors above before running experiments')}")
     if has_warnings:
-        lines.append(
-            f"  - {style.warn('Review warnings — some checks did not pass')}"
-        )
+        lines.append(f"  - {style.warn('Review warnings — some checks did not pass')}")
     if failures.get("failures"):
         lines.append(
             f"  - {style.info('Consider running `mayhem next` to find the best next cell')}"
@@ -416,11 +445,13 @@ def expert_cmd(
                     }
                 ]
             else:
-                failures["checks"].append({
-                    "name": "run_exists",
-                    "status": "error",
-                    "detail": f"run not found: {run_id}",
-                })
+                failures["checks"].append(
+                    {
+                        "name": "run_exists",
+                        "status": "error",
+                        "detail": f"run not found: {run_id}",
+                    }
+                )
                 compose_probe["status"] = "error"
         finally:
             store.close()
@@ -430,9 +461,7 @@ def expert_cmd(
     if as_json:
         click.echo(_render_expert_json(compose_probe, config_probe, docker_probe, failures))
     elif not quiet:
-        click.echo(
-            _render_expert_human(compose_probe, config_probe, docker_probe, failures)
-        )
+        click.echo(_render_expert_human(compose_probe, config_probe, docker_probe, failures))
 
     # Exit with error if any probe failed
     overall_status = "ok"

@@ -17,14 +17,14 @@ from mayhem.cli import style
 from mayhem.cli.campaign import campaign
 from mayhem.cli.config_cmd import config
 from mayhem.cli.context import CliContext
+from mayhem.cli.coverage_cmd import coverage_cmd
 from mayhem.cli.dependency import dependency
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.experiment import experiment
-from mayhem.cli.explore import explore
-from mayhem.cli.coverage_cmd import coverage_cmd
 from mayhem.cli.expert import expert_cmd
-from mayhem.cli.next_cmd import next_cmd
+from mayhem.cli.explore import explore
 from mayhem.cli.lifecycle import history, janitor, maniac, plan, recover, run, status, validate
+from mayhem.cli.next_cmd import next_cmd
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
 from mayhem.cli.toolkit import toolkit
 from mayhem.cli.topology import topology
@@ -94,7 +94,21 @@ def app(
     )
 
 
-for _cmd in (validate, plan, run, maniac, status, history, recover, janitor, dependency, explore, next_cmd, coverage_cmd, expert_cmd):
+for _cmd in (
+    validate,
+    plan,
+    run,
+    maniac,
+    status,
+    history,
+    recover,
+    janitor,
+    dependency,
+    explore,
+    next_cmd,
+    coverage_cmd,
+    expert_cmd,
+):
     app.add_command(_cmd)
 for _group in (experiment, topology, toolkit, config, campaign):
     app.add_command(_group)

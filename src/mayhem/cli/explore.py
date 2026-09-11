@@ -13,7 +13,6 @@ Shape::
 from __future__ import annotations
 
 import json
-import sys
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -24,26 +23,22 @@ from mayhem.cli import style
 from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import (
-    Prepared,
     build_graph,
-    engine_for,
     open_store,
-    plan_from_spec,
     prepare,
 )
-from mayhem.domain.candidates import ExperimentCandidate
+from mayhem.controller.cell_runner import CellRunner
 from mayhem.domain.coverage import CellState
 from mayhem.domain.topology import TopologyGraph
-from mayhem.infra.cell_runner import CellRunner
 from mayhem.infra.candidate_generator import CandidateLandscape
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
 if TYPE_CHECKING:
+    from mayhem.controller.explore_flow import ExploreDryRun, ExploreRun
     from mayhem.infra.candidate_gates import CandidateGatePipeline
-    from mayhem.infra.explore_flow import ExploreDryRun, ExploreRun, ExploreSummary
 
 
-def _runtime_gate_pipeline(allow_critical: bool = False) -> "CandidateGatePipeline":
+def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipeline:
     """Build a gate pipeline from probe-hold runtime facts.
 
     Feasibility mirrors ``synthesize_maniac_spec``: faults that require the
@@ -101,7 +96,7 @@ def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph,
 
 def _build_landscape(
     graph: TopologyGraph,
-) -> "CandidateLandscape":
+) -> CandidateLandscape:
     """Build a CandidateLandscape from the live topology graph (§3.1.1)."""
     from mayhem.domain.catalog import all_definitions
     from mayhem.infra.candidate_generator import CandidateLandscape
@@ -130,7 +125,7 @@ def _format_state_char(state: CellState | None) -> str:
     }.get(state, "?")
 
 
-def _render_dry_run(dry: "ExploreDryRun", *, json_mode: bool = False) -> str:
+def _render_dry_run(dry: ExploreDryRun, *, json_mode: bool = False) -> str:
     """Render the dry-run ranked queue (§3.1.8)."""
     if json_mode:
         return json.dumps(
@@ -149,7 +144,9 @@ def _render_dry_run(dry: "ExploreDryRun", *, json_mode: bool = False) -> str:
                             e.gate_decision.status.value if e.gate_decision else "accepted"
                         ),
                         "gate_reason": (
-                            e.gate_decision.reason if e.gate_decision and e.gate_decision.rejected else ""
+                            e.gate_decision.reason
+                            if e.gate_decision and e.gate_decision.rejected
+                            else ""
                         ),
                     }
                     for e in dry.entries
@@ -184,7 +181,7 @@ def _render_dry_run(dry: "ExploreDryRun", *, json_mode: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _render_run(run: "ExploreRun", *, json_mode: bool = False) -> str:
+def _render_run(run: ExploreRun, *, json_mode: bool = False) -> str:
     """Render the live run results (§3.1.9 status + §3.1.10 failure lines)."""
     if json_mode:
         return json.dumps(
@@ -212,16 +209,10 @@ def _render_run(run: "ExploreRun", *, json_mode: bool = False) -> str:
     lines: list[str] = []
     # §3.1.9 status block
     lines.append(style.cyan("explore session"))
-    lines.append(
-        f"  budget: {run.budget_used}/{run.budget_limit} executed"
-    )
-    lines.append(
-        f"  blocked: {len(run.blocked)}  denied: {len(run.denied)}"
-    )
+    lines.append(f"  budget: {run.budget_used}/{run.budget_limit} executed")
+    lines.append(f"  blocked: {len(run.blocked)}  denied: {len(run.denied)}")
     if run.stopped_early:
-        lines.append(
-            style.danger("  STOPPED EARLY:") + f" {run.stop_reason}"
-        )
+        lines.append(style.danger("  STOPPED EARLY:") + f" {run.stop_reason}")
     lines.append("")
 
     # Cell outcomes
@@ -242,7 +233,7 @@ def _render_run(run: "ExploreRun", *, json_mode: bool = False) -> str:
         lines.append(
             f"  {_format_state_char(CellState.BLOCKED)} {r.cell.target} / {r.cell.fault_kind} → {style.yellow('blocked')}"
         )
-        lines.append(f"    reason: (see gate output)")
+        lines.append("    reason: (see gate output)")
 
     return "\n".join(lines)
 
@@ -251,9 +242,15 @@ def _render_run(run: "ExploreRun", *, json_mode: bool = False) -> str:
 @_compose_option
 @click.option("--budget", type=int, default=10, help="Max cells to execute (default: 10).")
 @click.option("--deadline", type=str, default=None, help="Session deadline (e.g. '30m', '1h').")
-@click.option("--seed", type=int, default=0, help="RNG seed for deterministic generation (default: 0).")
-@click.option("--supervised", is_flag=True, default=False, help="Require user approval for each cell.")
-@click.option("--dry-run", is_flag=True, default=False, help="Print ranked queue without executing.")
+@click.option(
+    "--seed", type=int, default=0, help="RNG seed for deterministic generation (default: 0)."
+)
+@click.option(
+    "--supervised", is_flag=True, default=False, help="Require user approval for each cell."
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Print ranked queue without executing."
+)
 @click.option("--allow-critical", is_flag=True, default=False, help="Allow critical-risk faults.")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Output as JSON.")
 @click.option("--quiet", is_flag=True, default=False, help="Minimal output.")
@@ -293,6 +290,7 @@ def explore(
     """
     if no_color:
         import os
+
         os.environ["NO_COLOR"] = "1"
 
     graph, resolved_compose = _graph_from(ctx, compose)
@@ -305,6 +303,7 @@ def explore(
     deadline_epoch: float | None = None
     if deadline:
         from mayhem.domain.common import parse_duration
+
         deadline_s = parse_duration(deadline)
         deadline_epoch = time.time() + deadline_s
 
@@ -312,7 +311,8 @@ def explore(
     landscape = _build_landscape(graph)
 
     if dry_run:
-        from mayhem.infra.explore_flow import dry_run as explore_dry_run
+        from mayhem.controller.explore_flow import dry_run as explore_dry_run
+
         gates = _runtime_gate_pipeline(allow_critical=allow_critical)
         result = explore_dry_run(
             landscape,
@@ -353,7 +353,8 @@ def explore(
         live_graph=lambda: build_graph(resolved_compose),
     )
 
-    from mayhem.infra.explore_flow import run_explore
+    from mayhem.controller.explore_flow import run_explore
+
     result = run_explore(
         landscape,
         runner=runner,

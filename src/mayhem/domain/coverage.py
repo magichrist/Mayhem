@@ -85,9 +85,7 @@ class CellState(StrEnum):
     BLOCKED = "blocked"
 
 
-_TESTED_STATES = frozenset(
-    {CellState.COVERED, CellState.INCONCLUSIVE, CellState.FAILED}
-)
+_TESTED_STATES = frozenset({CellState.COVERED, CellState.INCONCLUSIVE, CellState.FAILED})
 
 
 def transition(current: CellState | None, new: CellState) -> CellState:
@@ -163,9 +161,7 @@ class CoverageSummary:
 
     @property
     def _noncovered_tested_count(self) -> int:
-        return sum(
-            count for s, count in self.state_counts.items() if s is not CellState.COVERED
-        )
+        return sum(count for s, count in self.state_counts.items() if s is not CellState.COVERED)
 
     @property
     def unknown_count(self) -> int:

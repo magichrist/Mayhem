@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import click
 
@@ -49,14 +48,14 @@ def _graph_from(ctx: click.Context, compose: str | None) -> TopologyGraph:
         raise click.UsageError(str(exc), ctx=ctx) from None
 
 
-def _landscape_cells(graph: TopologyGraph, seed: int = 0) -> tuple[tuple[CoverageCell, ...], dict[str, float], dict[str, RiskLevel]]:
+def _landscape_cells(
+    graph: TopologyGraph, seed: int = 0
+) -> tuple[tuple[CoverageCell, ...], dict[str, float], dict[str, RiskLevel]]:
     """Build a CoverageCell landscape from a topology graph.
 
     Returns (cells, criticality_map, risk_map).
     """
     from mayhem.domain.catalog import CATALOG
-    from mayhem.domain.faults import FaultCategory
-    from mayhem.domain.risks import RiskLevel
     from mayhem.infra.candidate_generator import CandidateLandscape, SeededCandidateGenerator
     from mayhem.infra.maniac import coverage_cell_for_candidate
 
@@ -80,7 +79,7 @@ def _landscape_cells(graph: TopologyGraph, seed: int = 0) -> tuple[tuple[Coverag
             cells.append(cell)
 
     # Criticality map: flat 0.5 per §7.2
-    criticality_map: dict[str, float] = {t: 0.5 for t in targets}
+    criticality_map: dict[str, float] = dict.fromkeys(targets, 0.5)
 
     # Risk map from catalog
     risk_map: dict[str, RiskLevel] = {}
@@ -94,8 +93,12 @@ def _landscape_cells(graph: TopologyGraph, seed: int = 0) -> tuple[tuple[Coverag
 @_compose_option
 @click.argument("spec", required=False, type=click.Path(exists=True))
 @click.option("--limit", type=int, default=5, help="Max suggestions to return (default: 5).")
-@click.option("--seed", type=int, default=0, help="RNG seed for deterministic generation (default: 0).")
-@click.option("--explain", is_flag=True, default=False, help="Print scoring rationale per suggestion.")
+@click.option(
+    "--seed", type=int, default=0, help="RNG seed for deterministic generation (default: 0)."
+)
+@click.option(
+    "--explain", is_flag=True, default=False, help="Print scoring rationale per suggestion."
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress human output.")
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored output.")
@@ -140,6 +143,7 @@ def next_cmd(
 
     # Division map: count covered cells per fault category
     from collections import Counter
+
     from mayhem.domain.faults import FaultCategory
 
     division_counter: Counter[str] = Counter()
@@ -189,7 +193,10 @@ def next_cmd(
         if not suggestions:
             click.echo("no untested cells remain — the landscape is fully covered.")
         else:
-            click.echo(style.cyan("suggested next cells") + f" (top {len(suggestions)} of {len(ranked)} untested)")
+            click.echo(
+                style.cyan("suggested next cells")
+                + f" (top {len(suggestions)} of {len(ranked)} untested)"
+            )
             click.echo()
             for i, rc in enumerate(suggestions, 1):
                 click.echo(

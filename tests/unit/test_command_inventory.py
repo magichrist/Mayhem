@@ -20,65 +20,71 @@ from mayhem.cli.exit_codes import ExitCode
 
 # Canonical 0.6 surface — 14 pre-existing + explore/next/coverage (feat-2),
 # plus the ``cfg`` alias for ``config``. Removal or addition fails.
-ALLOWLIST_COMMANDS: frozenset[str] = frozenset({
-    "campaign",
-    "config",
-    "cfg",
-    "dependency",
-    "experiment",
-    "history",
-    "janitor",
-    "maniac",
-    "plan",
-    "recover",
-    "run",
-    "status",
-    "toolkit",
-    "topology",
-    "validate",
-    # feat-2 §3 new surface
-    "explore",
-    "next",
-    "coverage",
-})
+ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
+    {
+        "campaign",
+        "config",
+        "cfg",
+        "dependency",
+        "experiment",
+        "history",
+        "janitor",
+        "maniac",
+        "plan",
+        "recover",
+        "run",
+        "status",
+        "toolkit",
+        "topology",
+        "validate",
+        # feat-2 §3 new surface
+        "explore",
+        "next",
+        "coverage",
+    }
+)
 
 # Allowlist with cfg de-duplicated (alias).
-ALLOWLIST_TOP_LEVEL: frozenset[str] = frozenset({
-    "campaign",
-    "cfg",
-    "config",
-    "dependency",
-    "experiment",
-    "expert",
-    "history",
-    "janitor",
-    "maniac",
-    "plan",
-    "recover",
-    "run",
-    "status",
-    "toolkit",
-    "topology",
-    "validate",
-    "explore",
-    "next",
-    "coverage",
-})
+ALLOWLIST_TOP_LEVEL: frozenset[str] = frozenset(
+    {
+        "campaign",
+        "cfg",
+        "config",
+        "dependency",
+        "experiment",
+        "expert",
+        "history",
+        "janitor",
+        "maniac",
+        "plan",
+        "recover",
+        "run",
+        "status",
+        "toolkit",
+        "topology",
+        "validate",
+        "explore",
+        "next",
+        "coverage",
+    }
+)
 
 # Canonical ExitCode snapshot — no member may be renamed or removed.
-ALLOWLIST_EXIT_CODES: frozenset[str] = frozenset({
-    "SUCCESS",
-    "GENERAL_FAILURE",
-    "USAGE_ERROR",
-    "CONFIG_ERROR",
-    "VALIDATION_ERROR",
-    "SAFETY_REFUSAL",
-    "EXPERIMENT_FAILURE",
-    "RECOVERY_FAILURE",
-    "AGENT_ERROR",
-    "TOOLKIT_ERROR",
-    "AMBIGUOUS_COMMAND",
-})
+ALLOWLIST_EXIT_CODES: frozenset[str] = frozenset(
+    {
+        "SUCCESS",
+        "GENERAL_FAILURE",
+        "USAGE_ERROR",
+        "CONFIG_ERROR",
+        "VALIDATION_ERROR",
+        "SAFETY_REFUSAL",
+        "EXPERIMENT_FAILURE",
+        "RECOVERY_FAILURE",
+        "AGENT_ERROR",
+        "TOOLKIT_ERROR",
+        "AMBIGUOUS_COMMAND",
+    }
+)
 
 
 def test_top_level_commands_match_allowlist() -> None:
@@ -93,7 +99,7 @@ def test_top_level_commands_match_allowlist() -> None:
 
 def test_no_exit_code_renamed_or_removed() -> None:
     actual_names = frozenset(ExitCode.__members__.keys())
-    assert ALLOWLIST_EXIT_CODES <= actual_names, (
+    assert actual_names >= ALLOWLIST_EXIT_CODES, (
         "an ExitCode member was renamed or removed; that is a breaking change "
         f"(removed: {sorted(ALLOWLIST_EXIT_CODES - actual_names)})"
     )

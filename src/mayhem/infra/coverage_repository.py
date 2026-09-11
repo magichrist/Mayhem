@@ -201,9 +201,7 @@ class SQLiteCoverageRepository:
 
     def cell_state(self, cell: CoverageCell) -> CellState | None:
         """Return the cell's persisted state, or None when unknown."""
-        rows = self._store.query(
-            "SELECT state FROM m5_coverage WHERE cell_key = ?", (cell.key,)
-        )
+        rows = self._store.query("SELECT state FROM m5_coverage WHERE cell_key = ?", (cell.key,))
         if not rows:
             return None
         return CellState(rows[0]["state"])
@@ -233,9 +231,7 @@ class SQLiteCoverageRepository:
                 records.append(self._status_record(cell.key))
         return tuple(records)
 
-    def recent_failures(
-        self, limit: int = 10
-    ) -> tuple[frozenset[str], frozenset[str]]:
+    def recent_failures(self, limit: int = 10) -> tuple[frozenset[str], frozenset[str]]:
         """Return (failed_targets, failed_faults) from recent failed runs.
 
         This powers session memory in the ranking function: cells sharing a

@@ -109,7 +109,5 @@ def test_group_db_flag_reaches_new_commands(
     """The §9 ``--db`` group option is accepted by every 0.6 command."""
     db = tmp_path / "test.db"
     for command in ("next", "coverage"):
-        code = main(
-            ["--db", str(db), command, "--quiet", "--json", "--compose", str(COMPOSE_FILE)]
-        )
+        code = main(["--db", str(db), command, "--quiet", "--json", "--compose", str(COMPOSE_FILE)])
         assert code in (0, 4), f"{command}: --db group flag was not accepted"

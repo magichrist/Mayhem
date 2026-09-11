@@ -70,6 +70,7 @@ def _config_layer_from_spec(document: dict[str, Any]) -> dict[str, Any]:
         out["policy"] = policy
     return out
 
+
 API_VERSION: Literal["mayhem/v1"] = "mayhem/v1"
 ENV_PREFIX = "MAYHEM_"
 _ENV_ALLOWED = {

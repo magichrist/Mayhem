@@ -17,10 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 _KPI_IDS = (
     "delta-recovery",
@@ -36,11 +33,7 @@ def delta_timeout_seconds(results: list[dict[str, Any]]) -> float:
     ``results`` is a list of run-row dicts with a numeric ``duration_seconds``
     key (or ``None`` when the run never completed). Empty input → 0.0.
     """
-    durations = [
-        float(r.get("duration_seconds") or 0.0)
-        for r in results
-        if isinstance(r, dict)
-    ]
+    durations = [float(r.get("duration_seconds") or 0.0) for r in results if isinstance(r, dict)]
     return max(durations) if durations else 0.0
 
 
@@ -110,9 +103,7 @@ def kpis_from_store(db: str | Path) -> dict[str, Any]:
     try:
         # runs table duration_seconds (best-effort; some schemas store ms)
         try:
-            runs = conn.execute(
-                'SELECT duration_seconds FROM runs WHERE status != \'pending\''
-            )
+            runs = conn.execute("SELECT duration_seconds FROM runs WHERE status != 'pending'")
             run_rows = [{"duration_seconds": row[0]} for row in runs]
             durations = [float(r.get("duration_seconds") or 0.0) for r in run_rows]
             delta = max(durations) if durations else 0.0
@@ -124,22 +115,21 @@ def kpis_from_store(db: str | Path) -> dict[str, Any]:
         # covered cells with risk
         try:
             covered = conn.execute(
-                'SELECT state, risk_level FROM m5_coverage '
-                'WHERE state = \'covered\''
+                "SELECT state, risk_level FROM m5_coverage WHERE state = 'covered'"
             )
             covered_rows = [{"state": r[0], "risk_level": r[1]} for r in covered]
         except sqlite3.OperationalError:
             covered_rows = []
 
         try:
-            planned = _query_count(conn, 'SELECT COUNT(*) FROM m5_coverage')
+            planned = _query_count(conn, "SELECT COUNT(*) FROM m5_coverage")
         except sqlite3.OperationalError:
             planned = 0
         executed = len(run_rows)
         autonomy = autonomy_gap(planned, executed) if planned else 1.0
 
         try:
-            obs_total = _query_count(conn, 'SELECT COUNT(*) FROM observations')
+            obs_total = _query_count(conn, "SELECT COUNT(*) FROM observations")
         except sqlite3.OperationalError:
             obs_total = 0
         evidence = evidence_recorded_total(obs_total, len(covered_rows))

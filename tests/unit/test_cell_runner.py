@@ -7,18 +7,14 @@ the record_blocked path.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
-
+from mayhem.controller.cell_runner import CellRunner, CellRunResult, _result_to_state
 from mayhem.domain.candidates import ExperimentCandidate
 from mayhem.domain.coverage import CellState
-from mayhem.infra.cell_runner import CellRunner, CellRunResult, _result_to_state
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.maniac import coverage_cell_for_candidate
 from mayhem.infra.store import Store
-
 
 # ---------------------------------------------------------------------------
 # Minimal topology graph for testing
@@ -71,7 +67,6 @@ def _test_prepared():
     from mayhem.config import PolicyCfg
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.experiments import BlastRadiusBudget
-    from mayhem.domain.risks import RiskLevel
 
     return Prepared(
         config_snapshot_id="test-cfg",

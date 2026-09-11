@@ -6,7 +6,6 @@ KPI's arithmetic — the pure functions must not depend on clocks or live I/O.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
