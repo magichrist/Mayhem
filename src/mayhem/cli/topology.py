@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -25,8 +25,33 @@ _COMPOSE_CANDIDATES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml
     default=None,
     help="Compose file, directory containing one, or omit to auto-detect in cwd.",
 )
+@click.option(
+    "--runtime",
+    "runtime",
+    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
+    default=None,
+    help="Discovery engine. Overrides the global --podman flag. Default: auto.",
+)
+@click.option(
+    "--context",
+    "kube_context",
+    default=None,
+    help="kubeconfig context to use (kubernetes discovery).",
+)
+@click.option(
+    "--namespace",
+    "kube_namespace",
+    default=None,
+    help="Scope discovery to one namespace (kubernetes discovery).",
+)
 @click.pass_context
-def discover(ctx: click.Context, compose_path: str | None) -> None:
+def discover(
+    ctx: click.Context,
+    compose_path: str | None,
+    runtime: str | None,
+    kube_context: str | None,
+    kube_namespace: str | None,
+) -> None:
     """Run the topology provider pipeline and print graph + drift JSON."""
     from mayhem.cli.app import _STATE
     from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
@@ -34,12 +59,37 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
     from mayhem.topology.service import TopologyService
 
     resolved = _resolve_compose(compose_path)
-    engine = _resolve_engine(str(_STATE.get("engine", "")))
+    if runtime is None:
+        runtime = _resolve_engine(str(_STATE.get("engine", "")))
+    engine = runtime
 
-    providers: list = []
+    providers: list[Any] = []
 
-    # Compose blueprint — scoped runtime match.
-    if resolved is not None:
+    # Kubernetes discovery — kubeconfig/context driven, no compose file.
+    if engine == "kubernetes":
+        from mayhem.topology.providers.kubernetes import (
+            KUBERNETES_IMPORT_ERROR,
+            KUBERNETES_INSTALL_HINT,
+            KubernetesProvider,
+        )
+
+        if KUBERNETES_IMPORT_ERROR is not None:
+            raise click.ClickException(
+                "Kubernetes discovery needs the k8s SDK. "
+                + KUBERNETES_INSTALL_HINT
+            )
+        provider = KubernetesProvider(
+            "kubernetes", context=kube_context, namespace=kube_namespace
+        )
+        if not provider.is_available():
+            raise click.ClickException(
+                "Kubernetes cluster is not reachable: check --context/--namespace "
+                "and the kubeconfig the target cluster is reachable through."
+            )
+        providers = [provider]
+
+    # Compose blueprint — scoped runtime match (docker/podman only).
+    elif resolved is not None:
         compose_provider = ComposeFileProvider(resolved)
         runtime_provider = runtime_best_effort(engine)
         if runtime_provider is not None:
@@ -48,6 +98,7 @@ def discover(ctx: click.Context, compose_path: str | None) -> None:
                 compose_provider.service_names,
             )
         providers = [p for p in (compose_provider, runtime_provider) if p is not None]
+
     else:
         # No compose file — fall back to mayhem.yaml target.containers,
         # or discover all running containers.
