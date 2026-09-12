@@ -406,3 +406,55 @@ journal) remains the load-bearing floor — everything above it is additive.
 - No weakening of any safety gate to make explore "easier".
 - No features that duplicate existing commands; if a command already does it,
   extend it.
+---
+
+## 10. Kubernetes topology provider (k-plan-2 §2.6 — implemented)
+
+**Scope:** live-cluster discovery + mode-one selection gate. This is the
+first chunk of the kubernetes target track (k-plan-2) that is **implemented
+and testable today**; executor drivers for kubernetes remain `UNSUPPORTED`
+(`KubernetesAdapter`) until k-plan-5.
+
+### What shipped
+
+| Artifact | Where | Notes |
+| --- | --- | --- |
+| `KubernetesProvider` (topology) | `topology/providers/kubernetes.py` | Discovered Pod/Service/k8s-node nodes; `kubernetes` SDK is an optional extra |
+| `KubernetesCfg` block | `config.py` | `kubernetes: {context:, namespace:}` + `runtime:` literal now includes `kubernetes` |
+| CLI wiring | `cli/topology.py discover` | `--runtime kubernetes --context <c> --namespace <ns>` |
+| `SelectionError` | `domain/errors.py` | stable codes: `selection.no_eligible_pods`, `selection.reserved_mode`, `selection.node_target_unsupported` |
+| `select_one` | `domain/target_selector.py` | deterministic mode-one pick |
+| Eligibility gate | `controller/planner.py::_gate_k8s_selection_eligibility` | plan-time §2.5 check (workload present ⇒ ≥1 `Running`, non-terminating pod) |
+| `PodNode.deletion_timestamp` | `domain/topology.py` | termination filter input |
+
+### CLI
+
+```bash
+mayhem topology discover --runtime kubernetes           # current kubeconfig context
+mayhem topology discover --runtime kubernetes --context prod --namespace checkout
+```
+
+Missing-SDK path is a one-liner diagnostic (`pip install "mayhem[k8s]"`);
+unreachable cluster/context gets its own `ClickException`.
+
+### Deviations from k-plan-2 (deliberate, recorded)
+
+1. **Workloads are not nodes.** k-plan-2 §2.3 lists Deployment/StatefulSet/
+   DaemonSet as node kinds AND stable targets. This phase emits them as
+   *logical targets only*: pods carry `owner_kind`/`owner_name` (the stable
+   workload name via the ReplicaSet→Deployment chain), so mode-one selection
+   and target matching work without materializing workload nodes or
+   workload→pod edges. Behind a documentation flag alongside §2.3.
+2. **k8s_node refuses selection.** `select_one` raises
+   `selection.node_target_unsupported` until k-plan-5 (plan.md §2.5); planning
+   a `k8s_node` target remains allowed (execution is what is reserved).
+
+### Safety/behavior notes
+
+- `is_available()` is a *live probe* (`list_namespace(limit=1)`) independent of
+  the executor adapter gate — discovery must work even though execution is
+  `UNSUPPORTED`.
+- The provider ignores `docker-compose` entirely (kubernetes is
+  kubeconfig-driven), including the `--compose` flag.
+- Service→pod edges reuse `DEPENDS_ON` (health-gated semantics); pod→node
+  edges reuse `RUNS_ON`; selector matching is equality-labels only (phase 1).
