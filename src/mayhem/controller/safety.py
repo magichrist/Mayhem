@@ -19,12 +19,14 @@ from typing import TYPE_CHECKING
 
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
 from mayhem.domain.execution_context import ExecutionContext
+from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.runtime_adapter import (
     CapabilityRequirements,
     CapabilityVerdict,
     RuntimeAdapter,
 )
+from mayhem.domain.target_selector import select_many
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -201,17 +203,21 @@ _REMOTE_REFUSE_MSG = (
 
 
 def _check_k8s_targets(plan: ExecutionPlan, graph: TopologyGraph) -> None:
-    """Refuse any plan that targets K8s node kinds without a live driver (ADR-M7).
-
-    K8s execution is out-of-scope for this milestone — the adapter contract
-    exists so future drivers can implement against a stable seam, but no
-    live-cluster fault injection is wired yet.  A plan targeting K8s nodes
-    must fail loud and early with an actionable message.
+    """Eligibility gate for K8s targets (ADR-M7-1 flip, sub-plan SP-3.2).
+    A kubernetes workload routed through ``targets:`` is admitted when the
+    live topology yields at least one eligible pod (``Running``, not
+    terminating) at plan time — ``select_one`` raises SelectionError when
+    nothing eligible, mirroring the planner gate.  Node-kind targets
+    (k8s_node) keep their hard refusal until k-plan-5; the planned-identity
+    scan stays for ``containers:``-authored faults resolved into k8s nodes.
     """
     for step in plan.steps:
         fault = step.fault
         if fault is None:
             continue
+        scope = getattr(fault, "target", None)
+        if scope is not None and scope.runtime == RuntimeLabel.KUBERNETES:
+            select_many(graph, scope)  # claims eligible set; SelectionError when none
         for target in fault.targets:
             for node_id in target.node_ids:
                 node = graph.by_id(node_id)
@@ -290,7 +296,7 @@ def validate_plan(
             _check_execution_context(fault, graph)
 
 
-def _validate_capability_requirements(
+def _validate_capability_requirements(  # noqa: PLR0912 — capability axes checked per-source
     plan: ExecutionPlan,
     adapter: RuntimeAdapter,
     ctx: SafetyContext,

@@ -34,6 +34,7 @@ from mayhem.domain.experiments import (
     DrillContainer,
     DrillFault,
     DrillSpec,
+    DrillTarget,
     ExecutionPlan,
     ExecutionStep,
     ExperimentKind,
@@ -47,9 +48,16 @@ from mayhem.domain.experiments import (
     Wait,
 )
 from mayhem.domain.faults import FaultDefinition, ParamType
-from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.identity import RuntimeIdentity, RuntimeLabel
 from mayhem.domain.maniac import draw_maniac_rounds
+from mayhem.domain.target import (
+    ResourceKind,
+    SelectionMode,
+    TargetScope,
+)
+from mayhem.domain.target_selector import select_many
 from mayhem.domain.topology import (
+    NodeKind,
     PortBinding,
     TargetSelector,
     TopologyNode,
@@ -257,7 +265,23 @@ def plan_drill(
     container so the executor can run them concurrently (Phase 5). ``spec_dir``
     anchors assets referenced by the spec (e.g. the ``net.load`` ``script``
     parameter) so relative paths resolve against the drill file.
+
+    ``targets:`` specs (k-plan-1) compile through :func:`_plan_targeted_drill`:
+    the logical target is pinned on every planned fault, and kubernetes drills
+    compile even though the live driver does not exist yet — that is the point
+    of the plan.
     """
+    if spec.targets is not None:
+        return _plan_targeted_drill(
+            run_id,
+            spec,
+            graph,
+            config_snapshot_id=config_snapshot_id,
+            topology_snapshot_id=topology_snapshot_id,
+            environment_fingerprint=environment_fingerprint,
+            spec_dir=spec_dir,
+        )
+    assert spec.containers is not None  # exactly-one-of enforced by DrillSpec
     _validate_container_names(spec, graph)
 
     steps: list[PlannedStep] = []
@@ -352,6 +376,280 @@ def plan_drill(
     )
 
 
+def _plan_targeted_drill(
+    run_id: str,
+    spec: DrillSpec,
+    graph: TopologyGraph,
+    *,
+    config_snapshot_id: str,
+    topology_snapshot_id: str,
+    environment_fingerprint: str,
+    spec_dir: str | None = None,
+) -> ExecutionPlan:
+    """Compile a ``targets:`` drill (k-plan-1 §1.2/§1.5).
+
+    Mirrors :func:`plan_drill`'s execution walker, but each logical target
+    desugars into the shared :class:`TargetScope` and is pinned on every fault.
+    Kubernetes drills compile even without a live driver: topology resolution
+    is best-effort while the plan always carries the authored logical target
+    (the execution-side impact gate re-applies resolution k-plan-2+).
+    """
+    _validate_target_names(spec)
+    assert spec.targets is not None
+    steps: list[PlannedStep] = []
+    seq = 0
+    for block in spec.execution:
+        if block.parallel:
+            emitted = 0
+            for logical_id in block.parallel:
+                emitted = max(
+                    emitted,
+                    _plan_target_faults(
+                        logical_id,
+                        spec.targets[logical_id],
+                        graph,
+                        steps,
+                        seq,
+                        recovery_default=spec.config.recovery,
+                        on_failure_default=spec.config.on_failure,
+                        spec_dir=spec_dir,
+                    ),
+                )
+            seq += emitted
+        elif block.sequential:
+            for logical_id in block.sequential:
+                seq += _plan_target_faults(
+                    logical_id,
+                    spec.targets[logical_id],
+                    graph,
+                    steps,
+                    seq,
+                    recovery_default=spec.config.recovery,
+                    on_failure_default=spec.config.on_failure,
+                    spec_dir=spec_dir,
+                )
+        elif block.wait is not None:
+            steps.append(
+                PlannedStep(
+                    id=f"wait-{seq:04d}",
+                    seq=seq,
+                    raw_action=Wait(type="wait", duration=block.wait),
+                )
+            )
+            seq += 1
+        elif block.check:
+            for i, probe in enumerate(block.check):
+                expected = probe.expect.status if probe.expect else None
+                steps.append(
+                    PlannedStep(
+                        id=f"check-{seq:04d}-{i}",
+                        seq=seq,
+                        raw_action=CheckHttp(
+                            type="check_http",
+                            url=probe.http or "",
+                            expected_status=expected,
+                        ),
+                    )
+                )
+                seq += 1
+        elif block.check_spec:
+            for i, cspec in enumerate(block.check_spec):
+                steps.append(
+                    PlannedStep(
+                        id=f"check-{seq:04d}-{i}",
+                        seq=seq,
+                        raw_action=CheckSpecStep(
+                            type="check_spec",
+                            check_id=cspec.id,
+                            probe=cspec.probe,
+                            execution=cspec.execution,
+                            target=cspec.target,
+                        ),
+                    )
+                )
+                seq += 1
+
+    if not any(s.fault for s in steps):
+        raise PlanningError(f"drill {spec.name!r} contains no fault injection")
+
+    return ExecutionPlan(
+        run_id=run_id,
+        kind=ExperimentKind.DRILL,
+        steps=tuple(steps),
+        config_snapshot_id=config_snapshot_id,
+        topology_snapshot_id=topology_snapshot_id,
+        environment_fingerprint=environment_fingerprint,
+        success=spec.success,
+        observability=spec.observability,
+        decision_refs=_governing_decisions(spec),
+    )
+
+
+def _validate_target_names(spec: DrillSpec) -> None:
+    """Execution steps may only reference targets defined under ``targets:``
+    (k-plan-1 §1.2). No topology coupling: kubernetes targets resolve against
+    the graph later, at the execution-side impact gate."""
+    assert spec.targets is not None
+    for block in spec.execution:
+        referenced = list(block.parallel or ()) + list(block.sequential or ())
+        for logical_id in referenced:
+            if logical_id not in spec.targets:
+                raise PlanningError(
+                    f"execution references target {logical_id!r} which is not defined "
+                    f"under 'targets'"
+                )
+
+
+def _container_scope(container_name: str) -> TargetScope:
+    """Normalized docker/podman locator desugared from ``containers:``
+    (k-plan-1 §1.3) — the planner's single container → TargetRef point."""
+    return TargetScope(
+        logical_id=container_name,
+        runtime=RuntimeLabel.DOCKER,
+        kind=ResourceKind.CONTAINER,
+        authority={"container_name": container_name},
+    )
+
+
+def _find_k8s_target_nodes(
+    graph: TopologyGraph, scope: TargetScope
+) -> tuple[TopologyNode, ...]:
+    """Best-effort compile-time resolution of a kubernetes logical target.
+
+    Only explicit ``kind: pod`` targets with a matching namespace+name resolve
+    against the graph today (PodNode/K8sNode — topology.py:107-138); workload
+    kinds (deployment/statefulset/…) stay logically pinned and resolve at the
+    execution-side impact gate once a live driver exists (k-plan-2).
+    """
+    wanted_kind = NodeKind.POD if scope.kind == ResourceKind.POD else NodeKind.K8S_NODE
+    if scope.kind not in (ResourceKind.POD, ResourceKind.K8S_NODE):
+        return ()
+    namespace = scope.authority.get("namespace", "")
+    name = scope.authority.get("name", "")
+    return tuple(
+        node
+        for node in graph.nodes
+        if node.kind == wanted_kind
+        and (getattr(node, "namespace", "default") or "default") == namespace
+        and node.name == name
+    )
+
+
+def _plan_target_faults(
+    logical_id: str,
+    target: DrillTarget,
+    graph: TopologyGraph,
+    out: list[PlannedStep],
+    seq: int,
+    *,
+    recovery_default: bool = True,
+    on_failure_default: OnFailure = OnFailure.ABORT_AND_RECOVER,
+    spec_dir: str | None = None,
+) -> int:
+    """Plan every fault on a logical target as its own compensatable step.
+
+    The target desugars to one :class:`TargetScope` (``to_scope``), which is
+    pinned on every planned fault. Reserved selection modes are schema-valid
+    but refused here — they land in k-plan-4.
+    """
+    scope = target.to_scope(logical_id)
+    _gate_k8s_selection_eligibility(graph, scope)
+
+    if not target.faults:
+        out.append(
+            PlannedStep(
+                id=f"{logical_id}-{seq:04d}",
+                seq=seq,
+                raw_action=Wait(type="wait", duration=0.0),
+            )
+        )
+        return 1
+
+    if scope.runtime == RuntimeLabel.KUBERNETES:
+        matched = _find_k8s_target_nodes(graph, scope)
+    else:
+        matched = tuple(
+            _find_container_nodes(graph, scope.authority.get("container_name", logical_id))
+        )
+
+    group_id = f"grp-{uuid.uuid4().hex[:12]}"
+    mode = GroupMode.SEQUENTIAL
+    path = f"/{logical_id}"
+    seen_pods: set[str] = set()
+    for i, drill_fault in enumerate(target.faults):
+        _require_no_selection_conflict(scope, graph, seen_pods)
+        out.append(
+            _plan_fault_step(
+                logical_id,
+                matched,
+                drill_fault,
+                graph,
+                seq + i,
+                execution_group_id=group_id,
+                group_mode=mode,
+                group_path=path,
+                recovery=(
+                    drill_fault.recovery if drill_fault.recovery is not None else recovery_default
+                ),
+                on_failure=(
+                    drill_fault.on_failure
+                    if drill_fault.on_failure is not None
+                    else on_failure_default
+                ),
+                spec_dir=spec_dir,
+                target=scope,
+                allow_unresolved=scope.runtime == RuntimeLabel.KUBERNETES,
+            )
+        )
+    return len(target.faults)
+
+
+def _gate_k8s_selection_eligibility(
+    graph: TopologyGraph, scope: TargetScope
+) -> None:
+    """Mode-one eligibility gate (k-plan-2 §2.5).
+
+    A kubernetes workload that IS in the live topology must yield at least one
+    eligible pod (``Running``, not terminating) at plan time — otherwise
+    planning fails with :class:`mayhem.domain.errors.SelectionError`
+    rather than planning a target no executor could ever reach. A workload
+    absent from the graph (logically pinned) passes through: execution
+    resolves it. ``k8s_node`` has no mode-one pick until k-plan-5.
+    """
+    if scope.runtime != RuntimeLabel.KUBERNETES or scope.kind == ResourceKind.K8S_NODE:
+        return
+    select_many(graph, scope)  # multi-mode eligibility + static mode errors (k-plan-4 §4.2)
+
+
+def _require_no_selection_conflict(
+    scope: TargetScope, graph: TopologyGraph, seen_pods: set[str]
+) -> bool:
+    """Multi-instance overlap guard (k-plan-4 §4.2 ``conflict.overlap``).
+
+    A second multi-instance step in the same round may not reuse pods an
+    earlier step selected — refuse before any mutation is planned.  Returns
+    ``True`` when the guard claimed pods (so the caller records them)."""
+    if (
+        scope.runtime != RuntimeLabel.KUBERNETES
+        or scope.kind == ResourceKind.K8S_NODE
+        or scope.selection is None
+        or scope.selection.mode == SelectionMode.ONE
+    ):
+        return False
+    picks = select_many(graph, scope)
+    if picks is None:  # logically pinned workload: execution re-resolves
+        return False
+    picked = frozenset(pod.id for pod in picks)
+    overlap = picked & seen_pods
+    if overlap:
+        raise PlanningError(
+            f"conflict.overlap: selection on target {scope.logical_id!r} overlaps "
+            f"earlier step pod(s) {sorted(overlap)}"
+        )
+    seen_pods |= set(picked)
+    return True
+
+
 def plan_maniac(
     run_id: str,
     spec: DrillSpec,
@@ -376,6 +674,11 @@ def plan_maniac(
     gates (risk ceiling, blast radius, ``max_faults``, timeout) apply unchanged
     to every round (ADR-M5-1).
     """
+    if spec.targets is not None:
+        raise PlanningError(
+            "maniac random rounds require a `containers:` spec, got `targets:` "
+            "(k-plan-1 §1.2)"
+        )
     _validate_container_names(spec, graph)
     draws = draw_maniac_rounds(
         spec, level=maniac.level, run_level=maniac.run_level, seed=maniac.seed
@@ -499,6 +802,7 @@ def _container_names(graph: TopologyGraph) -> set[str]:
 
 def _validate_container_names(spec: DrillSpec, graph: TopologyGraph) -> None:
     """Every container name in the spec must exist in the topology."""
+    assert spec.containers is not None  # containers-path only (k-plan-1)
     graph_names = _container_names(graph)
     missing = [name for name in spec.containers if name not in graph_names]
     if missing:
@@ -590,6 +894,43 @@ def _plan_container_faults(
     return len(container.faults)
 
 
+def _resolve_fault_nodes(
+    definition: FaultDefinition,
+    matched: tuple[TopologyNode, ...],
+    graph: TopologyGraph,
+    container_name: str,
+    allow_unresolved: bool,
+) -> tuple[tuple[TopologyNode, ...], list[TopologyNode]]:
+    """Pick the nodes a drill fault can act on plus its compensation subtree.
+
+    A kubernetes logical target without a live node stays logically pinned
+    (``allow_unresolved``): the plan carries the authored target and the
+    execution-side impact gate re-resolves it (k-plan-1 §1.5). Compensation
+    runs against the drill container's whole subtree — the fault's own
+    matching nodes plus the container/process the undo op executes in
+    (ADR-0020).
+    """
+    if not matched and allow_unresolved:
+        return (), []
+    nodes = tuple(n for n in matched if n.kind in definition.applicable_node_kinds)
+    if not nodes:
+        kinds = ", ".join(sorted({n.kind.value for n in matched}))
+        raise PlanningError(
+            f"fault {definition.id!r} does not apply to any node matched by "
+            f"container {container_name!r} (matched kinds: {kinds})"
+        )
+    compensation_nodes = list(matched)
+    seen = {id(node) for node in compensation_nodes}
+    for node in matched:
+        for proc in graph.connected_processes(node.id):
+            if id(proc) not in seen:
+                seen.add(id(proc))
+                compensation_nodes.append(proc)
+    return nodes, compensation_nodes
+
+
+
+
 def _plan_fault_step(
     container_name: str,
     matched: tuple[TopologyNode, ...],
@@ -597,12 +938,14 @@ def _plan_fault_step(
     graph: TopologyGraph,
     seq: int,
     *,
-    execution_group_id: str | None = None,
-    group_mode: GroupMode | None = None,
-    group_path: str | None = None,
-    recovery: bool = True,
+    execution_group_id: str,
+    group_mode: GroupMode,
+    group_path: str,
+    recovery: bool,
     on_failure: OnFailure | None = None,
     spec_dir: str | None = None,
+    target: TargetScope | None = None,
+    allow_unresolved: bool = False,
 ) -> PlannedStep:
     """Compile one drill fault into a compensatable :class:`PlannedStep`."""
     try:
@@ -611,27 +954,13 @@ def _plan_fault_step(
         raise PlanningError(str(exc)) from None
 
     # The fault applies to a specific kind subset, so target only the nodes it
-    # can actually act on.
-    nodes = tuple(n for n in matched if n.kind in definition.applicable_node_kinds)
-    if not nodes:
-        kinds = ", ".join(sorted({n.kind.value for n in matched}))
-        raise PlanningError(
-            f"fault {definition.id!r} does not apply to any node matched by "
-            f"container {container_name!r} (matched kinds: {kinds})"
-        )
-
-    # Compensation runs against the drill container's whole subtree: the
-    # fault's own matching nodes plus the container/process address the undo op
-    # executes in. Drill faults name containers; e.g. cpu.saturate targets
-    # SERVICE only, but its payload undo must still reach the container that
-    # backs the service (ADR-0020).
-    compensation_nodes = list(matched)
-    seen = {id(node) for node in compensation_nodes}
-    for node in matched:
-        for proc in graph.connected_processes(node.id):
-            if id(proc) not in seen:
-                seen.add(id(proc))
-                compensation_nodes.append(proc)
+    # can actually act on. A kubernetes logical target without a live node
+    # stays logically pinned (``allow_unresolved``): the plan carries the
+    # authored target and the execution-side impact gate re-resolves it
+    # (k-plan-1 §1.5).
+    nodes, compensation_nodes = _resolve_fault_nodes(
+        definition, matched, graph, container_name, allow_unresolved
+    )
 
     # ``duration`` is a Duration (float); the ``"10s"`` class default reaches
     # the runtime as an unvalidated str unless explicitly passed through
@@ -666,6 +995,7 @@ def _plan_fault_step(
     # the drill spec directory — rather than read at execution time.
     params = _embed_load_script(params, definition.id, spec_dir)
 
+    scope = target or _container_scope(container_name)
     selectors = tuple(TargetSelector(kind=node.kind, expr=node.name) for node in nodes)
     planned = PlannedFault(
         fault_id=definition.id,
@@ -673,6 +1003,7 @@ def _plan_fault_step(
             ResolvedTarget(selector=selector, node_ids=frozenset({node.id}))
             for selector, node in zip(selectors, nodes, strict=True)
         ),
+        target=scope,
         params=params,
         duration=drill_fault.duration,
         backend=None,
@@ -680,10 +1011,14 @@ def _plan_fault_step(
         recovery=recovery,
         on_failure=on_failure if on_failure is not None else OnFailure.ABORT_AND_RECOVER,
     )
-    planned = compensated(planned, tuple(compensation_nodes))
-    if not planned.undo_ops:
-        msg = f"fault {definition.id!r} compiled without undo contract"
-        raise InvariantViolationError("plan_write_ahead_undo", msg)
+    # Kuberares targets carry their undo contract with the driver (k-plan-2);
+    # docker/podman faults must compile compensatably here (write-ahead undo).
+    compiled_runtime = target.runtime if target is not None else RuntimeLabel.DOCKER
+    if nodes and compiled_runtime != RuntimeLabel.KUBERNETES:
+        planned = compensated(planned, tuple(compensation_nodes))
+        if not planned.undo_ops:
+            msg = f"fault {definition.id!r} compiled without undo contract"
+            raise InvariantViolationError("plan_write_ahead_undo", msg)
     return PlannedStep(
         id=f"{container_name}-{seq:04d}",
         seq=seq,
@@ -695,6 +1030,7 @@ def _plan_fault_step(
         raw_action=InjectFault(
             fault=definition.id,
             selectors=selectors,
+            target=target,  # None for containers path; TargetScope for targets
             params=params,
             duration=drill_fault.duration,
         ),

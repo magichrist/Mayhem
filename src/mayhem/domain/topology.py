@@ -119,6 +119,14 @@ class PodNode(_NodeBase):
     image: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     state: str = "unknown"
+    # k-plan-2: owner identity (stable workload key — deployment/statefulset/…)
+    # and pod facts. All defaulted so docker-era serialised fixtures survive.
+    owner_kind: str | None = None
+    owner_name: str | None = None
+    containers: tuple[str, ...] = ()  # container names, "app", "sidecar", …
+    pod_uid: str | None = None
+    restart_count: int = 0
+    deletion_timestamp: str | None = None  # set ⇒ pod is terminating (k-plan-2 §2.5)
 
 
 class K8sNode(_NodeBase):

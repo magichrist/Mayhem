@@ -7,6 +7,7 @@ the controller escalates; it does not retry blindly.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import signal
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mayhem.domain.identity import RuntimeLabel
+from mayhem.domain.resolution import ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
 
 if TYPE_CHECKING:
@@ -313,6 +316,129 @@ class PayloadExecutor(FaultExecutor):
         )
 
 
+class K8sExecutor(FaultExecutor):
+    """Kubernetes pod-level executor (ADR-M7-1, k-plan-3 SP-3.3).
+
+    The execution-time resolver (:mod:`mayhem.agents.k8s_resolve`) pins the
+    exact pod + container into ``lease.resolved_target`` (migration 0017) at
+    lease formation; this executor delivers the mutation through that pinned
+    target via ``kubectl exec``.
+
+    Executable this milestone — the signal family against the container's
+    primary process (PID 1), guarded by the ``/proc/1`` start-time check read
+    at resolution time (the k8s analogue of the docker ``boot_time`` PID-reuse
+    guard, ADR-M2 Phase 2.4):
+
+    * ``proc.pause``   → ``kill -STOP 1``, undo via ``kill -CONT 1``
+    * ``process.stop`` → ``kill -TERM 1`` (no live undo; graceful exit)
+    * ``process.kill`` → ``kill -KILL 1`` (no live undo)
+
+    Everything else small-bit family stays refused with the stable
+    ``k8s.unsupported`` code: payload faults (mem/cpu/fs/fd/load/fuzz) need
+    their params carried through the lease, which is the SP-3.4 compensation
+    contract, and pod-lifecycle faults (``k8s.pod.failure``) park in k-plan-4.
+    """
+
+    prefixes = ("k8s", "proc", "process", "mem", "cpu", "fs", "fd", "load", "fuzz")
+
+    _SIGNAL_INJECT = {
+        "proc.pause": "STOP",
+        "process.stop": "TERM",
+        "process.kill": "KILL",
+    }
+    # Each signal family's undo: ("CONT",) means a live CONT; ("",) is a no-op.
+    _SIGNAL_UNDO_COMMAND = {
+        "proc.pause": "CONT",
+        "process.stop": "",
+        "process.kill": "",
+    }
+
+    def supports(self, fault_id: str) -> bool:
+        if fault_id.startswith("k8s."):
+            return True
+        return _is_k8s_applicable(fault_id)
+
+    def capable_faults(self) -> tuple[str, ...]:
+        return ("k8s.pod.failure", *sorted(self._SIGNAL_INJECT))
+
+    def _target_or_none(self, lease: FaultLease) -> ResolvedPodTarget | None:
+        return lease.resolved_target
+
+    def _unsupported_reason(self, fault_id: str) -> str:
+        return k8s_unsupported_reason(fault_id)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self._SIGNAL_INJECT:
+            return self._unsupported_reason(lease.fault_id)
+        if lease.resolved_target is None:
+            return "k8s.unsupported: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        if lease.fault_id not in self._SIGNAL_INJECT or lease.resolved_target is None:
+            return StepOutcome("inject", False, self._unsupported_reason(lease.fault_id))
+        signame = self._SIGNAL_INJECT[lease.fault_id]
+        argv = (*lease.resolved_target.exec_argv, "kill", f"-{signame}", "1")
+        result = run_tool(argv)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"kubectl exec failed (rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id} delivered via kubectl exec: {signame} on primary pid 1",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        command = self._SIGNAL_UNDO_COMMAND.get(lease.fault_id, "")
+        if not command or lease.resolved_target is None:
+            return StepOutcome("undo", True, f"{lease.fault_id}: nothing live to undo")
+        argv = (*lease.resolved_target.exec_argv, "kill", f"-{command}", "1")
+        result = run_tool(argv)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"kubectl exec CONT failed (rc={result.exit_code}): {result.stdout.strip()} — DIRTY",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo",
+            True,
+            f"CONT delivered on primary pid 1 (pod {lease.resolved_target.pod})",
+            tool_result=result,
+        )
+
+
+_K8S_EXECUTOR = K8sExecutor()
+
+
+# ── k8s runtime contract (k-plan-3 §3.3/§3.4) ─────────────────────────────────
+# The run engine shares these with the K8sExecutor: which fault ids the exec
+# driver admits this milestone, and how their undo behaves.
+K8S_SIGNAL_FAULTS: frozenset[str] = frozenset(K8sExecutor._SIGNAL_INJECT)
+K8S_SIGNAL_INJECT_SIGNAL: dict[str, str] = dict(K8sExecutor._SIGNAL_INJECT)
+K8S_UNDO_COMMAND: dict[str, str] = dict(K8sExecutor._SIGNAL_UNDO_COMMAND)
+
+
+def k8s_unsupported_reason(fault_id: str) -> str:
+    """Stable ``k8s.unsupported`` reason for faults the driver refuses."""
+    if fault_id == "k8s.pod.failure":
+        return "k8s.unsupported: pod lifecycle faults are not executable this milestone (k-plan-4)"
+    prefix = fault_id.split(".", 1)[0]
+    if prefix in ("mem", "cpu", "fs", "fd", "load", "fuzz"):
+        return (
+            f"k8s.unsupported: {prefix}.* payloads need an argv compensation "
+            "contract carrying their params (k-plan-3 SP-3.4)"
+        )
+    return f"k8s.unsupported: driver {fault_id!r} is not executable this milestone"
+
+
 class NoopExecutor(FaultExecutor):
     """Step-outcome-only executor for placeholder steps with no effect.
 
@@ -405,6 +531,7 @@ EXECUTORS: tuple[FaultExecutor, ...] = (
     ProcPauseExecutor(),
     PayloadExecutor(),
     NoopExecutor(),
+    _K8S_EXECUTOR,
     ToolExecutor(),
 )
 
@@ -416,11 +543,43 @@ _register_fault_executor("cpu.throttle", EXECUTORS[-1])
 # SIGSTOP/SIGTERM/SIGKILL, so it is bypassed the same way.
 _register_fault_executor("fs.read_only", EXECUTORS[-1])
 _register_fault_executor("process.crash_loop", EXECUTORS[-1])
+_register_fault_executor("k8s.pod.failure", _K8S_EXECUTOR)
 
 
-def executor_for(fault_id: str) -> FaultExecutor | None:
-    """Explicit fault-level override wins; otherwise first registered executor
-    claiming this fault's prefix."""
+@functools.lru_cache(maxsize=512)
+def _is_k8s_applicable(fault_id: str) -> bool:
+    """True when the catalog pins ``fault_id`` to pod / k8s_node node kinds.
+
+    Supplies the runtime-aware k8s dispatch without duplicating the catalog;
+    imported lazily to keep executors import-order independent.
+    """
+    try:
+        from mayhem.domain.catalog import definition_for  # noqa: PLC0415
+        from mayhem.domain.topology import NodeKind  # noqa: PLC0415
+    except Exception:  # noqa: BLE001  (catalog is always importable; defensive)
+        return False
+    try:
+        definition = definition_for(fault_id)
+    except Exception:  # noqa: BLE001  (unknown fault id ⇒ not k8s-applicable)
+        return False
+    return NodeKind.POD in definition.applicable_node_kinds or (
+        NodeKind.K8S_NODE in definition.applicable_node_kinds
+    )
+
+
+def executor_for(
+    fault_id: str,
+    runtime: RuntimeLabel | None = None,
+) -> FaultExecutor | None:
+    """Dispatch a fault to its executor.
+
+    ``runtime=KUBERNETES`` forces the k8s driver (every fault on a kubernetes
+    step is delivered through the resolved pod — k-plan-3). With any other
+    runtime (or None), the explicit fault-level override wins, then the first
+    executor claiming the fault's prefix — the pre-k-plan-3 registry contract.
+    """
+    if runtime == RuntimeLabel.KUBERNETES:
+        return _K8S_EXECUTOR
     override = _FAULT_EXECUTOR_OVERRIDES.get(fault_id)
     if override is not None:
         return override

@@ -114,6 +114,15 @@ class TargetCfg(BaseModel):
     containers: list[str] = Field(default_factory=list)
 
 
+class KubernetesCfg(BaseModel):
+    """Kubernetes discovery overrides (k-plan-2 §2.6)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    context: str | None = None  # kubeconfig context; None => current-context
+    namespace: str | None = None  # None => all namespaces
+
+
 class MayhemConfigBase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -122,8 +131,9 @@ class MayhemConfigBase(BaseModel):
     blast_radius: BlastRadiusBudget = Field(default_factory=BlastRadiusBudget)
     storage: StorageCfg = Field(default_factory=StorageCfg)
     toolkit: ToolkitOverrides = Field(default_factory=ToolkitOverrides)
-    runtime: Literal["docker", "podman"] = "docker"
+    runtime: Literal["docker", "podman", "kubernetes"] = "docker"
     target: TargetCfg = Field(default_factory=TargetCfg)
+    kubernetes: KubernetesCfg = Field(default_factory=KubernetesCfg)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # ADR-M5-1 fallback for `mayhem maniac` when the drill spec's own
     # `config.maniac` block is absent (spec-level settings win).

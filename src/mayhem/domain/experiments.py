@@ -12,7 +12,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from mayhem.domain.capabilities import Identifier
 from mayhem.domain.checks import CheckLocus, CheckSpec, Probe
@@ -21,11 +27,17 @@ from mayhem.domain.decisions import DecisionRef
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.execution_context import ExecutionContextSpec
 from mayhem.domain.faults import FaultCategory
-from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.identity import RuntimeIdentity, RuntimeLabel
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.observability import ObservabilityConfig
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.success import SuccessCriteria
+from mayhem.domain.target import (
+    ResourceKind,
+    SelectionSpec,
+    TargetRef,
+    TargetScope,
+)
 from mayhem.domain.topology import TargetSelector
 
 
@@ -69,6 +81,7 @@ class InjectFault(BaseModel):
     type: Literal["inject_fault"] = "inject_fault"
     fault: str
     selectors: tuple[TargetSelector, ...]
+    target: TargetRef | None = None  # k-plan-1: targets:-authored faults
     params: dict[str, object] = Field(default_factory=dict)
     duration: Duration
     backend: Identifier | None = None
@@ -80,14 +93,17 @@ class InjectFault(BaseModel):
         FaultCategory.from_fault_id(value)
         return value
 
-    @field_validator("selectors")
-    @classmethod
-    def _non_empty_selectors(cls, value: tuple[TargetSelector, ...]) -> tuple[TargetSelector, ...]:
-        if not value:
+    @model_validator(mode="after")
+    def _has_locator(self) -> InjectFault:
+        # ``containers:``-authored faults address targets by selector; a
+        # ``targets:``-authored fault carries ``target`` instead and may have
+        # no selectors at all (k-plan-1 §1.3). Runs after the whole model is
+        # populated so the emptiness check sees both fields.
+        if not self.selectors and self.target is None:
             raise InvariantViolationError(
-                "step_requires_targets", "inject_fault needs >= 1 selector"
+                "step_requires_targets", "inject_fault needs >= 1 selector or a target"
             )
-        return value
+        return self
 
 
 class Wait(BaseModel):
@@ -232,6 +248,129 @@ class ExecutionStep(BaseModel):
     check_spec: tuple[CheckSpec, ...] | None = None  # locus-aware checks (ADR-M4-2)
 
 
+class DockerTargetSpec(BaseModel):
+    """Single-container locator for docker/podman targets (k-plan-1 §1.2)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    container_name: str = Field(min_length=1)
+
+
+class KubernetesTargetSpec(BaseModel):
+    """Locator material for a kubernetes target (k-plan-1 §1.2, §1.6).
+
+    Configuration — not credentials. ``name`` is always the stable workload
+    name (``Deployment/production/checkout``), never a generated pod name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: ResourceKind
+    namespace: str
+    name: str = Field(min_length=1)
+    container: str | None = None  # optional single container (container-level faults)
+
+    @field_validator("kind")
+    @classmethod
+    def _k8s_kinds_only(cls, value: ResourceKind) -> ResourceKind:
+        if value == ResourceKind.CONTAINER:
+            raise ValueError("kind 'container' is docker-scoped; use pod/deployment/...")
+        return value
+
+
+class DrillTarget(BaseModel):
+    """One logical target under the ``targets:`` block (k-plan-1 §1.2).
+
+    Cross-runtime: declares the runtime label and the locator block for that
+    runtime. Both the ``docker:`` and ``kubernetes:`` blocks are optional in
+    the schema but exactly one must match the ``runtime`` label, and the two
+    may not be mixed in one target.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    runtime: RuntimeLabel
+    docker: DockerTargetSpec | None = None
+    kubernetes: KubernetesTargetSpec | None = None
+    selection: SelectionSpec | None = None
+    faults: tuple[DrillFault, ...] = ()
+
+    @field_validator("faults")
+    @classmethod
+    def _requires_fault(cls, value: tuple[DrillFault, ...]) -> tuple[DrillFault, ...]:
+        if not value:
+            raise InvariantViolationError(
+                "target_requires_faults", "each target needs >= 1 fault"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _runtime_locator_matches(self) -> DrillTarget:
+        if self.runtime == RuntimeLabel.KUBERNETES:
+            if self.kubernetes is None:
+                raise InvariantViolationError(
+                    "target.runtime_mismatch",
+                    "kubernetes runtime requires a `kubernetes:` locator block",
+                )
+            if self.docker is not None:
+                raise InvariantViolationError(
+                    "target.mixed_locators",
+                    "a target may not carry both `docker:` and `kubernetes:` blocks",
+                )
+        else:
+            if self.docker is None:
+                raise InvariantViolationError(
+                    "target.runtime_mismatch",
+                    f"target runtime {self.runtime.value} requires a `docker:` locator block",
+                )
+            if self.kubernetes is not None:
+                raise InvariantViolationError(
+                    "target.mixed_locators",
+                    f"target runtime {self.runtime.value} may not carry a `kubernetes:` block",
+                )
+        return self
+
+    def to_scope(self, logical_id: str) -> TargetScope:
+        """Normalize this authored target into the shared :class:`TargetScope`
+        (k-plan-1 §1.3) — the single identity the planner pins."""
+        if self.runtime == RuntimeLabel.KUBERNETES:
+            assert self.kubernetes is not None
+            scope = TargetScope(
+                logical_id=logical_id,
+                runtime=self.runtime,
+                kind=self.kubernetes.kind,
+                authority={
+                    "api_group": _api_group_for_kind(self.kubernetes.kind),
+                    "kind": self.kubernetes.kind.value,
+                    "namespace": self.kubernetes.namespace,
+                    "name": self.kubernetes.name,
+                },
+                container=self.kubernetes.container,
+            )
+        else:
+            assert self.docker is not None
+            scope = TargetScope(
+                logical_id=logical_id,
+                runtime=self.runtime,
+                kind=ResourceKind.CONTAINER,
+                authority={"container_name": self.docker.container_name},
+            )
+        return scope.model_copy(update={"selection": self.selection})
+
+
+def _api_group_for_kind(kind: ResourceKind) -> str:
+    """Core kubernetes API group for the trusted locator material. Plumbing
+    only: the live driver (k-plan-2/3) resolves the concrete group/version."""
+    return {
+        ResourceKind.DEPLOYMENT: "apps",
+        ResourceKind.STATEFULSET: "apps",
+        ResourceKind.DAEMONSET: "apps",
+        ResourceKind.SERVICE: "core",
+        ResourceKind.POD: "core",
+        ResourceKind.K8S_NODE: "",
+    }.get(kind, "")
+
+
 class DrillSpec(BaseModel):
     """Unified drill spec — single YAML file replacing config + fault spec (ADR-0019)."""
 
@@ -241,15 +380,18 @@ class DrillSpec(BaseModel):
     name: str
     hypothesis: str = ""
     config: DrillConfig = Field(default_factory=DrillConfig)
-    containers: dict[str, DrillContainer]  # key = container_name from docker-compose
+    containers: dict[str, DrillContainer] | None = None  # key = container_name from docker-compose
+    targets: dict[str, DrillTarget] | None = None  # k-plan-1: cross-runtime logical targets
     execution: tuple[ExecutionStep, ...]
     success: SuccessCriteria | None = None  # optional machine verdict (ADR-M4-3)
     observability: ObservabilityConfig | None = None  # optional evidence sources (ADR-M4-4)
 
     @field_validator("containers")
     @classmethod
-    def _at_least_one_container(cls, value: dict[str, DrillContainer]) -> dict[str, DrillContainer]:
-        if not value:
+    def _no_empty_containers(
+        cls, value: dict[str, DrillContainer] | None
+    ) -> dict[str, DrillContainer] | None:
+        if value is not None and not value:
             raise InvariantViolationError("drill_requires_containers", "no containers defined")
         return value
 
@@ -259,6 +401,27 @@ class DrillSpec(BaseModel):
         if not value:
             raise InvariantViolationError("drill_requires_execution", "no execution steps defined")
         return value
+
+    @model_validator(mode="after")
+    def _targets_or_containers(self) -> DrillSpec:
+        """Exactly one of ``containers:`` / ``targets:`` may define the spec
+        (k-plan-1 §1.2). Mixing both is a compile-time schema error, code
+        ``targets.mixed_sources``; a spec with neither defines nothing."""
+        has_containers = bool(self.containers)
+        has_targets = bool(self.targets)
+        if has_containers and has_targets:
+            raise InvariantViolationError(
+                "targets.mixed_sources",
+                "a drill spec may not mix `containers:` and `targets:`",
+            )
+        if not has_containers and not has_targets:
+            # Pydantic-wrapped → parsed as a schema error (`parse_drill`):
+            # a spec with neither source defines nothing (k-plan-1 §1.2).
+            raise ValueError("a drill spec must define one of `containers:` or `targets:`")
+            raise InvariantViolationError(
+                "drill_requires_containers", "no containers or targets defined"
+            )
+        return self
 
 
 # -- compiled plan ------------------------------------------------------------------------
@@ -289,6 +452,7 @@ class PlannedFault(BaseModel):
 
     fault_id: str
     targets: tuple[ResolvedTarget, ...]
+    target: TargetRef | None = None
     undo_ops: tuple[UndoOp, ...] = ()
     verify_probes: tuple[VerifyProbe, ...] = ()
     params: dict[str, object] = Field(default_factory=dict)

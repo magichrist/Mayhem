@@ -227,9 +227,16 @@ class TestExecutorResolution:
         )
 
     @pytest.mark.parametrize("fault_id", K8S)
-    def test_k8s_faults_have_no_argv_executor(self, fault_id: str) -> None:
-        """k8s faults are kubectl-native; they intentionally resolve to None."""
-        assert executor_for(fault_id) is None
+    def test_k8s_faults_resolve_to_k8s_executor(self, fault_id: str) -> None:
+        """k8s faults are kubectl-native; a kubernetes-runtime step resolves
+        every fault to the dedicated K8sExecutor (k-plan-3 SP-3.3 executor
+        flip). Non-k8s runtimes keep the legacy registry dispatch."""
+        from mayhem.agents.executors import K8sExecutor
+        from mayhem.domain.identity import RuntimeLabel
+
+        assert isinstance(
+            executor_for(fault_id, runtime=RuntimeLabel.KUBERNETES), K8sExecutor
+        )
 
 
 # ── compensation contract ────────────────────────────────────────────────────

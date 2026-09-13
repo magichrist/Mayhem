@@ -98,11 +98,15 @@ def test_skips_non_running_states() -> None:
     assert exc.value.code == "selection.no_eligible_pods"
 
 
-def test_reserved_mode_refused() -> None:
-    pod = _pod("checkout-abc")
-    with pytest.raises(SelectionError) as exc:
-        select_one(_graph([pod]), _scope(selection=SelectionMode.ALL))
-    assert exc.value.code == "selection.reserved_mode"
+def test_multi_mode_selection_returns_full_set() -> None:
+    """k-plan-4 §4.2: reserved modes are now implemented — all selects every
+    eligible pod instead of refusing (SP-4.1 reserved-mode flip)."""
+    pods = [_pod(f"checkout-{s}") for s in ("aaa", "zzz", "mmm")]
+    from mayhem.domain.target_selector import select_many
+
+    picks = select_many(_graph(pods), _scope(selection=SelectionMode.ALL))
+    assert picks is not None
+    assert len(picks) == 3
 
 
 def test_k8s_node_has_no_mode_one_pick_until_kplan5() -> None:

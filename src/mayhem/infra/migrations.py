@@ -603,6 +603,18 @@ M0016_FIVE_STATE_COVERAGE = Migration(
 )
 
 
+# ── k-plan-3 (ADR-M7-1 §3.3): resolved-target evidence on the lease ──────
+# Nullable JSON column; resolved pod evidence for k8s exec-family faults,
+# NULL for docker leases. Additive + backward compatible; docker rows simply
+# keep NULL.
+M0017_RESOLVED_TARGET = Migration(
+    version=17,
+    name="resolved_target",
+    statements=("ALTER TABLE fault_leases ADD COLUMN resolved_target_json TEXT",),
+    down_statements=("ALTER TABLE fault_leases DROP COLUMN resolved_target_json",),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -620,4 +632,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0014_M4_OBSERVABILITY_AND_DECISIONS,
     M0015_RUN_CONTROLLER_PID,
     M0016_FIVE_STATE_COVERAGE,
+    M0017_RESOLVED_TARGET,
 )

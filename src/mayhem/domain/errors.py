@@ -60,6 +60,34 @@ class SchemaValidationError(DomainError):
         super().__init__(f"{subject}: {reason}")
 
 
+class SelectionError(DomainError):
+    """A ``selection:`` pick failed or a reserved mode was refused.
+
+    Attributes:
+        code: Stable machine-readable error code, e.g. ``selection.no_eligible_pods``
+            or ``selection.reserved_mode`` (k-plan-2 §2.5).
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(f"[{code}] {message}")
+
+
+class ResolutionError(DomainError):
+    """An execution-time target resolution failed for a named reason.
+
+    Attributes:
+        code: Stable machine-readable error code (k-plan-3 §3.5.2), e.g.
+            ``resolution.resource_missing`` (workload/pod gone) or
+            ``resolution.container_missing`` (named container absent from the
+            pod spec).
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(f"[{code}] {message}")
+
+
 class TargetDriftError(DomainError):
     """The planned ``RuntimeIdentity`` no longer matches the live one.
 

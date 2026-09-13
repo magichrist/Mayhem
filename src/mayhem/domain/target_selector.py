@@ -19,20 +19,29 @@ A workload that does **not exist in the topology at all** returns ``None``:
 that is the k-plan-1 "logically pinned" case, re-resolved at execution time.
 The error is raised only when the workload is present in the graph but has
 zero *eligible* pods.  ``SelectionSpec.mode`` values other than ``one`` are
-refused by the planner's ``_require_implemented_selection`` with
-:class:`SelectionError` ``selection.reserved_mode``.
+implemented by :func:`select_many` (k-plan-4 §4.2); see
+``selection.out_of_budget`` / ``conflict.overlap`` for the plan-time errors.
 """
 
 from __future__ import annotations
 
+import math
+import random
+import zlib
 from typing import TYPE_CHECKING
 
 from mayhem.domain.errors import SelectionError
-from mayhem.domain.target import ResourceKind, SelectionMode, TargetScope
+from mayhem.domain.target import (
+    ResourceKind,
+    SelectionMode,
+    SelectionSpec,
+    TargetScope,
+)
 from mayhem.domain.topology import EdgeKind, NodeKind, PodNode
 
 if TYPE_CHECKING:
-    from mayhem.domain.topology import TopologyGraph, TopologyNode
+    from mayhem.domain.experiments import BlastRadiusBudget
+    from mayhem.domain.topology import TopologyGraph
 
 #: Resource kinds whose pods are matched by the stable-workload owner identity
 #: (``PodNode.owner_kind``/``owner_name`` — k-plan-2 §2.3).
@@ -53,7 +62,7 @@ _OWNER_LABEL_TO_RESOURCE_KIND: dict[str, ResourceKind] = {
 
 
 def _pods_in_namespace(
-    graph: "TopologyGraph", namespace: str
+    graph: TopologyGraph, namespace: str
 ) -> tuple[PodNode, ...]:
     ns = namespace or "default"
     return tuple(
@@ -76,7 +85,7 @@ def _owner_match(pod: PodNode, scope: TargetScope) -> bool:
     return bool(pod.owner_name) and pod.owner_name == scope.authority.get("name")
 
 
-def _service_match(graph: "TopologyGraph", pod: PodNode, scope: TargetScope) -> bool:
+def _service_match(graph: TopologyGraph, pod: PodNode, scope: TargetScope) -> bool:
     """Service → selector-resolved pods via the discovery ``DEPENDS_ON`` edges.
 
     The provider emits ``Edge(service_id → pod_id, DEPENDS_ON, weight=1.0)``
@@ -101,7 +110,7 @@ def _service_match(graph: "TopologyGraph", pod: PodNode, scope: TargetScope) -> 
     return False
 
 
-def _candidate_pods(graph: "TopologyGraph", scope: TargetScope) -> tuple[PodNode, ...] | None:
+def _candidate_pods(graph: TopologyGraph, scope: TargetScope) -> tuple[PodNode, ...] | None:
     """Pods a target can select, or ``None`` when the workload is not in the
     graph (k-plan-1 logically-pinned path — execution re-resolves)."""
     if scope.kind == ResourceKind.POD:
@@ -156,26 +165,87 @@ def _is_eligible(pod: PodNode) -> bool:
     return pod.deletion_timestamp is None
 
 
-def select_one(
-    graph: "TopologyGraph", scope: TargetScope
-) -> PodNode | None:
-    """Pick the deterministic ``mode: one`` pod, or refuse with the stable
-    selection error.
+def _deterministic_key(pod: PodNode) -> tuple[str, str, str]:
+    """Hash-stable ordering: namespace, name, uid (k-plan-2 §2.5)."""
+    return (pod.namespace, pod.name, pod.pod_uid or "")
+
+
+def _dispatch(
+    scope: TargetScope,
+    eligible: tuple[PodNode, ...],
+    *,
+    seed: int | None = None,
+) -> tuple[PodNode, ...]:
+    """Apply the authored selection mode to the eligible set (k-plan-4 §4.2).
+
+    ``count`` / ``percentage`` / ``all`` consume pods in deterministic order
+    (no drops); ``random`` is a uniform single draw seeded for deterministic
+    replay.  ``one`` is the deterministic first pick (k-plan-2 contract).
+    """
+    selection = scope.selection or SelectionSpec(mode=SelectionMode.ONE)
+    ordered = tuple(sorted(eligible, key=_deterministic_key))
+    mode = selection.mode
+    if mode == SelectionMode.ONE:
+        return ordered[:1]
+    if mode == SelectionMode.RANDOM:
+        rng = random.Random(
+            seed
+            if seed is not None
+            else zlib.crc32(scope.logical_id.encode("utf-8"))
+        )
+        return (rng.choice(ordered),)
+    if mode == SelectionMode.ALL:
+        return ordered
+    if mode == SelectionMode.COUNT:
+        count = selection.count
+        if count is None:
+            raise SelectionError(
+                "selection.count_required",
+                f"selection.mode 'count' on target {scope.logical_id!r} "
+                "requires selection.count",
+            )
+        if count > len(ordered):
+            raise SelectionError(
+                "selection.count_exceeds_eligible",
+                f"selection count {count} on target {scope.logical_id!r} exceeds "
+                f"{len(ordered)} eligible pod(s)",
+            )
+        return ordered[:count]
+    if mode == SelectionMode.PERCENTAGE:
+        pct = selection.percentage
+        if pct is None:
+            raise SelectionError(
+                "selection.percentage_required",
+                f"selection.mode 'percentage' on target {scope.logical_id!r} "
+                "requires selection.percentage",
+            )
+        n = max(1, math.ceil(len(ordered) * pct / 100.0))
+        return ordered[: min(n, len(ordered))]
+    raise SelectionError(  # pragma: no cover - schema forbids unknown modes
+        "selection.unknown_mode", f"unknown selection mode {mode.value!r}"
+    )
+
+
+def select_many(
+    graph: TopologyGraph,
+    scope: TargetScope,
+    *,
+    budget: BlastRadiusBudget | None = None,
+    seed: int | None = None,
+) -> tuple[PodNode, ...] | None:
+    """Multi-instance selection (k-plan-4 §4.2) — count/percentage/all/random/one.
 
     Returns ``None`` only when the workload is absent from the topology
-    (logically pinned — execution re-resolves it, k-plan-3). Raises
-    :class:`SelectionError` when the workload exists but nothing eligible is
-    found.
+    (logically pinned — execution re-resolves it, k-plan-3).  Raises
+    :class:`SelectionError` when the workload exists but nothing is eligible,
+    when the authored ``count`` exceeds the eligible set, or when the picked
+    set exceeds ``budget.max_concurrent_faults`` (``selection.out_of_budget``,
+    pointing at the config knob that owns the cap).
     """
     if scope.kind == ResourceKind.K8S_NODE:
         raise SelectionError(
             "selection.node_target_unsupported",
             "k8s_node selection is reserved until k-plan-5",
-        )
-    if scope.selection is not None and scope.selection.mode != SelectionMode.ONE:
-        raise SelectionError(
-            "selection.reserved_mode",
-            f"selection mode {scope.selection.mode.value!r} is reserved until k-plan-4",
         )
 
     candidates = _candidate_pods(graph, scope)
@@ -189,4 +259,26 @@ def select_one(
             f"target {scope.logical_id!r} ({scope.kind.value} '{label}') has "
             f"{len(candidates)} pod(s), none Running and not terminating",
         )
-    return min(eligible, key=lambda pod: (pod.namespace, pod.name, pod.pod_uid or ""))
+    picked = _dispatch(scope, eligible, seed=seed)
+    if budget is not None and len(picked) > budget.max_concurrent_faults:
+        raise SelectionError(
+            "selection.out_of_budget",
+            f"selection on target {scope.logical_id!r} picks {len(picked)} pod(s), "
+            f"over policy.blast_radius.max_concurrent_faults="
+            f"{budget.max_concurrent_faults}",
+        )
+    return picked
+
+
+def select_one(
+    graph: TopologyGraph, scope: TargetScope
+) -> PodNode | None:
+    """Determine the single-pod view of the selection (legacy surface).
+
+    Returns ``None`` only when the workload is absent from the topology.
+    Raises :class:`SelectionError` when nothing eligible is found.
+    """
+    picked = select_many(graph, scope)
+    if picked is None:
+        return None
+    return picked[0]

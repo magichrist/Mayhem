@@ -352,12 +352,21 @@ class TestTargetsCompile:
         assert resolved == {"pod-checkout"}
         # the writable undo lands with the driver (k-plan-2) — no template yet
 
-    def test_reserved_selection_modes_refused_at_compile(self) -> None:
-        for mode in (SelectionMode.ALL, SelectionMode.COUNT):
+    def test_selection_modes_compile(self) -> None:
+        """k-plan-4 §4.2: multi-instance selection modes parse and compile
+        (SP-4.1 reserved-mode flip)."""
+        cases = (
+            {"mode": "one"},
+            {"mode": "all"},
+            {"mode": "count", "count": 1},
+            {"mode": "percentage", "percentage": 50},
+            {"mode": "random"},
+        )
+        for selection in cases:
             target = _docker_target()
-            target["selection"] = {"mode": mode.value}
-            with pytest.raises(Exception, match="reserved until k-plan-4"):
-                _compile("checkout", target, _container_graph(), fault_id="proc.pause")
+            target["selection"] = selection
+            plan = _compile("checkout", target, _container_graph(), fault_id="proc.pause")
+            assert any(step.fault is not None for step in plan.steps)
 
     def test_execution_references_undefined_target_refused(self) -> None:
         spec = DrillSpec.model_validate(_spec("checkout", _docker_target()))
@@ -401,17 +410,28 @@ class TestTargetsCompile:
 
 
 class TestTargetsSafetyGate:
-    def test_kubernetes_logical_target_refused(self) -> None:
+    def test_kubernetes_logical_target_admitted_when_eligible(self) -> None:
+        """ADR-M7-1 flip (SP-3.2, SP-4.1): a workload with an eligible pod is
+        admitted at plan + safety time; the old unconditional ``k8s.unsupported``
+        refusal applies only to unimplemented pathways."""
+        _k8s_owned = _graph(
+            PodNode(
+                id="pod-checkout-2",
+                name="checkout-abc123",
+                namespace="production",
+                image="checkout:latest",
+                state="Running",
+                owner_kind="Deployment",
+                owner_name="checkout",
+            )
+        )
         plan = _compile(
             "checkout",
             _kubernetes_deployment_target(),
-            _graph(),
+            _k8s_owned,
             fault_id="k8s.pod_latency",
         )
-        with pytest.raises(SafetyRefusedError) as exc_info:
-            validate_plan(plan, _graph(), _ctx())
-        assert exc_info.value.reason_code == "k8s.unsupported"
-        assert "kubernetes execution not yet supported" in str(exc_info.value)
+        validate_plan(plan, _k8s_owned, _ctx())  # no SafetyRefusedError raised
 
     def test_docker_target_passes_k8s_gate(self) -> None:
         plan = _compile("checkout", _docker_target(), _container_graph(), fault_id="proc.pause")

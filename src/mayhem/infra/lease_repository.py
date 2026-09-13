@@ -39,8 +39,8 @@ class SQLiteLeaseSink:
                     ttl_seconds, expires_at, injected_at, released_at,
                     release_mechanism, escalation_notes,
                     run_id, fault_id, targets_json, created_epoch_s,
-                    runtime_identity
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    runtime_identity, resolved_target_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.id,
@@ -59,6 +59,9 @@ class SQLiteLeaseSink:
                     json.dumps(sorted(lease.targets)),
                     created.timestamp(),
                     lease.runtime_identity,
+                    json.dumps(lease.resolved_target.model_dump(mode="json"))
+                    if lease.resolved_target is not None
+                    else None,
                 ),
             )
 
@@ -114,8 +117,18 @@ def _row_to_lease(row: Mapping[str, object]) -> FaultLease:
             "targets": frozenset(json.loads(str(row["targets_json"]))),
             "created_at": datetime.fromtimestamp(float(str(row["created_epoch_s"])), tz=UTC),
             "runtime_identity": row.get("runtime_identity"),
+            "resolved_target": _resolved_target_or_none(row.get("resolved_target_json")),
         }
     )
+
+
+def _resolved_target_or_none(raw: object) -> object:
+    """Parse the nullable ``resolved_target_json`` column back into a model."""
+    if not raw:
+        return None
+    from mayhem.domain.resolution import ResolvedPodTarget  # noqa: PLC0415
+
+    return ResolvedPodTarget.model_validate(json.loads(str(raw)))
 
 
 def _iso_or_none(moment: datetime | None) -> str | None:

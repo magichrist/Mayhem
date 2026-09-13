@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from mayhem.domain.common import Duration, utc_now
 from mayhem.domain.errors import InvalidTransitionError, InvariantViolationError
+from mayhem.domain.resolution import ResolvedPodTarget
 
 
 class LeaseState(StrEnum):
@@ -81,6 +82,10 @@ class FaultLease(BaseModel):
     release_mechanism: str | None = None  # normal|watchdog|janitor|manual
     escalation_notes: str | None = None
     runtime_identity: str | None = None  # canonical identity key (ADR-M1-1/1-3)
+    # k-plan-3 (ADR-M7-1 §3.3): nullable JSON evidence of the *resolved* target
+    # written by the execution-time resolver. Kubernetes exec-family faults
+    # populate it (pod/uid/container-id/node); docker faults leave it None.
+    resolved_target: ResolvedPodTarget | None = None
 
     @field_validator("id")
     @classmethod

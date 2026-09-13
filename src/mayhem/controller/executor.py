@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from mayhem.agents.executors import executor_for, read_boot_time
 from mayhem.agents.impact import OBSERVATION_BLIND
+from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
 from mayhem.controller.observability_collector import (
@@ -38,6 +39,7 @@ from mayhem.domain.checks import CheckLocus
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.experiments import OnFailure
+from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
 from mayhem.domain.run_outcome import RunVerdict
 from mayhem.domain.success import (
@@ -384,6 +386,7 @@ class RunEngine:
         on_event: Callable[[Event], None] | None = None,
         bypass: Mapping[tuple[str, str], str] | None = None,
         cancellation: CancellationToken | None = None,
+        k8s_resolver: KubernetesRuntimeResolver | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -410,6 +413,9 @@ class RunEngine:
         # signal handler escalates grace -> term -> kill and the agent loop
         # reads at every safe point.
         self._cancellation = cancellation or CancellationToken()
+        # Execution-time Kubernetes resolver (k-plan-3 SP-3.4): None means
+        # "build lazily on demand from the kubectl/SDK gate."
+        self._k8s_resolver = k8s_resolver
 
     # -- public -----------------------------------------------------------------------
 
@@ -711,12 +717,228 @@ class RunEngine:
                 dirty.extend(lease_dirty)
         return reports, dirty
 
+    def _execute_k8s_fault(
+        self, plan: ExecutionPlan, step: PlannedStep, targets: frozenset[str]
+    ) -> tuple[StepReport, list[str]]:
+        """Kubernetes-routed step execution (k-plan-3 SP-3.4).
+
+        Resolve the pod -> record the write-ahead undo contract -> form the
+        lease (carrying the resolved target via migration ``resolved_target``)
+        -> inject through the K8sExecutor -> hold -> undo -> release. Every
+        durable transition goes through the LeaseClient so no k8s path
+        bypasses the domain rules. Families the milestone driver refuses
+        (payload/lifecycle) fail loud with ``k8s.unsupported`` before any
+        lease forms.
+        """
+        from mayhem.agents.executors import (  # noqa: PLC0415
+            K8S_SIGNAL_FAULTS,
+            K8S_SIGNAL_INJECT_SIGNAL,
+            K8S_UNDO_COMMAND,
+            k8s_unsupported_reason,
+        )
+        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+            k8s_undo_spec,
+            make_k8s_resolver,
+            preferred_pod_from_graph,
+        )
+        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+
+        fault = step.fault
+        assert fault is not None and fault.target is not None
+        resolver = make_k8s_resolver(self._k8s_resolver)
+        if resolver is None or not resolver.available:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
+                    "not importable)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        if fault.fault_id not in K8S_SIGNAL_FAULTS:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    f"failed_to_apply: {k8s_unsupported_reason(fault.fault_id)} "
+                    "(safe-aborted, no mutation)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        try:
+            outcome = resolver.resolve(
+                fault.target,
+                preferred_pod=preferred_pod_from_graph(self._live_graph, targets),
+            )
+            target = outcome.resolved
+            if target is None:
+                raise ResolutionError("resolution.no_target", "resolver returned no pod")
+            pid, boot = resolver.read_primary_pid(target)
+        except ResolutionError as exc:
+            return (
+                StepReport(step.id, False, f"{exc.code}: {exc}", status="resolution_failed"),
+                [],
+            )
+        except SelectionError as exc:
+            return (
+                StepReport(step.id, False, f"{exc.code}: {exc}", status="selection_failed"),
+                [],
+            )
+        if outcome.drift:
+            self._emit(
+                Event(
+                    kind=EventKind.DRIFT_REPORTED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "step": step.id,
+                        "note": outcome.note,
+                    },
+                )
+            )
+        undo_spec = k8s_undo_spec(fault.fault_id, target, pid=pid, boot=boot)
+        lease = self._client.acquire(
+            run_id=plan.run_id,
+            fault_id=fault.fault_id,
+            targets=targets,
+            undo_ops=(undo_spec,),
+            verify_probes=(
+                VerifyProbe(
+                    probe="k8s.process",
+                    args={
+                        "fault_id": fault.fault_id,
+                        "pod": target.pod,
+                        "namespace": target.namespace,
+                        "pid": pid,
+                        "boot": boot,
+                    },
+                ),
+            ),
+            ttl_seconds=max(float(fault.duration) + 60.0, 120.0),
+            runtime_identity=target.authority_key,
+            resolved_target=target,
+        )
+        active = self._client.activate(lease.id)
+        executor = executor_for(fault.fault_id, runtime=RuntimeLabel.KUBERNETES)
+        if executor is None:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "failed_to_apply: k8s.unsupported: no executor registered "
+                    "(safe-aborted, no mutation)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        reason = executor.can_apply(active)
+        if reason is not None:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_FAILED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "status": "failed_to_apply",
+                        "reason": reason,
+                    },
+                ),
+            )
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    f"failed_to_apply: {reason} (safe-aborted, no mutation)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        inject_outcome = executor.inject(active)
+        self._record_tool_result(inject_outcome.tool_result if inject_outcome else None)
+        if not inject_outcome.ok:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="inject_failed")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_FAILED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "status": "inject_failed",
+                        "reason": inject_outcome.detail,
+                    },
+                ),
+            )
+            return (
+                StepReport(step.id, False, inject_outcome.detail, status="inject_failed"),
+                [],
+            )
+        self._emit(
+            Event(
+                kind=EventKind.FAULT_INJECTED,
+                run_id=plan.run_id,
+                detail={
+                    "fault": fault.fault_id,
+                    "lease": lease.id,
+                    "target": target.authority_key,
+                    "pod": target.pod,
+                    "resolver_note": outcome.note,
+                },
+            ),
+        )
+        self._sleep_interruptible(float(fault.duration))
+        undo_outcome = executor.undo(active)
+        self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
+        if undo_outcome.ok:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="normal")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_RECOVERED,
+                    run_id=plan.run_id,
+                    detail={"fault": fault.fault_id, "lease": lease.id},
+                ),
+            )
+            return (
+                StepReport(
+                    step.id,
+                    True,
+                    f"k8s {fault.fault_id} injected on {target.authority_key}: "
+                    f"{inject_outcome.detail}; undo: {undo_outcome.detail}",
+                ),
+                [],
+            )
+        dirty_lease = self._client.mark_releasing(lease.id)
+        dirty_lease = self._client.mark_dirty(lease.id, notes=undo_outcome.detail)
+        return (
+            StepReport(
+                step.id,
+                False,
+                f"k8s undo DIRTY on {lease.id}: {undo_outcome.detail}",
+                status="dirty",
+            ),
+            [dirty_lease.id],
+        )
+
     def _execute_fault(  # noqa: PLR0915, PLR0912  (converging inject/monitor/recover pipeline)
         self, plan: ExecutionPlan, step: PlannedStep
     ) -> tuple[StepReport, list[str]]:
         fault = step.fault
         assert fault is not None  # planner contract
         targets: frozenset[str] = frozenset().union(*(t.node_ids for t in fault.targets))
+        if fault.target is not None and fault.target.runtime == RuntimeLabel.KUBERNETES:
+            # k-plan-3: a kubernetes-routed step delivers through the resolved
+            # pod (kubectl exec driver), not the docker host pipeline.
+            return self._execute_k8s_fault(plan, step, targets)
         if self._safety is not None and self._live_graph is not None:
             # G3: re-check resolved targets against *live* topology seconds before injection.
             pre_exec_assertion(

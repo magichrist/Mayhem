@@ -17,12 +17,27 @@ into two sharply different concepts:
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+
+class RuntimeLabel(StrEnum):
+    """Locked runtime labels (k-plan-1 §1.3) — docker/podman/kubernetes.
+
+    ``RuntimeIdentity.runtime`` stays a free string in the model so persisted
+    rows never need a migration, but the DSL and config surface now speak only
+    this vocabulary. Enum values equal the historical strings, so any stored
+    ``runtime`` parse is a no-op round-trip.
+    """
+
+    DOCKER = "docker"
+    PODMAN = "podman"
+    KUBERNETES = "kubernetes"
 
 
 class RuntimeIdentity(BaseModel):
