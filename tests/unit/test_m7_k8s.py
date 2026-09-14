@@ -34,7 +34,7 @@ from mayhem.domain.experiments import (
     ResolvedTarget,
 )
 from mayhem.domain.faults import FaultCategory
-from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.identity import RuntimeIdentity, RuntimeLabel
 from mayhem.domain.k8s_adapter import (
     ADR_M7_1,
     ADR_M7_2,
@@ -49,6 +49,7 @@ from mayhem.domain.runtime_adapter import (
     CapabilityVerdict,
     RuntimeCapability,
 )
+from mayhem.domain.target import ResourceKind, TargetScope
 from mayhem.domain.topology import (
     Edge,
     EdgeKind,
@@ -286,12 +287,55 @@ class TestK8sSafetyGate:
         assert "kubernetes execution not yet supported" in str(exc_info.value)
         assert ADR_M7_1 in str(exc_info.value)
 
-    def test_k8s_node_plan_refused(self) -> None:
-        """Plan targeting a k8s node is also refused."""
-        plan = _k8s_plan("k8s.node_drain")
+    def test_k8s_node_plan_admitted(self) -> None:
+        """k-plan-5 ships node execution: a node-targeting plan validates."""
+        selector = TargetSelector(kind=NodeKind.K8S_NODE, expr="worker-1")
+        node_scope = TargetScope(
+            logical_id="workers",
+            runtime=RuntimeLabel.KUBERNETES,
+            kind=ResourceKind.K8S_NODE,
+            authority={"name": "worker-1"},
+        )
+        plan = ExecutionPlan(
+            run_id="run-m7-node",
+            kind=ExperimentKind.DRILL,
+            environment_fingerprint="f",
+            topology_snapshot_id="ts-m7",
+            config_snapshot_id="cs-m7",
+            steps=(
+                PlannedStep(
+                    id="step-1",
+                    seq=1,
+                    fault=PlannedFault(
+                        fault_id="k8s.node_drain",
+                        duration=10.0,
+                        target=node_scope,
+                        targets=(
+                            ResolvedTarget(
+                                selector=selector,
+                                node_ids=frozenset({"k8s-worker-1"}),
+                            ),
+                        ),
+                    ),
+                    raw_action=InjectFault(
+                        fault="k8s.node_drain",
+                        duration=10.0,
+                        selectors=(selector,),
+                    ),
+                ),
+            ),
+        )
         graph = _k8s_graph()
-        with pytest.raises(SafetyRefusedError, match=r"k8s\.unsupported"):
-            validate_plan(plan, graph, _ctx())
+        ctx = SafetyContext(
+            policy=PolicyCfg(
+                allow_critical=True,
+                critical_fault_acks=("k8s.node_drain",),
+            ),
+            budget=_ctx().budget,
+            fingerprint="f",
+            allow_critical_cli=True,  # engine-level flag, mirrors CLI --allow-critical
+        )
+        validate_plan(plan, graph, ctx, adapter=None)  # no refusal
 
     def test_normal_plan_not_affected(self) -> None:
         """Non-k8s plans pass the k8s gate."""
