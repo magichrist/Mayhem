@@ -443,6 +443,7 @@ def run_campaign(
                 live_graph=lambda: build_graph(resolved_compose),
                 on_event=_debug_progress() if obj.debug else None,
                 bypass=bypass,
+                recovery_grace=prepared.recovery_grace,
             )
             return eng.execute(compiled.plan)
 
