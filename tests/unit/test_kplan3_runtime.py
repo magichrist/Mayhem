@@ -8,6 +8,7 @@ this milestone refuses — before any lease forms or mutation happens.
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,7 +38,7 @@ from mayhem.domain.experiments import (
 )
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.leases import LeaseState, UndoOp
-from mayhem.domain.target import ResourceKind, TargetScope
+from mayhem.domain.target import ResourceKind, SelectionMode, SelectionSpec, TargetScope
 from mayhem.domain.topology import PodNode, TopologyGraph
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 from mayhem.infra.store import Store
@@ -52,17 +53,23 @@ class FakeClusterClient:
         pods: list[K8sPod],
         exec_stdout: str = "",
         fail_exec_on: tuple[str, ...] = (),
+        pod_sequence: list[list[K8sPod]] | None = None,
     ) -> None:
         self._workload = workload
         self._pods = pods
+        self._pod_sequence = list(pod_sequence or [])
         self._exec_stdout = exec_stdout
         self._fail_exec_on = fail_exec_on
         self.exec_calls: list[tuple[str, ...]] = []
+        self.pods_calls = 0
 
     def workload(self, workload: K8sWorkload) -> K8sWorkload | None:
         return self._workload
 
     def pods_for(self, workload: K8sWorkload) -> list[K8sPod]:
+        self.pods_calls += 1
+        if self._pod_sequence:
+            return self._pod_sequence.pop(0)
         return [p for p in self._pods if p.namespace == workload.namespace]
 
     def exec(self, target: Any, argv: tuple[str, ...]) -> str:
@@ -86,6 +93,10 @@ def _pod() -> K8sPod:
     )
 
 
+def _replacement_pod() -> K8sPod:
+    return replace(_pod(), uid="u-2", name="checkout-def456")
+
+
 _WORKLOAD = K8sWorkload(namespace="production", kind="deployment", name="checkout")
 
 
@@ -94,7 +105,7 @@ def _fake_tool(
     ok_stdout: str = "",
     fail_on: tuple[str, ...] = (),
 ):
-    def _run(argv: tuple[str, ...]) -> ToolResult:
+    def _run(argv: tuple[str, ...], **kwargs: Any) -> ToolResult:
         calls.append(tuple(argv))
         joined = " ".join(argv)
         fail = any(marker in joined for marker in fail_on)
@@ -202,6 +213,7 @@ def _engine(
     client: FakeClusterClient,
     *,
     resolver: KubernetesRuntimeResolver | None = None,
+    recovery_grace: float = 10.0,
 ) -> tuple[RunEngine, list[Event]]:
     events: list[Event] = []
     engine = RunEngine(
@@ -211,6 +223,7 @@ def _engine(
         live_graph=lambda: _graph(),
         on_event=events.append,
         k8s_resolver=resolver or KubernetesRuntimeResolver(client=client),
+        recovery_grace=recovery_grace,
     )
     return engine, events
 
@@ -282,16 +295,161 @@ class TestEngineK8sStep:
         signals = [arg for argv in tool_calls for arg in argv if arg.startswith("-")]
         assert "-STOP" in signals and "-CONT" in signals
 
-    def test_pod_lifecycle_refused_before_any_mutation(self, tmp_path: Path) -> None:
+    def test_pod_kill_mutation_waits_for_replacement(self, tmp_path: Path, monkeypatch) -> None:
+        """k-plan-4 §4.5: irreversible pod kill releases once a replacement runs."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-mutation.db")
+        client = FakeClusterClient(
+            workload=_WORKLOAD,
+            pods=[_pod()],
+            pod_sequence=[[_pod()], [_replacement_pod()]],
+        )
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan("k8s.pod_kill"))
+        assert result.steps[0].ok is True
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "normal"
+        assert lease.resolved_target is not None
+        assert lease.resolved_target.pod == "checkout-abc123"
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+        deletes = [
+            argv for argv in tool_calls
+            if argv[:2] == ("kubectl", "delete") and "pod" in argv
+        ]
+        assert deletes and "--grace-period" in deletes[0]
+
+    def test_pod_kill_without_replacement_marks_dirty(self, tmp_path: Path, monkeypatch) -> None:
+        """Compensation window expiring with no replacement ⇒ DIRTY lease."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-mutation-dirty.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, events = _engine(store, client, recovery_grace=10.0)
+        result = engine.execute(_plan("k8s.pod_kill"))
+        assert result.steps[0].ok is False
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.DIRTY
+        assert "replacement" in (lease.escalation_notes or "")
+        assert any(e.kind == EventKind.FAULT_FAILED for e in events)
+
+    def test_pod_pressure_reverses_live_undone(self, tmp_path: Path, monkeypatch) -> None:
+        """k-plan-4 §4.4: pod_pressure release is pure live undo (no replacement)."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-pressure.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan("k8s.pod_pressure"))
+        assert result.steps[0].ok is True
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "normal"
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+
+    def test_pod_partition_applies_and_revokes_network_policy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """k-plan-4 §4.1: pod_partition routes through the network-policy executor."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-partition.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan("k8s.pod_partition"))
+        assert result.steps[0].ok is True
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "normal"
+        assert lease.resolved_target is not None
+        assert lease.resolved_target.pod == "checkout-abc123"
+        applies = [a for a in tool_calls if "apply" in a]
+        deletes = [a for a in tool_calls if "delete" in a and "networkpolicy" in a]
+        assert applies, "partition must apply a NetworkPolicy"
+        assert deletes, "reversible undo must delete the NetworkPolicy"
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+
+    def test_inject_failure_on_kill_releases_without_mutation(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        tool_calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(tool_calls, fail_on=("delete",)),
+        )
+        store = Store.open_migrated(tmp_path / "rk3-mutation-inject.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, _events = _engine(store, client)
+        result = engine.execute(_plan("k8s.pod_kill"))
+        assert result.steps[0].ok is False
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "inject_failed"
+
+    def test_pod_kill_multi_instance_selection(self, tmp_path: Path, monkeypatch) -> None:
+        """k-plan-4 §4.2: count-mode selection leases one lease per resolved pod."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-multi.db")
+        pod_b = _replacement_pod()
+        client = FakeClusterClient(
+            workload=_WORKLOAD,
+            pods=[_pod(), pod_b],
+            pod_sequence=[[_pod(), pod_b], [_replacement_pod(), _replacement_pod()]],
+        )
+        scope = TargetScope(
+            logical_id="checkout",
+            runtime=RuntimeLabel.KUBERNETES,
+            kind=ResourceKind.DEPLOYMENT,
+            authority={"namespace": "production", "kind": "deployment", "name": "checkout"},
+            container="app",
+            selection=SelectionSpec(mode=SelectionMode.COUNT, count=2),
+        )
+        fault = PlannedFault(
+            fault_id="k8s.pod_kill",
+            targets=(),
+            target=scope,
+            undo_ops=(UndoOp(op="k8s.exec", args={"undo_command": "CONT"}),),
+            duration="0.1s",
+        )
+        step = PlannedStep(id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0))
+        plan = ExecutionPlan(
+            run_id="rk3-multi",
+            kind=ExperimentKind.DRILL,
+            steps=(step,),
+            config_snapshot_id="c",
+            topology_snapshot_id="t",
+            environment_fingerprint="f",
+        )
+        engine, events = _engine(store, client)
+        result = engine.execute(plan)
+        assert result.steps[0].ok is True
+        leases = _all_leases(store)
+        assert {l.resolved_target.pod for l in leases} == {"checkout-abc123", "checkout-def456"}
+        assert {l.state for l in leases} == {LeaseState.RELEASED}
+        deletes = [
+            argv for argv in tool_calls
+            if argv[:2] == ("kubectl", "delete") and "pod" in argv
+        ]
+        assert len(deletes) == 2  # one delete per selected pod
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+
+    def test_pod_latency_refused_without_netns(self, tmp_path: Path) -> None:
+        """k8s.pod_latency needs NETNS capability; when UNSUPPORTED the engine
+        acquires a lease, fails the capability gate, and releases it — no
+        mutation happens."""
         store = Store.open_migrated(tmp_path / "rk3-refuse.db")
         client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
         engine, _events = _engine(store, client)
-        plan = _plan_from_spec()  # planner admits k8s.pod_latency, engine refuses
+        plan = _plan_from_spec()
         fault = next(s.fault for s in plan.steps if s.fault is not None)
         assert fault.fault_id == "k8s.pod_latency"
         result = engine.execute(plan)
         assert result.steps[0].ok is False
-        assert _all_leases(store) == []
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "failed_to_apply"
         assert client.exec_calls == []  # no cluster I/O, no mutation
 
     def test_resolution_failure_leaves_no_lease(self, tmp_path: Path) -> None:
