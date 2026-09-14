@@ -104,6 +104,7 @@ class Prepared:
     topology_snapshot_id: str
     fingerprint: str
     safety: SafetyContext
+    recovery_grace: float = 300.0
 
 
 def prepare(
@@ -148,6 +149,7 @@ def prepare(
             fingerprint=fingerprint,
             allow_critical_cli=allow_critical,
         ),
+        recovery_grace=cfg.recovery_grace,
     )
 
 
@@ -256,6 +258,7 @@ def engine_for(
     live_graph: Callable[[], TopologyGraph] | None = None,
     on_event: Callable[[Event], None] | None = None,
     bypass: dict[tuple[str, str], str] | None = None,
+    recovery_grace: float = 300.0,
 ) -> RunEngine:
     return RunEngine(
         store,
@@ -264,6 +267,7 @@ def engine_for(
         live_graph=live_graph,
         on_event=on_event,
         bypass=bypass,
+        recovery_grace=recovery_grace,
     )
 
 
