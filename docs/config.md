@@ -157,7 +157,10 @@ field, type, and default:
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `risk_ceiling` | enum | `"medium"` | Highest fault risk a run may execute: `none`, `low`, `medium`, `high`, `critical`. |
-| `allow_critical` | bool | `false` | Permit `critical`-risk faults (requires `risk_ceiling: critical` EITHER via this field `true` **and** `--allow-critical` gate on critical runs, or via policy). |
+| `allow_critical` | bool | `false` | Config-side half of the `critical` opt-in. See the triple opt-in below. |
+| `critical_fault_acks` | seq[str] | `[]` | Per-fault acknowledgments for `critical`-risk faults (e.g. `k8s.node_drain`). A critical fault is injectable only when **all three** of `policy.allow_critical: true`, a matching entry here, and the `--allow-critical` CLI flag are present (k-plan-5 §5.1). |
+| `allow_faults` | seq[str] \| null | `null` | `null` = whole catalog; a list restricts injection to those fault ids. |
+| `deny_faults` | seq[str] | `[]` | Fault ids never injectable. |
 | `max_faults` | int | (none) | Ceiling on faults executed per run. |
 | `timeout` | str | (none) | Maximum wall-clock for a run (click Duration, e.g. `30m`). |
 | `recovery` | bool | `true` | Auto-recover the target after each fault. |
@@ -188,16 +191,30 @@ field, type, and default:
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
+| `runtime` | `"docker"` \| `"podman"` \| `"kubernetes"` | `"docker"` | Default runtime for drills that do not pin one per target. `kubernetes` makes discovery target a live cluster (`mayhem topology discover --runtime kubernetes`); compose blueprints stay docker-scoped. |
 | `timeout` | str | (none) | Run timeout (click Duration). |
 | `budget` | int | (none) | Fault budget for the run. |
 | `recovery` | bool | `true` | Auto-recover topology after each fault. |
 | `max_faults` | int | (none) | Ceiling on faults per run. |
+
+### 5.5a `kubernetes`
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `context` | str \| null | `null` | Kubeconfig context for discovery/execution; `null` uses the current context. |
+| `namespace` | str \| null | `null` | Namespace filter for discovery; `null` = all namespaces. |
 
 ### 5.6 `log_level`
 
 | Type | Default | Meaning |
 |------|---------|---------|
 | enum | `"WARNING"` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`. |
+
+### 5.7 `recovery_grace` (k-plan-4)
+
+| Type | Default | Meaning |
+|------|---------|---------|
+| float | `300.0` | Seconds pod-lifecycle compensation waits for the controller's replacement pod to reach Ready (timeout → `compensation_timeout` + janitor watch). |
 
 ---
 
