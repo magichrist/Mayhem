@@ -89,6 +89,9 @@ class PolicyCfg(BaseModel):
     deny_faults: frozenset[str] = frozenset()
     risk_ceiling: RiskLevel | None = None
     allow_critical: bool = False  # config-side half of the critical opt-in
+    # k-plan-5 §5.1: CRITICAL-risk faults additionally require a per-fault
+    # explicit ack here AND the CLI-level --allow-critical flag (triple opt-in).
+    critical_fault_acks: frozenset[str] = frozenset()
 
 
 class StorageCfg(BaseModel):
@@ -134,6 +137,9 @@ class MayhemConfigBase(BaseModel):
     runtime: Literal["docker", "podman", "kubernetes"] = "docker"
     target: TargetCfg = Field(default_factory=TargetCfg)
     kubernetes: KubernetesCfg = Field(default_factory=KubernetesCfg)
+    # k-plan-4 §4.5: how long pod-lifecycle compensation waits for the
+    # controller's replacement pod to reach Ready before timing out.
+    recovery_grace: float = Field(default=300.0, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # ADR-M5-1 fallback for `mayhem maniac` when the drill spec's own
     # `config.maniac` block is absent (spec-level settings win).
