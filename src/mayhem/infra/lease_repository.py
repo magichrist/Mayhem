@@ -126,9 +126,24 @@ def _resolved_target_or_none(raw: object) -> object:
     """Parse the nullable ``resolved_target_json`` column back into a model."""
     if not raw:
         return None
-    from mayhem.domain.resolution import ResolvedPodTarget  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
 
-    return ResolvedPodTarget.model_validate(json.loads(str(raw)))
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from mayhem.domain.resolution import (  # noqa: PLC0415
+        ResolvedNodeTarget,
+        ResolvedPodTarget,
+    )
+
+    data = _json.loads(str(raw))
+    # k-plan-5: pod leases persist ResolvedPodTarget, node leases persist
+    # ResolvedNodeTarget — discriminate on the shape rather than guess.
+    for model in (ResolvedNodeTarget, ResolvedPodTarget):
+        try:
+            return model.model_validate(data)
+        except ValidationError:
+            continue
+    return None
 
 
 def _iso_or_none(moment: datetime | None) -> str | None:
