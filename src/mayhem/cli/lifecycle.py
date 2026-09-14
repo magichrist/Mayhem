@@ -616,6 +616,7 @@ def run(
             live_graph=lambda: build_graph(resolved_compose),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass,
+            recovery_grace=prepared.recovery_grace,
         )
         result = engine.execute(compiled.plan)
         if obj.debug:
@@ -770,6 +771,7 @@ def maniac(
             live_graph=lambda: build_graph(resolved_compose),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass,
+            recovery_grace=prepared.recovery_grace,
         )
         result = engine.execute(compiled.plan)
         if obj.debug:
