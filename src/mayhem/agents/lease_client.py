@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.leases import FaultLease, LeaseState
-from mayhem.domain.resolution import ResolvedPodTarget
+from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -52,7 +52,8 @@ class LeaseClient:
         verify_probes: tuple[dict[str, Any], ...] = (),
         ttl_seconds: float = 120.0,
         runtime_identity: str | None = None,
-        resolved_target: ResolvedPodTarget | None = None,
+        resolved_target: ResolvedPodTarget | ResolvedNodeTarget | None = None,
+        epoch: int = 0,
     ) -> FaultLease:
         """Create a PENDING lease; the caller must activate() before injecting."""
         self._sequence += 1
@@ -67,6 +68,7 @@ class LeaseClient:
                 "verify_probes": list(verify_probes),
                 "ttl_seconds": ttl_seconds,
                 "runtime_identity": runtime_identity,
+                "epoch": epoch,
                 "resolved_target": (
                     resolved_target.model_dump(mode="json")
                     if resolved_target is not None
