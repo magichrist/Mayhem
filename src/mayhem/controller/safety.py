@@ -99,11 +99,15 @@ def check_fault_admission(fault_id: str, definition_risk: RiskLevel, ctx: Safety
             f"{fault_id}: risk {definition_risk.value} exceeds policy ceiling {ceiling.value}",
         )
     if definition_risk is RiskLevel.CRITICAL and not (
-        ctx.policy.allow_critical and ctx.allow_critical_cli
+        ctx.policy.allow_critical
+        and ctx.allow_critical_cli
+        and fault_id in ctx.policy.critical_fault_acks
     ):
         raise SafetyRefusedError(
             "safety.refused",
-            f"{fault_id}: critical risk requires config policy.allow_critical AND --allow-critical",
+            f"{fault_id}: critical risk requires config policy.allow_critical,"
+            " the CLI-level --allow-critical, and a per-fault ack in"
+            " policy.critical_fault_acks",
         )
 
 
@@ -204,24 +208,38 @@ _REMOTE_REFUSE_MSG = (
 
 def _check_k8s_targets(plan: ExecutionPlan, graph: TopologyGraph) -> None:
     """Eligibility gate for K8s targets (ADR-M7-1 flip, sub-plan SP-3.2).
+
     A kubernetes workload routed through ``targets:`` is admitted when the
     live topology yields at least one eligible pod (``Running``, not
     terminating) at plan time — ``select_one`` raises SelectionError when
     nothing eligible, mirroring the planner gate.  Node-kind targets
-    (k8s_node) keep their hard refusal until k-plan-5; the planned-identity
-    scan stays for ``containers:``-authored faults resolved into k8s nodes.
+    (k8s_node) are admitted too — k-plan-5 ships the node executor and
+    resolves the exact node at execution time; the planned-identity scan
+    stays for ``containers:``-authored faults resolved into k8s nodes
+    (those remain an authoring error, not an execution gap).
     """
     for step in plan.steps:
         fault = step.fault
         if fault is None:
             continue
+        from mayhem.domain.target import ResourceKind  # local: node-kind dispatch
+
         scope = getattr(fault, "target", None)
+        is_node_scope = (
+            scope is not None
+            and scope.runtime == RuntimeLabel.KUBERNETES
+            and scope.kind == ResourceKind.K8S_NODE
+        )
         if scope is not None and scope.runtime == RuntimeLabel.KUBERNETES:
+            if is_node_scope:
+                continue  # k-plan-5: node target resolves at execution time
             select_many(graph, scope)  # claims eligible set; SelectionError when none
         for target in fault.targets:
             for node_id in target.node_ids:
                 node = graph.by_id(node_id)
                 if node is not None and node.kind in _K8S_NODE_KIND_VALUES:
+                    if is_node_scope:
+                        continue  # k-plan-5: node-kind scoped plan is admitted
                     raise SafetyRefusedError(
                         "k8s.unsupported",
                         f"{fault.fault_id}: {_K8S_REFUSE_MSG}",
