@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from mayhem.domain.common import Duration, utc_now
 from mayhem.domain.errors import InvalidTransitionError, InvariantViolationError
-from mayhem.domain.resolution import ResolvedPodTarget
+from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 
 
 class LeaseState(StrEnum):
@@ -85,7 +85,13 @@ class FaultLease(BaseModel):
     # k-plan-3 (ADR-M7-1 §3.3): nullable JSON evidence of the *resolved* target
     # written by the execution-time resolver. Kubernetes exec-family faults
     # populate it (pod/uid/container-id/node); docker faults leave it None.
-    resolved_target: ResolvedPodTarget | None = None
+    # k-plan-5: ResolvedNodeTarget for node-level faults (node_drain/node_pressure).
+    resolved_target: ResolvedPodTarget | ResolvedNodeTarget | None = None
+    # RCLS (Recovery-capable Lease State) epoch: incremented each time the
+    # lease is re-served after a dirty/expired lifecycle.  The epoch lets
+    # downstream consumers (dashboard, janitor) detect stale undo artefacts.
+    epoch: int = 0
+    served_at: datetime | None = None  # timestamp of last serve (ACTIVE entry)
 
     @field_validator("id")
     @classmethod
@@ -147,6 +153,8 @@ class FaultLease(BaseModel):
         moment = now if now is not None else utc_now()
         if target is LeaseState.ACTIVE:
             updates["injected_at"] = moment
+            updates["served_at"] = moment
+            updates["epoch"] = self.epoch + 1
         if target in (LeaseState.RELEASED, LeaseState.EXPIRED):
             updates["released_at"] = moment
         if mechanism is not None:
