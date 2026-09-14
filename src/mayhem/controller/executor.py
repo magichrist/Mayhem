@@ -24,6 +24,7 @@ from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
+from mayhem.controller.k8s_runtime import K8S_MUTATION_FAULTS
 from mayhem.controller.observability_collector import (
     SourceCollection,
     collect_observability,
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from mayhem.domain.checks import SteadyStateCheck
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.identity import ProcessRuntimeIdentity
+    from mayhem.domain.resolution import ResolvedPodTarget
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
     from mayhem.toolkit.tool_runner import ToolResult
@@ -387,6 +389,7 @@ class RunEngine:
         bypass: Mapping[tuple[str, str], str] | None = None,
         cancellation: CancellationToken | None = None,
         k8s_resolver: KubernetesRuntimeResolver | None = None,
+        recovery_grace: float = 300.0,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -416,6 +419,9 @@ class RunEngine:
         # Execution-time Kubernetes resolver (k-plan-3 SP-3.4): None means
         # "build lazily on demand from the kubectl/SDK gate."
         self._k8s_resolver = k8s_resolver
+        # k-plan-4 §4.5: how long pod-lifecycle compensation waits for a
+        # replacement pod to reach Ready before declaring a timeout.
+        self._recovery_grace_s = max(float(recovery_grace), 10.0)
 
     # -- public -----------------------------------------------------------------------
 
@@ -732,11 +738,10 @@ class RunEngine:
         """
         from mayhem.agents.executors import (  # noqa: PLC0415
             K8S_SIGNAL_FAULTS,
-            K8S_SIGNAL_INJECT_SIGNAL,
-            K8S_UNDO_COMMAND,
             k8s_unsupported_reason,
         )
         from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+            K8S_NODE_FAULTS,
             k8s_undo_spec,
             make_k8s_resolver,
             preferred_pod_from_graph,
@@ -745,6 +750,10 @@ class RunEngine:
 
         fault = step.fault
         assert fault is not None and fault.target is not None
+        if fault.fault_id in K8S_NODE_FAULTS:
+            return self._execute_k8s_node_fault(plan, step)
+        if fault.fault_id in K8S_MUTATION_FAULTS:
+            return self._execute_k8s_pod_fault(plan, step)
         resolver = make_k8s_resolver(self._k8s_resolver)
         if resolver is None or not resolver.available:
             return (
@@ -927,6 +936,475 @@ class RunEngine:
                 status="dirty",
             ),
             [dirty_lease.id],
+        )
+
+    def _execute_k8s_pod_fault(
+        self, plan: ExecutionPlan, step: PlannedStep
+    ) -> tuple[StepReport, list[str]]:
+        """Pod-lifecycle + NetworkPolicy step execution (k-plan-4 §4.4/§4.5).
+
+        ``k8s.pod_kill``/``k8s.pod_evict``/``k8s.pod_oom`` are irreversible:
+        after the hold the round enters compensation — the engine polls the
+        workload's eligible pod set until a pod with a different uid has
+        replaced the injected one, bounded by ``config.recovery_grace``.
+        ``k8s.network_policy`` is reversible and ends with a live undo
+        (policy delete); ``k8s.pod_pressure`` is container-level pressure from
+        the k-plan-3 exec path.  Every durable transition flows through the
+        LeaseClient, one lease per resolved pod.
+        """
+        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+            K8S_REVERSIBLE_FAULTS,
+            k8s_mutation_spec,
+            k8s_undo_ops_for,
+            make_k8s_resolver,
+        )
+        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+
+        fault = step.fault
+        assert fault is not None and fault.target is not None
+        resolver = make_k8s_resolver(self._k8s_resolver)
+        if resolver is None or not resolver.available:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
+                    "not importable)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        action = fault.fault_id.split(".", 1)[-1]
+        try:
+            outcomes = resolver.resolve_many(fault.target, pod_action=action)
+        except ResolutionError as exc:
+            return (
+                StepReport(step.id, False, f"{exc.code}: {exc}", status="resolution_failed"),
+                [],
+            )
+        except SelectionError as exc:
+            return (
+                StepReport(step.id, False, f"{exc.code}: {exc}", status="selection_failed"),
+                [],
+            )
+        if not outcomes:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "selection.no_eligible_pods: no pod eligible for the mutation",
+                    status="selection_failed",
+                ),
+                [],
+            )
+
+        lease_ids: list[str] = []
+        dirty: list[str] = []
+        details: list[str] = []
+        for outcome in outcomes:
+            target = outcome.resolved
+            if target is None:
+                continue
+            if outcome.drift:
+                self._emit(
+                    Event(
+                        kind=EventKind.DRIFT_REPORTED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "step": step.id,
+                            "note": outcome.note,
+                        },
+                    )
+                )
+            mutation = k8s_mutation_spec(fault.fault_id, target, params=fault.params)
+            lease = self._client.acquire(
+                run_id=plan.run_id,
+                fault_id=fault.fault_id,
+                targets=frozenset({target.pod}),
+                undo_ops=(mutation, *k8s_undo_ops_for(fault.fault_id, target)),
+                verify_probes=(
+                    VerifyProbe(
+                        probe="k8s.replaced" if fault.fault_id not in K8S_REVERSIBLE_FAULTS
+                        else "k8s.undo",
+                        args={
+                            "fault_id": fault.fault_id,
+                            "pod": target.pod,
+                            "namespace": target.namespace,
+                        },
+                    ),
+                ),
+                ttl_seconds=max(float(fault.duration) + 60.0, 120.0),
+                runtime_identity=target.authority_key,
+                resolved_target=target,
+            )
+            active = self._client.activate(lease.id)
+            executor = executor_for(fault.fault_id, runtime=RuntimeLabel.KUBERNETES)
+            reason = (
+                executor.can_apply(active)
+                if executor is not None
+                else "k8s.unsupported: no executor registered"
+            )
+            if reason is not None:
+                self._client.mark_releasing(lease.id)
+                self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_FAILED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "status": "failed_to_apply",
+                            "reason": reason,
+                        },
+                    ),
+                )
+                return (
+                    StepReport(
+                        step.id,
+                        False,
+                        f"failed_to_apply: {reason} (safe-aborted, no mutation)",
+                        status="failed_to_apply",
+                    ),
+                    [],
+                )
+            inject_outcome = executor.inject(active)
+            self._record_tool_result(
+                inject_outcome.tool_result if inject_outcome else None
+            )
+            if not inject_outcome.ok:
+                self._client.mark_releasing(lease.id)
+                self._client.confirm_release(lease.id, mechanism="inject_failed")
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_FAILED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "status": "inject_failed",
+                            "reason": inject_outcome.detail,
+                        },
+                    ),
+                )
+                return (
+                    StepReport(
+                        step.id, False, inject_outcome.detail, status="inject_failed"
+                    ),
+                    [],
+                )
+            lease_ids.append(lease.id)
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_INJECTED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "target": target.authority_key,
+                        "pod": target.pod,
+                    },
+                )
+            )
+            self._sleep_interruptible(float(fault.duration))
+            if fault.fault_id in K8S_REVERSIBLE_FAULTS:
+                undo_outcome = executor.undo(active)
+                self._record_tool_result(
+                    undo_outcome.tool_result if undo_outcome else None
+                )
+                self._client.mark_releasing(lease.id)
+                if undo_outcome.ok:
+                    self._client.confirm_release(lease.id, mechanism="normal")
+                    self._emit(
+                        Event(
+                            kind=EventKind.FAULT_RECOVERED,
+                            run_id=plan.run_id,
+                            detail={"fault": fault.fault_id, "lease": lease.id},
+                        ),
+                    )
+                    details.append(
+                        f"{target.pod}: {inject_outcome.detail}; undo: {undo_outcome.detail}"
+                    )
+                    continue
+                mark = self._client.mark_releasing(lease.id)
+                mark = self._client.mark_dirty(lease.id, notes=undo_outcome.detail)
+                dirty.append(mark.id)
+                details.append(f"{target.pod}: undo DIRTY ({undo_outcome.detail})")
+                continue
+            recovered = self._wait_for_pod_replacement(resolver, fault, target)
+            self._client.mark_releasing(lease.id)
+            if recovered:
+                self._client.confirm_release(lease.id, mechanism="normal")
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_RECOVERED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "compensation": "replacement ready",
+                        },
+                    ),
+                )
+                details.append(
+                    f"{target.pod}: {inject_outcome.detail}; replacement ready"
+                )
+            else:
+                reason = (
+                    "replacement pod did not reach Ready within "
+                    f"recovery_grace={self._recovery_grace_s:.0f}s"
+                )
+                mark = self._client.mark_dirty(
+                    lease.id, notes="; ".join([inject_outcome.detail, reason])
+                )
+                dirty.append(mark.id)
+                self._emit(
+                    Event(
+                        kind=EventKind.FAULT_FAILED,
+                        run_id=plan.run_id,
+                        detail={
+                            "fault": fault.fault_id,
+                            "lease": lease.id,
+                            "status": "compensation_timeout",
+                            "reason": reason,
+                        },
+                    ),
+                )
+                details.append(f"{target.pod}: compensation timed out")
+        if dirty:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "k8s compensation DIRTY on " + ", ".join(sorted(dirty)),
+                    status="dirty",
+                ),
+                dirty,
+            )
+        return StepReport(step.id, True, "; ".join(details) or "no pods mutated"), lease_ids
+
+    def _wait_for_pod_replacement(
+        self,
+        resolver: KubernetesRuntimeResolver,
+        fault: PlannedFault,
+        target: ResolvedPodTarget,
+    ) -> bool:
+        """Poll the workload until the injected pod is replaced (k-plan-4 §4.5).
+
+        A replacement is any eligible pod whose uid differs from the injected
+        one.  Zero-eligible windows and resolution errors during the mutation
+        are transient and keep the poll alive until ``recovery_grace`` elapses.
+        """
+        deadline = time.monotonic() + self._recovery_grace_s
+        override = (fault.params or {}).get("recovery_grace")
+        if override is not None:
+            try:
+                deadline = time.monotonic() + float(override)
+            except (TypeError, ValueError):
+                pass
+        while time.monotonic() < deadline:
+            if self._abort_requested():
+                return False
+            try:
+                news = resolver.resolve_many(
+                    fault.target, pod_action=fault.fault_id.split(".", 1)[-1]
+                )
+            except (ResolutionError, SelectionError):
+                news = []
+            if any(
+                o.resolved is not None
+                and o.resolved.pod_uid != target.pod_uid
+                and o.resolved.pod != target.pod
+                for o in news
+            ):
+                return True
+            chunk = min(2.0, max(deadline - time.monotonic(), 0.0) or 2.0)
+            self._sleep_interruptible(chunk)
+        return False
+
+    def _execute_k8s_node_fault(
+        self, plan: ExecutionPlan, step: PlannedStep
+    ) -> tuple[StepReport, list[str]]:
+        """Execute a k8s *node*-level fault (k-plan-5 §5.1).
+
+        Resolve the node -> record the node mutation write-ahead contract ->
+        form the lease (carrying a ``ResolvedNodeTarget``) -> inject through
+        the node executor -> hold -> undo -> release.  Every durable
+        transition goes through the LeaseClient so no node path bypasses the
+        domain rules.  Node faults are always reversible (``k8s.node_drain``
+        undo = uncordon, ``k8s.node_pressure`` undo = workload delete).
+        """
+        from mayhem.agents.executors import (  # noqa: PLC0415
+            executor_for,
+            k8s_executor_for,
+        )
+        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+            K8S_NODE_FAULTS,
+            make_k8s_resolver,
+            k8s_node_routing,
+            k8s_node_spec,
+            k8s_node_undo_ops,
+            k8s_node_verify_spec,
+        )
+        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+
+        fault = step.fault
+        assert fault is not None and fault.target is not None
+        resolver = make_k8s_resolver(self._k8s_resolver)
+        if resolver is None or not resolver.available:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
+                    "not importable)",
+                ),
+                [],
+            )
+        if fault.fault_id not in K8S_NODE_FAULTS:
+            return (
+                StepReport(step.id, False, f"k8s.unsupported: {fault.fault_id}"),
+                [],
+            )
+        routing = k8s_node_routing()
+        pipeline = routing.get(fault.fault_id, "k8s.node")
+        assert pipeline == "k8s.node"
+        authority = fault.target.authority
+        node_name = authority.get("name") or authority.get("selector")
+        if isinstance(node_name, dict):
+            # selector dict → resolver does label matching; keep node_name None
+            node_name_arg: str | None = None
+        else:
+            node_name_arg = str(node_name) if node_name else None
+        try:
+            outcome = resolver.resolve_node(
+                fault.target, node_name=node_name_arg
+            )
+        except (ResolutionError, SelectionError) as exc:
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_FAILED,
+                    run_id=plan.run_id,
+                    detail={"fault": fault.fault_id, "reason": str(exc)},
+                ),
+            )
+            return StepReport(step.id, False, str(exc)), []
+        resolved = outcome.resolved
+        if resolved is None:
+            return StepReport(step.id, False, "node resolve returned no target"), []
+        params: dict[str, object] = dict(fault.params or {})
+        mutation = k8s_node_spec(fault.fault_id, resolved, params)
+        lease = self._client.acquire(
+            run_id=plan.run_id,
+            fault_id=fault.fault_id,
+            targets=frozenset({resolved.node}),
+            undo_ops=k8s_node_undo_ops(fault.fault_id, resolved, params),
+            verify_probes=(
+                VerifyProbe(
+                    probe="k8s.node_restored",
+                    args={
+                        "fault_id": fault.fault_id,
+                        "node": resolved.node,
+                        "node_uid": resolved.node_uid,
+                    },
+                ),
+            ),
+            ttl_seconds=max(float(fault.duration) + 60.0, 120.0),
+            runtime_identity=resolved.authority_key,
+            resolved_target=resolved,
+        )
+        active = self._client.activate(lease.id)
+        executor = executor_for(fault.fault_id, runtime=RuntimeLabel.KUBERNETES)
+        reason = (
+            executor.can_apply(active)
+            if executor is not None
+            else "k8s.unsupported: no executor registered"
+        )
+        if reason is not None:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_FAILED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "node": resolved.node,
+                        "reason": reason,
+                    },
+                ),
+            )
+            return (
+                StepReport(step.id, False, reason),
+                [],
+            )
+        inject_outcome = executor.inject(active)
+        self._record_tool_result(inject_outcome.tool_result)
+        if not inject_outcome.ok:
+            self._client.mark_releasing(lease.id)
+            self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_FAILED,
+                    run_id=plan.run_id,
+                    detail={
+                        "fault": fault.fault_id,
+                        "lease": lease.id,
+                        "node": resolved.node,
+                        "reason": inject_outcome.detail,
+                    },
+                ),
+            )
+            return (
+                StepReport(step.id, False, inject_outcome.detail),
+                [],
+            )
+        lease_ids: list[str] = [lease.id]
+        self._emit(
+            Event(
+                kind=EventKind.FAULT_INJECTED,
+                run_id=plan.run_id,
+                detail={
+                    "fault": fault.fault_id,
+                    "lease": lease.id,
+                    "node": resolved.node,
+                },
+            )
+        )
+        self._sleep_interruptible(float(fault.duration))
+        undo_outcome = executor.undo(active)
+        self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
+        self._client.mark_releasing(lease.id)
+        if undo_outcome and undo_outcome.ok:
+            self._client.confirm_release(lease.id, mechanism="normal")
+            self._emit(
+                Event(
+                    kind=EventKind.FAULT_RECOVERED,
+                    run_id=plan.run_id,
+                    detail={"fault": fault.fault_id, "lease": lease.id},
+                ),
+            )
+            details = [
+                f"{resolved.node}: {inject_outcome.detail}; undo: {undo_outcome.detail}"
+            ]
+            return (
+                StepReport(step.id, True, "; ".join(details)),
+                lease_ids,
+            )
+        mark = self._client.mark_dirty(
+            lease.id,
+            notes="; ".join([inject_outcome.detail, undo_outcome.detail if undo_outcome else "no undo"]),
+        )
+        return (
+            StepReport(
+                step.id,
+                False,
+                f"{resolved.node}: {inject_outcome.detail}; undo DIRTY "
+                f"({undo_outcome.detail if undo_outcome else 'no undo'})",
+            ),
+            [mark.id],
         )
 
     def _execute_fault(  # noqa: PLR0915, PLR0912  (converging inject/monitor/recover pipeline)
