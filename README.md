@@ -1,7 +1,8 @@
 # Mayhem
 
-**Chaos engineering for Docker & Podman (Kubernetes on the roadmap).** Mayhem
-discovers your system from its compose blueprint, compiles one declarative
+**Chaos engineering for Docker, Podman, and Kubernetes.** Mayhem discovers your
+system from a compose blueprint (Docker/Podman) or a live cluster (Kubernetes),
+compiles one declarative
 `kind: drill` YAML file into a frozen, safety-gated execution plan, injects
 faults through a capability-aware toolkit, and ends every run with a machine
 verdict derived from the observations it actually recorded.
@@ -37,6 +38,7 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 
 - Python 3.12+
 - Docker with Compose v2 (or Podman, used via the `--podman` flag)
+- *(Optional)* A running Kubernetes cluster and `kubectl` for `k8s.*` faults
 
 **Install**
 
@@ -68,10 +70,10 @@ prove injectable.
 The bundled spec exercises **38 distinct faults** across the `testcase-lb`
 load-balancer — one concurrent fault (`max_faults: 1`, `risk_ceiling:
 critical`), auto-recovery off — so the checks observe whether the stack
-self-heals on its own. The remaining nine `k8s.*` catalog faults are exercised
-against a Kubernetes blueprint in [`examples/k8s`](examples/k8s)
-(planning-only until the M8 driver lands), so **every fault in the catalog has
-an example.**
+self-heals on its own. The nine `k8s.*` catalog faults are exercised against a
+Kubernetes blueprint in [`examples/k8s`](examples/k8s) — see
+[Top-level fields (targets)](docs/drill-spec.md#top-level-fields) for the
+cross-runtime target syntax, so **every fault in the catalog has an example.**
 
 ---
 
@@ -182,8 +184,15 @@ errors — before anything is injected.
 
 Faults are drawn from the catalog (net.latency, proc.kill, net.packet_loss,
 TLS failure, container pause, HTTP error injection, dependency and database
-faults, …). The full per-fault reference — every id, its capabilities, risk
-level, and compensation contract — is in [`docs/drill-spec.md`](docs/drill-spec.md#fault-catalog).
+faults, k8s.pod_kill, k8s.node_drain, …). The full per-fault reference —
+every id, its capabilities, risk level, and compensation contract — is in
+[`docs/drill-spec.md`](docs/drill-spec.md#fault-catalog).
+
+The `containers:` block above is the docker-family authoring shape. To fault a
+Kubernetes workload or node — or mix runtimes in one spec — use the
+cross-runtime `targets:` block instead (exactly one of `containers:` /
+`targets:` defines a spec); see
+[Targets (cross-runtime)](docs/drill-spec.md#targets-cross-runtime).
 
 ---
 
@@ -203,6 +212,10 @@ policy:
   deny_faults: []            # fault ids never injectable
   risk_ceiling: null         # tightened by the drill ceiling at plan time
   allow_critical: false      # config-side half of the critical opt-in
+  critical_fault_acks: []    # per-fault acks; critical faults need allow_critical + ack + --allow-critical
+  kubernetes:                # discovery overrides for k8s drills
+    context: null            # kubeconfig context (null = current-context)
+    namespace: null          # namespace filter (null = all)
 blast_radius:
   max_services_pct: 50.0
   max_hosts: 2
@@ -214,7 +227,7 @@ storage:
   artifacts_dir: .mayhem/artifacts
 toolkit:
   binaries: {}               # pin a named tool's binary, keyed by fault backend
-runtime: docker              # docker | podman (CLI: --podman)
+runtime: docker              # docker | podman | kubernetes (CLI: --podman)
 target:
   containers: []             # explicit targets when no compose file is used
 log_level: INFO              # DEBUG | INFO | WARNING | ERROR
@@ -258,7 +271,7 @@ ex valid`, `mayhem t f`.
 
 | Command | Description |
 |---------|-------------|
-| `mayhem topology discover` | Discover live services/hosts and dependency edges from the blueprint. |
+| `mayhem topology discover` | Discover live services/hosts/dependency edges from the blueprint. `--runtime kubernetes` (with `--kube-context` / `--namespace`) discovers a live cluster instead of a compose stack. |
 | `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
 | `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
 | `mayhem run SPEC` | Compile and execute a drill; print the run summary. `--ctr CONTAINER` scopes execution to one container; `--next` prints the plan that would run. |
@@ -321,14 +334,17 @@ successive experiments.
 
 - **Risk ceilings.** Every catalog fault carries a risk level; injection is
   refused when either the policy or the drill ceiling is exceeded.
-  `--allow-critical` is the operator-side acknowledgment.
+  `critical`-risk faults (e.g. `k8s.node_drain`) need a **triple opt-in**:
+  `policy.allow_critical: true`, a per-fault ack in `policy.critical_fault_acks`,
+  and the `--allow-critical` CLI flag.
 - **Concurrency budget.** `max_faults` caps simultaneously-injected faults;
   a wider `parallel:` step queues into rounds.
 - **Duration caps.** Per-fault `duration` beyond the catalog maximum is a
   compile error.
 - **Capability gating.** Faults declare the capabilities they need
-  (docker engine, net_admin, process control, …); the plan is proven against
-  the live graph by the impact gate before run — never assumed.
+  (docker engine, kubernetes_engine, net_admin, process control, …); the plan
+  is proven against the live graph by the impact gate before run — never
+  assumed.
 - **Compensation contracts.** Reversible faults run their declared inverse;
   irreversible ones are followed by workload reconciliation. A failed round
   aborts-and-recovers its own faults first, then propagates.
@@ -365,7 +381,8 @@ The pipeline is staged so everything expensive is done up front and execution
 is as small as possible:
 
 1. **Discover** — the topology provider builds a graph (services, hosts,
-   dependency edges) from the compose blueprint and live containers.
+   dependency edges) from the compose blueprint (Docker/Podman) or a live
+   Kubernetes cluster, plus live containers/nodes.
 2. **Prepare** — `mayhem config` layering (defaults → `mayhem.yaml` → profile →
    env → flags) plus topology, drift detection, and target revalidation.
 3. **Compile & plan** — the drill spec becomes a frozen `ExecutionPlan` with
@@ -393,7 +410,7 @@ is as small as possible:
 | Area | Status |
 |------|--------|
 | Domain models, configuration system | Complete |
-| Topology discovery (Docker/Podman) + compose project filtering + drift detection | Complete |
+| Topology discovery (Docker/Podman/Kubernetes) + compose project filtering + drift detection | Complete |
 | Fault catalog + registry + capability probing (`toolkit`) | Complete |
 | Drill spec DSL (config / containers / execution / checks) | Complete |
 | Deterministic + random planners, frozen plans | Complete |
@@ -405,7 +422,7 @@ is as small as possible:
 | SQLite persistence + restart, migrations (schema freeze) | Complete |
 | Campaigns (multi-spec runs) | Complete |
 | Tests, ruff, mypy (per-file strict) | Complete |
-| Kubernetes execution | Planned (interface-only; see [`examples/k8s`](examples/k8s)) |
+| Kubernetes topology discovery + runtime | Complete (see [`examples/k8s`](examples/k8s)) |
 | Web UI / REST API | Planned |
 
 ---
