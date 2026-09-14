@@ -77,19 +77,33 @@ def test_risk_ceiling_exclusion():
         check_fault_admission("node.service_stop", RiskLevel.HIGH, ctx)
 
 
-def test_critical_requires_double_optin():
+def test_critical_requires_triple_optin():
+    """Critical faults require config allow_critical + --allow-critical + per-fault ack."""
     ctx = _ctx(allow_critical=True)  # config half only
-    with pytest.raises(SafetyRefusedError, match="--allow-critical"):
+    with pytest.raises(SafetyRefusedError, match="per-fault ack"):
         check_fault_admission("x", RiskLevel.CRITICAL, ctx)
+    # config + CLI, but no ack
     ctx_cli = SafetyContext(
         policy=PolicyCfg(allow_critical=True),
         budget=BlastRadiusBudget(),
         fingerprint="f",
         allow_critical_cli=True,
     )
-    check_fault_admission("x", RiskLevel.CRITICAL, ctx_cli)  # both halves: ok
+    with pytest.raises(SafetyRefusedError, match="per-fault ack"):
+        check_fault_admission("x", RiskLevel.CRITICAL, ctx_cli)
+    # all three halves: ok
+    ctx_full = SafetyContext(
+        policy=PolicyCfg(
+            allow_critical=True,
+            critical_fault_acks=frozenset({"x"}),
+        ),
+        budget=BlastRadiusBudget(),
+        fingerprint="f",
+        allow_critical_cli=True,
+    )
+    check_fault_admission("x", RiskLevel.CRITICAL, ctx_full)
     with pytest.raises(SafetyRefusedError):
-        check_fault_admission("x", RiskLevel.CRITICAL, _ctx())  # neither
+        check_fault_admission("x", RiskLevel.CRITICAL, _ctx())  # none
 
 
 def test_default_policy_blocks_node_reboot():
