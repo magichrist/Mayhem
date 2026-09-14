@@ -8,7 +8,9 @@ config plus a step-based fault spec. It declares:
 - **config.maniac** — optional random-injection dial for `mayhem maniac`
   (random container/fault rounds instead of the authored plan)
 - **containers** — per-container faults, keyed by the stable `container_name:`
-- **execution** — cross-container ordering (parallel, sequential, wait, check)
+- **targets** — cross-runtime logical targets (docker / kubernetes workloads /
+  pods / nodes); exactly one of `containers:` / `targets:` defines a spec
+- **execution** — cross-target ordering (parallel, sequential, wait, check)
 - **success** — optional machine-evaluable criteria that turn the run into a
   PASS/FAIL verdict
 - **observability** — optional declarative evidence sources collected into the
@@ -88,7 +90,8 @@ options.
 | `name`          | string                             | yes      | —               | Drill name; run ids carry it as a readable prefix (`r-<name>-<suffix>`). Unlimited runs against one spec are recorded in the persistent DB. |
 | `hypothesis`    | string                             | no       | `""`            | What the drill is trying to prove. |
 | `config`        | [DrillConfig](#config)             | no       | `DrillConfig()` | Safety / runtime settings. |
-| `containers`    | map<string, [DrillContainer](#containers)> | yes | — | Faults per container. At least one required. |
+| `containers`    | map<string, [DrillContainer](#containers)> | *one of* `containers` / `targets` | — | Docker-family faults per-container, keyed by the stable `container_name:`. |
+| `targets`       | map<string, [DrillTarget](#targets-cross-runtime)> | *one of* `containers` / `targets` | — | Cross-runtime logical targets (`docker` / `kubernetes`), keyed by a stable name the `execution:` steps reference. A spec defines **exactly one** of `containers:` / `targets:` (mixing both or defining neither is a compile error). |
 | `execution`     | list<[ExecutionStep](#execution)>  | yes      | —               | Ordering of fault rounds. At least one step required. |
 | `success`       | [SuccessCriteria](#success)        | no       | —               | Machine verdict criteria. |
 | `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record. |
@@ -190,6 +193,16 @@ When you only want a specific fault observed under `recovery: false`, leave
 
 ## Containers
 
+`containers:` is the docker-family authoring shape. It is **exactly one-of**
+with the cross-runtime [`targets:`](#targets-cross-runtime) block — a spec
+defines faults under one or the other, never both, never neither. The two
+shapes target different runtimes:
+
+| Shape | Runtime | Target identity | Points at |
+|-------|---------|-----------------|-----------|
+| `containers:` | docker / podman | `container_name:` key | compose containers |
+| `targets:`     | docker / podman / **kubernetes** | a named `DrillTarget` | compose containers, k8s workloads (`deployment`/`statefulset`/`pod`/…) and **nodes** (`k8s_node`) |
+
 Each key of `containers:` **is** a `container_name:` value from the
 `docker-compose.yml` — the stable identity anchor. Mayhem resolves PIDs and
 addresses from this name at **execution time**, immediately before injection,
@@ -198,6 +211,70 @@ meantime. Everything else the drill records stays descriptive — what gates a
 fault is the catalog and the impact gate, not runtime hints.
 
 Faults listed under one container run **sequentially**.
+
+### Targets (cross-runtime)
+
+The `targets:` block (k-plan-1) is the cross-runtime counterpart to
+`containers:`. Each key is a **logical target name** chosen by the drill; the
+`execution:` steps and the planner reference targets by that name. A target
+declares its runtime, the locator material for that runtime, an optional
+selection, and the faults to run against it:
+
+| Field       | Type                          | Required | Description |
+|-------------|-------------------------------|----------|-------------|
+| `runtime`   | `docker` / `kubernetes`       | yes      | Which runtime this target addresses. |
+| `docker`    | `{container_name: string}`    | if `runtime: docker` | Single-container locator (same `container_name` contract as `containers:`). |
+| `kubernetes`| [KubernetesTargetSpec](#kubernetestargetspec) | if `runtime: kubernetes` | Workload / pod / node locator. |
+| `selection` | `{mode: one}`                 | no       | Which instances of the target are chosen. `mode: one` is the only implemented mode; `all` / `count` / `percentage` / `random` are schema-valid but refused at plan time with `PlanningError` ("reserved until k-plan-4"). |
+| `faults`    | list<[DrillFault](#drillfault)> | yes     | Faults injected against this target (≥ 1). |
+
+Invariants (compile-time): a `kubernetes` runtime requires the `kubernetes:`
+block and forbids the `docker:` block (and vice versa) — a target may never
+mix both locators; a target with no `faults` is refused.
+
+```yaml
+targets:
+  checkout:                          # logical name; `execution:` references this
+    runtime: kubernetes
+    kubernetes:
+      kind: deployment              # deployment | statefulset | daemonset | …
+      namespace: production
+      name: checkout
+    selection:
+      mode: one
+    faults:
+      - fault: k8s.pod_kill
+        duration: 30s
+  lb-egress:                         # docker target under the same spec
+    runtime: docker
+    docker: { container_name: testcase-lb }
+    faults:
+      - fault: net.packet_loss
+        duration: 10s
+  control-plane:                     # node faults target the k8s_node kind
+    runtime: kubernetes
+    kubernetes:
+      kind: k8s_node
+      namespace: ""                  # nodes are cluster-scoped
+      name: minikube
+    faults:
+      - fault: k8s.node_pressure      # needs policy.critical_fault_acks for node_drain
+        duration: 60s
+```
+
+#### KubernetesTargetSpec
+
+| Field       | Type | Required | Description |
+|-------------|------|----------|-------------|
+| `kind`      | `deployment` / `statefulset` / `daemonset` / `service` / `pod` / `k8s_node` | yes | The runtime resource family. `container` is refused here — it is docker-scoped; pod-level kinds accept pod faults. |
+| `namespace` | string | yes | Namespace of the workload (empty for cluster-scoped `k8s_node`). |
+| `name`      | string | yes | The **stable** workload name (e.g. `checkout`) — never a generated pod name; mayhem resolves live pods from it at execution time. |
+| `container` | string | no | Optional single container inside the workload (container-level faults). |
+
+A `kubernetes` drill compiles and gates against the blueprint entirely
+offline (like `containers:` drills); the impact gate proves the pods / nodes
+injectable against the live cluster when `run` reaches execution. Faults are
+drawn from the catalog's `k8s.*` family (see the [fault catalog](#fault-catalog)).
 
 ### `DrillFault`
 
@@ -242,8 +319,8 @@ the action to take. Steps run left to right, top to bottom.
 
 | Key         | Value                               | Meaning |
 |-------------|-------------------------------------|---------|
-| `parallel`  | list of container names             | Inject this step's fault on all named containers concurrently (subject to `max_faults`). |
-| `sequential`| list of container names             | Run this step's faults against each container one after another. |
+| `parallel`  | list of names                       | Inject this step's fault on all named targets concurrently (subject to `max_faults`). For `containers:` specs these are `container_name:` values; for `targets:` specs they are the logical target names. |
+| `sequential`| list of names                       | Run this step's faults against each target one after another (same name contract as `parallel`). |
 | `wait`      | `{duration}` (or `{until_check_passes, timeout}`) | Wait before the next step. |
 | `check`     | list of inline probes               | Inline health probe(s) evaluated between rounds (legacy shorthand; prefer `check_spec` for new drills). |
 | `check_spec`| list of [locus-aware checks](#checks-and-check_spec) | Fully-declared checks with an explicit or inferred execution locus. |
@@ -548,23 +625,28 @@ Full details: [docs/compensation.md](compensation.md).
 
 ## Design Rules
 
-- **Identity is the container name.** Fault targets and check loci resolve from
-  `container_name:` against the compose blueprint. Compose project filtering and
-  drift detection keep the discovered topology aligned with the blueprint.
-  `mayhem run --ctr` / `mayhem maniac --ctr` accept the same value (or the
-  runtime container name) to scope an entire execution to a single container, so
-  a target can be faulted in isolation without editing the spec.
+- **Identity is the target name.** For `containers:` specs, fault targets and
+  check loci resolve from `container_name:` against the compose blueprint.
+  For `targets:` specs, they resolve from the logical target names against the
+  locator blocks (compose containers, k8s workloads / pods / nodes). Compose
+  project filtering and drift detection keep the discovered topology aligned
+  with the blueprint; k8s workloads are resolved to live pods at execution
+  time. `mayhem run --ctr` / `mayhem maniac --ctr` accept the same value (or
+  the runtime container name) to scope an entire execution to a single
+  container, so a target can be faulted in isolation without editing the spec.
 - **The fault applies only if the catalog says it can.** Applicable node kinds
   (container / service / host / k8s_node / pod / process / external_dependency)
   and required capabilities gate injection at validate and plan time.
 - **Risk ceilings compose, tightening only.** The drill `config.risk_ceiling`
   intersects the policy ceiling in `mayhem.yaml`; a fault passes only when below
-  both. `--allow-critical` is the operator-side acknowledgment for
-  `critical`-risk faults (`k8s.node_drain`).
+  both. `critical`-risk faults (`k8s.node_drain`) additionally need a triple
+  opt-in: `policy.allow_critical: true`, a per-fault ack in
+  `policy.critical_fault_acks`, and the `--allow-critical` CLI flag.
 - **Every fault is compensated.** Reversible faults run their declared inverse;
   irreversible ones (`container.kill`, `k8s.pod_evict`, …) are followed by a
   container-spec reconciliation that restores the faulted workload
-  (the compensation contract).
+  (the compensation contract). Node drains/pressure run the node-scope
+  executors via the `kubernetes_engine` capability.
 - **Rounds recover independently.** A failed round aborts-and-recovers its own
   faults first, then propagates; orphaned leases are swept by the janitor.
 - **The spec schema is frozen.** Evolution happens through migrations on the
