@@ -137,6 +137,7 @@ class CellRunner:
             self._engine_name,
             bypass=self._bypass,
             live_graph=self._live_graph,
+            recovery_grace=self._prepared.recovery_grace,
         )
         result = engine.execute(plan)
 
