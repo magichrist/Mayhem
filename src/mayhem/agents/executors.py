@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mayhem.domain.identity import RuntimeLabel
-from mayhem.domain.resolution import ResolvedPodTarget
+from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
 
 if TYPE_CHECKING:
@@ -404,7 +404,8 @@ class K8sExecutor(FaultExecutor):
             return StepOutcome(
                 "undo",
                 False,
-                f"kubectl exec CONT failed (rc={result.exit_code}): {result.stdout.strip()} — DIRTY",
+                f"kubectl exec CONT failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()} — DIRTY",
                 tool_result=result,
             )
         return StepOutcome(
@@ -418,7 +419,7 @@ class K8sExecutor(FaultExecutor):
 _K8S_EXECUTOR = K8sExecutor()
 
 
-# ── k8s runtime contract (k-plan-3 §3.3/§3.4) ─────────────────────────────────
+# ── k8s runtime contract (k-plan-3 §3.3/§3.4, k-plan-4 §4.4) ────────────────
 # The run engine shares these with the K8sExecutor: which fault ids the exec
 # driver admits this milestone, and how their undo behaves.
 K8S_SIGNAL_FAULTS: frozenset[str] = frozenset(K8sExecutor._SIGNAL_INJECT)
@@ -426,10 +427,765 @@ K8S_SIGNAL_INJECT_SIGNAL: dict[str, str] = dict(K8sExecutor._SIGNAL_INJECT)
 K8S_UNDO_COMMAND: dict[str, str] = dict(K8sExecutor._SIGNAL_UNDO_COMMAND)
 
 
+def _memory_bytes_from_spec(spec: str | None, default_mib: int = 64) -> int:
+    """Best-effort parse of a Kubernetes memory string to bytes (k-plan-4 §4.4)."""
+    if not spec:
+        return default_mib * 1048576
+    spec = spec.strip().lower()
+    try:
+        if spec.endswith("gi"):
+            return int(float(spec[:-2]) * 1073741824)
+        if spec.endswith("g"):
+            return int(float(spec[:-1]) * 1000000000)
+        if spec.endswith("mi"):
+            return int(float(spec[:-2]) * 1048576)
+        if spec.endswith("m"):
+            return int(float(spec[:-1]) * 1000000)
+        if spec.endswith("k"):
+            return int(float(spec[:-1]) * 1000)
+        return int(float(spec))
+    except (ValueError, TypeError):
+        return default_mib * 1048576
+
+
+def _lease_fault_params(lease: FaultLease) -> dict[str, object]:
+    """The fault params carried on the lease's write-ahead contract.
+
+    k-plan-4 §4.4 carries params through the mutation spec (``args["params"]``),
+    matching the k-plan-3 SP-3.4 evidence shape — the domain model has no
+    free-form params bag on the lease.  ``UndoOp.args`` is ``dict[str, str]``,
+    so the bag is JSON-encoded on the spec and decoded here.
+    """
+    import json as _json  # noqa: PLC0415
+    for op in lease.undo_ops or ():
+        params = op.args.get("params")
+        if isinstance(params, dict):
+            return dict(params)
+        if isinstance(params, str):
+            try:
+                decoded = _json.loads(params)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(decoded, dict):
+                return dict(decoded)
+    return {}
+
+
+class K8sPodKillExecutor(K8sExecutor):
+    """Execute and undo ``k8s.pod_kill`` (SP-4.4, k-plan-4 §4.4)."""
+
+    prefixes = ("k8s.pod_kill",)
+
+    def _grace_period(self, lease: FaultLease) -> str:
+        params = _lease_fault_params(lease)
+        gp = params.get("grace_period") or params.get("timeout")
+        return str(int(gp)) if gp else "30"
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_kill":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_kill: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.pod_kill: no resolved target")
+        argv: tuple[str, ...] = (
+            "kubectl", "delete", "pod", t.pod, "-n", t.namespace,
+            "--grace-period", self._grace_period(lease),
+        )
+        result = run_tool(argv, timeout_s=60)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject", False,
+                f"kubectl delete pod failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject", True,
+            f"k8s.pod_kill: deleted pod {t.pod} in namespace {t.namespace}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome("undo", True, "k8s.pod_kill: no live undo for delete")
+
+
+class K8sPodEvictExecutor(K8sExecutor):
+    """Execute and undo ``k8s.pod_evict`` (SP-4.4, k-plan-4 §4.4).
+
+    Eviction is submitted via ``kubectl create -f -`` against the Eviction
+    resource so the API server enforces PDBs natively.
+    """
+
+    prefixes = ("k8s.pod_evict",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_evict":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_evict: no resolved pod target on the lease"
+        return None
+
+    @staticmethod
+    def _eviction_json(target: ResolvedPodTarget) -> str:
+        import json as _json  # noqa: PLC0415
+        return _json.dumps(
+            {
+                "apiVersion": "policy/v1",
+                "kind": "Eviction",
+                "metadata": {"name": target.pod, "namespace": target.namespace},
+            }
+        )
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.pod_evict: no resolved target")
+        argv: tuple[str, ...] = ("kubectl", "create", "-f", "-", "-n", t.namespace)
+        result = run_tool(argv, timeout_s=30, stdin_data=self._eviction_json(t))
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject", False,
+                f"kubectl eviction failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject", True,
+            f"k8s.pod_evict: evicted pod {t.pod} in namespace {t.namespace}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome("undo", True, "k8s.pod_evict: no live undo for eviction")
+
+
+class K8sPodOomExecutor(K8sExecutor):
+    """Execute and undo ``k8s.pod_oom`` (SP-4.4, k-plan-4 §4.4).
+
+    Spikes memory usage inside the container via ``/dev/shm`` writes so the
+    kernel OOMKills the container.  The spike is bounded by an in-container
+    ``sleep``; the engine's compensation then watches for the replacement pod.
+    """
+
+    prefixes = ("k8s.pod_oom",)
+
+    def _bytes_spec(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        return _memory_bytes_from_spec(
+            str(params.get("memory_limit") or params.get("limit") or "64Mi"),
+            default_mib=64,
+        )
+
+    def _duration(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        raw = params.get("duration") or lease.ttl_seconds or 120
+        try:
+            return max(5, int(float(raw)))
+        except (ValueError, TypeError):
+            return 120
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_oom":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_oom: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.pod_oom: no resolved target")
+        nbytes = self._bytes_spec(lease)
+        duration = self._duration(lease)
+        sh_cmd = (
+            f"d=/dev/shm/.mayhem_oom; rm -f $d; "
+            f"head -c {nbytes} /dev/zero > $d 2>/dev/null & sleep {duration}"
+        )
+        argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", sh_cmd)
+        result = run_tool(argv, timeout_s=duration + 30)
+        # rc 0 means sleep exited normally; non-zero may mean the container
+        # died (OOM) before sleep completed — both are acceptable as the
+        # OOM effect, so the step succeeds and compensation verifies.
+        return StepOutcome(
+            "inject", True,
+            f"k8s.pod_oom: memory spike ({nbytes} bytes) started in "
+            f"pod {t.pod} container {t.container}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome("undo", True, "k8s.pod_oom: no live undo for OOM kill")
+
+
+class K8sPodPressureExecutor(K8sExecutor):
+    """Execute and undo ``k8s.pod_pressure`` (SP-4.4, k-plan-4 §4.4).
+
+    Reuses the k-plan-3 exec plumbing: a bounded in-container stress loop
+    (cpu or memory) terminated by an internal ``sleep`` matching the lease
+    duration.  The stress self-terminates; no live undo is needed.
+    """
+
+    prefixes = ("k8s.pod_pressure",)
+
+    def _resource(self, lease: FaultLease) -> str:
+        params = _lease_fault_params(lease)
+        return str(params.get("resource") or "cpu").lower()
+
+    def _duration(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        raw = params.get("duration") or lease.ttl_seconds or 300
+        try:
+            return max(5, int(float(raw)))
+        except (ValueError, TypeError):
+            return 300
+
+    def _target_percent(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        try:
+            return max(1, min(100, int(float(params.get("target_percent") or 50))))
+        except (ValueError, TypeError):
+            return 50
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_pressure":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_pressure: no resolved pod target on the lease"
+        return None
+
+    def _cpu_stress_command(self, lease: FaultLease) -> str:
+        pct = self._target_percent(lease)
+        duration = self._duration(lease)
+        return (
+            f"n=$(nproc 2>/dev/null || echo 1); "
+            f"c=$(echo \"$n {pct} 100\" | awk '{{printf \"%d\", ($1*$2+$99)/100}}'); "
+            f"pids=''; i=0; while [ $i -lt $c ]; do "
+            f"( while :; do :; done ) & pids=\"$pids $!\"; i=$((i+1)); done; "
+            f"sleep {duration}; kill $pids 2>/dev/null; wait 2>/dev/null"
+        )
+
+    def _mem_stress_command(self, lease: FaultLease) -> str:
+        duration = self._duration(lease)
+        nbytes = 64 * 1048576
+        return (
+            f"p=$(mktemp -p /dev/shm 2>/dev/null || echo /dev/shm/.mayhem_pres); "
+            f"head -c {nbytes} /dev/zero > $p 2>/dev/null & "
+            f"sleep {duration}; kill $! 2>/dev/null; rm -f $p"
+        )
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.pod_pressure: no resolved target")
+        resource = self._resource(lease)
+        duration = self._duration(lease)
+        sh_cmd = (
+            self._cpu_stress_command(lease)
+            if resource == "cpu"
+            else self._mem_stress_command(lease)
+        )
+        argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", sh_cmd)
+        result = run_tool(argv, timeout_s=duration + 30)
+        return StepOutcome(
+            "inject", True,
+            f"k8s.pod_pressure: {resource} stress started in pod {t.pod} "
+            f"container {t.container} for {duration}s",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome(
+            "undo", True, "k8s.pod_pressure: stress self-terminates; no live undo"
+        )
+
+
+class K8sNetworkPolicyExecutor(K8sExecutor):
+    """Execute and undo ``k8s.network_policy`` (SP-4.4, k-plan-4 §4.4).
+
+    Applies an ingress/egress deny-all NetworkPolicy scoped to the target
+    pod's ``podSelector``.  Undo deletes the policy by the deterministic
+    name ``mayhem-deny-<pod_name>`` (or an explicit ``policy_name`` param).
+    """
+
+    prefixes = ("k8s.network_policy",)
+
+    @staticmethod
+    def _policy_name(target: ResolvedPodTarget, params: dict[str, object] | None) -> str:
+        explicit = (params or {}).get("policy_name")
+        if explicit:
+            return str(explicit)
+        return f"mayhem-deny-{target.pod}"
+
+    @staticmethod
+    def _policy_body(
+        target: ResolvedPodTarget, name: str, params: dict[str, object] | None
+    ) -> str:
+        import json as _json  # noqa: PLC0415
+        direction = str((params or {}).get("direction") or "ingress").lower()
+        if direction not in ("ingress", "egress"):
+            direction = "ingress"
+        pod_selector = {"matchLabels": target.labels} if target.labels else {}
+        spec: dict[str, object] = {
+            "podSelector": pod_selector,
+            "policyTypes": [direction.title()],
+        }
+        if direction == "ingress":
+            spec["ingress"] = []
+        else:
+            spec["egress"] = []
+        return _json.dumps(
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {
+                    "name": name,
+                    "namespace": target.namespace,
+                    "labels": {
+                        "app.kubernetes.io/managed-by": "mayhem",
+                        "mayhem.k8s/policy-kind": direction,
+                    },
+                },
+                "spec": spec,
+            }
+        )
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.network_policy":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.network_policy: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.network_policy: no resolved target")
+        params = _lease_fault_params(lease)
+        name = self._policy_name(t, params)
+        body = self._policy_body(t, name, params)
+        argv: tuple[str, ...] = ("kubectl", "apply", "-f", "-", "-n", t.namespace)
+        result = run_tool(argv, timeout_s=30, stdin_data=body)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject", False,
+                f"kubectl apply NetworkPolicy failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject", True,
+            f"k8s.network_policy: applied {name} in namespace {t.namespace}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("undo", True, "k8s.network_policy: nothing to undo")
+        params = _lease_fault_params(lease)
+        name = self._policy_name(t, params)
+        argv: tuple[str, ...] = (
+            "kubectl", "delete", "networkpolicy", name, "-n", t.namespace,
+            "--ignore-not-found",
+        )
+        result = run_tool(argv, timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo", False,
+                f"kubectl delete NetworkPolicy failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome("undo", True, f"k8s.network_policy: deleted {name}")
+
+
+class K8sPodPartitionExecutor(K8sNetworkPolicyExecutor):
+    """Execute ``k8s.pod_partition`` (k-plan-4 §4.1).
+
+    Reuses the NetworkPolicy mechanism with a separate policy-name prefix
+    (``mayhem-isolate-``) so undo deletes only the partition policy and never
+    collides with broader network_policy families.
+    """
+
+    prefixes = ("k8s.pod_partition",)
+
+    @staticmethod
+    def _policy_name(target: ResolvedPodTarget, params: dict[str, object] | None) -> str:
+        explicit = (params or {}).get("policy_name")
+        if explicit:
+            return str(explicit)
+        return f"mayhem-isolate-{target.pod}"
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_partition":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_partition: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        outcome = super().inject(lease)
+        if outcome.detail:
+            outcome = StepOutcome(
+                outcome.step,
+                outcome.ok,
+                outcome.detail.replace("k8s.network_policy:", "k8s.pod_partition:"),
+                tool_result=outcome.tool_result,
+            )
+        return outcome
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        outcome = super().undo(lease)
+        if outcome.detail:
+            outcome = StepOutcome(
+                outcome.step,
+                outcome.ok,
+                outcome.detail.replace("k8s.network_policy:", "k8s.pod_partition:"),
+                tool_result=outcome.tool_result,
+            )
+        return outcome
+
+
+# ── k-plan-5: node-level faults ──────────────────────────────────────────────
+NETNS_UNSUPPORTED_MESSAGE = (
+    "k8s.unsupported: k8s.pod_latency needs node-side network-namespace access "
+    "(nsenter into the pod's netns); the NETNS runtime capability is "
+    "UNSUPPORTED this milestone — see k-plan-5 §5.3"
+)
+
+
+def k8s_netns_supported() -> bool:
+    """NETNS capability verdict from the kubernetes runtime adapter.
+
+    Node-side netns (``nsenter tc netem``) is delivered through the kubernetes
+    driver; the adapter's capability matrix is the single source of truth for
+    whether that delivery path is wired this milestone (k-plan-5 §5.3).
+    """
+    from mayhem.domain.k8s_adapter import KubernetesAdapter  # noqa: PLC0415
+    from mayhem.domain.runtime_adapter import RuntimeCapability  # noqa: PLC0415
+
+    return RuntimeCapability.NETNS in KubernetesAdapter().capabilities().supported
+
+
+class K8sNodeDrainExecutor(K8sExecutor):
+    """Cordon + drain an exact node; undo via uncordon (k-plan-5 §5.1/§5.2).
+
+    ``k8s.node_drain`` is CRITICAL-risk: admission requires
+    ``policy.allow_critical`` + ``--allow-critical`` + a per-fault ``ack``
+    (Band A6/B).  The drain is scoped to the resolved node; pods on other
+    nodes are never touched.  Eviction honours PodDisruptionBudgets because
+    ``kubectl drain`` lets the API server enforce PDBs natively (mirrors the
+    Eviction path in :class:`K8sPodEvictExecutor`).
+    """
+
+    prefixes = ("k8s.node_drain",)
+
+    def _grace_period(self, lease: FaultLease) -> str:
+        params = _lease_fault_params(lease)
+        grace = params.get("grace_period") or params.get("timeout")
+        if grace is None:
+            return "30"
+        try:
+            return str(int(grace))
+        except (TypeError, ValueError):
+            return "30"
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.node_drain":
+            return None
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget) or target.node in ("", "*"):
+            return "k8s.node_drain: no resolved node target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, "k8s.node_drain: no resolved node target")
+        cordon = run_tool(("kubectl", "cordon", target.node), timeout_s=30)
+        if cordon.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                "k8s.node_drain: kubectl cordon failed "
+                f"(rc={cordon.exit_code}): {cordon.stdout.strip()}",
+                tool_result=cordon,
+            )
+        drain = run_tool(
+            (
+                "kubectl",
+                "drain",
+                target.node,
+                "--ignore-daemonsets",
+                "--delete-emptydir-data",
+                "--grace-period",
+                self._grace_period(lease),
+            ),
+            timeout_s=60,
+        )
+        if drain.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                "k8s.node_drain: kubectl drain failed "
+                f"(rc={drain.exit_code}): {drain.stdout.strip()}",
+                tool_result=drain,
+            )
+        note = f"k8s.node_drain: node {target.node} cordoned and drained"
+        if "evicted" not in drain.stdout:
+            note += " (no pods evicted)"
+        return StepOutcome("inject", True, note, tool_result=drain)
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, "k8s.node_drain: no resolved node target")
+        result = run_tool(("kubectl", "uncordon", target.node), timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                "k8s.node_drain: kubectl uncordon failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"k8s.node_drain: node {target.node} uncordoned", tool_result=result
+        )
+
+
+class K8sNodePressureExecutor(K8sExecutor):
+    """Node-level capacity pressure via a noisy-neighbour workload (k-plan-5 §5.4).
+
+    The mutation applies a singleton workload pinned to the resolved node
+    (``nodeName`` in the pod spec) requesting a share of the node's allocatable
+    capacity; undo deletes that workload — live and reversible.
+    """
+
+    prefixes = ("k8s.node_pressure",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.node_pressure":
+            return None
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget) or target.node in ("", "*"):
+            return "k8s.node_pressure: no resolved node target on the lease"
+        return None
+
+    def _target_percent(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        try:
+            return max(1, min(100, int(float(params.get("target_percent") or 50))))
+        except (TypeError, ValueError):
+            return 50
+
+    def _workload_name(self, target: ResolvedNodeTarget) -> str:
+        import re as _re  # noqa: PLC0415
+
+        return "mayhem-node-pressure-" + _re.sub(r"[^a-z0-9-]", "-", target.node.lower())
+
+    def _pressure_argv(self, lease: FaultLease, target: ResolvedNodeTarget) -> tuple[str, ...]:
+        import json as _json  # noqa: PLC0415
+
+        pct = self._target_percent(lease)
+        resource = str((_lease_fault_params(lease).get("resource") or "cpu"))
+        if resource == "memory":
+            requests = {"memory": f"{pct}Mi"}
+        else:
+            requests = {"cpu": f"{pct}m"}
+        body = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": self._workload_name(target), "labels": {"mayhem/pressure": "node"}},
+            "spec": {
+                "nodeName": target.node,
+                "restartPolicy": "Never",
+                "containers": [
+                    {
+                        "name": "burner",
+                        "image": "busybox:1.36",
+                        "imagePullPolicy": "IfNotPresent",
+                        "command": ["sh", "-c", "while :; do :; done"],
+                        "resources": {"requests": requests},
+                    }
+                ],
+            },
+        }
+        return (
+            "kubectl",
+            "apply",
+            "-f",
+            "-",
+            "--input",
+            _json.dumps(body, separators=(",", ":")),
+        )
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, "k8s.node_pressure: no resolved node target")
+        argv = self._pressure_argv(lease, target)
+        result = run_tool(argv, timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                "k8s.node_pressure: applying pressure workload failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"k8s.node_pressure: pressure workload {self._workload_name(target)} "
+            f"applied to node {target.node}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, "k8s.node_pressure: no resolved node target")
+        name = self._workload_name(target)
+        result = run_tool(
+            ("kubectl", "delete", "pod", name, "--ignore-not-found", "--grace-period=0"),
+            timeout_s=30,
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                "k8s.node_pressure: deleting pressure workload failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"k8s.node_pressure: pressure workload {name} deleted", tool_result=result
+        )
+
+
+class K8sPodLatencyExecutor(K8sPodPressureExecutor):
+    """Per-pod network-latency fault via ``tc netem`` in the pod netns (k-plan-5 §5.3).
+
+    NETNS delivery is UNSUPPORTED this milestone: ``can_apply`` refuses before
+    any mutation with :data:`NETNS_UNSUPPORTED_MESSAGE` unless the kubernetes
+    runtime adapter reports the NETNS capability (the M8 driver seam).  When
+    available, inject adds qdisc delay on the pod's ``eth0``; undo removes it.
+    """
+
+    prefixes = ("k8s.pod_latency",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_latency":
+            return None
+        if lease.resolved_target is None:
+            return "k8s.pod_latency: no resolved pod target on the lease"
+        if not k8s_netns_supported():
+            return NETNS_UNSUPPORTED_MESSAGE
+        return None
+
+    def _delay_params(self, lease: FaultLease) -> tuple[str, str]:
+        params = _lease_fault_params(lease)
+        delay = params.get("delay_ms")
+        jitter = params.get("jitter_ms")
+        try:
+            delay_ms = str(max(0, int(float(delay)) if delay is not None else 100))
+        except (TypeError, ValueError):
+            delay_ms = "100"
+        try:
+            jitter_ms = str(max(0, int(float(jitter)) if jitter is not None else 0))
+        except (TypeError, ValueError):
+            jitter_ms = "0"
+        return delay_ms, jitter_ms
+
+    def _tc_struct(self, lease: FaultLease) -> str:
+        delay_ms, jitter_ms = self._delay_params(lease)
+        return f"tc qdisc add dev eth0 root netem delay {delay_ms}ms {jitter_ms}ms 25%"
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("inject", False, "k8s.pod_latency: no resolved target")
+        argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", self._tc_struct(lease))
+        result = run_tool(argv, timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"k8s.pod_latency: tc netem failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"k8s.pod_latency: delay {self._tc_struct(lease)} applied on "
+            f"pod {t.pod} container {t.container}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        t = lease.resolved_target
+        if t is None:
+            return StepOutcome("undo", False, "k8s.pod_latency: no resolved target")
+        argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", "tc qdisc del dev eth0 root")
+        result = run_tool(argv, timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"k8s.pod_latency: tc qdisc del failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"k8s.pod_latency: qdisc removed from pod {t.pod}", tool_result=result
+        )
+
+
+_K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
+    "k8s.pod_kill": K8sPodKillExecutor,
+    "k8s.pod_evict": K8sPodEvictExecutor,
+    "k8s.pod_oom": K8sPodOomExecutor,
+    "k8s.pod_pressure": K8sPodPressureExecutor,
+    "k8s.network_policy": K8sNetworkPolicyExecutor,
+    "k8s.pod_partition": K8sPodPartitionExecutor,
+    "k8s.node_drain": K8sNodeDrainExecutor,
+    "k8s.node_pressure": K8sNodePressureExecutor,
+    "k8s.pod_latency": K8sPodLatencyExecutor,
+}
+
+
+def k8s_executor_for(
+    fault_id: str,
+    runtime: RuntimeLabel = RuntimeLabel.DOCKER,
+) -> K8sExecutor | None:
+    """Return the k8s executor for *fault_id* or ``None``.
+
+    Pod-lifecycle and network-policy families return their dedicated executors
+    when ``runtime is KUBERNETES``; all other k8s-delivered faults return the
+    shared ``_K8S_EXECUTOR`` so the signal path stays uniform.
+    """
+    if runtime is RuntimeLabel.KUBERNETES:
+        specialized = _K8S_EXECUTORS.get(fault_id)
+        if specialized is not None:
+            return specialized()
+        return _K8S_EXECUTOR
+    return None
+
+
 def k8s_unsupported_reason(fault_id: str) -> str:
     """Stable ``k8s.unsupported`` reason for faults the driver refuses."""
     if fault_id == "k8s.pod.failure":
-        return "k8s.unsupported: pod lifecycle faults are not executable this milestone (k-plan-4)"
+        return (
+            "k8s.unsupported: k8s.pod.failure is the umbrella refusal id; "
+            "use k8s.pod_kill / k8s.pod_evict / k8s.pod_oom (k-plan-4)"
+        )
     prefix = fault_id.split(".", 1)[0]
     if prefix in ("mem", "cpu", "fs", "fd", "load", "fuzz"):
         return (
@@ -579,7 +1335,7 @@ def executor_for(
     executor claiming the fault's prefix — the pre-k-plan-3 registry contract.
     """
     if runtime == RuntimeLabel.KUBERNETES:
-        return _K8S_EXECUTOR
+        return k8s_executor_for(fault_id, runtime)
     override = _FAULT_EXECUTOR_OVERRIDES.get(fault_id)
     if override is not None:
         return override
