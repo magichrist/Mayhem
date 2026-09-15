@@ -1343,8 +1343,29 @@ class RunEngine:
         inject_outcome = executor.inject(active)
         self._record_tool_result(inject_outcome.tool_result)
         if not inject_outcome.ok:
-            self._client.mark_releasing(lease.id)
-            self._client.confirm_release(lease.id, mechanism="failed_to_apply")
+            # A node mutation can partially apply before failing (cordon ok,
+            # drain not) — run the write-ahead undo so the node is never left
+            # mid-mutation.  If the undo itself fails, escalate to DIRTY.
+            undo_outcome = executor.undo(active)
+            self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
+            dirty: list[str] = []
+            if undo_outcome and undo_outcome.ok:
+                self._client.mark_releasing(lease.id)
+                self._client.confirm_release(
+                    lease.id, mechanism="failed_to_apply_undone"
+                )
+                note = f"{inject_outcome.detail} (undo ok)"
+            else:
+                self._client.mark_releasing(lease.id)
+                mark = self._client.mark_dirty(
+                    lease.id,
+                    notes=(
+                        f"{inject_outcome.detail}; undo failed: "
+                        f"{(undo_outcome.detail if undo_outcome else 'not attempted')}"
+                    ),
+                )
+                dirty.append(mark.id)
+                note = f"{inject_outcome.detail}; undo DIRTY"
             self._emit(
                 Event(
                     kind=EventKind.FAULT_FAILED,
@@ -1358,8 +1379,8 @@ class RunEngine:
                 ),
             )
             return (
-                StepReport(step.id, False, inject_outcome.detail),
-                [],
+                StepReport(step.id, False, note),
+                dirty,
             )
         lease_ids: list[str] = [lease.id]
         self._emit(
