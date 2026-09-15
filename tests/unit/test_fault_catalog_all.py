@@ -32,14 +32,28 @@ from mayhem.domain.topology import (
     ServiceNode,
 )
 
-ALL_FAULTS = tuple(d.id for d in CATALOG)
-NON_K8S = tuple(
-    d.id
-    for d in CATALOG
-    if NodeKind.K8S_NODE not in d.applicable_node_kinds
-    and NodeKind.POD not in d.applicable_node_kinds
+NON_K8S_KINDS = frozenset(
+    {
+        NodeKind.SERVICE,
+        NodeKind.CONTAINER,
+        NodeKind.HOST,
+        NodeKind.PROCESS,
+        NodeKind.EXTERNAL_DEPENDENCY,
+    }
 )
-K8S = tuple(set(ALL_FAULTS) - set(NON_K8S))
+K8S_ONLY_KINDS = frozenset({NodeKind.POD, NodeKind.K8S_NODE})
+
+ALL_FAULTS = tuple(d.id for d in CATALOG)
+
+# Non-k8s faults: every catalog fault that addresses at least one non-k8s node
+# kind. A fault may also target pods (the portable argv families) and still
+# belongs in the non-k8s test set — it stays container-portable with an argv
+# compensation template.
+NON_K8S = tuple(d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS)
+
+# K8s-only: faults whose kinds are a subset of {pod, k8s_node} — pure
+# kubernetes archetypes that live exclusively in the kubectl pipeline.
+K8S = tuple(d.id for d in CATALOG if d.applicable_node_kinds <= K8S_ONLY_KINDS)
 
 # Values that pass the injection grammar where a generic type seed would not
 # (``rate`` is a schema param on both; the STRING seed "test" is not a rate).
@@ -234,9 +248,7 @@ class TestExecutorResolution:
         from mayhem.agents.executors import K8sExecutor
         from mayhem.domain.identity import RuntimeLabel
 
-        assert isinstance(
-            executor_for(fault_id, runtime=RuntimeLabel.KUBERNETES), K8sExecutor
-        )
+        assert isinstance(executor_for(fault_id, runtime=RuntimeLabel.KUBERNETES), K8sExecutor)
 
 
 # ── compensation contract ────────────────────────────────────────────────────
