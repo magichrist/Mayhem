@@ -44,20 +44,48 @@ def open_store(db: str) -> Store:
     return Store.open_migrated(Path(db))
 
 
-def build_graph(compose: str | None) -> TopologyGraph:
-    """Build a topology graph from a compose blueprint (ADR-0006).
+def selected_engine() -> str:
+    """The engine selected at the root (``-k/--kubernetes``, ``-p/--podman``).
 
-    Drill specs are compose-native (Phase 6): the graph is always derived
-    from ``docker-compose.yaml``, so the manual ``--process``/``--service``/
-    ``--host`` overrides are gone. ``compose`` defaults to auto-detect in the
-    caller (``_resolve_compose``), so reaching here with ``None`` means no
-    blueprint was found.
+    Returns ``"kubernetes"``, ``"docker"``, ``"podman"``, or ``""`` (auto).
+    Every CLI command that builds fault material routes through this so the
+    ``-k`` flag has the same effect everywhere: discovery, planning, and
+    execution all target the same engine as ``topology discover``.
     """
-    if compose is None:
-        raise ValueError(
-            "no docker-compose blueprint found — pass --compose <path> "
-            "or place a compose file in the working directory"
-        )
+    from mayhem.cli.app import _STATE
+    from mayhem.cli.topology import _resolve_engine
+
+    return _resolve_engine(str(_STATE.get("engine", ""))) or ""
+
+
+def engine_fault_kinds() -> tuple[str, ...]:
+    """Catalog fault ids that can run under the CLI-selected engine.
+
+    With ``-k/--kubernetes`` only the k8s driver's available families are
+    returned (pod/node targets); otherwise the full catalog applies
+    (docker/podman compose runtimes). Landscape, coverage, and suggestion
+    commands scope themselves with this, so ``-k`` never surfaces a fault the
+    selected engine cannot execute.
+    """
+    from mayhem.domain.catalog import all_definitions
+
+    if selected_engine() == "kubernetes":
+        from mayhem.controller.k8s_runtime import k8s_available_faults
+
+        return tuple(k8s_available_faults())
+    return tuple(sorted(d.id for d in all_definitions()))
+
+
+def build_graph(compose: str | None) -> TopologyGraph:
+    """Build a topology graph from a compose blueprint or the live cluster.
+
+    Drill specs are compose-native (Phase 6): the graph is derived from
+    ``docker-compose.yaml`` — unless ``--kubernetes`` was set at the root, in
+    which case the graph comes straight from the kubeconfig-resolved cluster
+    (no blueprint involved). ``compose`` defaults to auto-detect in the
+    caller (``_resolve_compose``), so reaching here with ``None`` and a
+    container engine means no blueprint was found.
+    """
     from mayhem.cli.app import _STATE
     from mayhem.cli.topology import _resolve_engine
     from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
@@ -66,6 +94,14 @@ def build_graph(compose: str | None) -> TopologyGraph:
 
     engine = _resolve_engine(str(_STATE.get("engine", "")))
 
+    if engine == "kubernetes":
+        return _kubernetes_discovery_graph()
+
+    if compose is None:
+        raise ValueError(
+            "no docker-compose blueprint found — pass --compose <path> "
+            "or place a compose file in the working directory"
+        )
     compose_provider = ComposeFileProvider(compose)
     runtime_provider = runtime_best_effort(engine)
     if runtime_provider is not None:
@@ -96,6 +132,34 @@ def build_graph(compose: str | None) -> TopologyGraph:
             edges=tuple(result.edges) + tuple(extra_edges),
         )
     return result
+
+
+def _kubernetes_discovery_graph() -> TopologyGraph:
+    """Discover the topology from the live cluster (``--kubernetes`` engine).
+
+    Mirrors the kubernetes branch of ``mayhem topology discover``: the graph
+    is kubeconfig/context driven and needs no compose blueprint. Raises
+    ``ValueError`` so callers that wrap it (``_graph_from``) surface a usable
+    usage error when the SDK is missing or the cluster is unreachable.
+    """
+    from mayhem.topology.providers.kubernetes import (
+        KUBERNETES_IMPORT_ERROR,
+        KUBERNETES_INSTALL_HINT,
+        KubernetesProvider,
+    )
+    from mayhem.topology.service import TopologyService
+
+    if KUBERNETES_IMPORT_ERROR is not None:
+        raise ValueError(
+            "Kubernetes discovery needs the k8s SDK. " + KUBERNETES_INSTALL_HINT
+        )
+    provider = KubernetesProvider("kubernetes", context=None, namespace=None)
+    if not provider.is_available():
+        raise ValueError(
+            "Kubernetes cluster is not reachable: check the active kubeconfig "
+            "context the target cluster is reachable through."
+        )
+    return TopologyService().discover([provider]).graph
 
 
 @dataclass(frozen=True, slots=True)
