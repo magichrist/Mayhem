@@ -64,7 +64,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         id="cpu.saturate",
         category=FaultCategory.CPU,
         risk=RiskLevel.MEDIUM,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(_pct(minimum=1.0, maximum=100.0),),
     ),
@@ -75,7 +75,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.DOCKER_ENGINE}),
         # A reserve-share throttle needs the container engine cgroup knobs
         # (``update --cpus``), so it cannot address a bare HOST process.
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(_pct(minimum=1.0, maximum=100.0),),
     ),
@@ -83,7 +83,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         id="mem.exhaust",
         category=FaultCategory.MEMORY,
         risk=RiskLevel.HIGH,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=120.0,
         params_schema=(
             _pct(minimum=1.0, maximum=99.0),
@@ -98,7 +98,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         id="mem.leak",
         category=FaultCategory.MEMORY,
         risk=RiskLevel.HIGH,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             ParamSpec(name="rate_mb", type=ParamType.INTEGER, default=8, minimum=1, maximum=512),
@@ -109,7 +109,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.STORAGE,
         risk=RiskLevel.MEDIUM,
         reversible=True,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
+        ),
         max_duration_s=300.0,
         params_schema=(_pct(minimum=1.0, maximum=99.0),),
     ),
@@ -118,7 +120,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.STORAGE,
         risk=RiskLevel.MEDIUM,
         reversible=True,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
+        ),
         max_duration_s=300.0,
         # Consumes free inodes (zero-byte marker files) instead of capacity;
         # undo removes the marker files, so the filesystem is fully restored.
@@ -129,7 +133,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.STORAGE,
         risk=RiskLevel.MEDIUM,
         reversible=True,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
+        ),
         max_duration_s=120.0,
         params_schema=(
             _S,
@@ -160,11 +166,10 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(ParamSpec(name="path", type=ParamType.STRING, default="/"),),
     ),
     FaultDefinition(
-        id="net.latency",
+id="net.latency",
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
-        required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             _S,
@@ -173,11 +178,10 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
     ),
     FaultDefinition(
-        id="net.packet_loss",
+id="net.packet_loss",
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
-        required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             _pct(minimum=1.0, maximum=100.0),
@@ -189,7 +193,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             ParamSpec(name="rate", type=ParamType.STRING, required=True),
@@ -202,7 +206,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.NETWORK,
         risk=RiskLevel.HIGH,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=120.0,
         params_schema=(),
     ),
@@ -254,7 +258,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             _pct(minimum=1.0, maximum=100.0),
@@ -267,7 +271,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
         required_caps=frozenset({Capability.NET_ADMIN}),
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
             _pct(minimum=1.0, maximum=100.0),
@@ -603,14 +607,17 @@ CATALOG: tuple[FaultDefinition, ...] = (
         id="fd.exhaust",
         category=FaultCategory.FD,
         risk=RiskLevel.HIGH,
-        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
+        ),
         max_duration_s=120.0,
         params_schema=(ParamSpec(name="limit", type=ParamType.INTEGER, default=64),),
     ),
     # ── Kubernetes archetypes (ADR-M7-3, ADR-M7-4) ──────────────────────────
-    # All k8s archetypes are UNSUPPORTED (no live cluster driver); they exist so
-    # the planner + capability matrix can reason about k8s targets without
-    # executing.  Fingerprints reuse M2/M3 patterns for future k8s drivers.
+    # All k8s archetypes are AVAILABLE when the live cluster driver is present;
+    # the executor register is the source of truth for executability.  Families
+    # without a kubectl primitive (image_pull_slow) remain catalog-only and
+    # refuse at can_apply time with a stable unsupported reason.
     #
     # Capacity-stress sub-category (ADR-M7-3)
     FaultDefinition(
@@ -707,6 +714,240 @@ CATALOG: tuple[FaultDefinition, ...] = (
         applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
         max_duration_s=600.0,
         params_schema=(ParamSpec(name="grace_period", type=ParamType.INTEGER, default=30),),
+    ),
+    # ── k-plan-6: next-20 families (docs/k8s-new.md) ────────────────────────
+    # Probe sub-family — patch the owning workload's readiness/liveness/startup
+    # probe to a failing command; undo restores the original probe object.
+    FaultDefinition(
+        id="k8s.pod_readiness_fail",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="failure_command", type=ParamType.STRING, default="/bin/false"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.pod_liveness_fail",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="failure_command", type=ParamType.STRING, default="/bin/false"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.pod_startup_fail",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="failure_command", type=ParamType.STRING, default="/bin/false"),
+        ),
+    ),
+    # Scheduler sub-family — workload-level template patch (nodeSelector /
+    # schedulerName) that prevents new pods from becoming ready or scheduled.
+    FaultDefinition(
+        id="k8s.pod_unschedulable",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="k8s.schedule_delay",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="scheduler_name", type=ParamType.STRING, default="mayhem-scheduler-nope"),
+        ),
+    ),
+    # Registry sub-family — image reference patch (image_pull_slow is
+    # catalog-only; kubectl alone cannot shape pull latency).
+    FaultDefinition(
+        id="k8s.image_pull_failure",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/pull-fail:latest"),
+        ),
+    ),
+    # Registry pacing — CATALOG ONLY: no kubectl primitive delivers slow
+    # image pulls; the executor refuses at can_apply time with a stable
+    # ``k8s.unsupported`` reason.  Planner can reason about the archetype
+    # but the driver never registers it.
+    FaultDefinition(
+        id="k8s.image_pull_slow",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/pull-slow:latest"),
+            ParamSpec(name="delay_s", type=ParamType.INTEGER, default=30, minimum=1, maximum=600),
+        ),
+    ),
+    # Workload sub-family — mutations delivered via kubectl patch/scale on
+    # the owning Deployment/StatefulSet.
+    FaultDefinition(
+        id="k8s.replica_reduce",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="replicas", type=ParamType.INTEGER, default=1, minimum=0),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.rollout_pause",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(),
+    ),
+    FaultDefinition(
+        id="k8s.rollout_failure",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/rollout-fail:latest"),
+        ),
+    ),
+    # Pod-delete sub-family — uncontrolled deletion (no graceful shutdown).
+    FaultDefinition(
+        id="k8s.pod_delete_uncontrolled",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=120.0,
+        params_schema=(),
+    ),
+    # Service sub-family — Service object-level mutation (selector / port).
+    FaultDefinition(
+        id="k8s.service_no_endpoints",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="selector_key", type=ParamType.STRING, default="mayhem.no-endpoints"),
+            ParamSpec(name="selector_value", type=ParamType.STRING, default="true"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.service_endpoint_flap",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="cycles", type=ParamType.INTEGER, default=3, minimum=1, maximum=20),
+            ParamSpec(name="interval_s", type=ParamType.INTEGER, default=5, minimum=1, maximum=120),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.service_port_mismatch",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="target_port", type=ParamType.INTEGER, default=0, minimum=0),
+        ),
+    ),
+    # Config sub-family — ConfigMap data corruption / Secret deletion.
+    FaultDefinition(
+        id="k8s.configmap_corrupt",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="configmap", type=ParamType.STRING),
+            ParamSpec(name="prefix", type=ParamType.STRING, default="mayhem-corrupted-"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.secret_unavailable",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="synthetic", type=ParamType.STRING, default="true"),
+            ParamSpec(name="name", type=ParamType.STRING),
+        ),
+    ),
+    # Storage sub-family — in-pod persistent volume stress / permission change
+    # or workload volume-source swap.
+    FaultDefinition(
+        id="k8s.persistent_volume_delay",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=600.0,
+        params_schema=(
+            ParamSpec(name="volume_path", type=ParamType.STRING),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.persistent_volume_error",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=600.0,
+        params_schema=(
+            ParamSpec(name="volume_path", type=ParamType.STRING),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.persistent_volume_detach",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.CRITICAL,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(),
+    ),
+    # Node sub-family — cordon (subset of drain without eviction).
+    FaultDefinition(
+        id="k8s.node_cordon",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=300.0,
+        params_schema=(),
     ),
 )
 
