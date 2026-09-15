@@ -19,6 +19,26 @@ from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
 
+from mayhem.agents.k8s_control import (
+    ResourceRef,
+    apply_patch,
+    clear_annotation,
+    configmap_ref_for_pod,
+    delete_object,
+    find_annotated,
+    kubectl_apply_json,
+    kubectl_json,
+    pod_exec,
+    preferred_mount_path,
+    read_snapshot,
+    rollout_control,
+    scale,
+    secret_ref_for_pod,
+    service_ref_for_pod,
+    workload_ref_for_pod,
+    write_annotation,
+)
+
 if TYPE_CHECKING:
     from mayhem.domain.leases import FaultLease
 
@@ -354,9 +374,11 @@ class K8sExecutor(FaultExecutor):
     }
 
     def supports(self, fault_id: str) -> bool:
-        if fault_id.startswith("k8s."):
-            return True
-        return _is_k8s_applicable(fault_id)
+        # K8s dispatch goes through ``k8s_executor_for()`` when
+        # ``runtime=KUBERNETES``; this executor never participates in
+        # non-k8s (docker) dispatch so portable generic faults that are
+        # also k8s-live continue to route to their ToolExecutors on docker.
+        return False
 
     def capable_faults(self) -> tuple[str, ...]:
         return ("k8s.pod.failure", *sorted(self._SIGNAL_INJECT))
@@ -457,6 +479,7 @@ def _lease_fault_params(lease: FaultLease) -> dict[str, object]:
     so the bag is JSON-encoded on the spec and decoded here.
     """
     import json as _json  # noqa: PLC0415
+
     for op in lease.undo_ops or ():
         params = op.args.get("params")
         if isinstance(params, dict):
@@ -493,19 +516,26 @@ class K8sPodKillExecutor(K8sExecutor):
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_kill: no resolved target")
         argv: tuple[str, ...] = (
-            "kubectl", "delete", "pod", t.pod, "-n", t.namespace,
-            "--grace-period", self._grace_period(lease),
+            "kubectl",
+            "delete",
+            "pod",
+            t.pod,
+            "-n",
+            t.namespace,
+            "--grace-period",
+            self._grace_period(lease),
         )
         result = run_tool(argv, timeout_s=60)
         if result.exit_code != 0:
             return StepOutcome(
-                "inject", False,
-                f"kubectl delete pod failed (rc={result.exit_code}): "
-                f"{result.stdout.strip()}",
+                "inject",
+                False,
+                f"kubectl delete pod failed (rc={result.exit_code}): {result.stdout.strip()}",
                 tool_result=result,
             )
         return StepOutcome(
-            "inject", True,
+            "inject",
+            True,
             f"k8s.pod_kill: deleted pod {t.pod} in namespace {t.namespace}",
             tool_result=result,
         )
@@ -517,8 +547,10 @@ class K8sPodKillExecutor(K8sExecutor):
 class K8sPodEvictExecutor(K8sExecutor):
     """Execute and undo ``k8s.pod_evict`` (SP-4.4, k-plan-4 §4.4).
 
-    Eviction is submitted via ``kubectl create -f -`` against the Eviction
-    resource so the API server enforces PDBs natively.
+    Eviction is submitted via the kubernetes Python SDK's
+    ``create_namespaced_pod_eviction`` (policy/v1 Eviction subresource) so
+    the API server enforces PDBs natively.  ``kubectl create -f -`` does not
+    work because kubectl lacks a resource mapping for the Eviction kind.
     """
 
     prefixes = ("k8s.pod_evict",)
@@ -530,34 +562,37 @@ class K8sPodEvictExecutor(K8sExecutor):
             return "k8s.pod_evict: no resolved pod target on the lease"
         return None
 
-    @staticmethod
-    def _eviction_json(target: ResolvedPodTarget) -> str:
-        import json as _json  # noqa: PLC0415
-        return _json.dumps(
-            {
-                "apiVersion": "policy/v1",
-                "kind": "Eviction",
-                "metadata": {"name": target.pod, "namespace": target.namespace},
-            }
-        )
-
     def inject(self, lease: FaultLease) -> StepOutcome:
         t = lease.resolved_target
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_evict: no resolved target")
-        argv: tuple[str, ...] = ("kubectl", "create", "-f", "-", "-n", t.namespace)
-        result = run_tool(argv, timeout_s=30, stdin_data=self._eviction_json(t))
-        if result.exit_code != 0:
+        try:
+            from kubernetes import client as _k8s_client  # noqa: PLC0415
+            from kubernetes import config as _k8s_config  # noqa: PLC0415
+
+            _k8s_config.load_kube_config()
+            api = _k8s_client.CoreV1Api()
+            eviction = _k8s_client.V1Eviction(
+                metadata=_k8s_client.V1ObjectMeta(
+                    name=t.pod,
+                    namespace=t.namespace,
+                ),
+            )
+            api.create_namespaced_pod_eviction(
+                name=t.pod,
+                namespace=t.namespace,
+                body=eviction,
+            )
+        except Exception as exc:  # noqa: BLE001
             return StepOutcome(
-                "inject", False,
-                f"kubectl eviction failed (rc={result.exit_code}): "
-                f"{result.stdout.strip()}",
-                tool_result=result,
+                "inject",
+                False,
+                f"k8s.pod_evict: eviction API call failed: {exc}",
             )
         return StepOutcome(
-            "inject", True,
+            "inject",
+            True,
             f"k8s.pod_evict: evicted pod {t.pod} in namespace {t.namespace}",
-            tool_result=result,
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
@@ -612,7 +647,8 @@ class K8sPodOomExecutor(K8sExecutor):
         # died (OOM) before sleep completed — both are acceptable as the
         # OOM effect, so the step succeeds and compensation verifies.
         return StepOutcome(
-            "inject", True,
+            "inject",
+            True,
             f"k8s.pod_oom: memory spike ({nbytes} bytes) started in "
             f"pod {t.pod} container {t.container}",
             tool_result=result,
@@ -663,9 +699,9 @@ class K8sPodPressureExecutor(K8sExecutor):
         duration = self._duration(lease)
         return (
             f"n=$(nproc 2>/dev/null || echo 1); "
-            f"c=$(echo \"$n {pct} 100\" | awk '{{printf \"%d\", ($1*$2+$99)/100}}'); "
+            f'c=$(echo "$n {pct} 100" | awk \'{{printf "%d", ($1*$2+$99)/100}}\'); '
             f"pids=''; i=0; while [ $i -lt $c ]; do "
-            f"( while :; do :; done ) & pids=\"$pids $!\"; i=$((i+1)); done; "
+            f'( while :; do :; done ) & pids="$pids $!"; i=$((i+1)); done; '
             f"sleep {duration}; kill $pids 2>/dev/null; wait 2>/dev/null"
         )
 
@@ -692,16 +728,15 @@ class K8sPodPressureExecutor(K8sExecutor):
         argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", sh_cmd)
         result = run_tool(argv, timeout_s=duration + 30)
         return StepOutcome(
-            "inject", True,
+            "inject",
+            True,
             f"k8s.pod_pressure: {resource} stress started in pod {t.pod} "
             f"container {t.container} for {duration}s",
             tool_result=result,
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        return StepOutcome(
-            "undo", True, "k8s.pod_pressure: stress self-terminates; no live undo"
-        )
+        return StepOutcome("undo", True, "k8s.pod_pressure: stress self-terminates; no live undo")
 
 
 class K8sNetworkPolicyExecutor(K8sExecutor):
@@ -722,10 +757,9 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
         return f"mayhem-deny-{target.pod}"
 
     @staticmethod
-    def _policy_body(
-        target: ResolvedPodTarget, name: str, params: dict[str, object] | None
-    ) -> str:
+    def _policy_body(target: ResolvedPodTarget, name: str, params: dict[str, object] | None) -> str:
         import json as _json  # noqa: PLC0415
+
         direction = str((params or {}).get("direction") or "ingress").lower()
         if direction not in ("ingress", "egress"):
             direction = "ingress"
@@ -772,13 +806,15 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
         result = run_tool(argv, timeout_s=30, stdin_data=body)
         if result.exit_code != 0:
             return StepOutcome(
-                "inject", False,
+                "inject",
+                False,
                 f"kubectl apply NetworkPolicy failed (rc={result.exit_code}): "
                 f"{result.stdout.strip()}",
                 tool_result=result,
             )
         return StepOutcome(
-            "inject", True,
+            "inject",
+            True,
             f"k8s.network_policy: applied {name} in namespace {t.namespace}",
             tool_result=result,
         )
@@ -790,13 +826,19 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
         params = _lease_fault_params(lease)
         name = self._policy_name(t, params)
         argv: tuple[str, ...] = (
-            "kubectl", "delete", "networkpolicy", name, "-n", t.namespace,
+            "kubectl",
+            "delete",
+            "networkpolicy",
+            name,
+            "-n",
+            t.namespace,
             "--ignore-not-found",
         )
         result = run_tool(argv, timeout_s=30)
         if result.exit_code != 0:
             return StepOutcome(
-                "undo", False,
+                "undo",
+                False,
                 f"kubectl delete NetworkPolicy failed (rc={result.exit_code}): "
                 f"{result.stdout.strip()}",
                 tool_result=result,
@@ -878,9 +920,9 @@ class K8sNodeDrainExecutor(K8sExecutor):
     ``k8s.node_drain`` is CRITICAL-risk: admission requires
     ``policy.allow_critical`` + ``--allow-critical`` + a per-fault ``ack``
     (Band A6/B).  The drain is scoped to the resolved node; pods on other
-    nodes are never touched.  Eviction honours PodDisruptionBudgets because
-    ``kubectl drain`` lets the API server enforce PDBs natively (mirrors the
-    Eviction path in :class:`K8sPodEvictExecutor`).
+    nodes are never touched.  ``--force`` evicts controller-less pods
+    (e.g. minikube's ``storage-provisioner``) that kubectl otherwise
+    refuses; daemonsets are ignored so node-local agents survive.
     """
 
     prefixes = ("k8s.node_drain",)
@@ -923,6 +965,7 @@ class K8sNodeDrainExecutor(K8sExecutor):
                 target.node,
                 "--ignore-daemonsets",
                 "--delete-emptydir-data",
+                "--force",
                 "--grace-period",
                 self._grace_period(lease),
             ),
@@ -990,6 +1033,9 @@ class K8sNodePressureExecutor(K8sExecutor):
         return "mayhem-node-pressure-" + _re.sub(r"[^a-z0-9-]", "-", target.node.lower())
 
     def _pressure_argv(self, lease: FaultLease, target: ResolvedNodeTarget) -> tuple[str, ...]:
+        return ("kubectl", "apply", "-f", "-")
+
+    def _pressure_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
         import json as _json  # noqa: PLC0415
 
         pct = self._target_percent(lease)
@@ -1001,7 +1047,10 @@ class K8sNodePressureExecutor(K8sExecutor):
         body = {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": self._workload_name(target), "labels": {"mayhem/pressure": "node"}},
+            "metadata": {
+                "name": self._workload_name(target),
+                "labels": {"mayhem/pressure": "node"},
+            },
             "spec": {
                 "nodeName": target.node,
                 "restartPolicy": "Never",
@@ -1016,21 +1065,15 @@ class K8sNodePressureExecutor(K8sExecutor):
                 ],
             },
         }
-        return (
-            "kubectl",
-            "apply",
-            "-f",
-            "-",
-            "--input",
-            _json.dumps(body, separators=(",", ":")),
-        )
+        return _json.dumps(body, separators=(",", ":"))
 
     def inject(self, lease: FaultLease) -> StepOutcome:
         target = lease.resolved_target
         if not isinstance(target, ResolvedNodeTarget):
             return StepOutcome("inject", False, "k8s.node_pressure: no resolved node target")
         argv = self._pressure_argv(lease, target)
-        result = run_tool(argv, timeout_s=30)
+        body = self._pressure_body(lease, target)
+        result = run_tool(argv, timeout_s=30, stdin_data=body)
         if result.exit_code != 0:
             return StepOutcome(
                 "inject",
@@ -1148,6 +1191,1046 @@ class K8sPodLatencyExecutor(K8sPodPressureExecutor):
         )
 
 
+def _shq(value: object) -> str:
+    """Shell-escape *value* for embedding in a ``sh -c`` payload string."""
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+#: fault_id -> undo verb: "reap" kills the recorded worker pids and sweeps
+#: the token artifacts; "tc" clears the root qdisc on eth0.  The reverseable
+#: argv lane (SP-3.1) is opt-in per fault id; a fault not listed here is not
+#: a K8sArgvExecutor fault.
+_K8S_ARGV_UNDO_VERB: dict[str, str] = {
+    "cpu.saturate": "reap",
+    "cpu.throttle": "reap",
+    "mem.exhaust": "reap",
+    "mem.leak": "reap",
+    "fs.fill": "reap",
+    "fs.inode_exhaust": "reap",
+    "fs.io_stress": "reap",
+    "fd.exhaust": "reap",
+    "net.latency": "tc",
+    "net.packet_loss": "tc",
+    "net.duplicate": "tc",
+    "net.reorder": "tc",
+    "net.bandwidth": "tc",
+    "net.partition": "tc",
+}
+
+
+class K8sArgvExecutor(K8sExecutor):
+    """Portable generic faults delivered in-pod via ``kubectl exec`` argv.
+
+    k-plan-3 SP-3.4: the generic payload families (``cpu.*``, ``mem.*``,
+    ``fs.*``, ``fd.*``) become *live on cluster* through the argv
+    compensation contract — inject launches a bounded in-pod worker
+    (``sh -c`` payload) that records its pids into a marker file and arms a
+    self-cleaning reaper; undo reaps the workers idempotently and removes
+    the artifacts.  The ``net.*`` tc-netem families ride the same pipeline
+    but stay gated on the adapter's NETNS capability (:func:`NETNS_UNSUPPORTED
+    `): they mutate the pod netns qdisc, never an argv worker.
+    """
+
+    prefixes: tuple[str, ...] = ()
+
+    def capable_faults(self) -> tuple[str, ...]:
+        return tuple(sorted(_K8S_ARGV_UNDO_VERB))
+
+    # -- helpers ------------------------------------------------------------
+
+    def _token(self, lease: FaultLease) -> str:
+        safe = "".join(ch for ch in lease.id if ch.isalnum())
+        return safe[:24] or "mh"
+
+    def _duration(self, lease: FaultLease) -> int:
+        params = _lease_fault_params(lease)
+        raw = params.get("duration") or lease.ttl_seconds or 120
+        try:
+            return max(5, int(float(raw)))
+        except (ValueError, TypeError):
+            return 120
+
+    def _target_or_none(self, lease: FaultLease) -> ResolvedPodTarget | None:
+        return lease.resolved_target
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
+        if verb is None:
+            return self._unsupported_reason(lease.fault_id)
+        if lease.resolved_target is None:
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        if verb == "tc" and not k8s_netns_supported():
+            return NETNS_UNSUPPORTED_MESSAGE
+        return None
+
+    # -- payload builders ---------------------------------------------------
+
+    def _worker_parts(  # noqa: PLR0911 (one branch per fault family)
+        self, lease: FaultLease, token: str, duration: int
+    ) -> str:
+        """The ``sh -c`` fragment that spawns the in-pod workers.
+
+        Every worker backgrounds itself and appends its pid to ``$r`` (the
+        marker file), so the common reaper + undo sweep can address it.
+        """
+        params = _lease_fault_params(lease)
+
+        def _pct(key: str, default: float) -> int:
+            raw = params.get(key)
+            if raw is None:
+                return int(default)
+            try:
+                return max(1, min(100, int(float(raw))))
+            except (TypeError, ValueError):
+                return int(default)
+
+        def _num(key: str, default: int, minimum: int = 1) -> int:
+            raw = params.get(key)
+            if raw is None:
+                return default
+            try:
+                return max(minimum, int(float(raw)))
+            except (TypeError, ValueError):
+                return default
+
+        def _spawn(body: str) -> str:
+            return f"( {body} ) & echo $! >> $r;"
+
+        fault = lease.fault_id
+        if fault == "cpu.saturate":
+            pct = _pct("percent", 100)
+            return (
+                "n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4); "
+                f"n=$(( n * {pct} / 100 )); [ $n -lt 1 ] && n=1; i=0; "
+                "while [ $i -lt $n ]; do ( while :; do :; done ) & "
+                "echo $! >> $r; i=$((i+1)); done"
+            )
+        if fault == "cpu.throttle":
+            pct = _pct("percent", 50)
+            return _spawn(
+                "i=0; while :; do if [ $((i%100)) -lt "
+                f"{pct} ]; then :; else sleep 0.01; fi; i=$((i+1)); done"
+            )
+        if fault == "mem.exhaust":
+            nbytes = _memory_bytes_from_spec(
+                str(params.get("amount") or params.get("limit") or "512M")
+            )
+            return _spawn(f"head -c {nbytes} /dev/zero > /dev/shm/mayhem-{token}.blk 2>/dev/null")
+        if fault == "mem.leak":
+            rate = _num("rate_mb", 64)
+            return _spawn(
+                "while :; do cat /dev/zero 2>/dev/null | head -c "
+                f"{rate}M >> /dev/shm/mayhem-{token}.blk 2>/dev/null; "
+                "sleep 1; done"
+            )
+        if fault == "fs.fill":
+            pct = _pct("percent", 90)
+            return (
+                f"mb=$(df -m /tmp 2>/dev/null | awk 'NR==2 "
+                f"{{ mb=int($4*{pct}/100); if (mb>0) print mb; }}'); "
+                f'if [ -n "$mb" ]; then dd if=/dev/zero '
+                f"of=/tmp/mayhem-{token}.fill bs=1M count=$mb 2>/dev/null & "
+                "echo $! >> $r; fi"
+            )
+        if fault == "fs.inode_exhaust":
+            return _spawn(
+                f"d=/tmp/mayhem-{token}.in; mkdir -p $d; i=0; "
+                "while :; do : > $d/f$i 2>/dev/null || break; i=$((i+1)); done"
+            )
+        if fault == "fs.io_stress":
+            workers = _num("workers", 1, minimum=1)
+            return (
+                f"i=0; while [ $i -lt {workers} ]; do ( "
+                "while :; do dd if=/dev/zero of=/tmp/mayhem-"
+                f"{token}.io bs=64k count=1024 2>/dev/null; "
+                f"dd if=/tmp/mayhem-{token}.io of=/dev/null bs=64k 2>/dev/null; "
+                "done ) & echo $! >> $r; i=$((i+1)); done"
+            )
+        if fault == "fd.exhaust":
+            limit = min(_num("limit", 64), 512)
+            return (
+                f"i=0; while [ $i -lt {limit} ]; do "
+                "( eval 'exec 9<>/dev/null'; sleep "
+                f"{duration} ) & echo $! >> $r; i=$((i+1)); done"
+            )
+        raise ValueError(f"{fault}: no argv worker payload builder")
+
+    def _tc_argv(self, lease: FaultLease, target: ResolvedPodTarget) -> tuple[str, ...]:
+        params = _lease_fault_params(lease)
+
+        def _pct_raw(key: str, default: float = 50.0) -> str:
+            raw = params.get(key)
+            try:
+                value = max(0.0, min(100.0, float(raw)))
+            except (TypeError, ValueError):
+                value = default
+            return f"{value:g}"
+
+        fault = lease.fault_id
+        base = (*target.exec_argv, "tc")
+        if fault == "net.latency":
+            delay = params.get("delay_ms", 100)
+            jitter = params.get("jitter_ms", 0)
+            try:
+                delay_s = f"{max(0, int(float(delay)))}"
+            except (TypeError, ValueError):
+                delay_s = "100"
+            try:
+                jitter_s = f"{max(0, int(float(jitter)))}"
+            except (TypeError, ValueError):
+                jitter_s = "0"
+            return (
+                *base,
+                "qdisc",
+                "add",
+                "dev",
+                "eth0",
+                "root",
+                "netem",
+                "delay",
+                f"{delay_s}ms",
+                f"{jitter_s}ms",
+                "25%",
+            )
+        if fault == "net.packet_loss":
+            pct = _pct_raw("percent")
+            return (*base, "qdisc", "add", "dev", "eth0", "root", "netem", "loss", f"{pct}%")
+        if fault == "net.duplicate":
+            pct = _pct_raw("percent")
+            return (*base, "qdisc", "add", "dev", "eth0", "root", "netem", "duplicate", f"{pct}%")
+        if fault == "net.reorder":
+            pct = _pct_raw("percent")
+            delay = params.get("delay_ms", 50)
+            try:
+                delay_s = f"{max(0, int(float(delay)))}"
+            except (TypeError, ValueError):
+                delay_s = "50"
+            return (
+                *base,
+                "qdisc",
+                "add",
+                "dev",
+                "eth0",
+                "root",
+                "netem",
+                "delay",
+                f"{delay_s}ms",
+                "reorder",
+                f"{pct}%",
+                "50%",
+            )
+        if fault == "net.bandwidth":
+            rate = str(params.get("rate") or "1mbit").strip()
+            burst = str(params.get("burst") or "10k").strip()
+            return (
+                *base,
+                "qdisc",
+                "add",
+                "dev",
+                "eth0",
+                "root",
+                "tbf",
+                "rate",
+                rate,
+                "burst",
+                burst,
+                "latency",
+                "50ms",
+            )
+        if fault == "net.partition":
+            return (*base, "qdisc", "add", "dev", "eth0", "root", "netem", "loss", "100%")
+        raise ValueError(f"{fault}: no tc fault builder")
+
+    # -- inject / undo ------------------------------------------------------
+
+    def inject(self, lease: FaultLease) -> StepOutcome:  # noqa: PLR0911 (argv vs tc lane + per-lane failures)
+        target = lease.resolved_target
+        if target is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved target")
+        verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
+        if verb == "tc":
+            argv = self._tc_argv(lease, target)
+            try:
+                result = run_tool(argv, timeout_s=30)
+            except ToolError as exc:
+                return StepOutcome("inject", False, f"{lease.fault_id} tc failed: {exc}")
+            if result.exit_code != 0:
+                return StepOutcome(
+                    "inject",
+                    False,
+                    f"{lease.fault_id} tc qdisc add failed (rc={result.exit_code}): "
+                    f"{result.stdout.strip()}",
+                    tool_result=result,
+                )
+            return StepOutcome(
+                "inject",
+                True,
+                f"{lease.fault_id} netem/tbf applied to eth0 in {target.pod}",
+                result,
+            )
+        token = self._token(lease)
+        duration = self._duration(lease)
+        workers = self._worker_parts(lease, token, duration)
+        sh_cmd = (
+            f"r=/tmp/mayhem-{token}.pids; rm -f $r; "
+            f"{workers}; ( sleep {duration}; if [ -s $r ]; then cat $r | "
+            "xargs kill 2>/dev/null; fi; rm -f $r; rm -rf "
+            f"/tmp/mayhem-{token}.* /dev/shm/mayhem-{token}.* ) "
+            ">/dev/null 2>&1 &"
+        )
+        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", sh_cmd)
+        try:
+            result = run_tool(argv, timeout_s=duration + 30)
+        except ToolError as exc:
+            return StepOutcome("inject", False, f"{lease.fault_id} payload launch failed: {exc}")
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id} payload launch failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id} argv payload launched in {target.pod}/{target.container}",
+            result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if target is None:
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved target")
+        verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
+        if verb == "tc":
+            argv = (*target.exec_argv, "tc", "qdisc", "del", "dev", "eth0", "root")
+            try:
+                result = run_tool(argv, timeout_s=30)
+            except ToolError as exc:
+                return StepOutcome("undo", False, f"{lease.fault_id} tc undo failed: {exc}")
+            if result.exit_code != 0:
+                return StepOutcome(
+                    "undo",
+                    False,
+                    f"{lease.fault_id} tc qdisc del failed (rc={result.exit_code}): "
+                    f"{result.stdout.strip()}",
+                    tool_result=result,
+                )
+            return StepOutcome(
+                "undo",
+                True,
+                f"{lease.fault_id} qdisc removed from {target.pod}",
+                tool_result=result,
+            )
+        token = self._token(lease)
+        sh_cmd = (
+            f"r=/tmp/mayhem-{token}.pids; if [ -s $r ]; then cat $r | "
+            "xargs kill 2>/dev/null; fi; rm -f $r; rm -rf "
+            f"/tmp/mayhem-{token}.* /dev/shm/mayhem-{token}.* 2>/dev/null"
+        )
+        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", sh_cmd)
+        try:
+            result = run_tool(argv, timeout_s=30)
+        except ToolError as exc:
+            return StepOutcome("undo", False, f"{lease.fault_id} cleanup failed: {exc}")
+        return StepOutcome(
+            "undo",
+            result.succeeded,
+            f"{lease.fault_id} argv payload reaped in {target.pod}",
+            result,
+        )
+
+
+class K8sSnapshotExecutor(K8sExecutor):
+    """Undo base for k-plan-6 controller-level mutations (docs/k8s-new.md).
+
+    Reversible controller faults persist an undo snapshot on the *target
+    object itself* (``mayhem.io/restore`` annotation): at inject the executor
+    writes the snapshot, at undo it reads the annotation, asks a subclass
+    to apply the restore patch, then clears the annotation.  Because the
+    snapshot lives on the object the engine mutated (the workload / Service /
+    ConfigMap), undo is *pod-independent*: a Deployment scaled to zero or a
+    pod that was deleted still leaves the owning object carrying the restore
+    contract — this is the crash-safe recovery anchor of k-plan-6 §5.
+    """
+
+    ref_kinds: tuple[str, ...] = ()
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        namespace = (
+            target.namespace if isinstance(target, ResolvedPodTarget) else "default"
+        )
+        ref = find_annotated(namespace, self.ref_kinds)
+        if ref is None:
+            return StepOutcome(
+                "undo",
+                True,
+                f"{lease.fault_id}: no restore annotation found; nothing to undo",
+            )
+        snapshot = read_snapshot(ref)
+        if snapshot is None:
+            clear_annotation(ref)
+            return StepOutcome(
+                "undo",
+                True,
+                f"{lease.fault_id}: snapshot absent; cleared stale annotation",
+            )
+        if not self._restore(ref, snapshot):
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: restore failed for {ref.kind}/{ref.name}",
+            )
+        clear_annotation(ref)
+        return StepOutcome(
+            "undo",
+            True,
+            f"{lease.fault_id}: restored {ref.kind}/{ref.name} from snapshot",
+        )
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        raise NotImplementedError
+
+    def _ref_kinds_for(self, lease: FaultLease) -> tuple[str, ...]:
+        return self.ref_kinds
+
+
+class K8sWorkloadExecutor(K8sSnapshotExecutor):
+    """Workload-level mutations delivered via ``kubectl patch/scale/rollout``.
+
+    Owns the probe (readiness/liveness/startup), scheduler (unschedulable,
+    schedule_delay), registry-image patch, workload (replica_reduce,
+    rollout_pause, rollout_failure) and PVC-detach families.  The restore
+    snapshot is the owning object's full ``spec``; the engine mutates only
+    this workload, so the spec is a faithful and idempotent restore contract.
+    """
+
+    prefixes = (
+        "k8s.pod_readiness_fail",
+        "k8s.pod_liveness_fail",
+        "k8s.pod_startup_fail",
+        "k8s.pod_unschedulable",
+        "k8s.schedule_delay",
+        "k8s.image_pull_failure",
+        "k8s.replica_reduce",
+        "k8s.rollout_pause",
+        "k8s.rollout_failure",
+        "k8s.persistent_volume_detach",
+    )
+    ref_kinds = ("Deployment", "StatefulSet", "DaemonSet")
+
+    _PROBE_FIELDS = {
+        "k8s.pod_readiness_fail": "readinessProbe",
+        "k8s.pod_liveness_fail": "livenessProbe",
+        "k8s.pod_startup_fail": "startupProbe",
+    }
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        workload = workload_ref_for_pod(target)
+        if workload is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: no owning workload found for pod {target.pod}",
+            )
+        if lease.fault_id in ("k8s.replica_reduce", "k8s.rollout_pause",
+                             "k8s.rollout_failure", "k8s.persistent_volume_detach"):
+            if workload.kind not in ("Deployment", "StatefulSet"):
+                return StepOutcome(
+                    "inject",
+                    False,
+                    f"{lease.fault_id}: workload {workload.kind}/{workload.name} has no "
+                    "replicas/rollout surface (DaemonSet refused)",
+                )
+        obj = kubectl_json(workload)
+        if obj is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: workload {workload.kind}/{workload.name} not found",
+            )
+        snapshot = {"spec": obj.get("spec", {})}
+        snapshot["rollout_paused"] = str(lease.fault_id == "k8s.rollout_pause").lower()
+        if len(_serialize(snapshot)) > 100_000:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: workload spec too large for the restore annotation",
+            )
+        write_annotation(workload, snapshot)
+        ok = self._mutate(lease, workload, obj)
+        if ok:
+            return StepOutcome(
+                "inject",
+                True,
+                f"{lease.fault_id}: mutated {workload.kind}/{workload.name}",
+            )
+        clear_annotation(workload)
+        return StepOutcome(
+            "inject",
+            False,
+            f"{lease.fault_id}: kubectl mutation failed on {workload.kind}/{workload.name} "
+            "(restore annotation cleared)",
+        )
+
+    def _mutate(
+        self,
+        lease: FaultLease,
+        workload: ResourceRef,
+        obj: dict[str, object],
+    ) -> bool:
+        params = _lease_fault_params(lease)
+        container = self._container_name(obj)
+        fault = lease.fault_id
+        probe_field = self._PROBE_FIELDS.get(fault)
+        if probe_field is not None:
+            failing = {"exec": {"command": ["/bin/sh", "-c", "/bin/false"]}}
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {"name": container, probe_field: failing}
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+        if fault == "k8s.pod_unschedulable":
+            return apply_patch(
+                workload,
+                {"spec": {"template": {"spec": {"nodeSelector": {"mayhem.unschedulable": "true"}}}}},
+            )
+        if fault == "k8s.schedule_delay":
+            scheduler = params.get("scheduler_name") or "mayhem-scheduler-nope"
+            return apply_patch(
+                workload,
+                {"spec": {"template": {"spec": {"schedulerName": str(scheduler)}}}},
+            )
+        if fault == "k8s.image_pull_failure":
+            image = str(params.get("image") or "mayhem.invalid/pull-fail:latest")
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {"containers": [{"name": container, "image": image}]}
+                        }
+                    }
+                },
+            )
+        if fault == "k8s.rollout_failure":
+            image = str(params.get("image") or "mayhem.invalid/rollout-fail:latest")
+            failing = {"exec": {"command": ["/bin/sh", "-c", "/bin/false"]}}
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": container,
+                                        "image": image,
+                                        "readinessProbe": failing,
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+        if fault == "k8s.replica_reduce":
+            replicas = int(params.get("replicas") or 0)
+            return scale(workload, replicas)
+        if fault == "k8s.rollout_pause":
+            return rollout_control(workload, pause=True)
+        if fault == "k8s.persistent_volume_detach":
+            pvc_vols = [
+                vol
+                for vol in obj.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
+                if "persistentVolumeClaim" in vol
+            ]
+            if not pvc_vols:
+                return False
+            patch = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "volumes": [
+                                {"name": vol["name"], "emptyDir": {}} for vol in pvc_vols
+                            ]
+                        }
+                    }
+                }
+            }
+            return apply_patch(workload, patch)
+        return False
+
+    @staticmethod
+    def _container_name(obj: dict[str, object]) -> str:
+        containers = (
+            obj.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("containers", [])
+        )
+        for container in containers:
+            name = container.get("name")
+            if name:
+                return str(name)
+        return "app"
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        if snapshot.get("rollout_paused") == "true":
+            rollout_control(ref, pause=False)
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+class K8sServiceExecutor(K8sSnapshotExecutor):
+    """Service-object mutations: selector removal, flap cycling, port mismatch."""
+
+    prefixes = (
+        "k8s.service_no_endpoints",
+        "k8s.service_endpoint_flap",
+        "k8s.service_port_mismatch",
+    )
+    ref_kinds = ("Service",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        svc = service_ref_for_pod(target)
+        if svc is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: no Service with a matching selector for pod {target.pod}",
+            )
+        obj = kubectl_json(svc)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: Service {svc.name} not found")
+        snapshot = {"spec": obj.get("spec", {})}
+        write_annotation(svc, snapshot)
+        ok = self._mutate(lease, svc, obj)
+        if ok:
+            return StepOutcome(
+                "inject", True, f"{lease.fault_id}: mutated Service {svc.name}"
+            )
+        clear_annotation(svc)
+        return StepOutcome(
+            "inject",
+            False,
+            f"{lease.fault_id}: kubectl mutation failed on Service {svc.name}",
+        )
+
+    def _mutate(
+        self, lease: FaultLease, svc: ResourceRef, obj: dict[str, object]
+    ) -> bool:
+        fault = lease.fault_id
+        params = _lease_fault_params(lease)
+        if fault == "k8s.service_no_endpoints":
+            key = str(params.get("selector_key") or "mayhem.no-endpoints")
+            value = str(params.get("selector_value") or "true")
+            return apply_patch(svc, {"spec": {"selector": {key: value}}})
+        if fault == "k8s.service_port_mismatch":
+            ports = obj.get("spec", {}).get("ports", [])
+            if not ports:
+                return False
+            first = ports[0]
+            port = int(first.get("port") or 0)
+            requested = int(params.get("target_port") or 0)
+            old_target = first.get("targetPort") or port
+            if requested > 0:
+                broken = requested
+            elif isinstance(old_target, int) and old_target in (1, 65535):
+                broken = old_target + 1
+            elif isinstance(old_target, int):
+                broken = max(2, min(65535, old_target + 1))
+            else:
+                broken = 65531
+            return apply_patch(
+                svc,
+                {"spec": {"ports": [{"port": port, "targetPort": broken}]}},
+            )
+        if fault == "k8s.service_endpoint_flap":
+            # Bounded synchronous flap: toggle the selector every interval_s
+            # for ``cycles`` alternations, then leave the service pointing at
+            # the broken selector (undo restores the original object).
+            from time import sleep  # noqa: PLC0415
+
+            key = str(params.get("selector_key") or "mayhem.no-endpoints")
+            value = str(params.get("selector_value") or "true")
+            cycles = max(1, min(20, int(params.get("cycles") or 3)))
+            interval = max(1, min(120, int(params.get("interval_s") or 5)))
+            ok = True
+            for i in range(cycles):
+                broken = i % 2 == 0
+                patch = (
+                    {"spec": {"selector": {key: value}}}
+                    if broken
+                    else {"spec": {"selector": self._original_selector(obj)}}
+                )
+                ok = apply_patch(svc, patch) and ok
+                sleep(interval)
+            return ok
+
+    @staticmethod
+    def _original_selector(obj: dict[str, object]) -> dict[str, object]:
+        selector = obj.get("spec", {}).get("selector") or {}
+        return dict(selector)
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+class K8sConfigExecutor(K8sSnapshotExecutor):
+    """ConfigMap corruption and Secret deletion (recreate-on-undo).
+
+    ``k8s.configmap_corrupt`` annotates the ConfigMap itself and corrupts
+    its data.  ``k8s.secret_unavailable`` annotates the *pod* (the Secret
+    object is deleted and cannot carry its own snapshot); undo recreates
+    the Secret from the pod annotation.  ``kubectl delete`` faults a real
+    deleted object, matching k-plan-6 §13 semantics (Fail pods / pod
+    admission refusal).
+    """
+
+    prefixes = ("k8s.configmap_corrupt", "k8s.secret_unavailable")
+    ref_kinds = ("ConfigMap",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        if lease.fault_id == "k8s.configmap_corrupt":
+            return self._inject_configmap(lease, target)
+        return self._inject_secret(lease, target)
+
+    def _inject_configmap(self, lease: FaultLease, target: ResolvedPodTarget) -> StepOutcome:
+        params = _lease_fault_params(lease)
+        explicit = params.get("configmap")
+        cm = (
+            ResourceRef(kind="ConfigMap", name=str(explicit), namespace=target.namespace)
+            if explicit
+            else configmap_ref_for_pod(target)
+        )
+        if cm is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: no ConfigMap mounted into {target.pod}",
+            )
+        obj = kubectl_json(cm)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: ConfigMap {cm.name} not found")
+        prefix = str(params.get("prefix") or "mayhem-corrupted-")
+        data = dict(obj.get("data") or {})
+        if not data:
+            data = {"mayhem-corrupted": "empty-configmap"}
+        snapshot = {"data": dict(data)}
+        write_annotation(cm, snapshot)
+        corrupted = {
+            str(k): f"{prefix}{str(v)[:120]}" for k, v in data.items()
+        }
+        if not apply_patch(cm, {"data": corrupted}):
+            clear_annotation(cm)
+            return StepOutcome(
+                "inject", False, f"{lease.fault_id}: patch failed on ConfigMap {cm.name}"
+            )
+        return StepOutcome("inject", True, f"{lease.fault_id}: corrupted ConfigMap {cm.name}")
+
+    def _inject_secret(self, lease: FaultLease, target: ResolvedPodTarget) -> StepOutcome:
+        params = _lease_fault_params(lease)
+        explicit = params.get("name")
+        synthetic = str(params.get("synthetic") or "true").lower() in ("1", "true", "yes")
+        sec = (
+            ResourceRef(kind="Secret", name=str(explicit), namespace=target.namespace)
+            if explicit
+            else secret_ref_for_pod(target)
+        )
+        if sec is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: no Secret mounted into {target.pod}",
+            )
+        if not synthetic and not sec.name.startswith("mayhem-"):
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: refusing to delete non-mayhem Secret {sec.name} "
+                "(set synthetic=false and an explicit mayhem-* name to force)",
+            )
+        obj = kubectl_json(sec)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: Secret {sec.name} not found")
+        snapshot = {
+            "secret": {
+                "kind": "Secret",
+                "name": sec.name,
+                "namespace": target.namespace,
+                "type": str(obj.get("type") or "Opaque"),
+                "data": dict(obj.get("data") or {}),
+            }
+        }
+        pod_ref = ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace)
+        write_annotation(pod_ref, snapshot)
+        if not delete_object(sec):
+            clear_annotation(pod_ref)
+            return StepOutcome(
+                "inject", False, f"{lease.fault_id}: delete failed on Secret {sec.name}"
+            )
+        return StepOutcome("inject", True, f"{lease.fault_id}: deleted Secret {sec.name}")
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        if lease.fault_id == "k8s.secret_unavailable":
+            return self._undo_secret(lease)
+        return super().undo(lease)
+
+    def _undo_secret(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved pod target")
+        pod_ref = ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace)
+        snapshot = read_snapshot(pod_ref)
+        if snapshot is None:
+            return StepOutcome(
+                "undo", True, f"{lease.fault_id}: no Secret snapshot on pod; nothing to undo"
+            )
+        secret = snapshot.get("secret")
+        if not isinstance(secret, dict) or not secret.get("name"):
+            clear_annotation(pod_ref)
+            return StepOutcome("undo", False, f"{lease.fault_id}: malformed Secret snapshot")
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": secret["name"],
+                "namespace": secret.get("namespace") or target.namespace,
+            },
+            "type": secret.get("type") or "Opaque",
+            "data": secret.get("data") or {},
+        }
+        if not kubectl_apply_json(manifest):
+            return StepOutcome("undo", False, f"{lease.fault_id}: Secret recreation failed")
+        clear_annotation(pod_ref)
+        return StepOutcome("undo", True, f"{lease.fault_id}: recreated Secret {secret['name']}")
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"data": snapshot["data"]})
+
+
+class K8sStorageExecutor(K8sExecutor):
+    """In-pod persistent volume stress / permission faults (k-plan-6 §16–17).
+
+    ``k8s.persistent_volume_delay`` short-circuits a path with ``chattr +i``
+    style latency — the pragmatic primitive here is a bounded permission
+    change (``chmod 000``) that self-restores after the authored duration:
+    callers observe I/O errors / delays without permanent damage.
+    ``k8s.persistent_volume_error`` makes the path unreadable/unwritable.
+
+    Both workers are argv-reaped on undo (identical to ``K8sPodPressure``);
+    the volume change is the *file mode inside the pod's mount* and is
+    confined to the resolved container's mount namespace.
+    """
+
+    prefixes = ("k8s.persistent_volume_delay", "k8s.persistent_volume_error")
+
+    def _token(self, lease: FaultLease) -> str:
+        safe = "".join(ch for ch in lease.id if ch.isalnum())
+        return safe[:24] or "mh"
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        params = _lease_fault_params(lease)
+        path = str(params.get("volume_path") or preferred_mount_path(target))
+        hold = max(1, int(lease.ttl_seconds or 120))
+        token = self._token(lease)
+        pidfile = f"/tmp/mayhem-{token}.pids"
+        if lease.fault_id == "k8s.persistent_volume_delay":
+            body = (
+                f"chmod 000 {path}; echo $$ > {pidfile}; "
+                f"sleep {hold}; chmod 755 {path} 2>/dev/null; rm -f {pidfile}"
+            )
+        else:
+            body = (
+                f"chmod 000 {path}; echo $$ > {pidfile}; "
+                f"sleep {hold}; rm -f {pidfile}"
+            )
+        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", body)
+        try:
+            result = run_tool(argv, timeout_s=60)
+        except ToolError as exc:
+            return StepOutcome("inject", False, f"{lease.fault_id} exec failed: {exc}")
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id} exec rc={result.exit_code}: {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id}: {path} made {self._mode_label(lease)} for {hold}s",
+            tool_result=result,
+        )
+
+    def _mode_label(self, lease: FaultLease) -> str:
+        return "unreadable (I/O error horizon)" if lease.fault_id == "k8s.persistent_volume_error" else "slow (permission short-circuit)"
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if target is None:
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved target")
+        token = self._token(lease)
+        sh_cmd = (
+            f"r=/tmp/mayhem-{token}.pids; if [ -s $r ]; then cat $r | "
+            "xargs kill 2>/dev/null; fi; rm -f $r; rm -rf "
+            f"/tmp/mayhem-{token}.* 2>/dev/null"
+        )
+        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", sh_cmd)
+        try:
+            result = run_tool(argv, timeout_s=30)
+        except ToolError as exc:
+            return StepOutcome("undo", False, f"{lease.fault_id} cleanup failed: {exc}")
+        return StepOutcome(
+            "undo",
+            result.succeeded,
+            f"{lease.fault_id} worker reaped in {target.pod}",
+            result,
+        )
+
+
+class K8sPodDeleteExecutor(K8sExecutor):
+    """Uncontrolled pod deletion (``kubectl delete --force --grace-period=0``).
+
+    The deletion has no object-level undo: recovery is the pod replacement
+    the engine watches (k-plan-6 §12).  Undo is a verified no-op so lease
+    release is always clean.
+    """
+
+    prefixes = ("k8s.pod_delete_uncontrolled",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.pod_delete_uncontrolled":
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        ref = ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace)
+        if not delete_object(ref, force=True, grace_period=0):
+            return StepOutcome(
+                "inject", False, f"{lease.fault_id}: force delete failed for {target.pod}"
+            )
+        return StepOutcome("inject", True, f"{lease.fault_id}: {target.pod} force-deleted")
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome(
+            "undo",
+            True,
+            f"{lease.fault_id}: irreversible; pod replacement is the recovery",
+        )
+
+
+class K8sNodeCordonExecutor(K8sExecutor):
+    """Cordon a node (no eviction); undo via uncordon (k-plan-6 §19)."""
+
+    prefixes = ("k8s.node_cordon",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id != "k8s.node_cordon":
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedNodeTarget):
+            return f"{lease.fault_id}: no resolved node target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved node target")
+        result = run_tool(("kubectl", "cordon", target.node), timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: kubectl cordon failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject", True, f"{lease.fault_id}: node {target.node} cordoned", tool_result=result
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved node target")
+        result = run_tool(("kubectl", "uncordon", target.node), timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: kubectl uncordon failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"{lease.fault_id}: node {target.node} schedulable again",
+            tool_result=result,
+        )
+
+
+def _serialize(snapshot: dict[str, object]) -> str:
+    import json as _json  # noqa: PLC0415
+
+    return _json.dumps(snapshot, sort_keys=True)
+
+
 _K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
     "k8s.pod_kill": K8sPodKillExecutor,
     "k8s.pod_evict": K8sPodEvictExecutor,
@@ -1158,6 +2241,40 @@ _K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
     "k8s.node_drain": K8sNodeDrainExecutor,
     "k8s.node_pressure": K8sNodePressureExecutor,
     "k8s.pod_latency": K8sPodLatencyExecutor,
+    "cpu.saturate": K8sArgvExecutor,
+    "cpu.throttle": K8sArgvExecutor,
+    "mem.exhaust": K8sArgvExecutor,
+    "mem.leak": K8sArgvExecutor,
+    "fs.fill": K8sArgvExecutor,
+    "fs.inode_exhaust": K8sArgvExecutor,
+    "fs.io_stress": K8sArgvExecutor,
+    "fd.exhaust": K8sArgvExecutor,
+    "net.latency": K8sArgvExecutor,
+    "net.packet_loss": K8sArgvExecutor,
+    "net.duplicate": K8sArgvExecutor,
+    "net.reorder": K8sArgvExecutor,
+    "net.bandwidth": K8sArgvExecutor,
+    "net.partition": K8sArgvExecutor,
+    # ── k-plan-6: next-20 controller-level families (docs/k8s-new.md) ────────
+    "k8s.pod_readiness_fail": K8sWorkloadExecutor,
+    "k8s.pod_liveness_fail": K8sWorkloadExecutor,
+    "k8s.pod_startup_fail": K8sWorkloadExecutor,
+    "k8s.pod_unschedulable": K8sWorkloadExecutor,
+    "k8s.schedule_delay": K8sWorkloadExecutor,
+    "k8s.image_pull_failure": K8sWorkloadExecutor,
+    "k8s.replica_reduce": K8sWorkloadExecutor,
+    "k8s.rollout_pause": K8sWorkloadExecutor,
+    "k8s.rollout_failure": K8sWorkloadExecutor,
+    "k8s.persistent_volume_detach": K8sWorkloadExecutor,
+    "k8s.service_no_endpoints": K8sServiceExecutor,
+    "k8s.service_endpoint_flap": K8sServiceExecutor,
+    "k8s.service_port_mismatch": K8sServiceExecutor,
+    "k8s.configmap_corrupt": K8sConfigExecutor,
+    "k8s.secret_unavailable": K8sConfigExecutor,
+    "k8s.persistent_volume_delay": K8sStorageExecutor,
+    "k8s.persistent_volume_error": K8sStorageExecutor,
+    "k8s.pod_delete_uncontrolled": K8sPodDeleteExecutor,
+    "k8s.node_cordon": K8sNodeCordonExecutor,
 }
 
 
