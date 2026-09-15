@@ -74,12 +74,15 @@ def _graph_from(ctx: click.Context, compose: str | None) -> TopologyGraph:
 
 def _landscape_cells(graph: TopologyGraph, seed: int = 0) -> tuple[CoverageCell, ...]:
     """Build a CoverageCell landscape from a topology graph."""
-    from mayhem.domain.catalog import CATALOG
     from mayhem.infra.candidate_generator import CandidateLandscape, SeededCandidateGenerator
     from mayhem.infra.maniac import coverage_cell_for_candidate
 
     targets = tuple(sorted({n.id for n in graph.nodes}))
-    fault_kinds = tuple(sorted({fd.id for fd in CATALOG}))
+    # Fault kinds: scoped to the engine selected at the root — with ``-k``
+    # only kubernetes-executable families are counted in coverage land.
+    from mayhem.cli.services import engine_fault_kinds
+
+    fault_kinds = engine_fault_kinds()
 
     landscape_obj = CandidateLandscape(
         targets=targets,
