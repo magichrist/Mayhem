@@ -55,9 +55,7 @@ K8S_MUTATION_FAULTS: frozenset[str] = frozenset(
 K8S_DELETE_FAULTS: frozenset[str] = frozenset({"k8s.pod_kill", "k8s.pod_evict"})
 # Network families ship their undo as a policy delete; pod_partition is the
 # same mechanism targeting the pod's own isolation (k-plan-4 §4.1).
-K8S_NETWORK_FAULTS: frozenset[str] = frozenset(
-    {"k8s.network_policy", "k8s.pod_partition"}
-)
+K8S_NETWORK_FAULTS: frozenset[str] = frozenset({"k8s.network_policy", "k8s.pod_partition"})
 # Families with a live lease-time undo (network policy delete, pressure
 # restore signal); everything else relies on compensation (k-plan-4 §4.4/§4.5).
 K8S_REVERSIBLE_FAULTS: frozenset[str] = frozenset(
@@ -68,17 +66,152 @@ K8S_REVERSIBLE_FAULTS: frozenset[str] = frozenset(
         "k8s.node_drain",  # undo = uncordon (k-plan-5 §5.2)
         "k8s.node_pressure",  # undo = delete pressure workload (k-plan-5 §5.4)
         "k8s.pod_latency",  # undo = qdisc clear (k-plan-5 §5.3)
+        # ── k-plan-6: next-20 families (docs/k8s-new.md) ──
+        "k8s.pod_readiness_fail",
+        "k8s.pod_liveness_fail",
+        "k8s.pod_startup_fail",
+        "k8s.pod_unschedulable",
+        "k8s.schedule_delay",
+        "k8s.image_pull_failure",
+        "k8s.replica_reduce",
+        "k8s.rollout_pause",
+        "k8s.rollout_failure",
+        "k8s.service_no_endpoints",
+        "k8s.service_endpoint_flap",
+        "k8s.service_port_mismatch",
+        "k8s.configmap_corrupt",
+        "k8s.secret_unavailable",
+        "k8s.persistent_volume_delay",
+        "k8s.persistent_volume_error",
+        "k8s.persistent_volume_detach",
+        "k8s.node_cordon",  # undo = uncordon (k-plan-6)
     }
 )
 # k-plan-5: node-scoped faults mutate the cluster node, not a container; they
 # resolve to a ResolvedNodeTarget and ride the node pipeline in the engine.
 K8S_NODE_FAULTS: frozenset[str] = frozenset(
-    {"k8s.node_drain", "k8s.node_pressure"}
+    {"k8s.node_drain", "k8s.node_pressure", "k8s.node_cordon"}
 )
 # k-plan-5 §5.3: network-namespace-injected pod faults (tc netem via nsenter).
 # The NETNS capability gates delivery; without it the driver refuses with
 # ``k8s.unsupported`` before any mutation (Band C).
-K8S_NETNS_FAULTS: frozenset[str] = frozenset({"k8s.pod_latency"})
+K8S_NETNS_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.pod_latency",
+        # k-plan-3 SP-3.4: the portable tc-netem argv families ride the same
+        # netns seam (K8sArgvExecutor gates delivery on the same capability).
+        "net.latency",
+        "net.packet_loss",
+        "net.duplicate",
+        "net.reorder",
+        "net.bandwidth",
+        "net.partition",
+    }
+)
+
+# ── k-plan-3 SP-3.4: portable in-pod argv families ──────────────────────────
+
+K8S_ARGV_FAULTS: frozenset[str] = frozenset(
+    {
+        "cpu.saturate",
+        "cpu.throttle",
+        "mem.exhaust",
+        "mem.leak",
+        "fs.fill",
+        "fs.inode_exhaust",
+        "fs.io_stress",
+        "fd.exhaust",
+        "net.latency",
+        "net.packet_loss",
+        "net.duplicate",
+        "net.reorder",
+        "net.bandwidth",
+        "net.partition",
+    }
+)
+# The argv families deliver through ``kubectl exec`` into a resolved pod and
+# undo is live (reap the worker pids / tc qdisc clear), so they ride the
+# reversible mutation pipeline exactly like ``k8s.pod_pressure``.
+K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_ARGV_FAULTS
+K8S_REVERSIBLE_FAULTS = K8S_REVERSIBLE_FAULTS | K8S_ARGV_FAULTS
+
+# ── k-plan-6: next-20 controller-level families (docs/k8s-new.md) ────────────
+# Unlike the k-plan-3/4/5 families these are delivered through kubectl
+# patch/scale/rollout against the *owning workload* (or the Service /
+# ConfigMap / Secret) rather than the container.  Every family on this list
+# is reversible with a live lease-time undo restoring the object snapshot;
+# ``k8s.pod_delete_uncontrolled`` is the single irreversible entry and joins
+# K8S_DELETE_FAULTS (compensation = replacement watch).
+
+K8S_PROBE_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.pod_readiness_fail",
+        "k8s.pod_liveness_fail",
+        "k8s.pod_startup_fail",
+    }
+)
+K8S_SCHEDULER_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.pod_unschedulable",
+        "k8s.schedule_delay",
+    }
+)
+K8S_REGISTRY_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.image_pull_failure",
+        "k8s.image_pull_slow",  # catalog-only; refuses at can_apply time
+    }
+)
+K8S_WORKLOAD_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.replica_reduce",
+        "k8s.rollout_pause",
+        "k8s.rollout_failure",
+    }
+)
+K8S_POD_DELETE_FAULTS: frozenset[str] = frozenset({"k8s.pod_delete_uncontrolled"})
+K8S_SERVICE_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.service_no_endpoints",
+        "k8s.service_endpoint_flap",
+        "k8s.service_port_mismatch",
+    }
+)
+K8S_CONFIG_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.configmap_corrupt",
+        "k8s.secret_unavailable",
+    }
+)
+K8S_STORAGE_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.persistent_volume_delay",
+        "k8s.persistent_volume_error",
+        "k8s.persistent_volume_detach",
+    }
+)
+# Controller-level families = everything that mutates a k8s object other than
+# the pod's own container (workload / service / config / storage / probes).
+# image_pull_slow stays out of the executable surface (no kubectl primitive);
+# image_pull_failure rides the workload-image patch lane.
+K8S_CONTROLLER_FAULTS: frozenset[str] = frozenset(
+    K8S_PROBE_FAULTS
+    | K8S_SCHEDULER_FAULTS
+    | K8S_WORKLOAD_FAULTS
+    | K8S_POD_DELETE_FAULTS
+    | K8S_SERVICE_FAULTS
+    | K8S_CONFIG_FAULTS
+    | K8S_STORAGE_FAULTS
+    | frozenset({"k8s.image_pull_failure"})
+)
+K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
+# image_pull_slow is a registered catalog archetype for planning, but no
+# kubectl primitive delivers pull-latency shaping; it must never be offered
+# as reversible.  All other new controller families restore a live snapshot.
+K8S_REVERSIBLE_FAULTS = (
+    K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS - K8S_POD_DELETE_FAULTS
+)
+K8S_DELETE_FAULTS = K8S_DELETE_FAULTS | K8S_POD_DELETE_FAULTS
 
 
 def make_k8s_resolver(
@@ -166,6 +299,7 @@ def k8s_mutation_spec(
     # UndoOp.args is dict[str, str], so the params bag rides along JSON-encoded
     # (k-plan-4 §4.4); _lease_fault_params decodes it on the executor side.
     import json as _json  # noqa: PLC0415
+
     return {
         "op": "k8s.mutation" if reversible else "k8s.mutation.noop",
         "args": {
@@ -176,9 +310,7 @@ def k8s_mutation_spec(
             "pod_uid": target.pod_uid,
             "pod_action": target.pod_action,
             "reversible": str(reversible).lower(),
-            "labels": ",".join(
-                f"{k}={v}" for k, v in sorted(target.labels.items())
-            ),
+            "labels": ",".join(f"{k}={v}" for k, v in sorted(target.labels.items())),
             "exec_argv": " ".join(target.exec_argv),
             "params": _json.dumps(dict(params or {}), sort_keys=True, separators=(",", ":")),
         },
@@ -286,6 +418,17 @@ def k8s_node_undo_ops(
                 },
             ),
         )
+    if fault_id == "k8s.node_cordon":
+        return (
+            UndoOp(
+                op="k8s.uncordon",
+                args={
+                    "node": target.node,
+                    "node_uid": target.node_uid,
+                    "params": bag,
+                },
+            ),
+        )
     return ()
 
 
@@ -324,9 +467,9 @@ def k8s_node_verify_spec(
 def k8s_node_routing() -> dict[str, str]:
     """Node-family pipeline routing: node faults → the node pipeline step.
 
-    Modes are per-fault (k-plan-5 §5.1): ``node_drain`` and ``node_pressure``
-    both route through the node pipeline (``k8s.node``); everything else falls
-    back to ``k8s.pod``.
+    Modes are per-fault (k-plan-5 §5.1): ``node_drain``, ``node_pressure``,
+    and ``node_cordon`` all route through the node pipeline (``k8s.node``);
+    everything else falls back to ``k8s.pod``.
     """
     return {fault: "k8s.node" for fault in K8S_NODE_FAULTS}
 
@@ -370,18 +513,40 @@ def unsupported_reason(fault_id: str) -> str:
     return k8s_unsupported_reason(fault_id)
 
 
+def k8s_available_faults() -> frozenset[str]:
+    """The fault ids that can actually execute against kubernetes targets.
+
+    In-pod families route through ``K8S_MUTATION_FAULTS`` (pod lifecycle,
+    policy, signal and the SP-3.4 portable argv lanes); node-scoped faults
+    route via ``K8S_NODE_FAULTS``.  These are the executor's own dispatch
+    registers, so the list can never drift from what the driver accepts.
+    """
+    return K8S_MUTATION_FAULTS | K8S_NODE_FAULTS
+
+
 __all__ = (
+    "K8S_ARGV_FAULTS",
+    "K8S_CONFIG_FAULTS",
+    "K8S_CONTROLLER_FAULTS",
     "K8S_DELETE_FAULTS",
     "K8S_MUTATION_FAULTS",
     "K8S_NETNS_FAULTS",
     "K8S_NETWORK_FAULTS",
     "K8S_NODE_FAULTS",
+    "K8S_POD_DELETE_FAULTS",
+    "K8S_PROBE_FAULTS",
+    "K8S_REGISTRY_FAULTS",
     "K8S_REVERSIBLE_FAULTS",
+    "K8S_SCHEDULER_FAULTS",
+    "K8S_SERVICE_FAULTS",
     "K8S_SIGNAL_FAULTS",
+    "K8S_STORAGE_FAULTS",
+    "K8S_WORKLOAD_FAULTS",
     "NO_UNDO_MARKER",
     "UNDO_OP",
     "ResolutionError",
     "SelectionError",
+    "k8s_available_faults",
     "k8s_mutation_spec",
     "k8s_node_routing",
     "k8s_node_spec",
