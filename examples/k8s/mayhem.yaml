@@ -1,26 +1,38 @@
-# Kubernetes drill spec (planning-only).
+# Kubernetes drill spec — exercises all 9 k8s.* catalog faults against the
+# deployment blueprint in kubernetes.yaml running on minikube.
+# Uses the cross-runtime `targets:` block (k-plan-1).
 #
-# Exercises the nine `k8s.*` catalog faults against the declarative blueprint in
-# kubernetes.yaml. When the M8 k8s driver lands, Kubernetes targets are keyed by
-# namespace + name/labels instead of compose container_name, and this spec
-# becomes runnable. In the current milestone it is NOT executable: the planner
-# and the k8s.unsupported safety gate refuse k8s node kinds (ADR-M7).
+# k-plan-3 (post-M7/M8): the portable generic-catalog families are LIVE on k8s
+# too.  They execute inside the resolved pod via the plan-charted UTF-8
+# `kubectl exec` argv path (K8sArgvExecutor):
+#   * ``cpu.*`` / ``mem.*`` / ``fs.*`` / ``fd.*`` — bounded in-pod worker with
+#     a self-cleaning reaper; release is pure live undo (no pod replacement).
+#   * ``net.*`` — tc-netem lane, gated on the adapter's NETNS capability;
+#     refused before any mutation when the runtime reports no netns.
+# The k8s.* archetypes below remain the lifecycle/capacity families.
 apiVersion: "mayhem/v1"
 kind: drill
 name: k8s-fault-drill
 hypothesis: "kubernetes workload and node recover from every injected k8s fault"
 
 config:
+  policy:
+    allow_critical: true
+    critical_fault_acks:
+      - k8s.node_drain
   risk_ceiling: critical
-  # k8s.node_drain is critical-risk; require explicit acknowledgment to plan.
   max_faults: 1
   timeout: 60m
   log_level: INFO
   recovery: false
 
-containers:
-  # Node-level faults target k8s worker/control-plane nodes.
+targets:
   node-group:
+    runtime: kubernetes
+    kubernetes:
+      kind: k8s_node
+      namespace: ""
+      name: minikube
     faults:
       - fault: k8s.node_drain
         params:
@@ -32,8 +44,13 @@ containers:
           target_percent: 80
         duration: 15s
 
-  # Pod-level faults target workload pods selected by label.
   testcase-api:
+    runtime: kubernetes
+    kubernetes:
+      kind: deployment
+      namespace: mayhem
+      name: testcase-api
+      container: api
     faults:
       - fault: k8s.pod_evict
         duration: 15s
@@ -62,11 +79,125 @@ containers:
           policy_name: deny-egress
           direction: egress
         duration: 15s
+      # ── k-plan-3 portable lane: live in-pod argv families (verified on k8s)
+      - fault: cpu.saturate
+        params:
+          percent: 100
+        duration: 15s
+      - fault: cpu.throttle
+        params:
+          percent: 50
+        duration: 15s
+      - fault: mem.exhaust
+        params:
+          amount: 128Mi
+        duration: 15s
+      - fault: mem.leak
+        params:
+          rate_mb: 32
+        duration: 15s
+      - fault: fs.fill
+        params:
+          percent: 80
+        duration: 15s
+      - fault: fs.inode_exhaust
+        duration: 15s
+      - fault: fs.io_stress
+        params:
+          workers: 2
+        duration: 15s
+      - fault: fd.exhaust
+        params:
+          limit: 128
+        duration: 15s
+      # ── k-plan-3 netns lane (tc-netem in pod netns; needs NETNS capability)
+      - fault: net.latency
+        params:
+          jitter_ms: 20
+        duration: 15s
+      - fault: net.packet_loss
+        params:
+          percent: 15
+        duration: 15s
+      - fault: net.duplicate
+        params:
+          percent: 10
+        duration: 15s
+      - fault: net.reorder
+        params:
+          percent: 10
+          delay_ms: 40
+        duration: 15s
+      - fault: net.bandwidth
+        params:
+          rate: 5mbit
+          burst: 10k
+        duration: 15s
+      - fault: net.partition
+        duration: 15s
+
+  testcase-lb:
+    runtime: kubernetes
+    kubernetes:
+      kind: deployment
+      namespace: mayhem
+      name: testcase-lb
+      container: lb
+    faults:
+      - fault: k8s.pod_evict
+        duration: 15s
+      - fault: k8s.pod_kill
+        duration: 15s
+      - fault: k8s.pod_latency
+        params:
+          seconds: 3s
+          jitter_ms: 50
+        duration: 15s
+      - fault: k8s.pod_oom
+        params:
+          memory_limit: 64Mi
+        duration: 15s
+      - fault: k8s.pod_partition
+        params:
+          seconds: 3s
+        duration: 15s
+      - fault: k8s.pod_pressure
+        params:
+          resource: cpu
+          target_percent: 80
+        duration: 15s
+      # ── k-plan-3 portable lane: representative live argv + netns subset
+      - fault: cpu.saturate
+        params:
+          percent: 80
+        duration: 15s
+      - fault: mem.leak
+        params:
+          rate_mb: 32
+        duration: 15s
+      - fault: fs.io_stress
+        params:
+          workers: 1
+        duration: 15s
+      - fault: fd.exhaust
+        params:
+          limit: 128
+        duration: 15s
+      - fault: net.latency
+        params:
+          jitter_ms: 25
+        duration: 15s
+      - fault: k8s.network_policy
+        params:
+          policy_name: deny-egress
+          direction: egress
 
 execution:
   - parallel: [node-group]
   - wait: 5s
   - sequential: [testcase-api]
+  - wait: 5s
+  - sequential: [testcase-lb]
 
 success:
   criteria:
