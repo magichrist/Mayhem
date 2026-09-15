@@ -114,9 +114,12 @@ def _fake_tool(
     calls: list,
     ok_stdout: str = "",
     fail_on: tuple[str, ...] = (),
+    stdin_calls: list | None = None,
 ):
     def _run(argv: tuple[str, ...], **kwargs: Any) -> ToolResult:
         calls.append(tuple(argv))
+        if stdin_calls is not None:
+            stdin_calls.append(kwargs.get("stdin_data"))
         joined = " ".join(argv)
         fail = any(marker in joined for marker in fail_on)
         return ToolResult(
@@ -292,6 +295,7 @@ class TestK8sNodeDrainExecutor:
         injection = [argv for argv in calls if "drain" in argv or "cordon" in argv]
         assert [argv[1] for argv in injection] == ["cordon", "drain"]
         assert injection[0][2] == "w1"
+        assert "--force" in injection[1], "drain must force-evict controller-less pods"
 
     def test_undo_uncordons(self, monkeypatch) -> None:
         calls: list = []
@@ -331,15 +335,21 @@ class TestK8sNodeDrainExecutor:
 class TestK8sNodePressureExecutor:
     def test_inject_applies_pressure_workload(self, monkeypatch) -> None:
         calls: list = []
-        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        stdin_calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(calls, stdin_calls=stdin_calls),
+        )
         lease = _lease_for("k8s.node_pressure", params={"resource": "cpu", "target_percent": 80})
         outcome = K8sNodePressureExecutor().inject(lease)
         assert outcome.ok is True
         apply_argv = calls[0]
         assert apply_argv[:3] == ("kubectl", "apply", "-f")
-        body = json.loads(apply_argv[5])
+        assert apply_argv[3] == "-", "manifest must stream via stdin"
+        body = json.loads(stdin_calls[0])
         assert body["spec"]["nodeName"] == "w1"
         assert body["metadata"]["name"] == "mayhem-node-pressure-w1"
+        assert body["spec"]["containers"][0]["resources"]["requests"] == {"cpu": "80m"}
 
     def test_undo_deletes_pressure_workload(self, monkeypatch) -> None:
         calls: list = []
@@ -396,7 +406,8 @@ class TestEngineK8sNodeStep:
     ) -> None:
         tool_calls: list = []
         monkeypatch.setattr(
-            "mayhem.agents.executors.run_tool", _fake_tool(tool_calls, fail_on=("cordon",))
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(tool_calls, fail_on=("kubectl cordon",)),
         )
         store = Store.open_migrated(tmp_path / "rk5.db")
         client = FakeClusterClient(K8sNodeInfo(name="w1", uid="n-1", ready=True))
@@ -405,10 +416,52 @@ class TestEngineK8sNodeStep:
         assert result.steps[0].ok is False
         lease = _all_leases(store)[0]
         assert lease.state == LeaseState.RELEASED
-        assert lease.release_mechanism == "failed_to_apply"
+        assert lease.release_mechanism == "failed_to_apply_undone"
         assert not any(
             event.kind == EventKind.FAULT_RECOVERED for event in events
         )
+        # the inject failure must not leave the node mid-mutation: uncordon
+        # was attempted last on a cordon failure.
+        assert tool_calls[-1][1] == "uncordon"
+
+    def test_engine_drain_failure_undoes_partial_cordon(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A drain that fails *after* a successful cordon must uncordon again
+        (write-ahead undo on partial node mutation) — never leak a cordon."""
+        tool_calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool", _fake_tool(tool_calls, fail_on=("drain",))
+        )
+        store = Store.open_migrated(tmp_path / "rk5.db")
+        client = FakeClusterClient(K8sNodeInfo(name="w1", uid="n-1", ready=True))
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan_node())
+        assert result.steps[0].ok is False
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "failed_to_apply_undone"
+        verbs = [(argv[1], argv[2] if len(argv) > 2 else "") for argv in tool_calls]
+        assert verbs == [("cordon", "w1"), ("drain", "w1"), ("uncordon", "w1")]
+
+    def test_engine_drain_failure_with_broken_undo_marks_dirty(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """If the partial-mutation undo also fails, the lease escalates DIRTY
+        so the operator is told a cordon may be stuck on the node."""
+        tool_calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(tool_calls, fail_on=("drain", "uncordon")),
+        )
+        store = Store.open_migrated(tmp_path / "rk5.db")
+        client = FakeClusterClient(K8sNodeInfo(name="w1", uid="n-1", ready=True))
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan_node())
+        assert result.steps[0].ok is False
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.DIRTY
+        assert not any(event.kind == EventKind.FAULT_RECOVERED for event in events)
 
     def test_engine_node_undo_failure_marks_dirty(
         self, tmp_path: Path, monkeypatch
