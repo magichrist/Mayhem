@@ -46,11 +46,21 @@ CONTAINERS = (
     "testcase-db",
 )
 
+NON_K8S_KINDS = frozenset(
+    {
+        NodeKind.SERVICE,
+        NodeKind.CONTAINER,
+        NodeKind.HOST,
+        NodeKind.PROCESS,
+        NodeKind.EXTERNAL_DEPENDENCY,
+    }
+)
+
+# Container-executable faults: every catalog fault that addresses at least one
+# non-k8s node kind. A fault may also target pods (the k8s argv families) and
+# still belongs in the docker matrix — it stays container-portable.
 FAULTS = tuple(
-    d.id
-    for d in CATALOG
-    if NodeKind.POD not in d.applicable_node_kinds
-    and NodeKind.K8S_NODE not in d.applicable_node_kinds
+    d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS
 )
 
 _RATE = {"net.bandwidth": {"rate": "10mbit"}, "dependency.rate_limit": {"rate": 100}}
@@ -204,12 +214,7 @@ class TestPlannerMatrix:
         assert step.fault.verify_probes
 
     def test_all_catalog_faults_appear_in_the_matrix(self) -> None:
-        non_k8s = {
-            d.id
-            for d in CATALOG
-            if NodeKind.POD not in d.applicable_node_kinds
-            and NodeKind.K8S_NODE not in d.applicable_node_kinds
-        }
+        non_k8s = {d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS}
         assert set(FAULTS) == non_k8s
         assert "net.bandwidth" in FAULTS  # rate-seeded required param present
         assert "dependency.rate_limit" in FAULTS
