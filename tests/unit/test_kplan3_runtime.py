@@ -3,10 +3,15 @@
 Pins the execution-side contract: the engine routes kubernetes steps through
 the resolved pod (kubectl exec driver), records the resolved target on the
 lease, and fails loud with the stable ``k8s.unsupported`` refusal for families
-this milestone refuses — before any lease forms or mutation happens.
+this milestone refuses — before any lease forms or mutation happens.  The
+portable generic catalog families (``cpu.*``/``mem.*``/``fs.*``/``fd.*`` and
+the tc-netem ``net.*`` lane) deliver through the K8sArgvExecutor argv path
+(SP-3.1 lane).
 """
+
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +19,7 @@ from typing import Any, cast
 
 import pytest
 
+from mayhem.agents.executors import K8sArgvExecutor, k8s_executor_for
 from mayhem.agents.k8s_resolve import (
     K8sContainerStatus,
     K8sPod,
@@ -22,6 +28,9 @@ from mayhem.agents.k8s_resolve import (
 )
 from mayhem.controller.executor import RunEngine
 from mayhem.controller.k8s_runtime import (
+    K8S_ARGV_FAULTS,
+    k8s_mutation_spec,
+    k8s_undo_ops_for,
     k8s_undo_spec,
     make_k8s_resolver,
     preferred_pod_from_graph,
@@ -37,12 +46,13 @@ from mayhem.domain.experiments import (
     Wait,
 )
 from mayhem.domain.identity import RuntimeLabel
-from mayhem.domain.leases import LeaseState, UndoOp
+from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
 from mayhem.domain.target import ResourceKind, SelectionMode, SelectionSpec, TargetScope
 from mayhem.domain.topology import PodNode, TopologyGraph
 from mayhem.infra.lease_repository import SQLiteLeaseSink
 from mayhem.infra.store import Store
 from mayhem.toolkit.tool_runner import ToolResult
+
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
 class FakeClusterClient:
@@ -144,7 +154,9 @@ def _plan(fault_id: str = "proc.pause", *, duration: str = "0.1s") -> ExecutionP
         undo_ops=(UndoOp(op="k8s.exec", args={"undo_command": "CONT"}),),
         duration=duration,
     )
-    step = PlannedStep(id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0))
+    step = PlannedStep(
+        id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0)
+    )
     return ExecutionPlan(
         run_id="rk3-e2e",
         kind=ExperimentKind.DRILL,
@@ -163,7 +175,11 @@ def _plan_from_spec() -> ExecutionPlan:
             "targets": {
                 "checkout": {
                     "runtime": "kubernetes",
-                    "kubernetes": {"kind": "deployment", "namespace": "production", "name": "checkout"},
+                    "kubernetes": {
+                        "kind": "deployment",
+                        "namespace": "production",
+                        "name": "checkout",
+                    },
                     "faults": [{"fault": "k8s.pod_latency", "duration": "1s"}],
                 }
             },
@@ -196,10 +212,17 @@ def _plan_from_spec() -> ExecutionPlan:
 
 def _graph() -> TopologyGraph:
     return TopologyGraph(
-        nodes=(PodNode(id="pod-checkout", name="checkout-abc123", namespace="production", image="x", state="Running"),),
+        nodes=(
+            PodNode(
+                id="pod-checkout",
+                name="checkout-abc123",
+                namespace="production",
+                image="x",
+                state="Running",
+            ),
+        ),
         edges=(),
     )
-
 
 
 def _all_leases(store: Store) -> list:
@@ -244,9 +267,44 @@ class TestK8sRuntimeAdapter:
         assert args["namespace"] == "production"
         assert args["exec_argv"].startswith("kubectl exec -n production pod/checkout-abc123")
 
+    def test_mutation_spec_carries_argv_params_bag(self) -> None:
+        """k-plan-4 §4.4: the argv lane writes its params through the mutation
+        spec's write-ahead ``params`` bag, recoverable by ``_lease_fault_params``."""
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        resolver = KubernetesRuntimeResolver(client=client)
+        outcome = resolver.resolve(_scope())
+        spec = k8s_mutation_spec("cpu.saturate", outcome.resolved, params={"percent": 80})
+        args = cast(dict[str, str], spec["args"])
+        assert spec["op"] == "k8s.mutation"
+        assert args["fault_id"] == "cpu.saturate"
+        assert json.loads(args["params"]) == {"percent": 80}
+        assert args["exec_argv"].startswith("kubectl exec -n production pod/checkout-abc123")
+
+    def test_argv_family_records_live_undo_op_not_noop(self) -> None:
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        resolver = KubernetesRuntimeResolver(client=client)
+        outcome = resolver.resolve(_scope())
+        ops = k8s_undo_ops_for("cpu.saturate", outcome.resolved)
+        assert [op.op for op in ops] == ["k8s.undo.cpu.saturate"]
+        ops_tc = k8s_undo_ops_for("net.latency", outcome.resolved)
+        assert [op.op for op in ops_tc] == ["k8s.undo.net.latency"]
+        ops_kill = k8s_undo_ops_for("k8s.pod_kill", outcome.resolved)
+        assert [op.op for op in ops_kill] == ["k8s.mutation.noop"]
+
+    def test_argv_families_are_registered_in_the_mutation_register(self) -> None:
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        resolver = KubernetesRuntimeResolver(client=client)
+        outcome = resolver.resolve(_scope())
+        for fault_id in K8S_ARGV_FAULTS:
+            ops = k8s_undo_ops_for(fault_id, outcome.resolved)
+            assert ops and ops[0].op.startswith("k8s.undo.")
+
     def test_preferred_pod_from_graph(self) -> None:
         graph = _graph()
-        assert preferred_pod_from_graph(lambda: graph, frozenset({"pod-checkout"})) == "checkout-abc123"
+        assert (
+            preferred_pod_from_graph(lambda: graph, frozenset({"pod-checkout"}))
+            == "checkout-abc123"
+        )
 
     def test_preferred_pod_from_graph_none_without_match(self) -> None:
         assert preferred_pod_from_graph(lambda: _graph(), frozenset({"nope"})) is None
@@ -315,8 +373,7 @@ class TestEngineK8sStep:
         assert lease.resolved_target.pod == "checkout-abc123"
         assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
         deletes = [
-            argv for argv in tool_calls
-            if argv[:2] == ("kubectl", "delete") and "pod" in argv
+            argv for argv in tool_calls if argv[:2] == ("kubectl", "delete") and "pod" in argv
         ]
         assert deletes and "--grace-period" in deletes[0]
 
@@ -347,6 +404,79 @@ class TestEngineK8sStep:
         assert lease.state == LeaseState.RELEASED
         assert lease.release_mechanism == "normal"
         assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+
+    def test_cpu_saturate_argv_family_injects_and_undoes_live(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """SP-3.1 lane: a generic catalog family executes in-pod via the
+        plan-charted UTF-8 kubectl-exec argv and releases with live undo."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-argv-cpu.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan("cpu.saturate", duration="0.1s"))
+        assert result.steps[0].ok is True
+        lease = _all_leases(store)[0]
+        assert lease.fault_id == "cpu.saturate"
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "normal"
+        assert lease.resolved_target is not None
+        assert lease.resolved_target.pod == "checkout-abc123"
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+        joined = " ".join(" ".join(c) for c in tool_calls)
+        # inject prepared the bounded worker; undo reaped it — never a pod kill.
+        assert "kubectl exec" in joined
+        assert "reaper" not in joined
+
+    def test_net_latency_argv_family_runs_when_netns_available(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """SP-3.1 netns lane: net.latency rides the reversible mutation
+        pipeline exactly like k8s.pod_latency once NETNS is reported."""
+        tool_calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.k8s_netns_supported", lambda: True)
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
+        store = Store.open_migrated(tmp_path / "rk3-argv-net.db")
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        engine, events = _engine(store, client)
+        result = engine.execute(_plan("net.latency", duration="0.1s"))
+        assert result.steps[0].ok is True
+        lease = _all_leases(store)[0]
+        assert lease.state == LeaseState.RELEASED
+        assert lease.release_mechanism == "normal"
+        assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
+        joined = " ".join(" ".join(c) for c in tool_calls)
+        assert "tc qdisc add dev eth0 root netem delay" in joined
+        assert "tc qdisc del dev eth0 root" in joined
+
+    def test_tc_argv_family_refused_without_netns_capability(self, monkeypatch) -> None:
+        """Band-C netns gate: without the adapter NETNS capability the argv
+        tc lane refuses before any mutation."""
+        monkeypatch.setattr("mayhem.agents.executors.k8s_netns_supported", lambda: False)
+        executor = k8s_executor_for("net.latency", RuntimeLabel.KUBERNETES)
+        assert isinstance(executor, K8sArgvExecutor)
+        client = FakeClusterClient(workload=_WORKLOAD, pods=[_pod()])
+        resolver = KubernetesRuntimeResolver(client=client)
+        outcome = resolver.resolve(_scope())
+        lease = FaultLease(
+            id="l-argv-net",
+            run_id="rk3-argv-net",
+            fault_id="net.latency",
+            owner_agent="engine",
+            targets=frozenset({"checkout-abc123"}),
+            undo_ops=k8s_undo_ops_for("net.latency", outcome.resolved),
+            verify_probes=(
+                VerifyProbe(
+                    probe="k8s.undo", args={"fault_id": "net.latency", "pod": "checkout-abc123"}
+                ),
+            ),
+            ttl_seconds=120.0,
+            state=LeaseState.ACTIVE,
+            resolved_target=outcome.resolved,
+        )
+        reason = executor.can_apply(lease)
+        assert reason is not None and "netns" in reason.lower()
 
     def test_pod_partition_applies_and_revokes_network_policy(
         self, tmp_path: Path, monkeypatch
@@ -413,7 +543,9 @@ class TestEngineK8sStep:
             undo_ops=(UndoOp(op="k8s.exec", args={"undo_command": "CONT"}),),
             duration="0.1s",
         )
-        step = PlannedStep(id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0))
+        step = PlannedStep(
+            id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0)
+        )
         plan = ExecutionPlan(
             run_id="rk3-multi",
             kind=ExperimentKind.DRILL,
@@ -429,8 +561,7 @@ class TestEngineK8sStep:
         assert {l.resolved_target.pod for l in leases} == {"checkout-abc123", "checkout-def456"}
         assert {l.state for l in leases} == {LeaseState.RELEASED}
         deletes = [
-            argv for argv in tool_calls
-            if argv[:2] == ("kubectl", "delete") and "pod" in argv
+            argv for argv in tool_calls if argv[:2] == ("kubectl", "delete") and "pod" in argv
         ]
         assert len(deletes) == 2  # one delete per selected pod
         assert any(e.kind == EventKind.FAULT_RECOVERED for e in events)
