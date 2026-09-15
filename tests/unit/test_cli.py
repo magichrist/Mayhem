@@ -8,6 +8,7 @@ import pytest
 
 from mayhem.cli.app import main
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.cli.services import engine_fault_kinds, selected_engine
 
 TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
 COMPOSE_FILE = TESTCASE / "docker-compose.yml"
@@ -45,10 +46,122 @@ def _write(tmp_path: Path, text: str) -> Path:
     return spec_file
 
 
-class TestToolkitGroup:
+class TestEngineScoping:
+    """``-k/--kubernetes`` must scope fault material everywhere (not just the
+    toolkit listing): graph, landscape, coverage, and suggestions all route
+    through the same engine helpers."""
+
+    def test_selected_engine_defaults_to_auto(self) -> None:
+        with patch("mayhem.cli.app._STATE", {"engine": "", "debug": "", "gate": "1"}):
+            assert selected_engine() == ""
+
+    def test_selected_engine_reads_k_flag(self) -> None:
+        with patch(
+            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
+        ):
+            assert selected_engine() == "kubernetes"
+
+    def test_engine_fault_kinds_full_catalog_by_default(self) -> None:
+        with patch("mayhem.cli.app._STATE", {"engine": "", "debug": "", "gate": "1"}):
+            kinds = engine_fault_kinds()
+        assert "proc.pause" in kinds
+        assert "k8s.pod_kill" in kinds
+        assert len(kinds) == len(set(kinds))  # no duplicates
+
+    def test_engine_fault_kinds_k8s_subset_with_k_flag(self) -> None:
+        from mayhem.controller.k8s_runtime import k8s_available_faults
+
+        with patch(
+            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
+        ):
+            kinds = set(engine_fault_kinds())
+        assert kinds == k8s_available_faults()
+        assert kinds == {
+            "cpu.saturate", "cpu.throttle", "mem.exhaust", "mem.leak",
+            "fs.fill", "fs.inode_exhaust", "fs.io_stress", "fd.exhaust",
+            "net.latency", "net.packet_loss", "net.duplicate", "net.reorder",
+            "net.bandwidth", "net.partition",
+            "k8s.pod_kill", "k8s.pod_evict", "k8s.pod_oom", "k8s.pod_pressure",
+            "k8s.network_policy", "k8s.pod_partition", "k8s.pod_latency",
+            "k8s.node_drain", "k8s.node_pressure",
+            "k8s.pod_readiness_fail", "k8s.pod_liveness_fail", "k8s.pod_startup_fail",
+            "k8s.pod_unschedulable", "k8s.schedule_delay", "k8s.image_pull_failure",
+            "k8s.rollout_failure", "k8s.replica_reduce", "k8s.rollout_pause",
+            "k8s.service_no_endpoints", "k8s.service_endpoint_flap",
+            "k8s.service_port_mismatch", "k8s.configmap_corrupt",
+            "k8s.secret_unavailable", "k8s.pod_delete_uncontrolled",
+            "k8s.persistent_volume_delay", "k8s.persistent_volume_error",
+            "k8s.persistent_volume_detach", "k8s.node_cordon",
+        }
+
+    def test_next_landscape_k8s_scope(self) -> None:
+        """With ``-k`` the ``next`` suggestion landscape references only
+        kubernetes-executable faults, so it never suggests a fault the k8s
+        driver cannot execute."""
+        from mayhem.cli.next_cmd import _landscape_cells
+        from mayhem.controller.k8s_runtime import k8s_available_faults
+        from mayhem.domain.topology import ServiceNode, TopologyGraph
+
+        graph = TopologyGraph(
+            nodes=(ServiceNode(id="svc-web", name="web"),),
+        )
+        with patch(
+            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
+        ):
+            cells, _, _ = _landscape_cells(graph, seed=7)
+        fault_kinds = {cell.fault_kind for cell in cells}
+        assert fault_kinds <= k8s_available_faults()
+
+    def test_coverage_landscape_k8s_scope(self) -> None:
+        """With ``-k`` the ``coverage`` landscape references only
+        kubernetes-executable faults."""
+        from mayhem.cli.coverage_cmd import _landscape_cells
+        from mayhem.controller.k8s_runtime import k8s_available_faults
+        from mayhem.domain.topology import ServiceNode, TopologyGraph
+
+        graph = TopologyGraph(
+            nodes=(ServiceNode(id="svc-web", name="web"),),
+        )
+        with patch(
+            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
+        ):
+            cells = _landscape_cells(graph, seed=7)
+        fault_kinds = {cell.fault_kind for cell in cells}
+        assert fault_kinds <= k8s_available_faults()
+
+    def test_explore_landscape_k8s_scope(self) -> None:
+        """With ``-k`` the ``explore`` landscape references only
+        kubernetes-executable faults."""
+        from mayhem.cli.explore import _build_landscape
+        from mayhem.controller.k8s_runtime import k8s_available_faults
+        from mayhem.domain.topology import ServiceNode, TopologyGraph
+
+        graph = TopologyGraph(
+            nodes=(ServiceNode(id="svc-web", name="web"),),
+        )
+        with patch(
+            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
+        ):
+            landscape = _build_landscape(graph)
+        assert set(landscape.fault_kinds) <= k8s_available_faults()
     def test_faults_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["toolkit", "faults"]) == 0
         assert "proc.pause" in capsys.readouterr().out
+
+    def test_faults_k8s_flag_filters_to_kubernetes_available(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``-k`` must narrow the toolkit: only faults the k8s driver executes.
+        assert main(["-k", "toolkit", "faults"]) == 0
+        out = capsys.readouterr().out
+        assert "cpu.saturate" in out and "lane=argv" in out
+        assert "net.partition" in out and "lane=argv+netns" in out
+        assert "k8s.node_drain" in out and "lane=node" in out
+        assert "k8s.pod_kill" in out and "lane=pod-delete" in out
+        # cross-runtime (docker/podman-only) families are not executable on k8s.
+        assert "proc.pause" not in out
+        assert "container.kill" not in out
+        assert "dns.nxdomain" not in out
 
     def test_two_level_prefix_reaches_nested_command(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
