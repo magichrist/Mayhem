@@ -182,9 +182,11 @@ class TestK8sExample:
         spec = load_drill(str(K8S_DIR / "mayhem.yaml"))
         assert spec.kind == "drill"
         assert spec.name == "k8s-fault-drill"
-        assert set(spec.containers) == {"node-group", "testcase-api"}
-        for container in spec.containers.values():
-            for fault in container.faults:
+        # targets: mode — mixes k8s_node + deployment targets
+        assert spec.targets is not None
+        assert set(spec.targets) == {"node-group", "testcase-api", "testcase-lb"}
+        for target in spec.targets.values():
+            for fault in target.faults:
                 definition_for(fault.fault)
         assert spec.config.risk_ceiling is not None
 
