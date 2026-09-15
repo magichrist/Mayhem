@@ -173,6 +173,6 @@ def _find_compose_in(directory: Path) -> str | None:
 
 def _resolve_engine(flag_value: str) -> str | None:
     """Turn the CLI flag value into an explicit engine, or None for auto-detect."""
-    if flag_value in ("docker", "podman"):
+    if flag_value in ("docker", "podman", "kubernetes"):
         return flag_value
     return None
