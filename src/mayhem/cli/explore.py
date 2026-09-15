@@ -26,6 +26,7 @@ from mayhem.cli.services import (
     build_graph,
     open_store,
     prepare,
+    selected_engine,
 )
 from mayhem.controller.cell_runner import CellRunner
 from mayhem.domain.coverage import CellState
@@ -41,12 +42,15 @@ if TYPE_CHECKING:
 def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipeline:
     """Build a gate pipeline from probe-hold runtime facts.
 
-    Feasibility mirrors ``synthesize_maniac_spec``: faults that require the
-    Kubernetes engine are infeasible on a compose (Docker/Podman) runtime, so
-    they are surfaced as rejections in ``--dry-run`` and ``blocked`` at
-    runtime.  Everything else is passed through — per-cell feasibility is
-    proven by the plan/impact-gate pathway at execute time.
+    Feasibility is scoped to the engine selected at the root: on a compose
+    (Docker/Podman) runtime, faults that require the Kubernetes engine are
+    infeasible and surface as rejections in ``--dry-run`` and ``blocked`` at
+    runtime. With ``-k/--kubernetes`` the supported set is exactly the k8s
+    driver's available families, so kubernetes lanes pass the gate.  Everything
+    else is passed through — per-cell feasibility is proven by the
+    plan/impact-gate pathway at execute time.
     """
+    from mayhem.cli.services import engine_fault_kinds, selected_engine
     from mayhem.domain.capabilities import Capability
     from mayhem.domain.catalog import all_definitions
     from mayhem.infra.candidate_gates import (
@@ -56,12 +60,15 @@ def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipelin
         SafetyGate,
     )
 
-    excluded = frozenset({Capability.KUBERNETES_ENGINE})
-    supported = tuple(
-        definition.id
-        for definition in all_definitions()
-        if definition.required_caps.isdisjoint(excluded)
-    )
+    if selected_engine() == "kubernetes":
+        supported = engine_fault_kinds()
+    else:
+        excluded = frozenset({Capability.KUBERNETES_ENGINE})
+        supported = tuple(
+            definition.id
+            for definition in all_definitions()
+            if definition.required_caps.isdisjoint(excluded)
+        )
     safety = SafetyGate(forbidden_faults=() if allow_critical else ())
     return CandidateGatePipeline(
         safety=safety,
@@ -98,13 +105,14 @@ def _build_landscape(
     graph: TopologyGraph,
 ) -> CandidateLandscape:
     """Build a CandidateLandscape from the live topology graph (§3.1.1)."""
-    from mayhem.domain.catalog import all_definitions
+    from mayhem.cli.services import engine_fault_kinds
     from mayhem.infra.candidate_generator import CandidateLandscape
 
-    # Targets: real service names from the compose graph (never aliases).
+    # Targets: real service names from the topology graph (never aliases).
     targets = graph.container_names()
-    # Fault kinds: every fault in the catalog.
-    faults = tuple(defn.id for defn in all_definitions())
+    # Fault kinds: every fault runnable on the selected engine (with
+    # ``-k`` this is the kubernetes-available subset).
+    faults = engine_fault_kinds()
     return CandidateLandscape(
         targets=targets,
         fault_kinds=faults,
@@ -325,7 +333,7 @@ def explore(
         ctx.exit(int(ExitCode.SUCCESS))
         return
 
-    # Live explore: prepare → runner → execute loop.
+# Live explore: prepare → runner → execute loop.
     try:
         prepared = prepare(
             config_path=obj.config or "",
@@ -350,6 +358,7 @@ def explore(
         graph=graph,
         prepared=prepared,
         coverage=coverage,
+        engine_name=selected_engine() or "podman",
         live_graph=lambda: build_graph(resolved_compose),
     )
 
