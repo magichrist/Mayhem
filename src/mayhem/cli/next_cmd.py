@@ -61,8 +61,12 @@ def _landscape_cells(
 
     targets = tuple(sorted({n.id for n in graph.nodes}))
 
-    # Collect fault kinds from catalog
-    fault_kinds = tuple(sorted({fd.id for fd in CATALOG}))
+    # Fault kinds: everything runnable on the selected engine — with ``-k``
+    # this is the kubernetes-available subset, so ``next`` never suggests a
+    # fault the selected engine cannot execute.
+    from mayhem.cli.services import engine_fault_kinds
+
+    fault_kinds = engine_fault_kinds()
 
     landscape_obj = CandidateLandscape(
         targets=targets,
