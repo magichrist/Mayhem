@@ -14,10 +14,50 @@ toolkit = make_group("toolkit", "Inspect the fault catalog and local tool capabi
 
 @toolkit.command("faults")
 def faults() -> None:
-    """List the fault catalog with risk and compensatability."""
+    """List the fault catalog with risk and compensatability.
+
+    Honors the global ``-k/--kubernetes`` flag: with Kubernetes selected, only
+    the faults the k8s driver can actually execute are listed (pod/node
+    targets), each annotated with its delivery lane. Without it the full
+    cross-runtime catalog is shown.
+    """
+    from mayhem.cli.app import _STATE
+    from mayhem.controller.k8s_runtime import (
+        K8S_ARGV_FAULTS,
+        K8S_DELETE_FAULTS,
+        K8S_NETNS_FAULTS,
+        K8S_NETWORK_FAULTS,
+        K8S_NODE_FAULTS,
+        k8s_available_faults,
+    )
+
+    kubernetes = str(_STATE.get("engine", "")) == "kubernetes"
+    available = k8s_available_faults() if kubernetes else None
+
+    def _lane(fault_id: str) -> str:
+        if fault_id in K8S_NODE_FAULTS:
+            return "node"
+        if fault_id in K8S_NETNS_FAULTS and fault_id in K8S_ARGV_FAULTS:
+            return "argv+netns"
+        if fault_id in K8S_ARGV_FAULTS:
+            return "argv"
+        if fault_id in K8S_DELETE_FAULTS:
+            return "pod-delete"
+        if fault_id in K8S_NETWORK_FAULTS:
+            return "network-policy"
+        return "in-pod-signal"
+
     for definition in sorted(all_definitions(), key=lambda d: d.id):
+        if available is not None and definition.id not in available:
+            continue
         undoable = "yes" if definition.reversible else "no"
-        click.echo(f"{definition.id:<24} risk={definition.risk.value:<6} undo={undoable}")
+        if kubernetes:
+            click.echo(
+                f"{definition.id:<24} risk={definition.risk.value:<6} "
+                f"undo={undoable} lane={_lane(definition.id)}"
+            )
+        else:
+            click.echo(f"{definition.id:<24} risk={definition.risk.value:<6} undo={undoable}")
 
 
 @toolkit.command("list")
