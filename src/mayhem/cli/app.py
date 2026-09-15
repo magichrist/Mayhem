@@ -70,6 +70,14 @@ _STATE: dict[str, str] = {"debug": "", "engine": ""}
     default=False,
     help="Use Podman instead of Docker.",
 )
+@click.option(
+    "-k",
+    "--kubernetes",
+    "kubernetes",
+    is_flag=True,
+    default=False,
+    help="Use Kubernetes instead of Docker/Podman (kubeconfig-driven discovery).",
+)
 @click.option("-d", "--debug", is_flag=True, help="Re-raise errors instead of rendering them.")
 @click.pass_context
 def app(
@@ -80,10 +88,13 @@ def app(
     allow_critical: bool,
     skip_gate: bool,
     podman: bool,
+    kubernetes: bool,
     debug: bool,
 ) -> None:
+    if podman and kubernetes:
+        raise click.UsageError("--podman and --kubernetes are mutually exclusive")
     _STATE["debug"] = "1" if debug else ""
-    _STATE["engine"] = "podman" if podman else ""
+    _STATE["engine"] = "podman" if podman else ("kubernetes" if kubernetes else "")
     _STATE["gate"] = "0" if skip_gate else "1"
     ctx.obj = CliContext(
         db=db or "mayhem.db",
