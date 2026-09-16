@@ -1,6 +1,6 @@
 """Unit tests for the k-plan-6 controller-level fault family rollout.
 
-Covers the 19 new mutation families in ``k8s_new.md``: register admission
+Covers the 21 k-plan-6 mutation families: register admission
 (K8S_MUTATION_FAULTS / K8S_REVERSIBLE_FAULTS), executor dispatch, snapshot-
 annotated inject/undo for workload/service/config mutations, in-pod storage
 workers, uncontrolled pod deletion, node cordon, and the image_pull_slow
@@ -17,13 +17,19 @@ from mayhem.agents.executors import (
     K8S_SIGNAL_FAULTS,
     K8sConfigExecutor,
     K8sExecutor,
+    K8sHpaExecutor,
     K8sNodeCordonExecutor,
+    K8sNodeCrashLoopExecutor,
+    K8sNvidiaSmiErrorExecutor,
     K8sPodDeleteExecutor,
     K8sServiceExecutor,
     K8sStorageExecutor,
+    K8sTaintEvictExecutor,
     K8sWorkloadExecutor,
+    NODE_CONTROL_UNSUPPORTED_MESSAGE,
     k8s_executor_for,
     k8s_unsupported_reason,
+    node_control_worker_name,
 )
 from mayhem.agents.k8s_control import RESTORE_ANNOTATION, ResourceRef
 from mayhem.controller.k8s_runtime import (
@@ -182,7 +188,7 @@ class _FakeKube:
         except (ValueError, IndexError):
             return "default"
 
-    _KIND_ALIASES = {"svc": "Service", "cm": "ConfigMap", "rs": "ReplicaSet", "deploy": "Deployment", "secret": "Secret", "pod": "Pod", "node": "Node"}
+    _KIND_ALIASES = {"svc": "Service", "cm": "ConfigMap", "rs": "ReplicaSet", "deploy": "Deployment", "secret": "Secret", "pod": "Pod", "node": "Node", "hpa": "HorizontalPodAutoscaler"}
 
     def _canonical(self, kind: str) -> str:
         return self._KIND_ALIASES.get(kind, kind)
@@ -342,6 +348,22 @@ def _rs() -> dict[str, Any]:
     }
 
 
+def _hpa() -> dict[str, Any]:
+    return {
+        "apiVersion": "autoscaling/v2",
+        "kind": "HorizontalPodAutoscaler",
+        "metadata": {"name": "checkout-hpa", "namespace": "prod", "annotations": {}},
+        "spec": {
+            "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout"},
+            "minReplicas": 2,
+            "maxReplicas": 10,
+            "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 80}}}],
+            "behavior": {"scaleDown": {"stabilizationWindowSeconds": 300}},
+        },
+        "status": {"currentReplicas": 4},
+    }
+
+
 _DEFAULT_OBJECTS = (_deploy(), _svc(), _cm(), _secret(), _pod(), _rs())
 
 
@@ -372,6 +394,8 @@ _NEW_MUTATION = (
     "k8s.persistent_volume_delay",
     "k8s.persistent_volume_error",
     "k8s.pod_delete_uncontrolled",
+    "k8s.hpa_scale_delay",
+    "k8s.hpa_scale_failure",
 )
 
 
@@ -426,6 +450,8 @@ class TestExecutorDispatch:
             ("k8s.persistent_volume_error", K8sStorageExecutor),
             ("k8s.pod_delete_uncontrolled", K8sPodDeleteExecutor),
             ("k8s.node_cordon", K8sNodeCordonExecutor),
+            ("k8s.hpa_scale_delay", K8sHpaExecutor),
+            ("k8s.hpa_scale_failure", K8sHpaExecutor),
         ],
     )
     def test_dispatches_to_dedicated_class(self, fault_id: str, expected: type) -> None:
@@ -562,6 +588,67 @@ class TestServiceExecutor:
         patch_calls = [c for c in kube.calls if c[1] == "patch"]
         payload = _json.loads(patch_calls[-1][patch_calls[-1].index("-p") + 1])
         assert payload["spec"]["ports"][0]["targetPort"] == 8081
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5b. HPA executor (k-plan-2 §14–§15)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_HPA_OBJECTS = (*_DEFAULT_OBJECTS, _hpa())
+
+
+class TestHpaExecutor:
+    def _inject(self, monkeypatch, fault_id: str, **kwargs: Any) -> tuple[_FakeKube, Any]:
+        kube = _kube(_HPA_OBJECTS)
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", kube._run)
+        monkeypatch.setattr("mayhem.agents.k8s_control.run_tool", kube._run)
+        lease = _lease(fault_id, **kwargs)
+        outcome = K8sHpaExecutor().inject(lease)
+        return kube, outcome
+
+    def test_scale_delay_patches_stabilization_window(self, monkeypatch) -> None:
+        kube, outcome = self._inject(monkeypatch, "k8s.hpa_scale_delay", params={"seconds": "2m"})
+        assert outcome.ok is True
+        patch_calls = [c for c in kube.calls if c[1] == "patch"]
+        payload = _json.loads(patch_calls[-1][patch_calls[-1].index("-p") + 1])
+        assert payload["spec"]["behavior"]["scaleUp"]["stabilizationWindowSeconds"] == 120
+
+    def test_scale_failure_up_pins_max_replicas(self, monkeypatch) -> None:
+        kube, outcome = self._inject(monkeypatch, "k8s.hpa_scale_failure", params={"direction": "up"})
+        assert outcome.ok is True
+        patch_calls = [c for c in kube.calls if c[1] == "patch"]
+        payload = _json.loads(patch_calls[-1][patch_calls[-1].index("-p") + 1])
+        assert payload["spec"]["maxReplicas"] == 4
+
+    def test_scale_failure_down_pins_min_replicas(self, monkeypatch) -> None:
+        kube, outcome = self._inject(monkeypatch, "k8s.hpa_scale_failure", params={"direction": "down"})
+        assert outcome.ok is True
+        patch_calls = [c for c in kube.calls if c[1] == "patch"]
+        payload = _json.loads(patch_calls[-1][patch_calls[-1].index("-p") + 1])
+        assert payload["spec"]["minReplicas"] == 4
+
+    def test_scale_failure_invalid_direction_refused(self) -> None:
+        assert K8sHpaExecutor().can_apply(_lease("k8s.hpa_scale_failure", params={"direction": "sideways"})) is not None
+
+    def test_no_hpa_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _kube()._run)
+        monkeypatch.setattr("mayhem.agents.k8s_control.run_tool", _kube()._run)
+        outcome = K8sHpaExecutor().inject(_lease("k8s.hpa_scale_delay"))
+        assert outcome.ok is False
+
+    def test_undo_restores_snapshot(self, monkeypatch) -> None:
+        kube = _kube(_HPA_OBJECTS)
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", kube._run)
+        monkeypatch.setattr("mayhem.agents.k8s_control.run_tool", kube._run)
+        executor = K8sHpaExecutor()
+        lease = _lease("k8s.hpa_scale_delay", params={"seconds": "60s"})
+        inject = executor.inject(lease)
+        assert inject.ok is True
+        ann_raw = kube.objects[("HorizontalPodAutoscaler", "checkout-hpa", "prod")]["metadata"]["annotations"][RESTORE_ANNOTATION]
+        original_spec = _hpa()["spec"]
+        assert _json.loads(ann_raw)["spec"] == original_spec
+        undo = executor.undo(lease)
+        assert undo.ok is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -720,3 +807,279 @@ def _fake_tool(calls: list, ok_stdout: str = "", fail_on: tuple[str, ...] = ()):
             return ToolResult(argv=argv, argv_digest="", env_digest="", host="", cwd=None, exit_code=1, duration_ms=1, stdout="", stderr="fail", truncated=False)
         return ToolResult(argv=argv, argv_digest="", env_digest="", host="", cwd=None, exit_code=0, duration_ms=1, stdout=ok_stdout, stderr="", truncated=False)
     return _run
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. Node-killer families — taint_evict / nvidia_smi_error / crash_loop
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_NODE_KILLER_FAULTS = ("k8s.taint_evict", "k8s.nvidia_smi_error", "k8s.crash_loop")
+
+
+class TestNodeControlFamilies:
+    """NODE_CONTROL-gated node-killer family tests (k-plan-6 §24)."""
+
+    # ── routing / register ──────────────────────────────────────────────────
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_node_killer_in_k8s_node_faults(self, fault_id: str) -> None:
+        assert fault_id in K8S_NODE_FAULTS
+        assert fault_id in k8s_available_faults()
+        assert k8s_node_routing()[fault_id] == "k8s.node"
+
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_dispatch_returns_dedicated_executor(self, fault_id: str) -> None:
+        expected = {
+            "k8s.taint_evict": K8sTaintEvictExecutor,
+            "k8s.nvidia_smi_error": K8sNvidiaSmiErrorExecutor,
+            "k8s.crash_loop": K8sNodeCrashLoopExecutor,
+        }
+        executor = k8s_executor_for(fault_id, RuntimeLabel.KUBERNETES)
+        assert executor is not None
+        assert isinstance(executor, expected[fault_id])
+        assert isinstance(executor, K8sExecutor)
+
+    # ── capability gate (negative path) ─────────────────────────────────────
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_gate_refusal_when_node_control_unsupported(
+        self, fault_id: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: False)
+        executor = k8s_executor_for(fault_id, RuntimeLabel.KUBERNETES)
+        lease = _lease(fault_id, resolved_target=_CORDON_TARGET)
+        assert executor.can_apply(lease) == NODE_CONTROL_UNSUPPORTED_MESSAGE
+
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_wrong_target_refused(self, fault_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        executor = k8s_executor_for(fault_id, RuntimeLabel.KUBERNETES)
+        lease = _lease(fault_id, resolved_target=_pod_target())
+        reason = executor.can_apply(lease)
+        assert reason is not None
+        assert "no resolved node target" in reason
+
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_unrelated_fault_refused(self, fault_id: str) -> None:
+        executor = k8s_executor_for(fault_id, RuntimeLabel.KUBERNETES)
+        lease = _lease("k8s.node_cordon", resolved_target=_CORDON_TARGET)
+        assert executor.can_apply(lease) is not None
+
+    # ── taint_evict: kubectl taint (inject) / untaint (undo) ────────────────
+    def test_taint_inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease(
+            "k8s.taint_evict",
+            resolved_target=_CORDON_TARGET,
+            params={"key": "my-taint", "value": "v", "effect": "NoSchedule"},
+        )
+        outcome = K8sTaintEvictExecutor().inject(lease)
+        assert outcome.ok is True
+        taint_calls = [c for c in calls if c[1] == "taint"]
+        assert taint_calls
+        assert taint_calls[0] == (
+            "kubectl", "taint", "node", "w2", "my-taint=v:NoSchedule"
+        )
+
+    def test_taint_inject_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease("k8s.taint_evict", resolved_target=_CORDON_TARGET)
+        outcome = K8sTaintEvictExecutor().inject(lease)
+        assert outcome.ok is True
+        taint_calls = [c for c in calls if c[1] == "taint"]
+        assert taint_calls[0] == (
+            "kubectl", "taint", "node", "w2", "mayhem.io/taint-evict=mayhem:NoExecute"
+        )
+
+    def test_taint_undo_untaints(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease("k8s.taint_evict", resolved_target=_CORDON_TARGET)
+        outcome = K8sTaintEvictExecutor().undo(lease)
+        assert outcome.ok is True
+        untaint = [c for c in calls if c[1] == "taint"]
+        assert untaint
+        assert untaint[0] == (
+            "kubectl", "taint", "node", "w2", "mayhem.io/taint-evict:NoExecute-"
+        )
+
+    def test_taint_undo_idempotent_on_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(calls, ok_stdout="taint: not found"),
+        )
+        lease = _lease("k8s.taint_evict", resolved_target=_CORDON_TARGET)
+        outcome = K8sTaintEvictExecutor().undo(lease)
+        assert outcome.ok is True
+
+    def test_taint_undo_failure_is_not_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr(
+            "mayhem.agents.executors.run_tool",
+            _fake_tool(calls, fail_on=("taint",)),
+        )
+        lease = _lease("k8s.taint_evict", resolved_target=_CORDON_TARGET)
+        outcome = K8sTaintEvictExecutor().undo(lease)
+        assert outcome.ok is False
+
+    # ── nvidia_smi_error: node-pinned GPU kill-policy worker ────────────────
+    def test_nvidia_inject_applies_node_pinned_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease("k8s.nvidia_smi_error", resolved_target=_CORDON_TARGET)
+        executor = K8sNvidiaSmiErrorExecutor()
+        outcome = executor.inject(lease)
+        assert outcome.ok is True
+        assert executor._worker_name(_CORDON_TARGET) == "mayhem-nvidia-smi-w2"
+        apply_calls = [c for c in calls if c[1] == "apply"]
+        assert apply_calls
+        assert apply_calls[0] == ("kubectl", "apply", "-f", "-")
+
+    def test_nvidia_undo_deletes_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease("k8s.nvidia_smi_error", resolved_target=_CORDON_TARGET)
+        outcome = K8sNvidiaSmiErrorExecutor().undo(lease)
+        assert outcome.ok is True
+        delete_calls = [c for c in calls if c[1] == "delete"]
+        assert delete_calls
+        assert delete_calls[0] == (
+            "kubectl", "delete", "daemonset", "mayhem-nvidia-smi-w2", "--ignore-not-found"
+        )
+
+    # ── crash_loop: kubelet / containerd worker ─────────────────────────────
+    def test_crash_loop_kubelet_inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease(
+            "k8s.crash_loop",
+            resolved_target=_CORDON_TARGET,
+            params={"runtime": "kubelet", "restarts": 5},
+        )
+        executor = K8sNodeCrashLoopExecutor()
+        outcome = executor.inject(lease)
+        assert outcome.ok is True
+        assert executor._worker_name(_CORDON_TARGET, lease) == "k8s-kubelet-crash-loop-w2"
+        apply_calls = [c for c in calls if c[1] == "apply"]
+        assert apply_calls
+
+    def test_crash_loop_containerd_inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease(
+            "k8s.crash_loop",
+            resolved_target=_CORDON_TARGET,
+            params={"runtime": "containerd"},
+        )
+        executor = K8sNodeCrashLoopExecutor()
+        outcome = executor.inject(lease)
+        assert outcome.ok is True
+        assert executor._worker_name(_CORDON_TARGET, lease) == "k8s-runtime-crash-loop-w2"
+        body = executor._worker_body(lease, _CORDON_TARGET)
+        assert "/var/lib/containerd" in body
+        apply_calls = [c for c in calls if c[1] == "apply"]
+        assert apply_calls
+
+    def test_crash_loop_worker_staging_temp_name(self) -> None:
+        assert node_control_worker_name("kubelet", "w2") + "-tmp" == "k8s-kubelet-crash-loop-w2-tmp"
+        assert node_control_worker_name("containerd", "w2") == "k8s-runtime-crash-loop-w2"
+
+    def test_crash_loop_undo_deletes_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("mayhem.agents.executors.k8s_node_control_supported", lambda: True)
+        calls: list = []
+        monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(calls))
+        lease = _lease(
+            "k8s.crash_loop",
+            resolved_target=_CORDON_TARGET,
+            params={"runtime": "kubelet"},
+        )
+        outcome = K8sNodeCrashLoopExecutor().undo(lease)
+        assert outcome.ok is True
+        delete_calls = [c for c in calls if c[1] == "delete"]
+        assert delete_calls
+        assert delete_calls[0] == (
+            "kubectl", "delete", "daemonset", "k8s-kubelet-crash-loop-w2",
+            "--ignore-not-found",
+        )
+
+    # ── spec / undo-op contracts ────────────────────────────────────────────
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_node_spec_is_node_mutation(self, fault_id: str) -> None:
+        spec = k8s_node_spec(fault_id, _CORDON_TARGET)
+        assert spec["op"] == "k8s.node.mutation"
+        assert spec["args"]["fault_id"] == fault_id
+        assert spec["args"]["node"] == "w2"
+        assert spec["args"]["reversible"] == "true"
+
+    def test_node_undo_ops_taint(self) -> None:
+        ops = k8s_node_undo_ops("k8s.taint_evict", _CORDON_TARGET, params={})
+        assert len(ops) == 1
+        op = ops[0]
+        assert op.op == "k8s.untaint"
+        assert op.args["node"] == "w2"
+        assert op.args["key"] == "mayhem.io/taint-evict"
+        assert op.args["value"] == "mayhem"
+        assert op.args["effect"] == "NoExecute"
+
+    def test_node_undo_ops_nvidia(self) -> None:
+        ops = k8s_node_undo_ops("k8s.nvidia_smi_error", _CORDON_TARGET, params={})
+        assert len(ops) == 1
+        op = ops[0]
+        assert op.op == "k8s.delete"
+        assert op.args["kind"] == "daemonset"
+        assert op.args["workload"] == "mayhem-nvidia-smi-w2"
+
+    def test_node_undo_ops_crash_loop(self) -> None:
+        ops = k8s_node_undo_ops(
+            "k8s.crash_loop", _CORDON_TARGET, params={"runtime": "containerd"}
+        )
+        assert len(ops) == 1
+        op = ops[0]
+        assert op.op == "k8s.delete"
+        assert op.args["kind"] == "daemonset"
+        assert op.args["runtime"] == "containerd"
+        assert op.args["workload"] == "k8s-runtime-crash-loop-w2"
+
+    @pytest.mark.parametrize("fault_id", _NODE_KILLER_FAULTS)
+    def test_verify_spec_rides_node_restored(self, fault_id: str) -> None:
+        from mayhem.controller.k8s_runtime import k8s_node_verify_spec
+
+        spec = k8s_node_verify_spec(fault_id, _CORDON_TARGET)
+        assert spec["op"] == "k8s.node_restored"
+        assert spec["resolve"] is True
+
+    # ── catalog shape ───────────────────────────────────────────────────────
+    @pytest.mark.parametrize(
+        "fault_id, param",
+        (
+            ("k8s.taint_evict", "key"),
+            ("k8s.taint_evict", "effect"),
+            ("k8s.nvidia_smi_error", "interval"),
+            ("k8s.crash_loop", "restarts"),
+        ),
+    )
+    def test_catalog_param_schemas(self, fault_id: str, param: str) -> None:
+        from mayhem.domain.catalog import definition_for
+
+        definition = definition_for(fault_id)
+        names = {p.name for p in definition.params_schema}
+        assert param in names
+        assert definition.max_duration_s == 120.0
+        assert definition.risk.value == "high"
+
+    def test_node_control_capability_registered(self) -> None:
+        from mayhem.domain.runtime_adapter import RuntimeCapability
+
+        assert RuntimeCapability.NODE_CONTROL == "node_control"
