@@ -36,6 +36,9 @@ class RuntimeCapability(StrEnum):
     RESOURCE_LIMITS = "resource_limits"
     INSPECT = "inspect"
     COMPOSE_FILTER = "compose_filter"
+    # k8s adapter only (ADR-M7-1 seam): node-level control-plane access
+    # (``kubectl get nodes``) that the node-killer families require.
+    NODE_CONTROL = "node_control"
 
 
 class CapabilityVerdict(StrEnum):
