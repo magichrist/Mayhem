@@ -13,7 +13,9 @@ Design decisions
 ----------------
 * ``is_available()`` returns ``False`` — no transport is wired yet.
 * ``capabilities()`` reports an empty supported set so that the verdict
-  matrix yields ``UNSUPPORTED`` for every ``RuntimeCapability``.
+  matrix yields ``UNSUPPORTED`` for every ``RuntimeCapability``, except
+  ``NODE_CONTROL`` which the driver reports once ``is_available()`` is live
+  (the gate the node-killer families admit on).
 * ``list_nodes`` / ``list_pods`` are stubs returning empty lists — real
   discovery belongs to the cluster-driver implementation (M8).
 """
@@ -79,10 +81,21 @@ class KubernetesAdapter(RuntimeAdapter):
         return False
 
     def capabilities(self) -> AdapterCapabilities:
-        """Empty capability set — all RuntimeCapabilities yield UNSUPPORTED."""
+        """Capability snapshot for the k8s driver seam.
+
+        Every RuntimeCapability is UNSUPPORTED until a live cluster driver
+        ships, **except** ``NODE_CONTROL``: the moment ``is_available()``
+        flips true (M8 driver), the adapter reports ``NODE_CONTROL``
+        alongside the engine — node-killer families (``k8s.taint_evict`` /
+        ``k8s.nvidia_smi_error`` / ``k8s.crash_loop``) read this verdict
+        before any mutation (k-plan-6 §24).
+        """
+        supported: frozenset[RuntimeCapability] = frozenset()
+        if self.is_available():
+            supported = frozenset({RuntimeCapability.NODE_CONTROL})
         return AdapterCapabilities(
             engine=self._engine,
-            supported=frozenset(),
+            supported=supported,
             alternatives=frozenset(),
             version=None,
         )
