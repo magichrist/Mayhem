@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mayhem.domain.common import parse_duration
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
@@ -26,6 +27,7 @@ from mayhem.agents.k8s_control import (
     configmap_ref_for_pod,
     delete_object,
     find_annotated,
+    hpa_ref_for_pod,
     kubectl_apply_json,
     kubectl_json,
     pod_exec,
@@ -912,6 +914,44 @@ def k8s_netns_supported() -> bool:
     from mayhem.domain.runtime_adapter import RuntimeCapability  # noqa: PLC0415
 
     return RuntimeCapability.NETNS in KubernetesAdapter().capabilities().supported
+
+
+# ── k-plan-6 §24: node-killer families (kubelet control-plane) ────────────────
+
+# The node-killer executor families that admit on the NODE_CONTROL capability
+# gate.  Kept here (not in k8s_runtime) to avoid an import cycle: the run
+# engine imports executors, and this set is used at can_apply time.
+K8S_NODE_CONTROL_FAULTS: frozenset[str] = frozenset(
+    {"k8s.taint_evict", "k8s.nvidia_smi_error", "k8s.crash_loop"}
+)
+
+NODE_CONTROL_UNSUPPORTED_MESSAGE = (
+    "k8s.unsupported: node-killer families (k8s.taint_evict / k8s.nvidia_smi_error / "
+    "k8s.crash_loop) need node-level kubelet control-plane access (kubectl get "
+    "nodes); the NODE_CONTROL runtime capability is UNSUPPORTED this milestone "
+    "— see k-plan-6 §24"
+)
+
+
+def k8s_node_control_supported() -> bool:
+    """NODE_CONTROL capability verdict from the kubernetes runtime adapter.
+
+    Node-killer delivery (taints, node-pinned GPU/CRI workers) goes through
+    the kubernetes driver; the adapter's capability matrix is the single
+    source of truth for whether the kubelet control-plane path is wired this
+    milestone (k-plan-6 §24, ADR-M7-1).
+    """
+    from mayhem.domain.k8s_adapter import KubernetesAdapter  # noqa: PLC0415
+    from mayhem.domain.runtime_adapter import RuntimeCapability  # noqa: PLC0415
+
+    return RuntimeCapability.NODE_CONTROL in KubernetesAdapter().capabilities().supported
+
+
+def node_control_unsupported_reason(fault_id: str) -> str:
+    """Stable refusal reason when the NODE_CONTROL gate is closed."""
+    if fault_id in K8S_NODE_CONTROL_FAULTS:
+        return NODE_CONTROL_UNSUPPORTED_MESSAGE
+    return k8s_unsupported_reason(fault_id)
 
 
 class K8sNodeDrainExecutor(K8sExecutor):
@@ -1907,6 +1947,101 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
         return apply_patch(ref, {"spec": snapshot["spec"]})
 
 
+class K8sHpaExecutor(K8sSnapshotExecutor):
+    """HorizontalPodAutoscaler mutations: scale-delay windows, scale pins.
+
+    The target is the HPA whose ``spec.scaleTargetRef`` points at the pod's
+    owning workload.  ``k8s.hpa_scale_delay`` raises
+    ``spec.behavior.scaleUp.stabilizationWindowSeconds`` so the controller
+    holds a scaled-up replica count for the window; ``k8s.hpa_scale_failure``
+    pins ``spec.maxReplicas`` or ``spec.minReplicas`` to the current replica
+    count so out-of-range scale requests fail.  Undo restores the full
+    ``spec`` snapshot from the object annotation.
+    """
+
+    prefixes = (
+        "k8s.hpa_scale_delay",
+        "k8s.hpa_scale_failure",
+    )
+    ref_kinds = ("HorizontalPodAutoscaler",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        if lease.fault_id == "k8s.hpa_scale_failure":
+            direction = str(_lease_fault_params(lease).get("direction") or "up")
+            if direction not in ("up", "down"):
+                return f"{lease.fault_id}: direction must be 'up' or 'down', got {direction!r}"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        hpa = hpa_ref_for_pod(target)
+        if hpa is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: no HorizontalPodAutoscaler targeting the owning "
+                f"workload of pod {target.pod}",
+            )
+        obj = kubectl_json(hpa)
+        if obj is None:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: HorizontalPodAutoscaler {hpa.name} not found",
+            )
+        snapshot = {"spec": obj.get("spec", {})}
+        write_annotation(hpa, snapshot)
+        ok = self._mutate(lease, hpa, obj)
+        if ok:
+            return StepOutcome(
+                "inject",
+                True,
+                f"{lease.fault_id}: mutated HorizontalPodAutoscaler {hpa.name}",
+            )
+        clear_annotation(hpa)
+        return StepOutcome(
+            "inject",
+            False,
+            f"{lease.fault_id}: kubectl mutation failed on HorizontalPodAutoscaler "
+            f"{hpa.name} (restore annotation cleared)",
+        )
+
+    def _mutate(
+        self,
+        lease: FaultLease,
+        hpa: ResourceRef,
+        obj: dict[str, object],
+    ) -> bool:
+        params = _lease_fault_params(lease)
+        if lease.fault_id == "k8s.hpa_scale_delay":
+            raw = params.get("seconds")
+            window = int(parse_duration(str(raw))) if raw else 60
+            window = max(1, min(window, 3600))
+            return apply_patch(
+                hpa,
+                {"spec": {"behavior": {"scaleUp": {"stabilizationWindowSeconds": window}}}},
+            )
+        direction = str(params.get("direction") or "up")
+        current = (obj.get("status") or {}).get("currentReplicas")
+        spec = obj.get("spec", {})
+        if current is None:
+            current = spec.get("minReplicas", 1)
+        if direction == "up":
+            patch: dict[str, object] = {"spec": {"maxReplicas": int(current)}}
+        else:
+            patch = {"spec": {"minReplicas": int(current)}}
+        return apply_patch(hpa, patch)
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
 class K8sConfigExecutor(K8sSnapshotExecutor):
     """ConfigMap corruption and Secret deletion (recreate-on-undo).
 
@@ -2225,6 +2360,389 @@ class K8sNodeCordonExecutor(K8sExecutor):
         )
 
 
+# ── k-plan-6 §24: node-killer families (NODE_CONTROL-gated) ───────────────────
+
+
+def _sanitize_node(name: str) -> str:
+    """k8s-safe object-name fragment for a node name (DNS-1123-ish)."""
+    import re as _re  # noqa: PLC0415
+
+    return _re.sub(r"[^a-z0-9-]", "-", (name or "").lower())
+
+
+def node_control_worker_name(kind: str, node: str) -> str:
+    """Deterministic node-pinned worker name for a node-killer family.
+
+    * ``kind="nvidia-smi"`` → ``mayhem-nvidia-smi-<node>``;
+    * ``kind="kubelet"``    → ``k8s-kubelet-crash-loop-<node>``;
+    * ``kind="containerd"`` → ``k8s-runtime-crash-loop-<node>``.
+
+    Shared between the executors and :func:`mayhem.controller.k8s_runtime.
+    k8s_node_undo_ops` so the write-ahead undo contract and the live delete
+    name can never drift apart (k-plan-6 §24).
+    """
+    if kind == "nvidia-smi":
+        return "mayhem-nvidia-smi-" + _sanitize_node(node)
+    if kind == "kubelet":
+        return "k8s-kubelet-crash-loop-" + _sanitize_node(node)
+    return "k8s-runtime-crash-loop-" + _sanitize_node(node)
+
+
+class K8sNodeControlExecutor(K8sExecutor):
+    """Node-killer base: held at the NODE_CONTROL admission gate.
+
+    Node-killer families mutate the node's kubelet control-plane (eviction
+    taints, GPU probe, container-runtime/kubelet crash loops).  They refuse at
+    ``can_apply`` time with :data:`NODE_CONTROL_UNSUPPORTED_MESSAGE` unless the
+    kubernetes runtime adapter reports the NODE_CONTROL capability (the M8
+    driver seam; ``kubectl get nodes`` must succeed).  The resolved node is
+    pinned into the lease at resolution time; a non-node target is always
+    refused.
+    """
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedNodeTarget):
+            return f"{lease.fault_id}: no resolved node target on the lease"
+        if not k8s_node_control_supported():
+            return NODE_CONTROL_UNSUPPORTED_MESSAGE
+        return None
+
+    @staticmethod
+    def _params(lease: FaultLease) -> dict[str, object]:
+        return _lease_fault_params(lease)
+
+
+class K8sTaintEvictExecutor(K8sNodeControlExecutor):
+    """NoExecute eviction taint on the resolved node (k-plan-6 §24).
+
+    inject applies ``<key>=<value>:<effect>`` (default
+    ``mayhem.io/taint-evict=mayhem:NoExecute``) to the node; kubelet then
+    voluntarily evicts the node's pods for the lease duration.  undo removes
+    the taint — live and reversible.  Removing an already-absent taint is
+    idempotent (kubectl ``not found`` still settles OK so undo never dirties).
+    """
+
+    prefixes = ("k8s.taint_evict",)
+
+    def _taint_parts(self, lease: FaultLease) -> tuple[str, str, str]:
+        params = self._params(lease)
+        key = str(params.get("key") or "mayhem.io/taint-evict").strip()
+        value = str(params.get("value") or "mayhem").strip()
+        effect = str(params.get("effect") or "NoExecute").strip()
+        return key or "mayhem.io/taint-evict", value or "mayhem", effect or "NoExecute"
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved node target")
+        key, value, effect = self._taint_parts(lease)
+        result = run_tool(
+            ("kubectl", "taint", "node", target.node, f"{key}={value}:{effect}"),
+            timeout_s=30,
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: kubectl taint failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id}: node {target.node} tainted {key}={value}:{effect} "
+            "(kubelet will evict its pods for the lease duration)",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved node target")
+        key, _, effect = self._taint_parts(lease)
+        result = run_tool(
+            ("kubectl", "taint", "node", target.node, f"{key}:{effect}-"),
+            timeout_s=30,
+        )
+        if result.exit_code != 0 and "not found" not in (result.stdout + result.stderr).lower():
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: kubectl untaint failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True,
+            f"{lease.fault_id}: eviction taint {key}:{effect} removed from {target.node}",
+            tool_result=result,
+        )
+
+
+class K8sNvidiaSmiErrorExecutor(K8sNodeControlExecutor):
+    """Node-local CUDA GPU failure — single-shot nvidia-smi kill policy.
+
+    inject applies a node-pinned DaemonSet worker (``mayhem-nvidia-smi
+    -<node>``) — hostPID + privileged, tolerated onto the target node — that,
+    each ``interval`` cycle, kills any running ``nvidia-smi`` process (the
+    single-shot kill policy: every GPU probe fails) and appends a rotating
+    kubelet log line under ``/var/lib/kubelet``.  undo deletes the worker —
+    live and reversible (k-plan-6 §24).
+    """
+
+    prefixes = ("k8s.nvidia_smi_error",)
+
+    def _worker_name(self, target: ResolvedNodeTarget) -> str:
+        return node_control_worker_name("nvidia-smi", target.node)
+
+    def _interval(self, lease: FaultLease) -> int:
+        try:
+            raw = self._params(lease).get("interval")
+            return max(1, min(60, int(float(str(raw or 1)))))
+        except (TypeError, ValueError):
+            return 1
+
+    def _worker_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
+        import json as _json  # noqa: PLC0415
+
+        name = self._worker_name(target)
+        interval = self._interval(lease)
+        loop = (
+            "while :; do for p in $(pidof nvidia-smi 2>/dev/null); do "
+            'kill -9 "$p" 2>/dev/null; done; '
+            'echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [mayhem] nvidia-smi kill policy '
+            f'cycle (interval={interval}s)" >> /var/lib/kubelet/mayhem-nvidia-smi.log; '
+            f"sleep {interval}; done"
+        )
+        body = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {
+                "name": name,
+                "labels": {
+                    "app.kubernetes.io/name": name,
+                    "mayhem.io/fault": "k8s.nvidia_smi_error",
+                },
+            },
+            "spec": {
+                "selector": {"matchLabels": {"app": name}},
+                "template": {
+                    "metadata": {
+                        "labels": {"app": name, "mayhem.io/fault": "k8s.nvidia_smi_error"},
+                    },
+                    "spec": {
+                        "nodeName": target.node,
+                        "hostPID": True,
+                        "tolerations": [{"operator": "Exists"}],
+                        "containers": [
+                            {
+                                "name": "nvidia-smi",
+                                "image": "busybox:1.36",
+                                "command": ["/bin/sh", "-c", loop],
+                                "securityContext": {"privileged": True, "runAsUser": 0},
+                                "volumeMounts": [
+                                    {"name": "kubelet", "mountPath": "/var/lib/kubelet"}
+                                ],
+                                "resources": {"requests": {"cpu": "10m"}},
+                            }
+                        ],
+                        "volumes": [
+                            {"name": "kubelet", "hostPath": {"path": "/var/lib/kubelet"}}
+                        ],
+                        "restartPolicy": "Always",
+                    },
+                },
+            },
+        }
+        return _json.dumps(body, separators=(",", ":"))
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved node target")
+        name = self._worker_name(target)
+        result = run_tool(
+            ("kubectl", "apply", "-f", "-"),
+            timeout_s=30,
+            stdin_data=self._worker_body(lease, target),
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: applying nvidia-smi kill-policy worker failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id}: nvidia-smi kill-policy worker {name} applied to node {target.node}",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved node target")
+        name = self._worker_name(target)
+        result = run_tool(
+            ("kubectl", "delete", "daemonset", name, "--ignore-not-found"),
+            timeout_s=30,
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: deleting nvidia-smi worker {name} failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"{lease.fault_id}: nvidia-smi worker {name} deleted", tool_result=result
+        )
+
+
+class K8sNodeCrashLoopExecutor(K8sNodeControlExecutor):
+    """Node-local container-runtime / kubelet crash-loop failure (k-plan-6 §24).
+
+    inject applies a node-pinned DaemonSet worker named
+    ``k8s-kubelet-crash-loop-<node>`` (``runtime=kubelet``) or
+    ``k8s-runtime-crash-loop-<node>`` (``runtime=containerd``) that repeatedly
+    SIGKILLs the node's kubelet / container runtime for ``restarts`` cycles and
+    writes rotating crash-loop log entries under ``/var/lib/kubelet`` (the
+    node's runtime kubelet); the temp marker file is ``<worker>-tmp``.  The
+    loop self-terminates after ``restarts``; undo deletes the worker — live
+    and reversible, and idempotent via ``--ignore-not-found``.
+    """
+
+    prefixes = ("k8s.crash_loop",)
+
+    def _runtime(self, lease: FaultLease) -> str:
+        value = str(self._params(lease).get("runtime") or "kubelet").strip().lower()
+        return "kubelet" if value == "kubelet" else "containerd"
+
+    def _restarts(self, lease: FaultLease) -> int:
+        try:
+            raw = self._params(lease).get("restarts")
+            return max(1, min(1000, int(float(str(raw or 10)))))
+        except (TypeError, ValueError):
+            return 10
+
+    def _worker_name(self, target: ResolvedNodeTarget, lease: FaultLease | None = None) -> str:
+        runtime = self._runtime(lease) if lease is not None else "kubelet"
+        return node_control_worker_name(runtime, target.node)
+
+    def _worker_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
+        import json as _json  # noqa: PLC0415
+
+        runtime = self._runtime(lease)
+        restarts = self._restarts(lease)
+        name = self._worker_name(target, lease)
+        proc = "kubelet" if runtime == "kubelet" else "containerd"
+        log_path = "/var/lib/kubelet/mayhem-kubelet-crash-loop.log"
+        loop = (
+            f': > /var/lib/kubelet/{name}-tmp; i=0; '
+            f'while [ "$i" -lt {restarts} ]; do '
+            f"for p in $(pidof {proc} 2>/dev/null); do kill -9 \"$p\" 2>/dev/null; done; "
+            f'echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [mayhem] {proc} crash-loop '
+            f'cycle $i/{restarts}" >> {log_path}; '
+            f'i=$((i+1)); sleep 1; done; '
+            f"touch /var/lib/kubelet/{name}.finished 2>/dev/null || true"
+        )
+        volumes = [
+            {"name": "kubelet", "hostPath": {"path": "/var/lib/kubelet"}},
+        ]
+        mounts = [{"name": "kubelet", "mountPath": "/var/lib/kubelet"}]
+        if runtime == "containerd":
+            volumes.append({"name": "containerd", "hostPath": {"path": "/var/lib/containerd"}})
+            mounts.append({"name": "containerd", "mountPath": "/var/lib/containerd"})
+        body = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {
+                "name": name,
+                "labels": {"app.kubernetes.io/name": name, "mayhem.io/fault": "k8s.crash_loop"},
+            },
+            "spec": {
+                "selector": {"matchLabels": {"app": name}},
+                "template": {
+                    "metadata": {
+                        "labels": {"app": name, "mayhem.io/fault": "k8s.crash_loop"},
+                    },
+                    "spec": {
+                        "nodeName": target.node,
+                        "hostPID": True,
+                        "tolerations": [{"operator": "Exists"}],
+                        "containers": [
+                            {
+                                "name": "crash-loop",
+                                "image": "busybox:1.36",
+                                "command": ["/bin/sh", "-c", loop],
+                                "securityContext": {"privileged": True, "runAsUser": 0},
+                                "volumeMounts": mounts,
+                                "resources": {"requests": {"cpu": "10m"}},
+                            }
+                        ],
+                        "volumes": volumes,
+                        "restartPolicy": "Always",
+                    },
+                },
+            },
+        }
+        return _json.dumps(body, separators=(",", ":"))
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved node target")
+        name = self._worker_name(target, lease)
+        result = run_tool(
+            ("kubectl", "apply", "-f", "-"),
+            timeout_s=30,
+            stdin_data=self._worker_body(lease, target),
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: applying crash-loop worker failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "inject",
+            True,
+            f"{lease.fault_id}: {self._runtime(lease)} crash-loop worker {name} "
+            f"applied to node {target.node} (restarts={self._restarts(lease)})",
+            tool_result=result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved node target")
+        name = self._worker_name(target, lease)
+        result = run_tool(
+            ("kubectl", "delete", "daemonset", name, "--ignore-not-found"),
+            timeout_s=30,
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: deleting crash-loop worker {name} failed "
+                f"(rc={result.exit_code}): {result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome(
+            "undo", True, f"{lease.fault_id}: crash-loop worker {name} deleted", tool_result=result
+        )
+
+
 def _serialize(snapshot: dict[str, object]) -> str:
     import json as _json  # noqa: PLC0415
 
@@ -2275,6 +2793,13 @@ _K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
     "k8s.persistent_volume_error": K8sStorageExecutor,
     "k8s.pod_delete_uncontrolled": K8sPodDeleteExecutor,
     "k8s.node_cordon": K8sNodeCordonExecutor,
+    # ── k-plan-6 §24: node-killer families (NODE_CONTROL-gated) ───────────────
+    "k8s.taint_evict": K8sTaintEvictExecutor,
+    "k8s.nvidia_smi_error": K8sNvidiaSmiErrorExecutor,
+    "k8s.crash_loop": K8sNodeCrashLoopExecutor,
+    # ── k-plan-2 §14–§15: HPA scale mutations ────────────────────────────────
+    "k8s.hpa_scale_delay": K8sHpaExecutor,
+    "k8s.hpa_scale_failure": K8sHpaExecutor,
 }
 
 
