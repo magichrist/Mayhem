@@ -17,7 +17,8 @@ from mayhem.domain.errors import SchemaValidationError
 _DURATION_RE = re.compile(r"^(?P<value>\d+(?:\.\d+)?)(?P<unit>s|m|h)$")
 
 _BYTES_RE = re.compile(
-    r"^(?P<value>\d+(?:\.\d+)?)(?P<unit>TiB|GiB|MiB|KiB|TB|GB|MB|KB|T|G|M|K|B)?$"
+    r"^(?P<value>\d+(?:\.\d+)?)"
+    r"(?P<unit>TiB|GiB|MiB|KiB|TB|GB|MB|KB|Ti|Gi|Mi|Ki|T|G|M|K|B)?$"
 )
 
 
@@ -37,12 +38,15 @@ def parse_duration(raw: str) -> float:
 
 
 def parse_bytes(raw: str) -> float:
-    """Parse a byte quantity string (e.g. ``256M``, ``1.5GiB``) into bytes.
+    """Parse a byte quantity string (e.g. ``256M``, ``1.5GiB``, ``128Mi``) into bytes.
 
-    Grammar accepts ``<n>`` followed by an optional unit: ``B``, ``K``/``KiB``,
-    ``M``/``MiB``, ``G``/``GiB``, ``T``/``TiB`` computed in powers of 1024, or
+    Grammar accepts ``<n>`` followed by an optional unit: ``B``,
+    ``K``/``Ki``/``KiB``, ``M``/``Mi``/``MiB``, ``G``/``Gi``/``GiB``,
+    ``T``/``Ti``/``TiB`` computed in powers of 1024, or
     ``KB``/``MB``/``GB``/``TB`` computed in powers of 1000. A bare number is
-    plain bytes.
+    plain bytes. The ``Ki``/``Mi``/… forms match the Kubernetes quantity
+    suffixes (k8s manifests author ``128Mi`` where the single-letter ``M``
+    stays the project's existing 1024-based reading).
 
     Raises:
         SchemaValidationError: If the string does not match the grammar.
@@ -50,11 +54,13 @@ def parse_bytes(raw: str) -> float:
     match = _BYTES_RE.fullmatch(raw.strip())
     if match is None:
         raise SchemaValidationError(
-            "bytes", f"expected '<n>[B|K|KB|KiB|M|MB|MiB|G|GB|GiB|T|TB|TiB]', got {raw!r}"
+            "bytes",
+            f"expected '<n>[B|K|KB|Ki|KiB|M|MB|Mi|MiB|G|GB|Gi|GiB|T|TB|Ti|TiB]', "
+            f"got {raw!r}",
         )
     value = float(match.group("value"))
     unit = match.group("unit") or "B"
-    base = 1024.0 if unit.endswith("iB") or len(unit) == 1 else 1000.0
+    base = 1024.0 if unit.endswith("iB") or unit.endswith("i") or len(unit) == 1 else 1000.0
     power = {"B": 0, "K": 1, "M": 2, "G": 3, "T": 4}[unit[0]]
     return value * base**power
 
