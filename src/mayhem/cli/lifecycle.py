@@ -27,7 +27,11 @@ from mayhem.cli.services import (
     run_journal,
 )
 from mayhem.controller.janitor import Janitor
-from mayhem.controller.planner import restrict_plan_to_container, synthesize_maniac_spec
+from mayhem.controller.planner import (
+    restrict_plan_to_container,
+    synthesize_k8s_maniac_spec,
+    synthesize_maniac_spec,
+)
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.infra.lease_repository import SQLiteLeaseSink
@@ -361,6 +365,7 @@ def _resolve_maniac_sources(
     graph: TopologyGraph,
     *,
     pool: str | None = None,
+    engine: str | None = None,
 ) -> tuple[str | None, str | None, DrillSpec | None]:
     """Resolve ``(spec_path, layered_config_path, synthesized_spec)`` for maniac.
 
@@ -382,7 +387,15 @@ def _resolve_maniac_sources(
     user-supplied ``mayhem.yaml`` keeps working as the tuning dial. ``pool``
     (``--ctr``) additionally restricts the *synthesized* draw pool to a single
     container subtree, so every drawn round lands on the requested container.
+    With ``engine == "kubernetes"`` the synthesizer builds a ``targets:`` spec
+    from the manifest blueprint graph instead (k-plan-3 SP-3.6); ``pool`` is
+    then refused by the caller (k8s rounds are target-scoped, not container-
+    scoped).
     """
+    if (engine or "") == "kubernetes":
+        synthesize = synthesize_k8s_maniac_spec
+    else:
+        synthesize = synthesize_maniac_spec
     pool_graph = graph.restrict_to(pool) if pool is not None else graph
     if explicit:
         return _resolve_spec(explicit, config_path=config_path), config_path, None
@@ -390,14 +403,14 @@ def _resolve_maniac_sources(
         target = Path(config_path)
         if target.is_file() and _is_drill_spec_file(target):
             return str(target), None, None
-        return None, str(target), synthesize_maniac_spec(pool_graph)
+        return None, str(target), synthesize(pool_graph)
     for name in _SPEC_CANDIDATES:
         candidate = Path.cwd() / name
         if candidate.is_file():
             if _is_drill_spec_file(candidate):
                 return str(candidate), config_path, None
-            return None, str(candidate), synthesize_maniac_spec(pool_graph)
-    return None, config_path, synthesize_maniac_spec(pool_graph)
+            return None, str(candidate), synthesize(pool_graph)
+    return None, config_path, synthesize(pool_graph)
 
 
 def _resolve_engine_from_state() -> str:
@@ -703,10 +716,17 @@ def maniac(
     """
     graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
+    engine = _resolve_engine_from_state()
     if ctr is not None:
+        if engine == "kubernetes":
+            raise click.UsageError(
+                "kubernetes maniac rounds are target-scoped (k-plan-3 SP-3.6) — "
+                "--ctr applies to compose container subtrees only",
+                ctx=ctx,
+            )
         _require_container(ctr, graph, ctx)
     spec_path, config_for_layers, synthesized = _resolve_maniac_sources(
-        experiment, obj.config, graph, pool=ctr
+        experiment, obj.config, graph, pool=ctr, engine=engine
     )
     if spec_path is None and synthesized is None:
         raise click.UsageError("no drill spec, and nothing to synthesize")
@@ -728,7 +748,7 @@ def maniac(
             spec_path,
             graph,
             prepared=prepared,
-            engine=_resolve_engine_from_state(),
+            engine=engine,
             config_path=config_for_layers,
             profile=obj.profile,
             steps=steps,
@@ -744,13 +764,22 @@ def maniac(
             )
         draws = sum(1 for step in compiled.plan.steps if step.fault is not None)
         if synthesized is not None:
-            click.echo(
-                style.info("info:") + " maniac mode — no drill spec; synthesized config "
-                f"from compose topology "
-                f"({len(synthesized.containers)} container(s)), "
-                f"{draws} random fault round(s) drawn",
-                err=True,
-            )
+            if synthesized.targets:
+                click.echo(
+                    style.info("info:") + " maniac mode — no drill spec; synthesized "
+                    f"kubernetes targets config from the blueprint topology "
+                    f"({len(synthesized.targets)} target(s)), "
+                    f"{draws} random fault round(s) drawn",
+                    err=True,
+                )
+            else:
+                click.echo(
+                    style.info("info:") + " maniac mode — no drill spec; synthesized config "
+                    f"from compose topology "
+                    f"({len(synthesized.containers)} container(s)), "
+                    f"{draws} random fault round(s) drawn",
+                    err=True,
+                )
         else:
             click.echo(
                 style.info("info:") + f" maniac mode — {draws} random fault round(s) drawn",
