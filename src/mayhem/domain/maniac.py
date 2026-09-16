@@ -35,7 +35,21 @@ class ManiacDraw:
     """One maniac round: a fault to inject on a container."""
 
     container: str  # target container name (matches the topology)
+    target: str  # logical target key (same as container for compose maniac)
     fault: DrillFault  # duration may be jittered (levels 4-5)
+    round: int  # 1-based injection round
+
+
+@dataclass(frozen=True)
+class ManiacTargetDraw:
+    """One maniac round against a kubernetes logical target (k-plan-3 SP-3.6).
+
+    ``target`` is the ``targets:`` key (the logical id the planner pins);
+    ``fault`` may be sourced from any target at ``level >= 3`` (cross-locus).
+    """
+
+    target: str  # logical target id (matches the topology pin)
+    fault: DrillFault
     round: int  # 1-based injection round
 
 
@@ -90,4 +104,43 @@ def draw_maniac_rounds(
         if jitter_pct > 0:
             fault = _jitter_duration(fault, jitter_pct, rng)
         draws.append(ManiacDraw(container=target, fault=fault, round=round_no))
+    return tuple(draws)
+
+
+def draw_maniac_target_rounds(
+    spec: DrillSpec,
+    *,
+    level: int,
+    run_level: int,
+    seed: int | None = None,
+) -> tuple[ManiacTargetDraw, ...]:
+    """Draw ``run_level`` random (target, fault) rounds from a ``targets:`` spec.
+
+    Kubernetes maniac mode (k-plan-3 SP-3.6) draws against the spec's
+    ``targets:`` map: each target authors >= 1 fault (schema invariant), so
+    any target in the pool is drawable.  Cross-locus draws (``level >= 3``)
+    may apply any spec-wide fault to any pool target; durations are jittered
+    at ``level >= 4`` like the container path (ADR-M5-1 §semantics).
+    """
+    if not spec.targets:
+        raise ManiacError(
+            "maniac target rounds need a `targets:` map with at least one target"
+        )
+    rng = random.Random(seed)
+    names = sorted(spec.targets)
+    all_faults = tuple(f for t in spec.targets.values() for f in t.faults)
+    jitter_pct = 0.20 if level >= 5 else (0.10 if level == 4 else 0.0)
+
+    draws: list[ManiacTargetDraw] = []
+    for round_no in range(1, run_level + 1):
+        target = rng.choice(names)
+        if level >= 3:
+            fault = rng.choice(all_faults)
+        elif level == 2:
+            fault = rng.choice(spec.targets[target].faults)
+        else:
+            fault = spec.targets[target].faults[0]
+        if jitter_pct > 0:
+            fault = _jitter_duration(fault, jitter_pct, rng)
+        draws.append(ManiacTargetDraw(target=target, fault=fault, round=round_no))
     return tuple(draws)
