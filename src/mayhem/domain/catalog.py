@@ -939,6 +939,29 @@ id="net.packet_loss",
         max_duration_s=300.0,
         params_schema=(),
     ),
+    # HPA sub-family (k-plan-2 §14–§15) — HorizontalPodAutoscaler mutation.
+    FaultDefinition(
+        id="k8s.hpa_scale_delay",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=3600.0,
+        params_schema=(
+            ParamSpec(name="seconds", type=ParamType.DURATION, default="60s"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.hpa_scale_failure",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="direction", type=ParamType.STRING, default="up"),
+        ),
+    ),
     # Node sub-family — cordon (subset of drain without eviction).
     FaultDefinition(
         id="k8s.node_cordon",
@@ -948,6 +971,44 @@ id="net.packet_loss",
         applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
         max_duration_s=300.0,
         params_schema=(),
+    ),
+    # Node-killer sub-family (k-plan-6 §24) — NODE_CONTROL-gated mutations:
+    # the executors refuse at can_apply time when the capability is absent, so
+    # none of these rides the KUBERNETES_ENGINE unsupported gate.
+    FaultDefinition(
+        id="k8s.taint_evict",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=120.0,
+        params_schema=(
+            ParamSpec(name="key", type=ParamType.STRING, default="mayhem.io/taint-evict"),
+            ParamSpec(name="value", type=ParamType.STRING, default="mayhem"),
+            ParamSpec(name="effect", type=ParamType.STRING, default="NoExecute"),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.nvidia_smi_error",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=120.0,
+        params_schema=(
+            ParamSpec(name="interval", type=ParamType.INTEGER, minimum=1, maximum=60, default=1),
+        ),
+    ),
+    FaultDefinition(
+        id="k8s.crash_loop",
+        category=FaultCategory.K8S,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
+        applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
+        max_duration_s=120.0,
+        params_schema=(
+            ParamSpec(name="restarts", type=ParamType.INTEGER, minimum=1, maximum=1000, default=10),
+        ),
     ),
 )
 
