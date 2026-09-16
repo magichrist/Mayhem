@@ -125,6 +125,34 @@ def workload_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
     return None
 
 
+def hpa_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
+    """Find the HorizontalPodAutoscaler that targets *target*'s owning workload.
+
+    HPAs reference their workload through ``spec.scaleTargetRef`` (kind +
+    name), so the workload is resolved first (:func:`workload_ref_for_pod`)
+    and the HPA list in the namespace is scanned for a matching target.
+    Returns ``None`` when no workload or no matching HPA exists.
+    """
+    workload = workload_ref_for_pod(target)
+    if workload is None:
+        return None
+    result = kubectl(("get", "hpa", "-n", target.namespace, "-o", "json"))
+    if result.exit_code != 0:
+        return None
+    for obj in _json.loads(result.stdout).get("items", []):
+        scale_target = obj.get("spec", {}).get("scaleTargetRef") or {}
+        if (
+            scale_target.get("kind") == workload.kind
+            and scale_target.get("name") == workload.name
+        ):
+            return ResourceRef(
+                kind="HorizontalPodAutoscaler",
+                name=str(obj.get("metadata", {}).get("name", "")),
+                namespace=target.namespace,
+            )
+    return None
+
+
 def _service_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
     """Locate the first Service whose selector is a subset of *target.labels*.
 
