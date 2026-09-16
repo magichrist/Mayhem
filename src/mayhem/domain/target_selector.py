@@ -165,6 +165,16 @@ def _is_eligible(pod: PodNode) -> bool:
     return pod.deletion_timestamp is None
 
 
+def _is_blueprint(pod: PodNode) -> bool:
+    """Blueprint manifest placeholders are never pickable pods.
+
+    The k8s manifest provider emits ``state="blueprint"`` PodNodes so a
+    workload's logical presence survives offline planning; eligibility
+    (and the impact gate) re-resolve live pods at execution time.
+    """
+    return pod.state == "blueprint"
+
+
 def _deterministic_key(pod: PodNode) -> tuple[str, str, str]:
     """Hash-stable ordering: namespace, name, uid (k-plan-2 §2.5)."""
     return (pod.namespace, pod.name, pod.pod_uid or "")
@@ -253,6 +263,12 @@ def select_many(
         return None
     eligible = tuple(pod for pod in candidates if _is_eligible(pod))
     if not eligible:
+        if candidates and all(_is_blueprint(pod) for pod in candidates):
+            # Blueprint manifest placeholders (topology/providers/k8s_manifest.py)
+            # are a workload's *logical presence*, not pickable pods: nothing
+            # is live in the graph, so the target stays logically pinned the
+            # same way an absent workload does (k-plan-1 §1.3).
+            return None
         label = scope.authority.get("name", scope.logical_id)
         raise SelectionError(
             "selection.no_eligible_pods",
