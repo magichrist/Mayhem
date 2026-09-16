@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from mayhem.controller.compensation import compensated
+from mayhem.controller.k8s_runtime import K8S_MUTATION_FAULTS, K8S_NODE_FAULTS
 from mayhem.domain.capabilities import Capability
 from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.domain.common import parse_duration
@@ -40,6 +41,7 @@ from mayhem.domain.experiments import (
     ExperimentKind,
     GroupMode,
     InjectFault,
+    KubernetesTargetSpec,
     ManiacCfg,
     OnFailure,
     PlannedFault,
@@ -49,7 +51,7 @@ from mayhem.domain.experiments import (
 )
 from mayhem.domain.faults import FaultDefinition, ParamType
 from mayhem.domain.identity import RuntimeIdentity, RuntimeLabel
-from mayhem.domain.maniac import draw_maniac_rounds
+from mayhem.domain.maniac import draw_maniac_rounds, draw_maniac_target_rounds
 from mayhem.domain.target import (
     ResourceKind,
     SelectionMode,
@@ -141,6 +143,123 @@ def synthesize_maniac_spec(graph: TopologyGraph, *, name: str = "maniac") -> Dri
         containers=containers,
         # ``plan_drill`` needs one execution step; the maniac planner replaces
         # the authored execution wholesale, so this placeholder never runs.
+        execution=(ExecutionStep(wait="1s"),),
+    )
+
+
+def synthesize_k8s_maniac_spec(  # noqa: PLR0912
+    graph: TopologyGraph, *, name: str = "maniac-k8s"
+) -> DrillSpec:
+    """Build a targets: spec for kubernetes maniac from a topology graph.
+
+    Every unique (owner_kind, owner_name, namespace) pair becomes a
+    ``DrillTarget`` whose fault pool combines ``K8S_MUTATION_FAULTS``
+    (pod-level, argv-portables) with every portable family whose catalog
+    entry addresses ``NodeKind.POD``. K8sNode documents in the graph emit
+    separate node-level targets drawn from ``K8S_NODE_FAULTS``.
+
+    Port synthesis mirrors :func:`_synthesized_params`: catalog defaults are
+    applied verbatim; mandatory parameters with an honest topology value
+    (``host``, ``port``) are filled; STRING params with no derivable value
+    drop the fault from that target's pool — the draw pool never names a
+    fault the planner cannot compile.
+
+    The spec carries only a schema-satisfying execution placeholder; the
+    ``execution:`` block is never written. ``plan_maniac`` replaces the
+    authored execution with random target+fault rounds at compile time.
+    """
+
+    # ── accumulate unique workloads and K8sNode docs ──
+    workload_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for node in graph.nodes:
+        if node.kind != NodeKind.POD:
+            continue
+        ns = getattr(node, "namespace", "default") or "default"
+        ok = getattr(node, "owner_kind", None)
+        on = getattr(node, "owner_name", None)
+        if not ok or not on:
+            continue
+        key = (ok, on, ns)
+        if key not in workload_map:
+            workload_map[key] = {
+                "kind": ok,
+                "name": on,
+                "namespace": ns,
+                "containers": tuple(getattr(node, "containers", ()) or ()),
+            }
+
+    node_targets: list[TopologyNode] = [
+        n for n in graph.nodes if n.kind == NodeKind.K8S_NODE
+    ]
+
+    targets: dict[str, DrillTarget] = {}
+    for (ok, on, ns), _meta in sorted(workload_map.items()):
+        kind_val = {
+            "Deployment": ResourceKind.DEPLOYMENT,
+            "StatefulSet": ResourceKind.STATEFULSET,
+            "DaemonSet": ResourceKind.DAEMONSET,
+        }.get(ok, ResourceKind.POD)
+        logical_id = f"{ok}/{ns}/{on}"
+        # Pods pool (k8s mutation families + portables with POD applicability).
+        faults: list[DrillFault] = []
+        for definition in all_definitions():
+            if frozenset({NodeKind.POD}).isdisjoint(definition.applicable_node_kinds):
+                continue
+            if definition.id not in K8S_MUTATION_FAULTS:
+                continue
+            params = _synthesized_params(definition, on, ())
+            if params is None:
+                continue
+            faults.append(DrillFault.model_validate({"fault": definition.id, "params": params}))
+        if not faults:
+            continue
+        targets[logical_id] = DrillTarget(
+            runtime=RuntimeLabel.KUBERNETES,
+            kubernetes=KubernetesTargetSpec(
+                kind=kind_val,
+                namespace=ns,
+                name=on,
+            ),
+            faults=tuple(faults),
+        )
+
+    for kn in node_targets:
+        kind_val = ResourceKind.K8S_NODE
+        logical_id = f"{kind_val.value}/{kn.name}"
+        node_faults: list[DrillFault] = []
+        for definition in all_definitions():
+            if frozenset({NodeKind.K8S_NODE}).isdisjoint(definition.applicable_node_kinds):
+                continue
+            if definition.id not in K8S_NODE_FAULTS:
+                continue
+            params = _synthesized_params(definition, kn.name, ())
+            if params is None:
+                continue
+            node_faults.append(DrillFault.model_validate({"fault": definition.id, "params": params}))
+        if not node_faults:
+            continue
+        ns = getattr(kn, "namespace", "default") or "default"
+        targets[logical_id] = DrillTarget(
+            runtime=RuntimeLabel.KUBERNETES,
+            kubernetes=KubernetesTargetSpec(
+                kind=ResourceKind.K8S_NODE,
+                namespace=ns,
+                name=kn.name,
+            ),
+            faults=tuple(node_faults),
+        )
+
+    return DrillSpec(
+        kind="drill",
+        name=name,
+        hypothesis=(
+            f"maniac: synthesized k8s spec for {len(targets)} target(s) "
+            "from the topology"
+        ),
+        targets=targets,
+        # Maniac rounds replace the authored execution wholesale (k-plan-3
+        # SP-3.6); this placeholder only satisfies the schema invariant that
+        # drill execution is non-empty and never runs.
         execution=(ExecutionStep(wait="1s"),),
     )
 
@@ -500,6 +619,13 @@ def _validate_target_names(spec: DrillSpec) -> None:
                 )
 
 
+def _k8s_targets_only(spec: DrillSpec) -> bool:
+    """Maniac target rounds are kubernetes-scoped (k-plan-3 SP-3.6): every
+    target must carry a ``kubernetes:`` locator block."""
+    assert spec.targets is not None
+    return all(t.runtime == RuntimeLabel.KUBERNETES for t in spec.targets.values())
+
+
 def _container_scope(container_name: str) -> TargetScope:
     """Normalized docker/podman locator desugared from ``containers:``
     (k-plan-1 §1.3) — the planner's single container → TargetRef point."""
@@ -673,44 +799,78 @@ def plan_maniac(
     machine verdict and evidence as a deterministic run. The spec's safety
     gates (risk ceiling, blast radius, ``max_faults``, timeout) apply unchanged
     to every round (ADR-M5-1).
-    """
-    if spec.targets is not None:
-        raise PlanningError(
-            "maniac random rounds require a `containers:` spec, got `targets:` "
-            "(k-plan-1 §1.2)"
-        )
-    _validate_container_names(spec, graph)
-    draws = draw_maniac_rounds(
-        spec, level=maniac.level, run_level=maniac.run_level, seed=maniac.seed
-    )
 
-    steps: list[PlannedStep] = []
-    seq = 0
-    for draw in draws:
-        matched = tuple(_find_container_nodes(graph, draw.container))
-        steps.append(
-            _plan_fault_step(
-                draw.container,
-                matched,
-                draw.fault,
+    A ``targets:`` spec drives the kubernetes variant (k-plan-3 SP-3.6): a
+    ``containers:`` block authoring any fault may still be combined with
+    ``targets:`` for the deterministic leg; the random rounds then draw from
+    the targets map only (``draw_maniac_target_rounds``).
+    """
+    if spec.targets is None:
+        _validate_container_names(spec, graph)
+        draws = draw_maniac_rounds(
+            spec, level=maniac.level, run_level=maniac.run_level, seed=maniac.seed
+        )
+
+        steps: list[PlannedStep] = []
+        seq = 0
+        for draw in draws:
+            matched = tuple(_find_container_nodes(graph, draw.container))
+            steps.append(
+                _plan_fault_step(
+                    draw.container,
+                    matched,
+                    draw.fault,
+                    graph,
+                    seq,
+                    execution_group_id=f"grp-{uuid.uuid4().hex[:12]}",
+                    group_mode=GroupMode.SEQUENTIAL,
+                    group_path=f"/{draw.container}",
+                    recovery=(
+                        draw.fault.recovery
+                        if draw.fault.recovery is not None
+                        else spec.config.recovery
+                    ),
+                    on_failure=(
+                        draw.fault.on_failure
+                        if draw.fault.on_failure is not None
+                        else spec.config.on_failure
+                    ),
+                    spec_dir=spec_dir,
+                )
+            )
+            seq += 1
+            seq = _plan_maniac_checks(steps, spec, seq)
+    else:
+        _validate_target_names(spec)
+        if _k8s_targets_only(spec):
+            for target_id, target in spec.targets.items():
+                _gate_k8s_selection_eligibility(graph, target.to_scope(target_id))
+        else:
+            raise PlanningError(
+                "maniac target rounds are kubernetes-scoped — a "
+                "`targets:` spec may not mix with a non-kubernetes target"
+            )
+        target_draws = draw_maniac_target_rounds(
+            spec, level=maniac.level, run_level=maniac.run_level, seed=maniac.seed
+        )
+
+        steps = []
+        seq = 0
+        for tdraw in target_draws:
+            target = spec.targets[tdraw.target]
+            single = target.model_copy(
+                update={"faults": (tdraw.fault,)}
+            )
+            seq = _plan_target_faults(
+                tdraw.target,
+                single,
                 graph,
+                steps,
                 seq,
-                execution_group_id=f"grp-{uuid.uuid4().hex[:12]}",
-                group_mode=GroupMode.SEQUENTIAL,
-                group_path=f"/{draw.container}",
-                recovery=(
-                    draw.fault.recovery if draw.fault.recovery is not None else spec.config.recovery
-                ),
-                on_failure=(
-                    draw.fault.on_failure
-                    if draw.fault.on_failure is not None
-                    else spec.config.on_failure
-                ),
+                recovery_default=spec.config.recovery,
+                on_failure_default=spec.config.on_failure,
                 spec_dir=spec_dir,
             )
-        )
-        seq += 1
-        seq = _plan_maniac_checks(steps, spec, seq)
 
     if not any(s.fault for s in steps):
         raise PlanningError(f"maniac drill {spec.name!r} drew no fault injection")
