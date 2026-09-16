@@ -92,6 +92,8 @@ class TestEngineScoping:
             "k8s.secret_unavailable", "k8s.pod_delete_uncontrolled",
             "k8s.persistent_volume_delay", "k8s.persistent_volume_error",
             "k8s.persistent_volume_detach", "k8s.node_cordon",
+            "k8s.hpa_scale_delay", "k8s.hpa_scale_failure",
+            "k8s.taint_evict", "k8s.nvidia_smi_error", "k8s.crash_loop",
         }
 
     def test_next_landscape_k8s_scope(self) -> None:
