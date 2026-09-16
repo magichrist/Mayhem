@@ -25,6 +25,7 @@ from mayhem.agents.executors import (
     K8S_UNDO_COMMAND,
     k8s_executor_for,
     k8s_unsupported_reason,
+    node_control_worker_name,
 )
 from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver, default_client
 from mayhem.domain.errors import ResolutionError, SelectionError
@@ -89,8 +90,18 @@ K8S_REVERSIBLE_FAULTS: frozenset[str] = frozenset(
 )
 # k-plan-5: node-scoped faults mutate the cluster node, not a container; they
 # resolve to a ResolvedNodeTarget and ride the node pipeline in the engine.
+# k-plan-6 §24: the node-killer families are NODE_CONTROL-gated and join the
+# same node pipeline (their executors refuse before any mutation when the
+# capability gate is closed).
 K8S_NODE_FAULTS: frozenset[str] = frozenset(
-    {"k8s.node_drain", "k8s.node_pressure", "k8s.node_cordon"}
+    {
+        "k8s.node_drain",
+        "k8s.node_pressure",
+        "k8s.node_cordon",
+        "k8s.taint_evict",
+        "k8s.nvidia_smi_error",
+        "k8s.crash_loop",
+    }
 )
 # k-plan-5 §5.3: network-namespace-injected pod faults (tc netem via nsenter).
 # The NETNS capability gates delivery; without it the driver refuses with
@@ -190,6 +201,13 @@ K8S_STORAGE_FAULTS: frozenset[str] = frozenset(
         "k8s.persistent_volume_detach",
     }
 )
+# k-plan-2 §14–§15: HorizontalPodAutoscaler mutation (scale delay / scale pin).
+K8S_HPA_FAULTS: frozenset[str] = frozenset(
+    {
+        "k8s.hpa_scale_delay",
+        "k8s.hpa_scale_failure",
+    }
+)
 # Controller-level families = everything that mutates a k8s object other than
 # the pod's own container (workload / service / config / storage / probes).
 # image_pull_slow stays out of the executable surface (no kubectl primitive);
@@ -202,6 +220,7 @@ K8S_CONTROLLER_FAULTS: frozenset[str] = frozenset(
     | K8S_SERVICE_FAULTS
     | K8S_CONFIG_FAULTS
     | K8S_STORAGE_FAULTS
+    | K8S_HPA_FAULTS
     | frozenset({"k8s.image_pull_failure"})
 )
 K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
@@ -381,7 +400,10 @@ def k8s_node_undo_ops(
     """UndoOps recorded on the lease for a node-level mutation (k-plan-5).
 
     * node_drain     → ``k8s.uncordon`` (live node facade restore);
-    * node_pressure  → ``k8s.delete`` (pressure workload).
+    * node_pressure  → ``k8s.delete`` (pressure workload);
+    * node_cordon    → ``k8s.uncordon``;
+    * taint_evict    → ``k8s.untaint`` (eviction taint removal);
+    * nvidia_smi_error / crash_loop → ``k8s.delete`` (node-pinned worker).
 
     Both ops carry the params bag (UndoOp.args is ``dict[str, str]``, so it
     rides along JSON-encoded, mirroring ``k8s_mutation_spec`` k-plan-4 §4.4)
@@ -429,7 +451,73 @@ def k8s_node_undo_ops(
                 },
             ),
         )
+    op = _node_kill_undo_op(fault_id, target, bag)
+    if op is not None:
+        return (op,)
     return ()
+
+
+def _node_kill_undo_op(
+    fault_id: str,
+    target: ResolvedNodeTarget,
+    bag: str,
+) -> UndoOp | None:
+    """UndoOp for the NODE_CONTROL-gated node-killer families (k-plan-6 §24).
+
+    taint_evict      → ``k8s.untaint`` (eviction taint removal);
+    nvidia_smi_error → ``k8s.delete`` of the node-pinned nvidia-smi worker;
+    crash_loop       → ``k8s.delete`` of the node-pinned crash-loop worker.
+
+    Everything else returns ``None`` so the caller falls back to its empty
+    undo-intent contract (k-plan-5 §5.4).
+    """
+    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
+
+    if fault_id == "k8s.taint_evict":
+        from json import loads as _loads  # noqa: PLC0415
+
+        taint = _loads(bag) if bag else {}
+        return UndoOp(
+            op="k8s.untaint",
+            args={
+                "node": target.node,
+                "node_uid": target.node_uid,
+                "key": str(taint.get("key") or "mayhem.io/taint-evict"),
+                "value": str(taint.get("value") or "mayhem"),
+                "effect": str(taint.get("effect") or "NoExecute"),
+                "params": bag,
+            },
+        )
+    if fault_id == "k8s.nvidia_smi_error":
+        name = node_control_worker_name("nvidia-smi", target.node)
+        return UndoOp(
+            op="k8s.delete",
+            args={
+                "node": target.node,
+                "workload": name,
+                "kind": "daemonset",
+                "params": bag,
+            },
+        )
+    if fault_id == "k8s.crash_loop":
+        from json import loads as _loads  # noqa: PLC0415
+
+        runtime = _loads(bag).get("runtime") if bag else None
+        runtime = str(runtime or "kubelet").strip().lower()
+        runtime = "kubelet" if runtime == "kubelet" else "containerd"
+        name = node_control_worker_name(runtime, target.node)
+        return UndoOp(
+            op="k8s.delete",
+            args={
+                "node": target.node,
+                "workload": name,
+                "kind": "daemonset",
+                "node_uid": target.node_uid,
+                "runtime": runtime,
+                "params": bag,
+            },
+        )
+    return None
 
 
 def _node_pressure_workload(node: str) -> str:
@@ -529,6 +617,7 @@ __all__ = (
     "K8S_CONFIG_FAULTS",
     "K8S_CONTROLLER_FAULTS",
     "K8S_DELETE_FAULTS",
+    "K8S_HPA_FAULTS",
     "K8S_MUTATION_FAULTS",
     "K8S_NETNS_FAULTS",
     "K8S_NETWORK_FAULTS",
