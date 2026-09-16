@@ -95,7 +95,20 @@ def build_graph(compose: str | None) -> TopologyGraph:
     engine = _resolve_engine(str(_STATE.get("engine", "")))
 
     if engine == "kubernetes":
-        return _kubernetes_discovery_graph()
+        if compose is None:
+            return _kubernetes_discovery_graph()
+        from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
+        from mayhem.topology.service import TopologyService as _ManifestTopologyService
+
+        manifest_provider = KubernetesManifestProvider(compose)
+        if not manifest_provider.is_available():
+            raise ValueError(
+                f"kubernetes blueprint {compose!r} not found — pass a k8s manifest "
+                "bundle via --compose or drop --compose to discover the live cluster"
+            )
+        if not manifest_provider.resource_kinds:
+            return _kubernetes_discovery_graph()
+        return _ManifestTopologyService().discover([manifest_provider]).graph
 
     if compose is None:
         raise ValueError(
