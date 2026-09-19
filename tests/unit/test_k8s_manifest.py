@@ -19,6 +19,7 @@ the mutation will land on. These tests pin four invariants:
      (cross-locus dispatch), with the same determinism guarantees as the
      container-level draw.
 """
+
 from __future__ import annotations
 
 import textwrap
@@ -139,6 +140,7 @@ def _graph_from_manifest(tmp_path: Path, content: str):
     known_ids = {n.id for n in fragment.nodes}
     safe_edges = tuple(e for e in fragment.edges if e.src in known_ids and e.dst in known_ids)
     from mayhem.domain.topology import TopologyGraph
+
     return TopologyGraph(nodes=fragment.nodes, edges=safe_edges)
 
 
@@ -152,6 +154,7 @@ def _live_pod(
     pod_id: str | None = None,
 ):
     from mayhem.domain.topology import PodNode
+
     return PodNode(
         id=pod_id or f"k8s::pod/{namespace}/{name}",
         name=name,
@@ -165,28 +168,43 @@ def _live_pod(
 
 # ── tests: target_selector transparency ──────────────────────────────────────
 
+
 class TestBlueprintTransparency:
     """Pins target-selector SP-4: blueprint pods are invisible to live picks."""
 
     def test_select_many_returns_none_for_all_blueprint(self, tmp_path):
         from mayhem.controller.target_selector import select_many
+
         graph = _graph_from_manifest(tmp_path, _DOCKER_API)
-        scope = DrillSpec.model_validate({
-            "kind": "drill",
-            "name": "t",
-            "targets": {"Deployment/mayhem/api": {
-                "runtime": "kubernetes",
-                "kubernetes": {"kind": "deployment", "namespace": "mayhem", "name": "api"},
-                "faults": [{"fault": "k8s.pod_kill"}],
-            }},
-            "execution": [{"sequential": ["Deployment/mayhem/api"]}],
-        }).targets["Deployment/mayhem/api"].to_scope("Deployment/mayhem/api")
+        scope = (
+            DrillSpec.model_validate(
+                {
+                    "kind": "drill",
+                    "name": "t",
+                    "targets": {
+                        "Deployment/mayhem/api": {
+                            "runtime": "kubernetes",
+                            "kubernetes": {
+                                "kind": "deployment",
+                                "namespace": "mayhem",
+                                "name": "api",
+                            },
+                            "faults": [{"fault": "k8s.pod_kill"}],
+                        }
+                    },
+                    "execution": [{"sequential": ["Deployment/mayhem/api"]}],
+                }
+            )
+            .targets["Deployment/mayhem/api"]
+            .to_scope("Deployment/mayhem/api")
+        )
         assert scope.runtime == RuntimeLabel.KUBERNETES
         picks = select_many(graph, scope)
         assert picks is None
 
     def test_select_many_picks_live_pod_matching_workload(self, tmp_path):
         from mayhem.controller.target_selector import select_many
+
         graph = _graph_from_manifest(tmp_path, _DOCKER_API)
         live = _live_pod(
             name="api-abc",
@@ -196,16 +214,28 @@ class TestBlueprintTransparency:
             state="running",
         )
         graph = type(graph)(nodes=(*graph.nodes, live), edges=graph.edges)
-        scope = DrillSpec.model_validate({
-            "kind": "drill",
-            "name": "t",
-            "targets": {"Deployment/mayhem/api": {
-                "runtime": "kubernetes",
-                "kubernetes": {"kind": "deployment", "namespace": "mayhem", "name": "api"},
-                "faults": [{"fault": "k8s.pod_kill"}],
-            }},
-            "execution": [{"sequential": ["Deployment/mayhem/api"]}],
-        }).targets["Deployment/mayhem/api"].to_scope("Deployment/mayhem/api")
+        scope = (
+            DrillSpec.model_validate(
+                {
+                    "kind": "drill",
+                    "name": "t",
+                    "targets": {
+                        "Deployment/mayhem/api": {
+                            "runtime": "kubernetes",
+                            "kubernetes": {
+                                "kind": "deployment",
+                                "namespace": "mayhem",
+                                "name": "api",
+                            },
+                            "faults": [{"fault": "k8s.pod_kill"}],
+                        }
+                    },
+                    "execution": [{"sequential": ["Deployment/mayhem/api"]}],
+                }
+            )
+            .targets["Deployment/mayhem/api"]
+            .to_scope("Deployment/mayhem/api")
+        )
         picks = select_many(graph, scope)
         assert picks is not None
         assert len(picks) == 1
@@ -216,6 +246,7 @@ class TestBlueprintTransparency:
         from mayhem.controller.target_selector import select_many
 
         from mayhem.domain.errors import SelectionError
+
         graph = _graph_from_manifest(tmp_path, _DOCKER_API)
         dead = _live_pod(
             name="api-zzz",
@@ -225,21 +256,34 @@ class TestBlueprintTransparency:
             state="terminating",
         )
         graph = type(graph)(nodes=(*graph.nodes, dead), edges=graph.edges)
-        scope = DrillSpec.model_validate({
-            "kind": "drill",
-            "name": "t",
-            "targets": {"Deployment/mayhem/api": {
-                "runtime": "kubernetes",
-                "kubernetes": {"kind": "deployment", "namespace": "mayhem", "name": "api"},
-                "faults": [{"fault": "k8s.pod_kill"}],
-            }},
-            "execution": [{"sequential": ["Deployment/mayhem/api"]}],
-        }).targets["Deployment/mayhem/api"].to_scope("Deployment/mayhem/api")
+        scope = (
+            DrillSpec.model_validate(
+                {
+                    "kind": "drill",
+                    "name": "t",
+                    "targets": {
+                        "Deployment/mayhem/api": {
+                            "runtime": "kubernetes",
+                            "kubernetes": {
+                                "kind": "deployment",
+                                "namespace": "mayhem",
+                                "name": "api",
+                            },
+                            "faults": [{"fault": "k8s.pod_kill"}],
+                        }
+                    },
+                    "execution": [{"sequential": ["Deployment/mayhem/api"]}],
+                }
+            )
+            .targets["Deployment/mayhem/api"]
+            .to_scope("Deployment/mayhem/api")
+        )
         with pytest.raises(SelectionError, match="no live pod"):
             select_many(graph, scope)
 
 
 # ── tests: synthesize_k8s_maniac_spec ────────────────────────────────────────
+
 
 class TestSynthesizeK8sManiacSpec:
     """Pins SP-3.6: kubernetes blueprint → targets spec with k8s faults."""
@@ -281,6 +325,7 @@ class TestSynthesizeK8sManiacSpec:
 
 # ── tests: draw_maniac_target_rounds ────────────────────────────────────────
 
+
 class TestDrawManiacTargetRounds:
     """Pins cross-locus dispatch (level ≥ 3) and determinism."""
 
@@ -298,18 +343,20 @@ class TestDrawManiacTargetRounds:
                     "faults": [{"fault": "k8s.pod_kill"}],
                 },
             }
-        return DrillSpec.model_validate({
-            "kind": "drill",
-            "name": "kmd",
-            "targets": targets,
-            "execution": [{"sequential": list(targets.keys())}],
-            "config": {
-                "risk_ceiling": "critical",
-                "max_faults": 1,
-                "timeout": "30m",
-                **({"maniac": maniac} if maniac else {}),
-            },
-        })
+        return DrillSpec.model_validate(
+            {
+                "kind": "drill",
+                "name": "kmd",
+                "targets": targets,
+                "execution": [{"sequential": list(targets.keys())}],
+                "config": {
+                    "risk_ceiling": "critical",
+                    "max_faults": 1,
+                    "timeout": "30m",
+                    **({"maniac": maniac} if maniac else {}),
+                },
+            }
+        )
 
     def test_deterministic_draw(self):
         spec = self._spec_with_targets(maniac={"level": 2, "run_level": 5, "seed": 42})
@@ -353,6 +400,7 @@ class TestDrawManiacTargetRounds:
 
 
 # ── tests: plan_maniac on k8s synthesized spec ──────────────────────────────
+
 
 class TestPlanManiacK8sSpec:
     """Pins SP-3.6: synthesized k8s spec compiles through plan_maniac."""
@@ -418,29 +466,32 @@ class TestPlanManiacK8sSpec:
 
 # ── tests: non-k8s target refusal ───────────────────────────────────────────
 
+
 class TestPlanManiacRefusesHeterogeneousTargets:
     """k-plan-3 SP-3.6: mixed docker + kubernetes targets in a single spec
     are refused at plan_maniac (maniac rounds are kubernetes-scoped only)."""
 
     def test_mixed_targets_raises(self, tmp_path):
         graph = _graph_from_manifest(tmp_path, _DOCKER_API)
-        spec = DrillSpec.model_validate({
-            "kind": "drill",
-            "name": "mixed",
-            "targets": {
-                "docker/web": {
-                    "runtime": "docker",
-                    "faults": [{"fault": "proc.pause"}],
+        spec = DrillSpec.model_validate(
+            {
+                "kind": "drill",
+                "name": "mixed",
+                "targets": {
+                    "docker/web": {
+                        "runtime": "docker",
+                        "faults": [{"fault": "proc.pause"}],
+                    },
+                    "Deployment/mayhem/api": {
+                        "runtime": "kubernetes",
+                        "kubernetes": {"kind": "deployment", "namespace": "mayhem", "name": "api"},
+                        "faults": [{"fault": "k8s.pod_kill"}],
+                    },
                 },
-                "Deployment/mayhem/api": {
-                    "runtime": "kubernetes",
-                    "kubernetes": {"kind": "deployment", "namespace": "mayhem", "name": "api"},
-                    "faults": [{"fault": "k8s.pod_kill"}],
-                },
-            },
-            "execution": [{"sequential": ["docker/web", "Deployment/mayhem/api"]}],
-            "config": {"risk_ceiling": "critical", "max_faults": 1, "timeout": "30m"},
-        })
+                "execution": [{"sequential": ["docker/web", "Deployment/mayhem/api"]}],
+                "config": {"risk_ceiling": "critical", "max_faults": 1, "timeout": "30m"},
+            }
+        )
         with pytest.raises(PlanningError, match="kubernetes-scoped"):
             plan_maniac(
                 "r-x",

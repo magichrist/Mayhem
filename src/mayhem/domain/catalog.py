@@ -166,7 +166,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(ParamSpec(name="path", type=ParamType.STRING, default="/"),),
     ),
     FaultDefinition(
-id="net.latency",
+        id="net.latency",
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
@@ -178,7 +178,7 @@ id="net.latency",
         ),
     ),
     FaultDefinition(
-id="net.packet_loss",
+        id="net.packet_loss",
         category=FaultCategory.NETWORK,
         risk=RiskLevel.MEDIUM,
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
@@ -770,7 +770,9 @@ id="net.packet_loss",
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(name="scheduler_name", type=ParamType.STRING, default="mayhem-scheduler-nope"),
+            ParamSpec(
+                name="scheduler_name", type=ParamType.STRING, default="mayhem-scheduler-nope"
+            ),
         ),
     ),
     # Registry sub-family — image reference patch (image_pull_slow is
@@ -783,7 +785,9 @@ id="net.packet_loss",
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/pull-fail:latest"),
+            ParamSpec(
+                name="image", type=ParamType.STRING, default="mayhem.invalid/pull-fail:latest"
+            ),
         ),
     ),
     # Registry pacing — CATALOG ONLY: no kubectl primitive delivers slow
@@ -798,7 +802,9 @@ id="net.packet_loss",
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/pull-slow:latest"),
+            ParamSpec(
+                name="image", type=ParamType.STRING, default="mayhem.invalid/pull-slow:latest"
+            ),
             ParamSpec(name="delay_s", type=ParamType.INTEGER, default=30, minimum=1, maximum=600),
         ),
     ),
@@ -811,9 +817,7 @@ id="net.packet_loss",
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
-        params_schema=(
-            ParamSpec(name="replicas", type=ParamType.INTEGER, default=1, minimum=0),
-        ),
+        params_schema=(ParamSpec(name="replicas", type=ParamType.INTEGER, default=1, minimum=0),),
     ),
     FaultDefinition(
         id="k8s.rollout_pause",
@@ -832,7 +836,9 @@ id="net.packet_loss",
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(name="image", type=ParamType.STRING, default="mayhem.invalid/rollout-fail:latest"),
+            ParamSpec(
+                name="image", type=ParamType.STRING, default="mayhem.invalid/rollout-fail:latest"
+            ),
         ),
     ),
     # Pod-delete sub-family — uncontrolled deletion (no graceful shutdown).
@@ -915,9 +921,7 @@ id="net.packet_loss",
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=600.0,
-        params_schema=(
-            ParamSpec(name="volume_path", type=ParamType.STRING),
-        ),
+        params_schema=(ParamSpec(name="volume_path", type=ParamType.STRING),),
     ),
     FaultDefinition(
         id="k8s.persistent_volume_error",
@@ -926,9 +930,7 @@ id="net.packet_loss",
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=600.0,
-        params_schema=(
-            ParamSpec(name="volume_path", type=ParamType.STRING),
-        ),
+        params_schema=(ParamSpec(name="volume_path", type=ParamType.STRING),),
     ),
     FaultDefinition(
         id="k8s.persistent_volume_detach",
@@ -947,9 +949,7 @@ id="net.packet_loss",
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=3600.0,
-        params_schema=(
-            ParamSpec(name="seconds", type=ParamType.DURATION, default="60s"),
-        ),
+        params_schema=(ParamSpec(name="seconds", type=ParamType.DURATION, default="60s"),),
     ),
     FaultDefinition(
         id="k8s.hpa_scale_failure",
@@ -958,9 +958,7 @@ id="net.packet_loss",
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.POD}),
         max_duration_s=300.0,
-        params_schema=(
-            ParamSpec(name="direction", type=ParamType.STRING, default="up"),
-        ),
+        params_schema=(ParamSpec(name="direction", type=ParamType.STRING, default="up"),),
     ),
     # Node sub-family — cordon (subset of drain without eviction).
     FaultDefinition(

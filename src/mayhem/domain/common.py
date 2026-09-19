@@ -55,8 +55,7 @@ def parse_bytes(raw: str) -> float:
     if match is None:
         raise SchemaValidationError(
             "bytes",
-            f"expected '<n>[B|K|KB|Ki|KiB|M|MB|Mi|MiB|G|GB|Gi|GiB|T|TB|Ti|TiB]', "
-            f"got {raw!r}",
+            f"expected '<n>[B|K|KB|Ki|KiB|M|MB|Mi|MiB|G|GB|Gi|GiB|T|TB|Ti|TiB]', got {raw!r}",
         )
     value = float(match.group("value"))
     unit = match.group("unit") or "B"

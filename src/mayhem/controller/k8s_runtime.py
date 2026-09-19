@@ -18,12 +18,11 @@ pure composition over in-memory objects.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
 
 from mayhem.agents.executors import (
     K8S_SIGNAL_FAULTS,
     K8S_UNDO_COMMAND,
-    k8s_executor_for,
     k8s_unsupported_reason,
     node_control_worker_name,
 )
@@ -31,9 +30,6 @@ from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver, default_client
 from mayhem.domain.errors import ResolutionError, SelectionError
 from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.domain.topology import NodeKind
-
-if TYPE_CHECKING:
-    from mayhem.controller.executor import RunEngine
 
 UNDO_OP = "k8s.exec"
 NO_UNDO_MARKER = "noop"  # signal families with nothing live to undo (TERM/KILL)
@@ -227,9 +223,7 @@ K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
 # image_pull_slow is a registered catalog archetype for planning, but no
 # kubectl primitive delivers pull-latency shaping; it must never be offered
 # as reversible.  All other new controller families restore a live snapshot.
-K8S_REVERSIBLE_FAULTS = (
-    K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS - K8S_POD_DELETE_FAULTS
-)
+K8S_REVERSIBLE_FAULTS = K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS - K8S_POD_DELETE_FAULTS
 K8S_DELETE_FAULTS = K8S_DELETE_FAULTS | K8S_POD_DELETE_FAULTS
 
 
@@ -411,9 +405,9 @@ def k8s_node_undo_ops(
     authored ``grace_period`` / ``target_percent`` / ``resource`` at both
     injection and undo time.
     """
-    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
-
     import json as _json  # noqa: PLC0415
+
+    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
 
     bag = _json.dumps(dict(params or {}), sort_keys=True, separators=(",", ":"))
     if fault_id == "k8s.node_drain":
@@ -559,7 +553,7 @@ def k8s_node_routing() -> dict[str, str]:
     and ``node_cordon`` all route through the node pipeline (``k8s.node``);
     everything else falls back to ``k8s.pod``.
     """
-    return {fault: "k8s.node" for fault in K8S_NODE_FAULTS}
+    return dict.fromkeys(K8S_NODE_FAULTS, "k8s.node")
 
 
 def k8s_undo_ops_for(fault_id: str, target: ResolvedPodTarget) -> tuple[UndoOp, ...]:

@@ -3,6 +3,7 @@
 Uses a stub provider to keep tests offline; the provider itself is covered in
 ``test_k8s_discovery.py``.
 """
+
 from __future__ import annotations
 
 from typing import ClassVar
@@ -46,9 +47,7 @@ class _StubProvider:
 
 def _patch_provider(monkeypatch, stub=_StubProvider):
     monkeypatch.setattr("mayhem.topology.providers.kubernetes.KubernetesProvider", stub)
-    monkeypatch.setattr(
-        "mayhem.topology.providers.kubernetes.KUBERNETES_IMPORT_ERROR", None
-    )
+    monkeypatch.setattr("mayhem.topology.providers.kubernetes.KUBERNETES_IMPORT_ERROR", None)
     _StubProvider.instances = []
     return stub
 

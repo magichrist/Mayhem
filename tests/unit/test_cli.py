@@ -56,9 +56,7 @@ class TestEngineScoping:
             assert selected_engine() == ""
 
     def test_selected_engine_reads_k_flag(self) -> None:
-        with patch(
-            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
-        ):
+        with patch("mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}):
             assert selected_engine() == "kubernetes"
 
     def test_engine_fault_kinds_full_catalog_by_default(self) -> None:
@@ -71,29 +69,57 @@ class TestEngineScoping:
     def test_engine_fault_kinds_k8s_subset_with_k_flag(self) -> None:
         from mayhem.controller.k8s_runtime import k8s_available_faults
 
-        with patch(
-            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
-        ):
+        with patch("mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}):
             kinds = set(engine_fault_kinds())
         assert kinds == k8s_available_faults()
         assert kinds == {
-            "cpu.saturate", "cpu.throttle", "mem.exhaust", "mem.leak",
-            "fs.fill", "fs.inode_exhaust", "fs.io_stress", "fd.exhaust",
-            "net.latency", "net.packet_loss", "net.duplicate", "net.reorder",
-            "net.bandwidth", "net.partition",
-            "k8s.pod_kill", "k8s.pod_evict", "k8s.pod_oom", "k8s.pod_pressure",
-            "k8s.network_policy", "k8s.pod_partition", "k8s.pod_latency",
-            "k8s.node_drain", "k8s.node_pressure",
-            "k8s.pod_readiness_fail", "k8s.pod_liveness_fail", "k8s.pod_startup_fail",
-            "k8s.pod_unschedulable", "k8s.schedule_delay", "k8s.image_pull_failure",
-            "k8s.rollout_failure", "k8s.replica_reduce", "k8s.rollout_pause",
-            "k8s.service_no_endpoints", "k8s.service_endpoint_flap",
-            "k8s.service_port_mismatch", "k8s.configmap_corrupt",
-            "k8s.secret_unavailable", "k8s.pod_delete_uncontrolled",
-            "k8s.persistent_volume_delay", "k8s.persistent_volume_error",
-            "k8s.persistent_volume_detach", "k8s.node_cordon",
-            "k8s.hpa_scale_delay", "k8s.hpa_scale_failure",
-            "k8s.taint_evict", "k8s.nvidia_smi_error", "k8s.crash_loop",
+            "cpu.saturate",
+            "cpu.throttle",
+            "mem.exhaust",
+            "mem.leak",
+            "fs.fill",
+            "fs.inode_exhaust",
+            "fs.io_stress",
+            "fd.exhaust",
+            "net.latency",
+            "net.packet_loss",
+            "net.duplicate",
+            "net.reorder",
+            "net.bandwidth",
+            "net.partition",
+            "k8s.pod_kill",
+            "k8s.pod_evict",
+            "k8s.pod_oom",
+            "k8s.pod_pressure",
+            "k8s.network_policy",
+            "k8s.pod_partition",
+            "k8s.pod_latency",
+            "k8s.node_drain",
+            "k8s.node_pressure",
+            "k8s.pod_readiness_fail",
+            "k8s.pod_liveness_fail",
+            "k8s.pod_startup_fail",
+            "k8s.pod_unschedulable",
+            "k8s.schedule_delay",
+            "k8s.image_pull_failure",
+            "k8s.rollout_failure",
+            "k8s.replica_reduce",
+            "k8s.rollout_pause",
+            "k8s.service_no_endpoints",
+            "k8s.service_endpoint_flap",
+            "k8s.service_port_mismatch",
+            "k8s.configmap_corrupt",
+            "k8s.secret_unavailable",
+            "k8s.pod_delete_uncontrolled",
+            "k8s.persistent_volume_delay",
+            "k8s.persistent_volume_error",
+            "k8s.persistent_volume_detach",
+            "k8s.node_cordon",
+            "k8s.hpa_scale_delay",
+            "k8s.hpa_scale_failure",
+            "k8s.taint_evict",
+            "k8s.nvidia_smi_error",
+            "k8s.crash_loop",
         }
 
     def test_next_landscape_k8s_scope(self) -> None:
@@ -107,9 +133,7 @@ class TestEngineScoping:
         graph = TopologyGraph(
             nodes=(ServiceNode(id="svc-web", name="web"),),
         )
-        with patch(
-            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
-        ):
+        with patch("mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}):
             cells, _, _ = _landscape_cells(graph, seed=7)
         fault_kinds = {cell.fault_kind for cell in cells}
         assert fault_kinds <= k8s_available_faults()
@@ -124,9 +148,7 @@ class TestEngineScoping:
         graph = TopologyGraph(
             nodes=(ServiceNode(id="svc-web", name="web"),),
         )
-        with patch(
-            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
-        ):
+        with patch("mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}):
             cells = _landscape_cells(graph, seed=7)
         fault_kinds = {cell.fault_kind for cell in cells}
         assert fault_kinds <= k8s_available_faults()
@@ -141,11 +163,10 @@ class TestEngineScoping:
         graph = TopologyGraph(
             nodes=(ServiceNode(id="svc-web", name="web"),),
         )
-        with patch(
-            "mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}
-        ):
+        with patch("mayhem.cli.app._STATE", {"engine": "kubernetes", "debug": "", "gate": "1"}):
             landscape = _build_landscape(graph)
         assert set(landscape.fault_kinds) <= k8s_available_faults()
+
     def test_faults_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["toolkit", "faults"]) == 0
         assert "proc.pause" in capsys.readouterr().out

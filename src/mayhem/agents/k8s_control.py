@@ -26,8 +26,8 @@ import json as _json
 from dataclasses import dataclass
 from typing import Any
 
-from mayhem.toolkit.tool_runner import ToolResult, run_tool
 from mayhem.domain.resolution import ResolvedPodTarget
+from mayhem.toolkit.tool_runner import ToolResult, run_tool
 
 RESTORE_ANNOTATION = "mayhem.io/restore"
 WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
@@ -98,9 +98,7 @@ def workload_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
         obj = kubectl_json(ref)
         if obj is None:
             return None
-        owners = (
-            obj.get("metadata", {}).get("ownerReferences") or []
-        )
+        owners = obj.get("metadata", {}).get("ownerReferences") or []
         matched = False
         for owner in owners:
             kind = str(owner.get("kind") or "")
@@ -141,10 +139,7 @@ def hpa_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
         return None
     for obj in _json.loads(result.stdout).get("items", []):
         scale_target = obj.get("spec", {}).get("scaleTargetRef") or {}
-        if (
-            scale_target.get("kind") == workload.kind
-            and scale_target.get("name") == workload.name
-        ):
+        if scale_target.get("kind") == workload.kind and scale_target.get("name") == workload.name:
             return ResourceRef(
                 kind="HorizontalPodAutoscaler",
                 name=str(obj.get("metadata", {}).get("name", "")),
@@ -170,9 +165,7 @@ def _service_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
         svc_name = svc.get("metadata", {}).get("name", "")
         svc_selector = svc.get("spec", {}).get("selector") or {}
         # If the service selector matches the pod labels it is a candidate.
-        if svc_selector and all(
-            target.labels.get(k) == v for k, v in svc_selector.items()
-        ):
+        if svc_selector and all(target.labels.get(k) == v for k, v in svc_selector.items()):
             return ResourceRef(kind="Service", name=svc_name, namespace=target.namespace)
     return None
 
@@ -187,9 +180,8 @@ def _config_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
     obj = kubectl_json(ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace))
     if obj is None:
         return None
-    for container in (
-        obj.get("spec", {}).get("initContainers", [])
-        + obj.get("spec", {}).get("containers", [])
+    for container in obj.get("spec", {}).get("initContainers", []) + obj.get("spec", {}).get(
+        "containers", []
     ):
         if container.get("name") != target.container:
             continue
@@ -198,7 +190,9 @@ def _config_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
                 vol = _vol_named(obj, vm["name"])
                 cm_name = vol.get("configMap", {}).get("name")
                 if cm_name:
-                    return ResourceRef(kind="ConfigMap", name=str(cm_name), namespace=target.namespace)
+                    return ResourceRef(
+                        kind="ConfigMap", name=str(cm_name), namespace=target.namespace
+                    )
     return None
 
 
@@ -212,9 +206,8 @@ def _secret_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
     obj = kubectl_json(ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace))
     if obj is None:
         return None
-    for container in (
-        obj.get("spec", {}).get("initContainers", [])
-        + obj.get("spec", {}).get("containers", [])
+    for container in obj.get("spec", {}).get("initContainers", []) + obj.get("spec", {}).get(
+        "containers", []
     ):
         if container.get("name") != target.container:
             continue
@@ -223,7 +216,9 @@ def _secret_ref_for_pod_impl(target: ResolvedPodTarget) -> ResourceRef | None:
                 vol = _vol_named(obj, vm["name"])
                 sec_name = vol.get("secret", {}).get("secretName")
                 if sec_name:
-                    return ResourceRef(kind="Secret", name=str(sec_name), namespace=target.namespace)
+                    return ResourceRef(
+                        kind="Secret", name=str(sec_name), namespace=target.namespace
+                    )
     return None
 
 
@@ -247,9 +242,8 @@ def preferred_mount_path(target: ResolvedPodTarget) -> str:
     obj = kubectl_json(ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace))
     if obj is None:
         return "/mnt/data"
-    for container in (
-        obj.get("spec", {}).get("initContainers", [])
-        + obj.get("spec", {}).get("containers", [])
+    for container in obj.get("spec", {}).get("initContainers", []) + obj.get("spec", {}).get(
+        "containers", []
     ):
         if container.get("name") == target.container:
             for vm in container.get("volumeMounts", []):
@@ -347,9 +341,7 @@ def rollout_control(ref: ResourceRef, *, pause: bool) -> bool:
 
 
 def scale(ref: ResourceRef, replicas: int) -> bool:
-    result = kubectl(
-        ("scale", ref.kind, ref.name, f"--replicas={replicas}", "-n", ref.namespace)
-    )
+    result = kubectl(("scale", ref.kind, ref.name, f"--replicas={replicas}", "-n", ref.namespace))
     return result.exit_code == 0
 
 

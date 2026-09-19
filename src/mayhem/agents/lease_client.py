@@ -70,9 +70,7 @@ class LeaseClient:
                 "runtime_identity": runtime_identity,
                 "epoch": epoch,
                 "resolved_target": (
-                    resolved_target.model_dump(mode="json")
-                    if resolved_target is not None
-                    else None
+                    resolved_target.model_dump(mode="json") if resolved_target is not None else None
                 ),
             }
         )

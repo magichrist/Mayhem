@@ -61,9 +61,7 @@ def _container_graph(name: str = "checkout", cid: str = "c-checkout") -> Topolog
                 id=cid,
                 name=name,
                 engine="podman",
-                runtime_identity=RuntimeIdentity(
-                    runtime="docker", host_id="h1", runtime_id=cid
-                ),
+                runtime_identity=RuntimeIdentity(runtime="docker", host_id="h1", runtime_id=cid),
                 container_name=name,
             ),
             ServiceNode(id=f"svc-{name}", name=f"{name}-svc", container_name=name),
@@ -183,9 +181,7 @@ class TestTargetsSchema:
 
     def test_mixed_sources_refused(self) -> None:
         mixed = _spec("checkout", _docker_target())
-        mixed["containers"] = {
-            "api": {"faults": [{"fault": "proc.pause", "duration": "5s"}]}
-        }
+        mixed["containers"] = {"api": {"faults": [{"fault": "proc.pause", "duration": "5s"}]}}
         with pytest.raises(InvariantViolationError) as exc:
             DrillSpec.model_validate(mixed)
         assert exc.value.rule == "targets.mixed_sources"
@@ -194,9 +190,7 @@ class TestTargetsSchema:
         # direct model_validate surfaces the pydantic error; parse_drill
         # re-wraps it as SchemaValidationError.
         with pytest.raises(pydantic.ValidationError):
-            DrillSpec.model_validate(
-                {"kind": "drill", "name": "k1", "execution": [{"wait": "5s"}]}
-            )
+            DrillSpec.model_validate({"kind": "drill", "name": "k1", "execution": [{"wait": "5s"}]})
 
     def test_empty_containers_still_invariant(self) -> None:
         with pytest.raises(InvariantViolationError):
@@ -282,9 +276,7 @@ class TestTargetsCompile:
             {
                 "kind": "drill",
                 "name": "legacy",
-                "containers": {
-                    "checkout": {"faults": [{"fault": "proc.pause", "duration": "5s"}]}
-                },
+                "containers": {"checkout": {"faults": [{"fault": "proc.pause", "duration": "5s"}]}},
                 "execution": [{"sequential": ["checkout"]}],
             }
         )

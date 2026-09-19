@@ -333,7 +333,7 @@ def explore(
         ctx.exit(int(ExitCode.SUCCESS))
         return
 
-# Live explore: prepare → runner → execute loop.
+    # Live explore: prepare → runner → execute loop.
     try:
         prepared = prepare(
             config_path=obj.config or "",

@@ -760,8 +760,7 @@ class RunEngine:
                 StepReport(
                     step.id,
                     False,
-                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
-                    "not importable)",
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK not importable)",
                     status="failed_to_apply",
                 ),
                 [],
@@ -968,8 +967,7 @@ class RunEngine:
                 StepReport(
                     step.id,
                     False,
-                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
-                    "not importable)",
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK not importable)",
                     status="failed_to_apply",
                 ),
                 [],
@@ -1025,7 +1023,8 @@ class RunEngine:
                 undo_ops=(mutation, *k8s_undo_ops_for(fault.fault_id, target)),
                 verify_probes=(
                     VerifyProbe(
-                        probe="k8s.replaced" if fault.fault_id not in K8S_REVERSIBLE_FAULTS
+                        probe="k8s.replaced"
+                        if fault.fault_id not in K8S_REVERSIBLE_FAULTS
                         else "k8s.undo",
                         args={
                             "fault_id": fault.fault_id,
@@ -1070,9 +1069,7 @@ class RunEngine:
                     [],
                 )
             inject_outcome = executor.inject(active)
-            self._record_tool_result(
-                inject_outcome.tool_result if inject_outcome else None
-            )
+            self._record_tool_result(inject_outcome.tool_result if inject_outcome else None)
             if not inject_outcome.ok:
                 self._client.mark_releasing(lease.id)
                 self._client.confirm_release(lease.id, mechanism="inject_failed")
@@ -1089,9 +1086,7 @@ class RunEngine:
                     ),
                 )
                 return (
-                    StepReport(
-                        step.id, False, inject_outcome.detail, status="inject_failed"
-                    ),
+                    StepReport(step.id, False, inject_outcome.detail, status="inject_failed"),
                     [],
                 )
             lease_ids.append(lease.id)
@@ -1110,9 +1105,7 @@ class RunEngine:
             self._sleep_interruptible(float(fault.duration))
             if fault.fault_id in K8S_REVERSIBLE_FAULTS:
                 undo_outcome = executor.undo(active)
-                self._record_tool_result(
-                    undo_outcome.tool_result if undo_outcome else None
-                )
+                self._record_tool_result(undo_outcome.tool_result if undo_outcome else None)
                 self._client.mark_releasing(lease.id)
                 if undo_outcome.ok:
                     self._client.confirm_release(lease.id, mechanism="normal")
@@ -1147,9 +1140,7 @@ class RunEngine:
                         },
                     ),
                 )
-                details.append(
-                    f"{target.pod}: {inject_outcome.detail}; replacement ready"
-                )
+                details.append(f"{target.pod}: {inject_outcome.detail}; replacement ready")
             else:
                 reason = (
                     "replacement pod did not reach Ready within "
@@ -1237,15 +1228,13 @@ class RunEngine:
         """
         from mayhem.agents.executors import (  # noqa: PLC0415
             executor_for,
-            k8s_executor_for,
         )
         from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
             K8S_NODE_FAULTS,
-            make_k8s_resolver,
             k8s_node_routing,
             k8s_node_spec,
             k8s_node_undo_ops,
-            k8s_node_verify_spec,
+            make_k8s_resolver,
         )
         from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
 
@@ -1257,8 +1246,7 @@ class RunEngine:
                 StepReport(
                     step.id,
                     False,
-                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK "
-                    "not importable)",
+                    "k8s.unsupported: no cluster client (kubectl not on PATH, SDK not importable)",
                 ),
                 [],
             )
@@ -1278,9 +1266,7 @@ class RunEngine:
         else:
             node_name_arg = str(node_name) if node_name else None
         try:
-            outcome = resolver.resolve_node(
-                fault.target, node_name=node_name_arg
-            )
+            outcome = resolver.resolve_node(fault.target, node_name=node_name_arg)
         except (ResolutionError, SelectionError) as exc:
             self._emit(
                 Event(
@@ -1351,9 +1337,7 @@ class RunEngine:
             dirty: list[str] = []
             if undo_outcome and undo_outcome.ok:
                 self._client.mark_releasing(lease.id)
-                self._client.confirm_release(
-                    lease.id, mechanism="failed_to_apply_undone"
-                )
+                self._client.confirm_release(lease.id, mechanism="failed_to_apply_undone")
                 note = f"{inject_outcome.detail} (undo ok)"
             else:
                 self._client.mark_releasing(lease.id)
@@ -1407,16 +1391,16 @@ class RunEngine:
                     detail={"fault": fault.fault_id, "lease": lease.id},
                 ),
             )
-            details = [
-                f"{resolved.node}: {inject_outcome.detail}; undo: {undo_outcome.detail}"
-            ]
+            details = [f"{resolved.node}: {inject_outcome.detail}; undo: {undo_outcome.detail}"]
             return (
                 StepReport(step.id, True, "; ".join(details)),
                 lease_ids,
             )
         mark = self._client.mark_dirty(
             lease.id,
-            notes="; ".join([inject_outcome.detail, undo_outcome.detail if undo_outcome else "no undo"]),
+            notes="; ".join(
+                [inject_outcome.detail, undo_outcome.detail if undo_outcome else "no undo"]
+            ),
         )
         return (
             StepReport(

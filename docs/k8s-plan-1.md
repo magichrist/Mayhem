@@ -61,16 +61,17 @@ The governing principle is unchanged from k-plan-6:
 Add to `src/mayhem/controller/k8s_runtime.py`:
 
 ```python
-K8S_NODE_HEALTH_FAULTS  = {"k8s.node_not_ready", "k8s.kube_proxy_failure"}
-K8S_NODE_NET_FAULTS     = {"k8s.node_network_partition"}
-K8S_CRASH_FAULTS        = {"k8s.pod_crash_loop"}
-K8S_PENDING_FAULTS      = {"k8s.pod_pending", "k8s.preemption_failure"}   # 7b adds preemption
+K8S_NODE_HEALTH_FAULTS = {"k8s.node_not_ready", "k8s.kube_proxy_failure"}
+K8S_NODE_NET_FAULTS = {"k8s.node_network_partition"}
+K8S_CRASH_FAULTS = {"k8s.pod_crash_loop"}
+K8S_PENDING_FAULTS = {"k8s.pod_pending", "k8s.preemption_failure"}  # 7b adds preemption
 K8S_CONTROLLER_SCALE_FAULTS = {
-    "k8s.deployment_scale_failure", "k8s.statefulset_scale_failure",
+    "k8s.deployment_scale_failure",
+    "k8s.statefulset_scale_failure",
 }
-K8S_QUOTA_FAULTS        = {"k8s.resource_quota_exhaust"}
-K8S_PVC_FAULTS          = {"k8s.persistent_volume_claim_pending"}
-K8S_MOUNT_FAULTS        = {"k8s.persistent_volume_mount_failure"}
+K8S_QUOTA_FAULTS = {"k8s.resource_quota_exhaust"}
+K8S_PVC_FAULTS = {"k8s.persistent_volume_claim_pending"}
+K8S_MOUNT_FAULTS = {"k8s.persistent_volume_mount_failure"}
 ```
 
 and fold them into the existing unions:
@@ -79,8 +80,12 @@ and fold them into the existing unions:
 K8S_NODE_FAULTS = K8S_NODE_FAULTS | K8S_NODE_HEALTH_FAULTS | K8S_NODE_NET_FAULTS
 K8S_CONTROLLER_FAULTS = (
     K8S_CONTROLLER_FAULTS
-    | K8S_CRASH_FAULTS | K8S_PENDING_FAULTS | K8S_CONTROLLER_SCALE_FAULTS
-    | K8S_QUOTA_FAULTS | K8S_PVC_FAULTS | K8S_MOUNT_FAULTS
+    | K8S_CRASH_FAULTS
+    | K8S_PENDING_FAULTS
+    | K8S_CONTROLLER_SCALE_FAULTS
+    | K8S_QUOTA_FAULTS
+    | K8S_PVC_FAULTS
+    | K8S_MOUNT_FAULTS
 )
 K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
 K8S_REVERSIBLE_FAULTS = K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS

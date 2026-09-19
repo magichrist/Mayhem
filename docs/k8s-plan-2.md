@@ -48,15 +48,18 @@ for DNS** (CoreDNS Corefile edit + rollout restart). No new revocation model.
 Add to `src/mayhem/controller/k8s_runtime.py`:
 
 ```python
-K8S_HPA_FAULTS      = {"k8s.hpa_scale_delay", "k8s.hpa_scale_failure"}
+K8S_HPA_FAULTS = {"k8s.hpa_scale_delay", "k8s.hpa_scale_failure"}
 K8S_DISRUPTION_FAULTS = {"k8s.pdb_violation", "k8s.eviction_block"}
-K8S_DNS_FAULTS      = {
-    "k8s.dns_failure", "k8s.dns_delay", "k8s.service_dns_mismatch",
+K8S_DNS_FAULTS = {
+    "k8s.dns_failure",
+    "k8s.dns_delay",
+    "k8s.service_dns_mismatch",
 }
 K8S_LIFECYCLE_FAULTS = {
-    "k8s.pod_image_pull_delay", "k8s.container_termination_delay",
+    "k8s.pod_image_pull_delay",
+    "k8s.container_termination_delay",
 }
-K8S_PREEMPT_FAULTS  = {"k8s.preemption_failure"}
+K8S_PREEMPT_FAULTS = {"k8s.preemption_failure"}
 ```
 
 Fold into the unions:
@@ -64,10 +67,13 @@ Fold into the unions:
 ```python
 K8S_CONTROLLER_FAULTS = (
     K8S_CONTROLLER_FAULTS
-    | K8S_HPA_FAULTS | K8S_DISRUPTION_FAULTS | K8S_DNS_FAULTS
-    | K8S_LIFECYCLE_FAULTS | K8S_PREEMPT_FAULTS
+    | K8S_HPA_FAULTS
+    | K8S_DISRUPTION_FAULTS
+    | K8S_DNS_FAULTS
+    | K8S_LIFECYCLE_FAULTS
+    | K8S_PREEMPT_FAULTS
 )
-K8S_MUTATION_FAULTS   = K8S_MUTATION_FAULTS   | K8S_CONTROLLER_FAULTS
+K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
 K8S_REVERSIBLE_FAULTS = K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS
 ```
 

@@ -258,7 +258,7 @@ class TestK8sRuntimeAdapter:
         resolver = KubernetesRuntimeResolver(client=client)
         outcome = resolver.resolve(_scope())
         spec = k8s_undo_spec("proc.pause", outcome.resolved, pid=1, boot=4242)  # type: ignore[arg-type]
-        args = cast(dict[str, str], spec["args"])
+        args = cast("dict[str, str]", spec["args"])
         assert spec["op"] == "k8s.exec"
         assert args["undo_command"] == "CONT"
         assert args["pid"] == "1"
@@ -274,7 +274,7 @@ class TestK8sRuntimeAdapter:
         resolver = KubernetesRuntimeResolver(client=client)
         outcome = resolver.resolve(_scope())
         spec = k8s_mutation_spec("cpu.saturate", outcome.resolved, params={"percent": 80})
-        args = cast(dict[str, str], spec["args"])
+        args = cast("dict[str, str]", spec["args"])
         assert spec["op"] == "k8s.mutation"
         assert args["fault_id"] == "cpu.saturate"
         assert json.loads(args["params"]) == {"percent": 80}

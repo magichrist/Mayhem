@@ -59,9 +59,7 @@ NON_K8S_KINDS = frozenset(
 # Container-executable faults: every catalog fault that addresses at least one
 # non-k8s node kind. A fault may also target pods (the k8s argv families) and
 # still belongs in the docker matrix — it stays container-portable.
-FAULTS = tuple(
-    d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS
-)
+FAULTS = tuple(d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS)
 
 _RATE = {"net.bandwidth": {"rate": "10mbit"}, "dependency.rate_limit": {"rate": 100}}
 

@@ -5,6 +5,7 @@ kubernetes-style objects so the discovery pipeline (pods, services, worker
 nodes), the ReplicaSet→Deployment owner fold, and the guarded-install banner
 are all verifiable without a cluster.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -113,9 +114,7 @@ class FakeCore:
         return _Items(self._pods)
 
     def list_namespaced_service(self, namespace: str) -> _Items:
-        return _Items(
-            [s for s in self._services if s.metadata.namespace == namespace]
-        )
+        return _Items([s for s in self._services if s.metadata.namespace == namespace])
 
     def list_service_for_all_namespaces(self) -> _Items:
         return _Items(self._services)
@@ -248,9 +247,7 @@ def test_discover_emits_pod_service_node_and_edges() -> None:
     edges = graph.edges
     depends = {(e.src, e.dst) for e in edges if e.kind == EdgeKind.DEPENDS_ON}
     runs_on = {(e.src, e.dst) for e in edges if e.kind == EdgeKind.RUNS_ON}
-    assert depends == {
-        (service_id("checkout", "checkout"), pod_id("checkout", "checkout-x7z9k"))
-    }
+    assert depends == {(service_id("checkout", "checkout"), pod_id("checkout", "checkout-x7z9k"))}
     assert runs_on == {
         (
             pod_id("checkout", "checkout-x7z9k"),

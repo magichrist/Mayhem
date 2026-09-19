@@ -41,9 +41,7 @@ from mayhem.topology.providers.kubernetes import node_id as _node_id
 from mayhem.topology.providers.kubernetes import pod_id as _pod_id
 from mayhem.topology.providers.kubernetes import service_id as _service_id
 
-_WORKLOAD_KINDS = frozenset(
-    {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"}
-)
+_WORKLOAD_KINDS = frozenset({"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"})
 _NODE_KINDS = frozenset({"Node"})
 _SUPPORTED_KINDS = _WORKLOAD_KINDS | _NODE_KINDS | {"Pod", "Service"}
 
@@ -63,20 +61,14 @@ def _labels(meta: dict[str, Any] | None) -> dict[str, str]:
 
 def _selectors(doc: dict[str, Any]) -> dict[str, str]:
     spec = doc.get("spec") or {}
-    return {
-        str(k): str(v) for k, v in (spec.get("selector") or {}).get("matchLabels", {}).items()
-    }
+    return {str(k): str(v) for k, v in (spec.get("selector") or {}).get("matchLabels", {}).items()}
 
 
 def _containers(doc: dict[str, Any]) -> tuple[str, ...]:
     spec = doc.get("spec") or {}
     template = spec.get("template") or {}
     pod_spec = template.get("spec") or {}
-    return tuple(
-        str(c.get("name"))
-        for c in pod_spec.get("containers") or []
-        if c.get("name")
-    )
+    return tuple(str(c.get("name")) for c in pod_spec.get("containers") or [] if c.get("name"))
 
 
 def _node_name(doc: dict[str, Any]) -> str | None:
@@ -179,9 +171,7 @@ class KubernetesManifestProvider:
             )
             pinned = _node_name(doc)
             if pinned and pinned in node_by_name:
-                edges.append(
-                    Edge(src=node_id, dst=node_by_name[pinned].id, kind=EdgeKind.RUNS_ON)
-                )
+                edges.append(Edge(src=node_id, dst=node_by_name[pinned].id, kind=EdgeKind.RUNS_ON))
 
         service_nodes: list[ServiceNode] = []
         for doc in nodes_by_kind["service"]:
@@ -199,9 +189,7 @@ class KubernetesManifestProvider:
             if selector:
                 for pod in pod_nodes:
                     if pod.namespace == namespace and selector.items() <= pod.labels.items():
-                        edges.append(
-                            Edge(src=service.id, dst=pod.id, kind=EdgeKind.DEPENDS_ON)
-                        )
+                        edges.append(Edge(src=service.id, dst=pod.id, kind=EdgeKind.DEPENDS_ON))
             service_nodes.append(service)
 
         notes.append(

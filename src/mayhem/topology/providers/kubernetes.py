@@ -168,13 +168,9 @@ class KubernetesProvider:
         nodes.extend(pods)
         for pod in pods:
             if pod.node_name:
-                edges.append(
-                    Edge(src=pod.id, dst=node_id(pod.node_name), kind=EdgeKind.RUNS_ON)
-                )
+                edges.append(Edge(src=pod.id, dst=node_id(pod.node_name), kind=EdgeKind.RUNS_ON))
 
-        notes = (
-            "kubernetes SDK missing" if _client is None else "live cluster discovery",
-        )
+        notes = ("kubernetes SDK missing" if _client is None else "live cluster discovery",)
         return PartialGraph(
             source=self.id,
             nodes=tuple(nodes),
@@ -195,9 +191,7 @@ class KubernetesProvider:
             meta = svc.metadata
             namespace = meta.namespace or "default"
             name = meta.name
-            nodes.append(
-                ServiceNode(id=service_id(namespace, name), name=name)
-            )
+            nodes.append(ServiceNode(id=service_id(namespace, name), name=name))
             selector = getattr(svc.spec, "selector", None) or {}
             if not selector:
                 continue
@@ -219,9 +213,7 @@ class KubernetesProvider:
             return list(core.list_namespaced_pod(self.namespace).items)
         return list(core.list_pod_for_all_namespaces().items)
 
-    def _discover_pods(
-        self, api: KubeApis
-    ) -> tuple[list[PodNode], dict[str, tuple[str, str]]]:
+    def _discover_pods(self, api: KubeApis) -> tuple[list[PodNode], dict[str, tuple[str, str]]]:
         owner_map = self._owner_map(api)
         pod_nodes: list[PodNode] = []
         for pod in self._all_pods(api.core):
@@ -230,9 +222,7 @@ class KubernetesProvider:
             pod_name = meta.name
             owner_kind, owner_name = _effective_owner(meta, owner_map)
             state = getattr(pod.status, "phase", "Unknown") or "Unknown"
-            containers = tuple(
-                c.name for c in getattr(pod.spec, "containers", []) or []
-            )
+            containers = tuple(c.name for c in getattr(pod.spec, "containers", []) or [])
             image = None
             conts = getattr(pod.spec, "containers", []) or []
             if conts and getattr(conts[0], "image", None):
@@ -314,16 +304,10 @@ class KubernetesProvider:
             meta = item.metadata
             name = meta.name
             labels = meta.labels or {}
-            role_labels = [
-                key for key in labels if key.startswith("node-role.kubernetes.io/")
-            ]
+            role_labels = [key for key in labels if key.startswith("node-role.kubernetes.io/")]
             # Control-plane/master roles come from role labels; a node with no
             # role label at all is a worker (k-plan-2 §2.4).
-            roles = (
-                [key.rsplit("/", 1)[-1] for key in role_labels]
-                if role_labels
-                else ["worker"]
-            )
+            roles = [key.rsplit("/", 1)[-1] for key in role_labels] if role_labels else ["worker"]
             ip_address_value = None
             for address in getattr(item.status, "addresses", []) or []:
                 if getattr(address, "type", "") == "InternalIP":

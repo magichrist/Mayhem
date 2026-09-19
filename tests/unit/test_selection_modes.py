@@ -7,6 +7,7 @@ Covers:
 - ``conflict.overlap`` refusal for same-target multi-instance faults
 - ``selection.count_exceeds_eligible`` static error
 """
+
 from __future__ import annotations
 
 import pytest
@@ -313,9 +314,7 @@ class TestPlannerMultiMode:
         assert len(plan.steps) == 1
 
     def test_percentage_mode_compiles(self) -> None:
-        plan = _plan(
-            _targeted_spec(selection=SelectionSpec(mode="percentage", percentage=50))
-        )
+        plan = _plan(_targeted_spec(selection=SelectionSpec(mode="percentage", percentage=50)))
         assert len(plan.steps) == 1
 
     def test_all_mode_compiles(self) -> None:

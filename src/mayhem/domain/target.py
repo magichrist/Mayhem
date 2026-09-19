@@ -43,7 +43,6 @@ class SelectionMode(StrEnum):
     RANDOM = "random"
 
 
-
 #: Modes accepted by the schema (full grammar) but refused at compile time.
 RESERVED_SELECTION_MODES: frozenset[SelectionMode] = frozenset(
     {
@@ -78,13 +77,9 @@ class SelectionSpec(BaseModel):
         # a value without its mode is a schema smell and refused eagerly.
         if value is not None:
             mode = info.data
-            companion = (
-                SelectionMode.COUNT if isinstance(value, int) else SelectionMode.PERCENTAGE
-            )
+            companion = SelectionMode.COUNT if isinstance(value, int) else SelectionMode.PERCENTAGE
             if mode.get("mode") != companion:
-                raise ValueError(
-                    f"{companion.value} requires selection.mode: {companion.value}"
-                )
+                raise ValueError(f"{companion.value} requires selection.mode: {companion.value}")
         return value
 
 

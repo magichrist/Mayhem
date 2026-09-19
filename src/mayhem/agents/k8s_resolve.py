@@ -144,7 +144,7 @@ class SdkK8sClient:
                 (cls.kubectl, "config", "current-context", "--request-timeout", "5s"),
                 timeout_s=6,
             )
-        except Exception:  # noqa: BLE001  (any harness failure ⇒ not available)
+        except Exception:
             return False
         return result.succeeded and bool(result.stdout.strip())
 
@@ -153,7 +153,10 @@ class SdkK8sClient:
         return result.exit_code != 0 and "not found" in result.stderr
 
     def _run(
-        self, argv: tuple[str, ...] | list[str], *, stdin_data: str | None = None,
+        self,
+        argv: tuple[str, ...] | list[str],
+        *,
+        stdin_data: str | None = None,
     ) -> ToolResult:
         return run_tool(argv, timeout_s=self.timeout_s, stdin_data=stdin_data)
 
@@ -241,9 +244,9 @@ class SdkK8sClient:
                 f"kubectl get {workload.kind}/{workload.name} failed: "
                 f"{workload_json.stderr.strip()[:200]}",
             )
-        selector = (
-            (json.loads(workload_json.stdout).get("spec") or {}).get("selector") or {}
-        ).get("matchLabels") or {}
+        selector = ((json.loads(workload_json.stdout).get("spec") or {}).get("selector") or {}).get(
+            "matchLabels"
+        ) or {}
         selector_argv = ",".join(f"{k}={v}" for k, v in sorted(selector.items()))
         pods_outcome = self._run(
             (
@@ -298,9 +301,7 @@ class SdkK8sClient:
             phase=str(status.get("phase") or ""),
             node=str(spec.get("nodeName") or ""),
             deletion_timestamp=(
-                str(metadata["deletionTimestamp"])
-                if metadata.get("deletionTimestamp")
-                else None
+                str(metadata["deletionTimestamp"]) if metadata.get("deletionTimestamp") else None
             ),
             containers=containers,
             creation_timestamp=str(metadata.get("creationTimestamp") or ""),
@@ -373,9 +374,7 @@ class SdkK8sClient:
         head, separator, tail = argv, "--", ()
         if "--" in argv:
             head, _, tail = argv.partition("--")
-        outcome = self._run(
-            (*head, "--request-timeout", f"{self.timeout_s}s", "--", *tail)
-        )
+        outcome = self._run((*head, "--request-timeout", f"{self.timeout_s}s", "--", *tail))
         if not outcome.succeeded:
             raise ResolutionError(
                 "resolution.exec_failed",
@@ -394,8 +393,8 @@ def default_client() -> K8sClusterClient | None:
 @dataclass(frozen=True)
 class ResolutionOutcome:
     resolved: ResolvedPodTarget | None = None
-    drift: bool = False          # live pick differs from plan-time preferred pod
-    note: str = ""               # human-readable evidence summary
+    drift: bool = False  # live pick differs from plan-time preferred pod
+    note: str = ""  # human-readable evidence summary
 
 
 def _workload_from_scope(scope: TargetScope) -> K8sWorkload:
@@ -586,8 +585,7 @@ class KubernetesRuntimeResolver:
             if live is None:
                 raise ResolutionError(
                     "resolution.resource_missing",
-                    f"{workload.kind}/{workload.name} not found "
-                    f"in namespace {workload.namespace}",
+                    f"{workload.kind}/{workload.name} not found in namespace {workload.namespace}",
                 )
         pods = [pod for pod in self._client.pods_for(workload) if pod.eligible]
         if not pods:
@@ -659,8 +657,7 @@ class KubernetesRuntimeResolver:
             )
         target = self._build_node_target(info, scope)
         note = (
-            f"resolved node {target.node} ready={target.ready}"
-            f" unschedulable={target.unschedulable}"
+            f"resolved node {target.node} ready={target.ready} unschedulable={target.unschedulable}"
         )
         return ResolutionOutcome(resolved=target, drift=False, note=note)
 
@@ -673,14 +670,10 @@ class KubernetesRuntimeResolver:
                 f"scope {scope.logical_id!r} has no concrete node name or selector",
             )
         wanted = {
-            str(k): str(v)
-            for k, v in selector.items()
-            if isinstance(v, (str, int, float, bool))
+            str(k): str(v) for k, v in selector.items() if isinstance(v, (str, int, float, bool))
         }
         matches = [
-            node.name
-            for node in self._client.nodes()
-            if wanted.items() <= node.labels.items()
+            node.name for node in self._client.nodes() if wanted.items() <= node.labels.items()
         ]
         if not matches:
             label = ",".join(f"{k}={v}" for k, v in sorted(wanted.items()))
@@ -690,9 +683,7 @@ class KubernetesRuntimeResolver:
             )
         return matches
 
-    def _build_node_target(
-        self, info: K8sNodeInfo, scope: TargetScope
-    ) -> ResolvedNodeTarget:
+    def _build_node_target(self, info: K8sNodeInfo, scope: TargetScope) -> ResolvedNodeTarget:
         """Materialize the evidence record for one resolved node (k-plan-5)."""
         return ResolvedNodeTarget(
             node=info.name,

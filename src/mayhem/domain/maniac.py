@@ -123,9 +123,7 @@ def draw_maniac_target_rounds(
     at ``level >= 4`` like the container path (ADR-M5-1 §semantics).
     """
     if not spec.targets:
-        raise ManiacError(
-            "maniac target rounds need a `targets:` map with at least one target"
-        )
+        raise ManiacError("maniac target rounds need a `targets:` map with at least one target")
     rng = random.Random(seed)
     names = sorted(spec.targets)
     all_faults = tuple(f for t in spec.targets.values() for f in t.faults)

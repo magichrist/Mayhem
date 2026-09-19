@@ -4,6 +4,7 @@ Mirrors k-plan-2 §2.5: workload present ⇒ ≥1 Running, non-terminating pod,
 or ``selection.*`` :class:`SelectionError` at plan time. Absent workload ⇒
 logically pinned (returns None / plans fine), resolved at execution.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -53,11 +54,14 @@ def _dep_edge(pod: PodNode) -> Edge:
 
 def _graph(pods: list[PodNode]) -> TopologyGraph:
     return TopologyGraph(
-        nodes=(*pods, ServiceNode(
-            id="k8s::checkout/Service/checkout",
-            name="checkout",
-            kind=NodeKind.SERVICE,
-        )),
+        nodes=(
+            *pods,
+            ServiceNode(
+                id="k8s::checkout/Service/checkout",
+                name="checkout",
+                kind=NodeKind.SERVICE,
+            ),
+        ),
         edges=tuple(_dep_edge(p) for p in pods),
     )
 

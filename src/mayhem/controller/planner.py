@@ -188,9 +188,7 @@ def synthesize_k8s_maniac_spec(  # noqa: PLR0912
                 "containers": tuple(getattr(node, "containers", ()) or ()),
             }
 
-    node_targets: list[TopologyNode] = [
-        n for n in graph.nodes if n.kind == NodeKind.K8S_NODE
-    ]
+    node_targets: list[TopologyNode] = [n for n in graph.nodes if n.kind == NodeKind.K8S_NODE]
 
     targets: dict[str, DrillTarget] = {}
     for (ok, on, ns), _meta in sorted(workload_map.items()):
@@ -235,7 +233,9 @@ def synthesize_k8s_maniac_spec(  # noqa: PLR0912
             params = _synthesized_params(definition, kn.name, ())
             if params is None:
                 continue
-            node_faults.append(DrillFault.model_validate({"fault": definition.id, "params": params}))
+            node_faults.append(
+                DrillFault.model_validate({"fault": definition.id, "params": params})
+            )
         if not node_faults:
             continue
         ns = getattr(kn, "namespace", "default") or "default"
@@ -252,10 +252,7 @@ def synthesize_k8s_maniac_spec(  # noqa: PLR0912
     return DrillSpec(
         kind="drill",
         name=name,
-        hypothesis=(
-            f"maniac: synthesized k8s spec for {len(targets)} target(s) "
-            "from the topology"
-        ),
+        hypothesis=(f"maniac: synthesized k8s spec for {len(targets)} target(s) from the topology"),
         targets=targets,
         # Maniac rounds replace the authored execution wholesale (k-plan-3
         # SP-3.6); this placeholder only satisfies the schema invariant that
@@ -637,9 +634,7 @@ def _container_scope(container_name: str) -> TargetScope:
     )
 
 
-def _find_k8s_target_nodes(
-    graph: TopologyGraph, scope: TargetScope
-) -> tuple[TopologyNode, ...]:
+def _find_k8s_target_nodes(graph: TopologyGraph, scope: TargetScope) -> tuple[TopologyNode, ...]:
     """Best-effort compile-time resolution of a kubernetes logical target.
 
     Only explicit ``kind: pod`` targets with a matching namespace+name resolve
@@ -730,9 +725,7 @@ def _plan_target_faults(
     return len(target.faults)
 
 
-def _gate_k8s_selection_eligibility(
-    graph: TopologyGraph, scope: TargetScope
-) -> None:
+def _gate_k8s_selection_eligibility(graph: TopologyGraph, scope: TargetScope) -> None:
     """Mode-one eligibility gate (k-plan-2 §2.5).
 
     A kubernetes workload that IS in the live topology must yield at least one
@@ -858,9 +851,7 @@ def plan_maniac(
         seq = 0
         for tdraw in target_draws:
             target = spec.targets[tdraw.target]
-            single = target.model_copy(
-                update={"faults": (tdraw.fault,)}
-            )
+            single = target.model_copy(update={"faults": (tdraw.fault,)})
             seq = _plan_target_faults(
                 tdraw.target,
                 single,
@@ -1087,8 +1078,6 @@ def _resolve_fault_nodes(
                 seen.add(id(proc))
                 compensation_nodes.append(proc)
     return nodes, compensation_nodes
-
-
 
 
 def _plan_fault_step(

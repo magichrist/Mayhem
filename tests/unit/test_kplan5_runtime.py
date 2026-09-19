@@ -248,9 +248,7 @@ class TestK8sNodeContracts:
         assert ops[0].args["kind"] == "pod"
 
     def test_node_undo_bag_carries_authored_params(self) -> None:
-        drain = k8s_node_undo_ops(
-            "k8s.node_drain", _resolved(), {"grace_period": 45}
-        )
+        drain = k8s_node_undo_ops("k8s.node_drain", _resolved(), {"grace_period": 45})
         assert json.loads(str(drain[0].args["params"])) == {"grace_period": 45}
         pressure = k8s_node_undo_ops(
             "k8s.node_pressure", _resolved(), {"resource": "memory", "target_percent": 80}
@@ -417,16 +415,12 @@ class TestEngineK8sNodeStep:
         lease = _all_leases(store)[0]
         assert lease.state == LeaseState.RELEASED
         assert lease.release_mechanism == "failed_to_apply_undone"
-        assert not any(
-            event.kind == EventKind.FAULT_RECOVERED for event in events
-        )
+        assert not any(event.kind == EventKind.FAULT_RECOVERED for event in events)
         # the inject failure must not leave the node mid-mutation: uncordon
         # was attempted last on a cordon failure.
         assert tool_calls[-1][1] == "uncordon"
 
-    def test_engine_drain_failure_undoes_partial_cordon(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_engine_drain_failure_undoes_partial_cordon(self, tmp_path: Path, monkeypatch) -> None:
         """A drain that fails *after* a successful cordon must uncordon again
         (write-ahead undo on partial node mutation) — never leak a cordon."""
         tool_calls: list = []
@@ -463,9 +457,7 @@ class TestEngineK8sNodeStep:
         assert lease.state == LeaseState.DIRTY
         assert not any(event.kind == EventKind.FAULT_RECOVERED for event in events)
 
-    def test_engine_node_undo_failure_marks_dirty(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_engine_node_undo_failure_marks_dirty(self, tmp_path: Path, monkeypatch) -> None:
         tool_calls: list = []
         monkeypatch.setattr(
             "mayhem.agents.executors.run_tool", _fake_tool(tool_calls, fail_on=("uncordon",))
@@ -479,9 +471,7 @@ class TestEngineK8sNodeStep:
         assert lease.state == LeaseState.DIRTY
         assert not any(event.kind == EventKind.FAULT_RECOVERED for event in events)
 
-    def test_engine_node_pressure_runs_apply_and_delete(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_engine_node_pressure_runs_apply_and_delete(self, tmp_path: Path, monkeypatch) -> None:
         tool_calls: list = []
         monkeypatch.setattr("mayhem.agents.executors.run_tool", _fake_tool(tool_calls))
         store = Store.open_migrated(tmp_path / "rk5.db")
@@ -511,9 +501,7 @@ def _lease_for(
         owner_agent="engine",
         targets=frozenset({target.node}),
         undo_ops=k8s_node_undo_ops(fault_id, target, params),
-        verify_probes=(
-            VerifyProbe(probe="k8s.node_restored", args={"node": target.node}),
-        ),
+        verify_probes=(VerifyProbe(probe="k8s.node_restored", args={"node": target.node}),),
         ttl_seconds=120.0,
         state=LeaseState.ACTIVE,
         resolved_target=target,

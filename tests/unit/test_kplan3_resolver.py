@@ -5,9 +5,11 @@ client: workload lookup, eligible-pod selection with preferred-pod drift,
 container presence, evidence capture (pod uid / container id / node /
 exec_argv), and the primary-pid guard that feeds the signal-family inject.
 """
+
 from __future__ import annotations
 
 import pytest
+
 from mayhem.agents.k8s_resolve import (
     K8sContainerStatus,
     K8sPod,
@@ -19,6 +21,7 @@ from mayhem.domain.errors import ResolutionError, SelectionError
 from mayhem.domain.experiments import TargetScope
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.target import ResourceKind
+
 
 # ── fake cluster client ───────────────────────────────────────────────────────
 class FakeClusterClient:
@@ -115,7 +118,10 @@ class TestResolveFlow:
     def test_no_eligible_pods_raises_selection_error(self) -> None:
         client = FakeClusterClient(
             workload=_WORKLOAD,
-            pods=[_pod("pending", phase="Pending", uid="u-3"), _pod("terminating", terminated=True, uid="u-4")],
+            pods=[
+                _pod("pending", phase="Pending", uid="u-3"),
+                _pod("terminating", terminated=True, uid="u-4"),
+            ],
         )
         with pytest.raises(SelectionError) as exc_info:
             _resolver(client).resolve(_scope())
@@ -145,7 +151,7 @@ class TestResolveFlow:
         outcome = _resolver(client).resolve(_scope())
         argv = outcome.resolved.exec_argv  # type: ignore[union-attr]
         assert argv[:3] == ("kubectl", "exec", "-n")
-        assert f"pod/checkout-abc123" in argv
+        assert "pod/checkout-abc123" in argv
         assert argv[-1] == "--"
 
     def test_primary_pid_guard_reads_proc_stat(self) -> None:
@@ -183,7 +189,9 @@ class TestResolveFlow:
 # ── proc stat parsing ─────────────────────────────────────────────────────────
 class TestProcStatParsing:
     def test_comm_with_spaces_and_parentheses(self) -> None:
-        pid, boot = _parse_proc_stat("1 (a (weird) name) S 0 1 1 0 -1 4194560 0 0 0 0 1 1 0 0 20 0 1 0 4242 0 0\n")
+        pid, boot = _parse_proc_stat(
+            "1 (a (weird) name) S 0 1 1 0 -1 4194560 0 0 0 0 1 1 0 0 20 0 1 0 4242 0 0\n"
+        )
         assert (pid, boot) == (1, 4242)
 
     def test_garbage_line_raises(self) -> None:

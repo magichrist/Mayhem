@@ -61,9 +61,7 @@ _OWNER_LABEL_TO_RESOURCE_KIND: dict[str, ResourceKind] = {
 }
 
 
-def _pods_in_namespace(
-    graph: TopologyGraph, namespace: str
-) -> tuple[PodNode, ...]:
+def _pods_in_namespace(graph: TopologyGraph, namespace: str) -> tuple[PodNode, ...]:
     ns = namespace or "default"
     return tuple(
         node
@@ -95,9 +93,7 @@ def _service_match(graph: TopologyGraph, pod: PodNode, scope: TargetScope) -> bo
     namespace = scope.authority.get("namespace", "")
     service_name = scope.authority.get("name", "")
     service_ids = {
-        edge.src
-        for edge in graph.edges
-        if edge.kind == EdgeKind.DEPENDS_ON and edge.dst == pod.id
+        edge.src for edge in graph.edges if edge.kind == EdgeKind.DEPENDS_ON and edge.dst == pod.id
     }
     for node in graph.nodes:
         if (
@@ -116,17 +112,11 @@ def _candidate_pods(graph: TopologyGraph, scope: TargetScope) -> tuple[PodNode, 
     if scope.kind == ResourceKind.POD:
         namespace = scope.authority.get("namespace", "")
         name = scope.authority.get("name", "")
-        return tuple(
-            pod
-            for pod in _pods_in_namespace(graph, namespace)
-            if pod.name == name
-        )
+        return tuple(pod for pod in _pods_in_namespace(graph, namespace) if pod.name == name)
     if scope.kind in _OWNER_KINDS:
         namespace = scope.authority.get("namespace", "")
         pods = tuple(
-            pod
-            for pod in _pods_in_namespace(graph, namespace)
-            if _owner_match(pod, scope)
+            pod for pod in _pods_in_namespace(graph, namespace) if _owner_match(pod, scope)
         )
         if not pods:
             return None
@@ -149,9 +139,7 @@ def _candidate_pods(graph: TopologyGraph, scope: TargetScope) -> tuple[PodNode, 
             for pod in graph.nodes
             if pod.kind == NodeKind.POD
             and any(
-                edge.src == service_id
-                and edge.dst == pod.id
-                and edge.kind == EdgeKind.DEPENDS_ON
+                edge.src == service_id and edge.dst == pod.id and edge.kind == EdgeKind.DEPENDS_ON
                 for edge in graph.edges
             )
         )
@@ -199,9 +187,7 @@ def _dispatch(
         return ordered[:1]
     if mode == SelectionMode.RANDOM:
         rng = random.Random(
-            seed
-            if seed is not None
-            else zlib.crc32(scope.logical_id.encode("utf-8"))
+            seed if seed is not None else zlib.crc32(scope.logical_id.encode("utf-8"))
         )
         return (rng.choice(ordered),)
     if mode == SelectionMode.ALL:
@@ -211,8 +197,7 @@ def _dispatch(
         if count is None:
             raise SelectionError(
                 "selection.count_required",
-                f"selection.mode 'count' on target {scope.logical_id!r} "
-                "requires selection.count",
+                f"selection.mode 'count' on target {scope.logical_id!r} requires selection.count",
             )
         if count > len(ordered):
             raise SelectionError(
@@ -286,9 +271,7 @@ def select_many(
     return picked
 
 
-def select_one(
-    graph: TopologyGraph, scope: TargetScope
-) -> PodNode | None:
+def select_one(graph: TopologyGraph, scope: TargetScope) -> PodNode | None:
     """Determine the single-pod view of the selection (legacy surface).
 
     Returns ``None`` only when the workload is absent from the topology.

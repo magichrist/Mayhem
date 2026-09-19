@@ -75,12 +75,9 @@ def discover(
 
         if KUBERNETES_IMPORT_ERROR is not None:
             raise click.ClickException(
-                "Kubernetes discovery needs the k8s SDK. "
-                + KUBERNETES_INSTALL_HINT
+                "Kubernetes discovery needs the k8s SDK. " + KUBERNETES_INSTALL_HINT
             )
-        provider = KubernetesProvider(
-            "kubernetes", context=kube_context, namespace=kube_namespace
-        )
+        provider = KubernetesProvider("kubernetes", context=kube_context, namespace=kube_namespace)
         if not provider.is_available():
             raise click.ClickException(
                 "Kubernetes cluster is not reachable: check --context/--namespace "

@@ -299,9 +299,7 @@ class DrillTarget(BaseModel):
     @classmethod
     def _requires_fault(cls, value: tuple[DrillFault, ...]) -> tuple[DrillFault, ...]:
         if not value:
-            raise InvariantViolationError(
-                "target_requires_faults", "each target needs >= 1 fault"
-            )
+            raise InvariantViolationError("target_requires_faults", "each target needs >= 1 fault")
         return value
 
     @model_validator(mode="after")
