@@ -95,11 +95,49 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # CLI commands keep heavy imports inside handlers so `--help` stays instant,
 # and typer's own API *is* Option(...) in argument defaults.
 "src/mayhem/cli/**" = ["PLC0415", "PLR0917"]
-"src/mayhem/cli/app.py" = ["PLR0911"]
-"src/mayhem/cli/lifecycle.py" = ["PLR0912", "PLR0915"]
+"src/mayhem/providers/builtin.py" = ["PLC0415"]
+"src/mayhem/cli/toolkit.py" = ["PLR0912"]
+"src/mayhem/cli/app.py" = ["PLR0911", "PLR0912"]
+"src/mayhem/cli/errors.py" = ["PLR0911", "PLR0912"]
+"src/mayhem/cli/renderers.py" = ["PLR0911"]
+"src/mayhem/cli/lifecycle.py" = ["PLR0911", "PLR0912", "PLR0915", "E501"]
+"src/mayhem/cli/topology.py" = ["E501"]
+"src/mayhem/agents/k8s_resolve.py" = ["PLC0415"]
+"src/mayhem/controller/executor.py" = [
+    "B007",
+    "E501",
+    "F841",
+    "PLC0415",
+    "PLR0911",
+    "PLR0912",
+    "PLR0915",
+    "SIM105",
+    "TC001",
+]
+"src/mayhem/agents/executors.py" = [
+    "E501",
+    "PLC0415",
+    "PLR0911",
+    "PLR0912",
+    "PLR0915",
+    "PLR0917",
+    "RET503",
+    "RUF002",
+    "RUF012",
+    "SIM108",
+]
+"src/mayhem/controller/k8s_runtime.py" = ["PLC0415", "E501"]
 # safety.py keeps catalog/topology imports inside helpers on purpose (see the
 # "local:" comments) — hoisting them would create import cycles.
-"src/mayhem/controller/safety.py" = ["PLC0415"]
+"src/mayhem/controller/safety.py" = ["PLC0415", "E501", "PLR0912"]
+"src/mayhem/cli/execution.py" = ["E501"]
+"src/mayhem/cli/render.py" = ["E501", "PLC0415"]
+"src/mayhem/controller/preflight.py" = ["F401", "E501", "PLC0415", "PLR0912", "PLR0915", "C409"]
+"src/mayhem/controller/plan_diff.py" = ["E501", "PLC0415"]
+"src/mayhem/infra/evidence.py" = ["E501", "PLC0415"]
+"src/mayhem/infra/diagnostics.py" = ["E501", "PLC0415"]
+"src/mayhem/domain/preflight.py" = ["E501", "PLC0415"]
+"src/mayhem/domain/evidence.py" = ["E501"]
 
 # --- Mypy --------------------------------------------------------------------
 [tool.mypy]

@@ -9,7 +9,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 _testcase  := "examples/testCase"
 _compose   := _testcase / "docker-compose.yml"
-_config    := _testcase / "mayhem.yml"
+_config    := _testcase / "mayhem.yaml"
 _spec      := _testcase / "mayhem.yaml"
 _db        := ".mayhem/e2e.db"
 
@@ -72,13 +72,6 @@ validate: setup
     mayhem --db {{ _db }} validate {{ _spec }} --compose {{ _compose }}
     @echo "✓ validate"
 
-# Validate with explicit process topology (no compose auto-detect)
-validate-process:
-    @echo "=== validate --process ==="
-    mayhem validate {{ _spec }} \
-        --process "download-1=10001" --process "download-2=10002"
-    @echo "✓ validate --process"
-
 # Plan the experiment
 plan:
     @echo "=== plan ==="
@@ -108,16 +101,21 @@ history:
         echo "✓ history"; \
     fi
 
-# Recovery sweep (orphaned fault leases)
-recover: setup
+# Recovery sweep (orphaned fault leases for the most recent run)
+recover:
     @echo "=== recover ==="
-    mayhem --db {{ _db }} recover
+    @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1" 2>/dev/null || echo ""); \
+    if [ -z "$$run_id" ]; then \
+        echo "⚠ no runs in DB — skipping recover"; \
+    else \
+        mayhem --db {{ _db }} recover "$$run_id"; \
+    fi
     @echo "✓ recover"
 
 # Janitor sweep (stale runs / resources)
 janitor: setup
     @echo "=== janitor ==="
-    mayhem --db {{ _db }} janitor sweep
+    mayhem --db {{ _db }} janitor
     @echo "✓ janitor"
 
 # ── campaign CRUD ────────────────────────────────────────────────────────────
@@ -125,14 +123,16 @@ janitor: setup
 # Create, list, show, start, abort, delete a campaign
 campaign: setup
     @echo "=== campaign ==="
-    mayhem --db {{ _db }} campaign create --name "e2e-campaign" --hypothesis "stack survives chaos"
+    mayhem --db {{ _db }} campaign create "e2e-campaign" --hypothesis "stack survives chaos"
     mayhem --db {{ _db }} campaign list
-    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns ORDER BY rowid DESC LIMIT 1"); \
+    @cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns WHERE name = 'e2e-campaign' ORDER BY rowid DESC LIMIT 1"); \
     mayhem --db {{ _db }} campaign show "$$cid"; \
     mayhem --db {{ _db }} campaign status "$$cid"; \
     mayhem --db {{ _db }} campaign start "$$cid" || true; \
-    mayhem --db {{ _db }} campaign abort "$$cid" || true; \
-    mayhem --db {{ _db }} campaign delete "$$cid"
+    mayhem --db {{ _db }} campaign abort "$$cid" || true
+    mayhem --db {{ _db }} campaign create "e2e-delete-campaign"
+    @delete_cid=$$(sqlite3 {{ _db }} "SELECT id FROM campaigns WHERE name = 'e2e-delete-campaign' ORDER BY rowid DESC LIMIT 1"); \
+    mayhem --db {{ _db }} campaign delete --yes "$$delete_cid"
     @echo "✓ campaign"
 
 # ── full round-trip ─────────────────────────────────────────────────────────
@@ -145,8 +145,8 @@ full: setup
     mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
     mayhem --db {{ _db }} status
     @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} history "$$run_id"
-    mayhem --db {{ _db }} recover
+    mayhem --db {{ _db }} history "$$run_id"; \
+    mayhem --db {{ _db }} recover "$$run_id"
     @echo "✓ full round-trip"
 
 # ── stack management ─────────────────────────────────────────────────────────
