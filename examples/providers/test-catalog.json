@@ -1,0 +1,40 @@
+{
+  "apiVersion": "mayhem.provider-catalog/v1",
+  "providers": [
+    {
+      "metadata": {
+        "apiVersion": "mayhem.provider/v1",
+        "providerId": "example.test",
+        "name": "Example Test Provider",
+        "version": "1.0.0",
+        "description": "A dependency-free discovery provider for SDK tests.",
+        "permissions": ["target:read"],
+        "capabilities": [
+          {
+            "id": "target.discovery",
+            "summary": "Resolve an in-memory test target.",
+            "requiredPermissions": ["target:read"]
+          }
+        ],
+        "targetLocators": [
+          {
+            "id": "example.test.target",
+            "kind": "test_object",
+            "selectorSchema": {"name": "string"},
+            "requiredPermissions": ["target:read"]
+          }
+        ],
+        "evidenceSchema": {
+          "name": "example-test-evidence",
+          "version": "1.0",
+          "fields": ["recorded_at", "operation", "target", "outcome"]
+        }
+      },
+      "implementation": {
+        "kind": "import",
+        "target": "examples.providers.test_provider:TestProvider",
+        "factory": false
+      }
+    }
+  ]
+}

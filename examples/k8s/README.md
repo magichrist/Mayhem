@@ -1,32 +1,39 @@
-# Kubernetes drill example (planning-only)
+# Kubernetes example: manifest planning, not live acceptance
 
-This directory is the **forward-looking Kubernetes example** for the Mayhem
-fault catalog's `k8s.*` family. It pairs a declarative Kubernetes blueprint
-(`kubernetes.yaml`) with a `kind: drill` spec (`mayhem.yaml`) that exercises
-the nine `k8s.*` faults.
+This directory contains a multi-document Kubernetes blueprint
+(`kubernetes.yaml`) and a cross-runtime drill (`mayhem.yaml`). The pair is a
+**manifest-backed planning example**. It is not a claim that a live cluster,
+Minikube deployment, Kubernetes executor, or every catalog fault has been
+validated end to end.
 
-> **Status: planning-only (ADR-M7 / M8).** Kubernetes execution is
-> interface-only in the current milestone. The `KubernetesAdapter` contract
-> exists as a stable seam (`mayhem.domain.k8s_adapter`), but **no live-cluster
-> fault injection driver is wired yet**. The planner and the `SafetyRefusedError`
-> gate (`k8s.unsupported`) deliberately refuse a plan that targets `pod` /
-> `k8s_node` kinds until that driver lands. This spec is therefore **not yet
-> runnable** — it documents *how* the `k8s.*` faults are expressed so every
-> catalog fault has an example, and it becomes executable when M8 is completed.
+## Current status layers
 
-The nine Kubernetes faults are the only catalog entries not exercisable against
-a Docker/Podman compose blueprint (they require `kubernetes_engine` and
-`pod`/`k8s_node` node kinds):
+| Layer | What this repository provides | What this example proves |
+|-------|-------------------------------|---------------------------|
+| Manifest topology | `KubernetesManifestProvider` creates an offline graph from supported manifest kinds. Workload pods are `blueprint` placeholders and are not eligible live selections. | The checked-in YAML can describe a logical workload/service graph for planning. |
+| Planner | Kubernetes `targets:` are normalized into logical scopes and preserved on planned faults and steps. | A drill can be authored for logical Kubernetes workloads or nodes. |
+| Executor | Dedicated Kubernetes fault executors and undo contracts exist for most registered families. | Source and fake-client unit contracts exist. Registration alone is not runtime availability. |
+| Live resolution | `KubernetesRuntimeResolver` can resolve eligible Running pods and nodes when a usable client is present. | No particular external cluster is certified by this directory. |
+| Legacy adapter | `KubernetesAdapter` is still a compatibility seam and reports `is_available() == False`. | Its capabilities must not be used as evidence about the separate resolver/executor path. |
+| Catalog-only | `k8s.image_pull_slow` is defined in the catalog but excluded from `k8s_available_faults()` and refuses before mutation. | A catalog definition alone is not execution support. |
 
-- `k8s.network_policy`
-- `k8s.node_drain`
-- `k8s.node_pressure`
-- `k8s.pod_evict`
-- `k8s.pod_kill`
-- `k8s.pod_latency`
-- `k8s.pod_oom`
-- `k8s.pod_partition`
-- `k8s.pod_pressure`
+The full status vocabulary and source anchors are in the
+[documentation authority index](../../docs/README.md#kubernetes-status-vocabulary).
+The [root README](../../README.md#kubernetes-status) summarizes the same
+distinction for users.
 
-Every other fault in the catalog is exercised against the compose example in
-[`examples/testCase/mayhem.yaml`](../testCase/mayhem.yaml).
+## What is in the example
+
+`mayhem.yaml` began with nine `k8s.*` families and also includes portable
+container-runtime families that have Kubernetes execution registrations. It is
+not an exhaustive inventory of the current catalog, which also contains newer
+workload, service, storage, scheduling, and node families.
+
+The manifest declares example Deployments and a Service. Do not infer from its
+historical comments that it is automatically applied to a cluster; this
+documentation does not prescribe or claim a live deployment workflow.
+
+For a current compose example, use
+[`../testCase/mayhem.yaml`](../testCase/mayhem.yaml). The Kubernetes files remain
+planning and capability-status fixtures until a caller supplies and validates
+the required external environment.

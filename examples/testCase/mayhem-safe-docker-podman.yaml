@@ -1,0 +1,50 @@
+apiVersion: mayhem/v1
+kind: drill
+name: safe-docker-podman-reliability
+hypothesis: docker and podman reliability slice stays reversible and observable
+config:
+  risk_ceiling: medium
+  max_faults: 1
+  timeout: 2m
+  recovery: true
+  on_failure: continue
+containers:
+  testcase-api:
+    faults:
+      - fault: proc.pause
+        duration: 5s
+      - fault: cpu.saturate
+        percent: 50
+        duration: 10s
+      - fault: mem.exhaust
+        percent: 50
+        duration: 10s
+      - fault: fs.fill
+        percent: 30
+        duration: 10s
+      - fault: net.latency
+        seconds: 3s
+        jitter_ms: 10
+        duration: 10s
+      - fault: net.packet_loss
+        percent: 10
+        duration: 10s
+      - fault: net.load
+        users: 5
+        duration: 10s
+      - fault: process.kill
+        duration: 5s
+execution:
+  - parallel: [testcase-api]
+observability:
+  sources:
+    - kind: probe
+      source_id: api.http
+      probe:
+        type: http
+        url: http://testcase-api:8080/
+        method: GET
+        timeout: 3s
+        expected_status: 200
+      cadence: 5s
+      timeout: 10s
