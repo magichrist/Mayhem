@@ -37,10 +37,14 @@ def test_ac1_five_states_with_unknown_implied(tmp_path: Path) -> None:
     store, coverage = _repo(tmp_path)
     states = set(CellState) | {None}  # None stands in for 'unknown'
     assert set(states) == {
-        CellState.COVERED,
+        CellState.UNKNOWN,
+        CellState.PLANNED,
+        CellState.EXECUTED,
+        CellState.PASSED,
         CellState.INCONCLUSIVE,
         CellState.FAILED,
         CellState.BLOCKED,
+        CellState.SKIPPED,
         None,
     }
 

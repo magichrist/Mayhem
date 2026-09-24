@@ -120,6 +120,34 @@ class TestEngineScoping:
             "k8s.taint_evict",
             "k8s.nvidia_smi_error",
             "k8s.crash_loop",
+            "k8s.node_not_ready",
+            "k8s.pod_crash_loop",
+            "k8s.pod_pending",
+            "k8s.node_network_partition",
+            "k8s.deployment_scale_failure",
+            "k8s.statefulset_scale_failure",
+            "k8s.resource_quota_exhaust",
+            "k8s.persistent_volume_mount_failure",
+            "k8s.persistent_volume_claim_pending",
+            "k8s.kube_proxy_failure",
+            "k8s.pod_image_pull_delay",
+            "k8s.container_termination_delay",
+            "k8s.preemption_failure",
+            "k8s.pdb_violation",
+            "k8s.eviction_block",
+            "k8s.dns_failure",
+            "k8s.dns_delay",
+            "k8s.service_dns_mismatch",
+            "k8s.pod_restart_churn",
+            "k8s.sidecar_termination",
+            "k8s.workload_stall",
+            "k8s.service_5xx",
+            "k8s.dns_timeout",
+            "k8s.node_disk_pressure",
+            "k8s.node_memory_pressure",
+            "k8s.node_pid_pressure",
+            "k8s.hpa_oscillation",
+            "k8s.pdb_over_eviction",
         }
 
     def test_next_landscape_k8s_scope(self) -> None:
@@ -185,6 +213,25 @@ class TestEngineScoping:
         assert "proc.pause" not in out
         assert "container.kill" not in out
         assert "dns.nxdomain" not in out
+
+    def test_faults_coverage_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert main(["toolkit", "faults", "--coverage", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["total"] > 0
+        assert "by_engine" in report
+        assert "by_domain" in report
+        assert "by_risk" in report
+        assert "by_reversibility" in report
+
+    def test_fault_explain_emits_contract(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert main(["toolkit", "fault", "explain", "proc.pause"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["id"] == "proc.pause"
+        assert report["status"] == "supported"
+        assert report["observable_effect"]
+        assert report["verification_method"]
+        assert report["undo"]
+        assert report["evidence"]
 
     def test_two_level_prefix_reaches_nested_command(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

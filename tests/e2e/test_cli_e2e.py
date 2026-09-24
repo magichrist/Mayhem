@@ -160,7 +160,7 @@ class TestToolkitGroup:
         assert "undo=" in out
 
     def test_toolkit_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["too", "f"])
+        rc = main(["too", "faults"])
         assert rc == 0
         assert "proc.pause" in capsys.readouterr().out
 
@@ -1061,7 +1061,7 @@ class TestPrefixResolution:
 
     def test_plan_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["p", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["pl", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_campaign_prefix_list(self, tmp_path: Path) -> None:

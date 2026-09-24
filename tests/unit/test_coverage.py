@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mayhem.domain.coverage import (
+    CellFilters,
     CellState,
     CoverageCell,
     CoverageRecord,
     CoverageSummary,
+    ResilienceCell,
     cell_key,
     transition,
 )
@@ -36,6 +38,61 @@ def _cells() -> tuple[CoverageCell, ...]:
 
 
 class TestCoverageCell:
+    def test_resilience_cell_has_stable_json(self) -> None:
+        cell = ResilienceCell(
+            target="web-1",
+            failure_domain="network",
+            fault="net.delay",
+            engine="podman",
+            risk="medium",
+            maturity="stable",
+            state=CellState.UNKNOWN,
+            last_run="run-1",
+            next_rationale="highest risk gap",
+            service="web",
+            target_profile="staging",
+        )
+        assert cell.key == cell.coverage_cell.key
+        assert cell.to_dict()["state"] == "unknown"
+        assert cell.to_dict()["fault"] == "net.delay"
+        assert cell.to_dict()["last_run"] == "run-1"
+
+    def test_explicit_state_vocabulary(self) -> None:
+        assert {
+            "unknown",
+            "planned",
+            "executed",
+            "passed",
+            "inconclusive",
+            "failed",
+            "blocked",
+            "skipped",
+        }.issubset({state.value for state in CellState})
+
+    def test_cell_filters_match_all_dimensions(self) -> None:
+        cell = ResilienceCell(
+            target="web-1",
+            failure_domain="network",
+            fault="net.delay",
+            engine="podman",
+            risk="high",
+            maturity="stable",
+            state=CellState.PLANNED,
+            service="web",
+            target_profile="staging",
+        )
+        filters = CellFilters(
+            target_profile="staging",
+            engine="podman",
+            service="web",
+            failure_domain="network",
+            risk="high",
+            maturity="stable",
+            state=CellState.PLANNED,
+        )
+        assert cell.matches(filters)
+        assert not cell.matches(CellFilters(engine="kubernetes"))
+
     def test_key_is_canonical_and_order_dependent(self) -> None:
         a = CoverageCell("web-1", "net.delay", "prod", "50ms")
         b = CoverageCell("web-1", "net.delay", "prod", "50ms")
@@ -149,13 +206,24 @@ class TestCoverageRepository:
         assert record.run_id == "r1"
         assert record.extra == {"fault": "injected", "band": "50ms"}
 
-    def test_covered_records_orderless(self, tmp_path: Path) -> None:
+    def test_resilience_cells_share_filters_and_persisted_state(self, tmp_path: Path) -> None:
         repo = self._repo(tmp_path)
-        cells = _cells()
-        for i, cell in enumerate(cells):
-            repo.mark_seen(cell, run_id=f"r{i}")
-        keys = {r.cell.key for r in repo.covered_records()}
-        assert keys == {c.key for c in cells}
+        cell = _cells()[0]
+        repo.record(
+            cell,
+            CellState.PLANNED,
+            metadata={"engine": "podman", "target_profile": "staging"},
+            risk="high",
+            maturity="stable",
+            failure_domain="network",
+            next_rationale="largest untested network gap",
+        )
+        rows = repo.resilience_cells((cell,), CellFilters(state=CellState.PLANNED))
+        assert len(rows) == 1
+        assert rows[0].engine == "podman"
+        assert rows[0].target_profile == "staging"
+        assert rows[0].next_rationale == "largest untested network gap"
+        assert rows[0].to_dict()["fault"] == cell.fault_kind
 
 
 class TestCellStateTransition:
@@ -187,10 +255,17 @@ class TestCellStateTransition:
         assert transition(CellState.FAILED, CellState.COVERED) is CellState.COVERED
 
     def test_impossible_moves_raise_value_error(self) -> None:
-        # Blocked is only ever entered from unknown — never from a tested state.
         for state in (CellState.COVERED, CellState.INCONCLUSIVE, CellState.FAILED):
             with pytest.raises(ValueError):
                 transition(state, CellState.BLOCKED)
+
+    def test_planned_and_skipped_transitions_are_explicit(self) -> None:
+        assert transition(CellState.UNKNOWN, CellState.PLANNED) is CellState.PLANNED
+        assert transition(CellState.PLANNED, CellState.EXECUTED) is CellState.EXECUTED
+        assert transition(CellState.EXECUTED, CellState.PASSED) is CellState.PASSED
+        assert transition(CellState.PLANNED, CellState.SKIPPED) is CellState.SKIPPED
+        with pytest.raises(ValueError):
+            transition(CellState.SKIPPED, CellState.EXECUTED)
 
 
 class TestCoverageSummaryFiveState:

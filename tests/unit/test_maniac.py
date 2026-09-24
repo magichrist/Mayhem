@@ -37,6 +37,7 @@ def test_level_1_takes_first_authored_fault_without_jitter() -> None:
     for i, draw in enumerate(draws):
         assert draw.round == i + 1
         assert draw.container in ("api", "lb")
+        assert draw.target == draw.container
         expected = {"api": 10.0, "lb": 50.0}[draw.container]
         assert (
             draw.fault.fault

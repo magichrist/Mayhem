@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "category": "config",
+      "evidence_ref": "",
+      "id": "config.ok",
+      "message": "ok",
+      "remediation": "",
+      "severity": "info"
+    }
+  ],
+  "summary": {
+    "errors": 0,
+    "infos": 1,
+    "total": 1,
+    "warnings": 0
+  }
+}

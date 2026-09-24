@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+import pytest
 from click.testing import CliRunner
 
+from mayhem.agents.k8s_resolve import resolve_k8s_target_context
 from mayhem.cli.topology import topology
 from mayhem.domain.topology import NodeKind, PodNode
 from mayhem.topology.providers.base import PartialGraph
@@ -123,4 +125,26 @@ def test_default_runtime_never_constructs_k8s_provider(monkeypatch) -> None:
     # Whatever the ambient docker/podman result is, kubernetes must be untouched.
     assert k8s_called == []
     assert "mayhem[k8s]" not in result.output
-    assert original_inst.KUBERNETES_INSTALL_HINT  # module stays importable
+    assert original_inst.KUBERNETES_INSTALL_HINT
+
+
+def test_target_context_uses_profile_values_and_refuses_conflicts() -> None:
+    selected = resolve_k8s_target_context(
+        profile_context="prod",
+        profile_namespace="pay",
+        profile_workload_selector="app=checkout",
+        profile_capability_policy="strict",
+        target_profile="prod",
+        mode="live",
+    )
+    assert selected.context == "prod"
+    assert selected.namespace == "pay"
+    assert selected.workload_selector == "app=checkout"
+    assert selected.capability_policy == "strict"
+    with pytest.raises(Exception, match="conflicting Kubernetes context"):
+        resolve_k8s_target_context(profile_context="prod", explicit_context="stage")
+
+
+def test_invalid_kubernetes_mode_is_refused() -> None:
+    with pytest.raises(Exception, match="invalid Kubernetes engine mode"):
+        resolve_k8s_target_context(mode="guess")

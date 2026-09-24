@@ -1,0 +1,37 @@
+[
+  {
+    "aliases": [
+      "v"
+    ],
+    "command": "validate",
+    "deprecated": true,
+    "deprecated_since": "0.6.0",
+    "deprecation_reason": "workflow grouping",
+    "removal": "0.8.0",
+    "replacement": "prepare validate",
+    "sample_invocation": "mayhem prepare validate",
+    "workflow": "experiment"
+  },
+  {
+    "aliases": [],
+    "command": "plan",
+    "deprecated": true,
+    "deprecated_since": "0.6.0",
+    "deprecation_reason": "workflow grouping",
+    "removal": "0.8.0",
+    "replacement": "prepare plan",
+    "sample_invocation": "mayhem prepare plan",
+    "workflow": "prepare"
+  },
+  {
+    "aliases": [],
+    "command": "run",
+    "deprecated": false,
+    "deprecated_since": "",
+    "deprecation_reason": "",
+    "removal": "",
+    "replacement": null,
+    "sample_invocation": "mayhem run",
+    "workflow": "run"
+  }
+]

@@ -7,6 +7,10 @@ on the run row, and the sweep (CLI + pre-run) reclaims leases whose owner is
 provably gone even though TTL has not elapsed.
 """
 
+import json
+from datetime import timedelta
+
+from mayhem.cli.app import main
 from mayhem.cli.lifecycle import _run_liveness, _sweep_before_run
 from mayhem.domain.common import utc_now
 from mayhem.domain.leases import FaultLease, LeaseState
@@ -131,3 +135,58 @@ class TestPreRunSweepReclaimsLeakedLeases:
         assert sink.load("l-4") is not None
         assert sink.load("l-4").state is LeaseState.ACTIVE
         store.close()
+
+
+def test_janitor_cli_dry_run_is_default_and_execute_is_explicit(tmp_path, capsys):
+    db = tmp_path / "janitor.db"
+    store = Store.open_migrated(db)
+    sink = SQLiteLeaseSink(store)
+    lease = _lease("r-expired", "l-cli", LeaseState.ACTIVE, ttl=1).model_copy(
+        update={"created_at": utc_now() - timedelta(seconds=10)}
+    )
+    sink.save(lease)
+    store.close()
+    assert main(["--db", str(db), "janitor", "--json"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["execute"] is False
+    assert preview["would_recover"] == ["l-cli"]
+    store = Store.open_migrated(db)
+    assert SQLiteLeaseSink(store).load("l-cli").state is LeaseState.ACTIVE
+    store.close()
+    assert main(["--db", str(db), "janitor", "--json", "--execute"]) == 0
+    executed = json.loads(capsys.readouterr().out)
+    assert executed["execute"] is True
+    assert executed["recovered"] == ["l-cli"]
+    store = Store.open_migrated(db)
+    assert SQLiteLeaseSink(store).load("l-cli").state is LeaseState.RELEASED
+    store.close()
+
+
+def test_recover_group_status_and_plan_accept_explicit_run_ids(tmp_path, capsys):
+    db = tmp_path / "recover.db"
+    store = Store.open_migrated(db)
+    sink = SQLiteLeaseSink(store)
+    sink.save(_lease("run-explicit", "l-explicit", LeaseState.ACTIVE, ttl=1).model_copy(
+        update={"created_at": utc_now() - timedelta(seconds=10)}
+    ))
+    store.close()
+    assert main(["--db", str(db), "recover", "status", "run-explicit", "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["state"] == "pending"
+    assert status["run_ids"] == ["run-explicit"]
+    assert main([
+        "--db",
+        str(db),
+        "recover",
+        "plan",
+        "run-explicit",
+        "--target",
+        "production",
+        "--json",
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["target_profiles"] == ["production"]
+    assert plan["leases"][0]["id"] == "l-explicit"
+    store = Store.open_migrated(db)
+    assert SQLiteLeaseSink(store).load("l-explicit").state is LeaseState.ACTIVE
+    store.close()

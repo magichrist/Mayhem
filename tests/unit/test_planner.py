@@ -86,6 +86,30 @@ class TestDrillPlanning:
         assert step.fault.undo_ops  # write-ahead undo present
         assert step.fault.verify_probes
 
+    def test_catalog_only_fault_refuses_before_compensation(self) -> None:
+        from mayhem.domain.experiments import DrillConfig, DrillContainer, DrillFault, DrillSpec
+
+        spec = DrillSpec(
+            kind="drill",
+            name="catalog-only",
+            config=DrillConfig(),
+            containers={
+                "testcase-api": DrillContainer(
+                    faults=(DrillFault(fault="fs.permission_failure", duration="3s"),)
+                )
+            },
+            execution=(ExecutionStep(parallel=("testcase-api",)),),
+        )
+        with pytest.raises(PlanningError, match=r"catalog\.unsupported"):
+            plan_drill(
+                "r-catalog-only",
+                spec,
+                _drill_graph(),
+                config_snapshot_id="c",
+                topology_snapshot_id="t",
+                environment_fingerprint="f",
+            )
+
     def test_net_load_embeds_user_script_against_spec_dir(self, tmp_path) -> None:
         from mayhem.domain.experiments import (
             DrillConfig,

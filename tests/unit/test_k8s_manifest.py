@@ -26,6 +26,7 @@ import textwrap
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,10 +42,7 @@ from mayhem.domain.experiments import (
     ManiacCfg,
 )
 from mayhem.domain.identity import RuntimeLabel
-from mayhem.domain.maniac import (
-    ManiacError,
-    draw_maniac_target_rounds,
-)
+from mayhem.domain.maniac import draw_maniac_target_rounds
 from mayhem.domain.target import ResourceKind
 from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
 
@@ -169,6 +167,13 @@ def _live_pod(
 # ── tests: target_selector transparency ──────────────────────────────────────
 
 
+def test_controller_target_selector_is_compatibility_surface() -> None:
+    from mayhem.controller.target_selector import select_many as controller_select_many
+    from mayhem.domain.target_selector import select_many as domain_select_many
+
+    assert controller_select_many is domain_select_many
+
+
 class TestBlueprintTransparency:
     """Pins target-selector SP-4: blueprint pods are invisible to live picks."""
 
@@ -244,7 +249,6 @@ class TestBlueprintTransparency:
 
     def test_select_many_terminating_only_raises(self, tmp_path):
         from mayhem.controller.target_selector import select_many
-
         from mayhem.domain.errors import SelectionError
 
         graph = _graph_from_manifest(tmp_path, _DOCKER_API)
@@ -393,10 +397,11 @@ class TestDrawManiacTargetRounds:
         draws = draw_maniac_target_rounds(spec, level=2, run_level=10, seed=1)
         assert len(draws) == 10
 
-    def test_empty_targets_raises(self):
-        spec = self._spec_with_targets(targets={}, maniac={"level": 2, "run_level": 5, "seed": 1})
-        with pytest.raises(ManiacError):
-            draw_maniac_target_rounds(spec, level=2, run_level=5, seed=1)
+    def test_empty_targets_are_rejected_by_the_schema(self):
+        with pytest.raises(ValidationError):
+            self._spec_with_targets(
+                targets={}, maniac={"level": 2, "run_level": 5, "seed": 1}
+            )
 
 
 # ── tests: plan_maniac on k8s synthesized spec ──────────────────────────────
@@ -456,12 +461,16 @@ class TestPlanManiacK8sSpec:
         )
         faults = [s for s in plan.steps if s.fault is not None]
         assert len(faults) == 2
-        for fault in faults:
-            scope = fault.target
-            assert scope is not None
-            assert scope.kind == ResourceKind.K8S_NODE
-            assert scope.name == "control-plane"
-            assert scope.namespace == ""
+        scopes = [fault.target for fault in faults]
+        assert all(scope is not None for scope in scopes)
+        assert {scope.kind for scope in scopes if scope is not None} == {
+            ResourceKind.DEPLOYMENT,
+            ResourceKind.K8S_NODE,
+        }
+        node_scopes = [scope for scope in scopes if scope and scope.kind == ResourceKind.K8S_NODE]
+        assert node_scopes
+        assert all(scope.name == "control-plane" for scope in node_scopes)
+        assert all(scope.namespace == "" for scope in node_scopes)
 
 
 # ── tests: non-k8s target refusal ───────────────────────────────────────────

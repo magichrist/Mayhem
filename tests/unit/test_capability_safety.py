@@ -20,6 +20,7 @@ from mayhem.domain.experiments import (
     ResolvedTarget,
 )
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
+from mayhem.domain.k8s_adapter import KubernetesAdapter, k8s_unsupported_remediation
 from mayhem.domain.runtime_adapter import (
     AdapterCapabilities,
     CapabilityRequirements,
@@ -229,3 +230,19 @@ def test_kubernetes_adapter_refuses_every_capability() -> None:
     assert isinstance(caps, AdapterCapabilities)
     assert caps.supported == frozenset()
     assert caps.alternatives == frozenset()
+
+
+def test_kubernetes_unsupported_remediation_is_stable_and_detailed() -> None:
+    reason = k8s_unsupported_remediation(
+        "k8s.dns_failure", capability="DNS_CONTROL", context="prod", namespace="pay"
+    )
+    assert reason.startswith("k8s.unsupported:")
+    assert "missing capability: DNS_CONTROL" in reason
+    assert "context: prod" in reason
+    assert "namespace: pay" in reason
+
+
+def test_kubernetes_adapter_can_be_explicitly_wired_for_capability_probe() -> None:
+    adapter = KubernetesAdapter(client=object())
+    assert adapter.is_available() is True
+    assert "node_control" in adapter.capabilities().supported

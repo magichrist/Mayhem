@@ -232,9 +232,18 @@ class TestTargetsSchema:
             DrillSpec.model_validate(bad)
         assert exc.value.rule == "target.mixed_locators"
 
-    def test_docker_target_requires_docker_block(self) -> None:
+    def test_docker_target_derives_locator_from_logical_key(self) -> None:
+        spec = DrillSpec.model_validate(_spec("checkout", {"runtime": "docker"}))
+        assert spec.targets is not None
+        scope = spec.targets["checkout"].to_scope("checkout")
+        assert scope.logical_id == "checkout"
+        assert scope.authority["container_name"] == "checkout"
+
+    def test_kubernetes_target_requires_kubernetes_block(self) -> None:
         with pytest.raises(InvariantViolationError) as exc:
-            DrillSpec.model_validate(_spec("checkout", {"runtime": "docker"}))
+            DrillSpec.model_validate(
+                _spec("checkout", {"runtime": "kubernetes"}, fault_id="k8s.pod_latency")
+            )
         assert exc.value.rule == "target.runtime_mismatch"
 
     def test_container_kind_is_docker_scoped(self) -> None:
@@ -304,6 +313,17 @@ class TestTargetsCompile:
         assert target.authority["container_name"] == "checkout"
         assert any(t.node_ids for t in fault.targets)
         assert fault.undo_ops
+
+    def test_targeted_step_reuses_planned_fault_target(self) -> None:
+        plan = _compile(
+            "checkout",
+            _kubernetes_deployment_target(),
+            _graph(),
+            fault_id="k8s.pod_latency",
+        )
+        step = next(step for step in plan.steps if step.fault is not None)
+        assert step.fault is not None
+        assert step.target is step.fault.target
 
     def test_docker_target_refuses_missing_container(self) -> None:
         with pytest.raises(Exception, match="not found in topology"):

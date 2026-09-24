@@ -1,0 +1,22 @@
+{
+  "cells": [
+    {
+      "cell_key": "svc-a:cpu.saturate",
+      "execution_context": "container",
+      "fault_kind": "cpu.saturate",
+      "parameter_band": "default",
+      "state": "unknown",
+      "target": "svc-a"
+    }
+  ],
+  "summary": {
+    "blocked": 0,
+    "covered": 0,
+    "coverage_pct": 0.0,
+    "failed": 0,
+    "inconclusive": 0,
+    "testable": 1,
+    "total": 1,
+    "unknown": 1
+  }
+}

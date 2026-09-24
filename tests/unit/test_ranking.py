@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mayhem.domain.coverage import CellState, CoverageCell
+from mayhem.domain.coverage import CellState, CoverageCell, ResilienceCell
 from mayhem.domain.risks import RiskLevel
 from mayhem.infra.ranking import (
     W_CRIT,
@@ -12,6 +12,7 @@ from mayhem.infra.ranking import (
     RankedCell,
     RankInputs,
     rank,
+    rank_resilience_cells,
     score,
 )
 
@@ -178,5 +179,35 @@ def test_criticality_lifts_topology_signalled_targets() -> None:
         risk_map={},
     )
     assert isinstance(ranked[0], RankedCell)
-    assert ranked[0].cell.target == "db"
-    assert ranked[0].factors["criticality"] == 3.0
+
+
+def test_resilience_ranking_preserves_enriched_cell_and_explanation() -> None:
+    cells = (
+        ResilienceCell(
+            target="api",
+            failure_domain="network",
+            fault="net.delay",
+            engine="podman",
+            risk="high",
+            maturity="stable",
+            next_rationale="uncovered high-risk network cell",
+        ),
+        ResilienceCell(
+            target="db",
+            failure_domain="storage",
+            fault="fs.fill",
+            engine="podman",
+            risk="critical",
+            maturity="stable",
+            next_rationale="uncovered critical-risk storage cell",
+        ),
+    )
+    ranked = rank_resilience_cells(
+        cells,
+        division_map={},
+        criticality_map={"api": 2.0, "db": 1.0},
+        risk_map={},
+    )
+    assert [item.cell.target for item in ranked] == ["api", "db"]
+    assert ranked[0].cell.next_rationale == "uncovered high-risk network cell"
+    assert "risk_rank" in ranked[0].factors

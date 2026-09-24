@@ -17,6 +17,7 @@ from mayhem.agents.executors import (
     executor_for,
 )
 from mayhem.controller.compensation import compensated, template_for
+from mayhem.controller.k8s_runtime import k8s_contract_for
 from mayhem.domain.catalog import CATALOG, definition_for
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import PlannedFault
@@ -49,7 +50,11 @@ ALL_FAULTS = tuple(d.id for d in CATALOG)
 # kind. A fault may also target pods (the portable argv families) and still
 # belongs in the non-k8s test set — it stays container-portable with an argv
 # compensation template.
-NON_K8S = tuple(d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS)
+NON_K8S = tuple(
+    d.id
+    for d in CATALOG
+    if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
+)
 
 # K8s-only: faults whose kinds are a subset of {pod, k8s_node} — pure
 # kubernetes archetypes that live exclusively in the kubectl pipeline.
@@ -287,6 +292,32 @@ class TestCompensationContract:
 
 # ── k8s catalog metadata ─────────────────────────────────────────────────────
 class TestK8sCatalog:
+    @pytest.mark.parametrize("fault_id", K8S)
+    def test_k8s_entries_have_family_execution_contract(self, fault_id: str) -> None:
+        contract = k8s_contract_for(fault_id)
+        assert contract.family in {
+            "workload",
+            "pod",
+            "node",
+            "service",
+            "storage",
+            "dns",
+            "autoscaling",
+            "disruption",
+            "image_lifecycle",
+        }
+        assert contract.target_kind in {"pod", "node"}
+        assert contract.capability
+        assert contract.safety_decision
+        assert contract.executor
+        assert contract.compensation
+        assert contract.evidence
+
+    def test_catalog_only_family_is_explicitly_refused(self) -> None:
+        contract = k8s_contract_for("k8s.image_pull_slow")
+        assert contract.executor == "k8s.unsupported"
+        assert "remediation" in contract.compensation
+
     @pytest.mark.parametrize("fault_id", K8S)
     def test_k8s_faults_are_kubernetes_capability_faults(self, fault_id: str) -> None:
         definition = definition_for(fault_id)

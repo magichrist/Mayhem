@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import pytest
 
+from mayhem.cli.campaign import _transition_row
 from mayhem.domain.campaigns import (
     Campaign,
     CampaignExperiment,
@@ -11,6 +12,8 @@ from mayhem.domain.campaigns import (
     CampaignSchedule,
     CampaignStatus,
     ExperimentOnFailure,
+    can_transition,
+    transition_campaign,
 )
 from mayhem.domain.candidates import ExperimentCandidate
 from mayhem.domain.coverage import CoverageCell
@@ -18,6 +21,7 @@ from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.m5_campaign import (
     ApproveDecision,
     CampaignMode,
+    CampaignState,
     M5Campaign,
     StopReason,
 )
@@ -28,21 +32,75 @@ from mayhem.infra.candidate_gates import (
     FeasibilityGate,
     ResourceConflictGate,
 )
+from mayhem.infra.store import Store
 
 
 class TestCampaignStatus:
     def test_all_values(self) -> None:
-        assert set(CampaignStatus) == {
+        assert {
             CampaignStatus.DRAFT,
             CampaignStatus.SCHEDULED,
+            CampaignStatus.APPROVED,
             CampaignStatus.RUNNING,
             CampaignStatus.PAUSED,
             CampaignStatus.COMPLETED,
             CampaignStatus.ABORTED,
-        }
+            CampaignStatus.ARCHIVED,
+        }.issubset(set(CampaignStatus))
 
 
-class TestCampaign:
+    def test_lifecycle_states_and_transitions(self) -> None:
+        assert {
+            CampaignStatus.DRAFT,
+            CampaignStatus.APPROVED,
+            CampaignStatus.RUNNING,
+            CampaignStatus.PAUSED,
+            CampaignStatus.COMPLETED,
+            CampaignStatus.ABORTED,
+            CampaignStatus.ARCHIVED,
+        }.issubset(set(CampaignStatus))
+        assert (
+            transition_campaign(CampaignStatus.DRAFT, CampaignStatus.APPROVED)
+            is CampaignStatus.APPROVED
+        )
+        assert (
+            transition_campaign(CampaignStatus.RUNNING, CampaignStatus.PAUSED)
+            is CampaignStatus.PAUSED
+        )
+        assert (
+            transition_campaign(CampaignStatus.PAUSED, CampaignStatus.RUNNING)
+            is CampaignStatus.RUNNING
+        )
+        with pytest.raises(ValueError):
+            transition_campaign(CampaignStatus.DRAFT, CampaignStatus.RUNNING)
+        assert can_transition(CampaignStatus.COMPLETED, CampaignStatus.ARCHIVED)
+
+    def test_persisted_lifecycle_uses_legacy_storage_aliases(self, tmp_path) -> None:
+        store = Store.open_migrated(tmp_path / "campaign.db")
+        with store.write() as conn:
+            conn.execute(
+                "INSERT INTO campaigns (id, name, status, created_at, updated_at)"
+                " VALUES ('c1', 'test', 'draft', '', '')"
+            )
+        assert _transition_row(store, "c1", CampaignStatus.APPROVED)["status"] == "scheduled"
+        _transition_row(store, "c1", CampaignStatus.RUNNING)
+        assert _transition_row(store, "c1", CampaignStatus.PAUSED)["status"] == "paused"
+        assert _transition_row(store, "c1", CampaignStatus.RUNNING)["status"] == "running"
+        store.close()
+    def test_campaign_supports_operator_bounds(self) -> None:
+        campaign = Campaign(
+            id="c1",
+            name="bounded",
+            experiments=(CampaignExperiment(experiment_ref="a"),),
+            target_profiles=("staging",),
+            engine_policy="podman",
+            budget=3,
+            deadline_epoch_s=100.0,
+            stop_conditions=("coverage_reached",),
+        )
+        assert campaign.model_dump(mode="json")["engine_policy"] == "podman"
+        assert campaign.budget == 3
+
     def test_empty_experiments_rejected(self) -> None:
         with pytest.raises(InvariantViolationError, match="campaign_requires_experiments"):
             Campaign(id="c1", name="test", experiments=())
@@ -203,7 +261,37 @@ class TestM5Campaign:
         assert c.max_runs == 100  # original untouched
 
 
-class TestCampaignExecutionLoop:
+    def test_pause_resume_persisted_transition_callback(self) -> None:
+        transitions: list[tuple[str, str]] = []
+        engine = M5CampaignEngine(
+            M5Campaign(id="c1", name="p", mode=CampaignMode.AUTONOMOUS),
+            source=_ListSource(_make_candidates(1)),
+            gates=_passing_gates(),
+            runner=_Runner(),
+            state_transition_fn=lambda old, new: transitions.append((old.value, new.value)),
+        )
+        engine.start()
+        engine.pause()
+        assert engine.state is CampaignState.PAUSED
+        engine.resume()
+        assert engine.state is CampaignState.RUNNING
+        assert transitions[-2:] == [("running", "paused"), ("paused", "running")]
+
+    def test_plan_is_side_effect_free_and_manifest_is_ordered(self) -> None:
+        source = _ListSource(_make_candidates(3))
+        engine = M5CampaignEngine(
+            M5Campaign(id="c1", name="plan", mode=CampaignMode.AUTONOMOUS),
+            source=source,
+            gates=_passing_gates(),
+            runner=_Runner(),
+        )
+        manifest = engine.plan()
+        assert [entry.candidate_id for entry in manifest.entries] == [
+            candidate.id for candidate in _make_candidates(3)
+        ]
+        assert source._items
+        assert engine.progress.runs_executed == 0
+
     def test_budget_exhausted_stops(self) -> None:
         """Acceptance: a bounded campaign stops when the budget is exhausted."""
         engine = M5CampaignEngine(

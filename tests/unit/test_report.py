@@ -1,9 +1,27 @@
 """Tests for the M5 report + experiment guidance builder (M5 Phase 5.7)."""
 
+import json
+import os
+import time
+
 from mayhem.domain.candidates import ExperimentCandidate
 from mayhem.domain.coverage import CoverageCell, CoverageRecord
+from mayhem.domain.evidence import EvidenceEnvelope
 from mayhem.domain.run_outcome import Outcome, RunRecord, RunStatus, RunVerdict
-from mayhem.infra.report import M5Report, build_m5_report, render_heatmap
+from mayhem.infra.report import (
+    M5Report,
+    ReportArtifactPolicy,
+    apply_report_retention,
+    build_m5_report,
+    compare_reports,
+    redact_report_data,
+    render_heatmap,
+    render_report_html,
+    render_report_json,
+    render_report_markdown,
+    report_id_for_run,
+    write_report_artifacts,
+)
 
 
 def _landscape(n_targets: int = 3, n_faults: int = 3) -> tuple[CoverageCell, ...]:
@@ -144,3 +162,117 @@ class TestBuildReport:
         assert "## What to run next" in md
         assert "## Candidate backlog" in md
         assert "run-1" in md
+
+
+def _envelope(run_id: str = "run-1", verdict: str = "pass") -> EvidenceEnvelope:
+    return EvidenceEnvelope(
+        run_id=run_id,
+        report_id=report_id_for_run(run_id),
+        plan_hash="plan-hash",
+        plan_id=run_id,
+        target_profile="production",
+        engine="kubernetes",
+        engine_version="1.31",
+        safety_decisions=("strict policy", "blast radius approved"),
+        step_reports=({"step_id": "inject", "status": "completed", "detail": "ok"},),
+        lease_timeline=({"id": "l-1", "state": "released", "release_mechanism": "janitor"},),
+        observations=({"kind": "latency", "value": 42},),
+        verdict=verdict,
+        recovery_state="recovered",
+        remediation=(),
+        environment_fingerprint="env-fingerprint",
+        target_identity="/Users/alice/private-cluster",
+        resolved_target="prod/secret-pod",
+        compensation_status="verified",
+        verification_basis="live",
+    )
+
+
+def test_report_id_is_stable():
+    assert report_id_for_run("run-1") == "report-run-1"
+    assert report_id_for_run("run/unsafe id") == "report-run_unsafe_id"
+
+
+def test_store_normalizes_stable_report_id(tmp_path):
+    from mayhem.infra.evidence import load_evidence, write_evidence
+    from mayhem.infra.store import Store
+
+    store = Store.open_migrated(tmp_path / "reports.db")
+    write_evidence(
+        store,
+        EvidenceEnvelope(
+            run_id="run-store",
+            plan_hash="hash",
+            step_reports=({"step_id": "s1"},),
+            verdict="pass",
+        ),
+    )
+    assert load_evidence(store, "run-store").report_id == "report-run-store"
+    store.close()
+
+
+def test_report_renderers_share_sections_and_redaction():
+    envelope = _envelope()
+    markdown = render_report_markdown(envelope)
+    payload = json.loads(render_report_json(envelope))
+    html = render_report_html(envelope)
+    for heading in (
+        "Executive Summary",
+        "Environment",
+        "Plan",
+        "Safety Decisions",
+        "Timeline",
+        "Observations",
+        "Verdict",
+        "Recovery",
+        "Limitations",
+    ):
+        assert heading in markdown
+        assert heading in html
+    assert payload["report_id"] == "report-run-1"
+    assert payload["evidence"]["verdict"] == "pass"
+    assert "secret-pod" not in markdown
+    assert "/Users/alice" not in html
+
+
+def test_report_redaction_covers_secrets_and_environment_data():
+    data = {
+        "password": "do-not-share",
+        "nested": [{"api_token": "token"}],
+        "target_identity": "/Users/alice/cluster",
+        "safe": "kept",
+    }
+    redacted = redact_report_data(data)
+    text = json.dumps(redacted)
+    assert "do-not-share" not in text
+    assert redacted["nested"][0]["api_token"] == "***REDACTED***"
+    assert "/Users/alice" not in text
+    assert redacted["safe"] == "kept"
+
+
+def test_report_artifacts_use_stable_id_and_retention(tmp_path):
+    policy = ReportArtifactPolicy(
+        artifact_dir=tmp_path,
+        retention_days=1,
+        max_reports=2,
+    )
+    paths = write_report_artifacts(_envelope(), policy=policy)
+    assert set(paths) == {"markdown", "json", "html"}
+    assert all(path.name.startswith("report-run-1.") for path in paths.values())
+    old = tmp_path / "report-old.md"
+    old.write_text("old")
+    old_time = time.time() - 3 * 24 * 60 * 60
+    os.utime(old, (old_time, old_time))
+    removed = apply_report_retention(tmp_path, retention_days=1, max_reports=10)
+    assert old in removed
+    assert old.exists() is False
+
+
+def test_report_comparison_is_data_only():
+    before = _envelope("run-before", "fail")
+    after = _envelope("run-after", "pass")
+    comparison = compare_reports(before, after)
+    assert comparison["before_report_id"] == "report-run-before"
+    assert comparison["after_report_id"] == "report-run-after"
+    assert comparison["verdict"] == {"before": "fail", "after": "pass", "changed": True}
+    assert comparison["step_count"] == {"before": 1, "after": 1, "changed": False}

@@ -193,3 +193,15 @@ class TestSweepWithRunLiveness:
         janitor, _ = _janitor_with(lease)
         result = janitor.sweep(now_epoch_s=utc_now().timestamp(), run_liveness=explode)
         assert result.quiet
+
+    def test_plan_is_side_effect_free_and_execute_opt_in(self) -> None:
+        janitor, sink = _janitor_with(_lease(LeaseState.ACTIVE, age_s=300.0, ttl=60.0))
+        preview = janitor.plan()
+        assert preview.would_recover == ("l-active-300",)
+        assert sink.load("l-active-300").state is LeaseState.ACTIVE
+        preview_result = janitor.sweep(execute=False)
+        assert preview_result.recovered == ("l-active-300",)
+        assert sink.load("l-active-300").state is LeaseState.ACTIVE
+        executed = janitor.sweep(execute=True)
+        assert executed.recovered == ("l-active-300",)
+        assert sink.load("l-active-300").state is LeaseState.RELEASED

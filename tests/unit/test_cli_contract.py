@@ -79,9 +79,16 @@ def test_help_output_is_nonempty(capsys: pytest.CaptureFixture[str]) -> None:
 def test_state_values_from_cellstate_enum() -> None:
     """``--state`` accepts exactly the §4.2 CellState values."""
     valid = {st.value for st in CellState}
-    # unknown is the *absence* of a row (never a CellState value) but a valid
-    # CLI filter; the four persisted states are the enum.
-    assert valid == {"covered", "inconclusive", "failed", "blocked"}
+    assert valid == {
+        "unknown",
+        "planned",
+        "executed",
+        "passed",
+        "inconclusive",
+        "failed",
+        "blocked",
+        "skipped",
+    }
 
 
 def test_fault_and_fault_category_mutually_exclusive(

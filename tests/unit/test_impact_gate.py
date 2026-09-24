@@ -474,6 +474,7 @@ class TestGateCoverage:
             for d in all_definitions()
             if d.id not in host_side
             and not d.id.startswith("k8s.")
+            and not d.catalog_only
             and d.id not in impact.REQUIREMENTS
         )
         assert uncovered == []

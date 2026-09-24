@@ -12,7 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from mayhem.agents.k8s_resolve import discover_k8s_status
 from mayhem.domain.topology import EdgeKind, NodeKind, TopologyGraph
+from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
 from mayhem.topology.providers.kubernetes import (
     KUBERNETES_IMPORT_ERROR,
     KUBERNETES_INSTALL_HINT,
@@ -270,6 +272,25 @@ def test_all_namespaces_when_no_namespace_filter() -> None:
     assert {n.name for n in graph.nodes if n.kind == NodeKind.POD} == {"a", "b"}
 
 
+def test_workload_selector_filters_discovered_pods() -> None:
+    provider = KubernetesProvider(
+        "kubernetes",
+        namespace="checkout",
+        workload_selector="app=web",
+        _api=KubeApis(
+            core=FakeCore(
+                pods=[
+                    _pod("web-1", labels={"app": "web"}),
+                    _pod("db-1", labels={"app": "db"}),
+                ]
+            ),
+            apps=FakeApps(),
+        ),
+    )
+    graph = TopologyGraph(nodes=provider.discover().nodes)
+    assert {n.name for n in graph.of_kind(NodeKind.POD)} == {"web-1"}
+
+
 def test_selector_is_equality_match() -> None:
     pod = _pod("web-1", namespace="checkout", labels={"app": "web", "tier": "fe"})
     svc_nomatch = _svc("web", "checkout", {"app": "web", "tier": "be"}, [])
@@ -316,3 +337,24 @@ def test_install_hint_present_when_sdk_missing() -> None:
     if KUBERNETES_IMPORT_ERROR is None:
         pytest.skip("kubernetes SDK is installed here")
     assert "mayhem[k8s]" in str(KUBERNETES_IMPORT_ERROR)
+
+
+def test_manifest_inspection_is_separate_from_live_readiness(tmp_path) -> None:
+    manifest = tmp_path / "k8s.yaml"
+    manifest.write_text(
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\n  namespace: prod\n"
+        "spec:\n  containers:\n  - name: app\n    image: nginx\n"
+    )
+    provider = KubernetesManifestProvider(manifest)
+    assert provider.manifest_inspection_available() is True
+    assert provider.live_readiness_available() is False
+    assert provider.discover().nodes[0].state == "blueprint"
+
+
+def test_missing_live_client_is_not_reported_healthy() -> None:
+    status = discover_k8s_status(client=None, sdk_available=False)
+    assert status.manifest_available is False
+    assert status.live_ready is False
+    assert status.client_available is False
+    assert status.healthy is False
+    assert "client" in status.warning
