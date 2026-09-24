@@ -19,5 +19,8 @@ class CliContext:
     db: str = DEFAULT_DB
     config: str | None = None
     profile: str | None = None
+    policy: str | None = None
     allow_critical: bool = False
     debug: bool = False
+    target: str | None = None
+    dry_run: bool = False

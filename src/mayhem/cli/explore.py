@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli import style
-from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import (
     build_graph,
@@ -30,13 +29,14 @@ from mayhem.cli.services import (
 )
 from mayhem.controller.cell_runner import CellRunner
 from mayhem.domain.coverage import CellState
-from mayhem.domain.topology import TopologyGraph
-from mayhem.infra.candidate_generator import CandidateLandscape
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
 if TYPE_CHECKING:
+    from mayhem.cli.context import CliContext
     from mayhem.controller.explore_flow import ExploreDryRun, ExploreRun
+    from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.candidate_gates import CandidateGatePipeline
+    from mayhem.infra.candidate_generator import CandidateLandscape
 
 
 def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipeline:
@@ -69,7 +69,7 @@ def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipelin
             for definition in all_definitions()
             if definition.required_caps.isdisjoint(excluded)
         )
-    safety = SafetyGate(forbidden_faults=() if allow_critical else ())
+    safety = SafetyGate(forbidden_faults=())
     return CandidateGatePipeline(
         safety=safety,
         feasibility=FeasibilityGate(supported=supported),
@@ -145,6 +145,16 @@ def _render_dry_run(dry: ExploreDryRun, *, json_mode: bool = False) -> str:
                     {
                         "target": e.cell.target,
                         "fault_kind": e.cell.fault_kind,
+                        "failure_domain": e.resilience_cell.failure_domain
+                        if e.resilience_cell
+                        else "",
+                        "engine": e.resilience_cell.engine if e.resilience_cell else "",
+                        "risk": e.resilience_cell.risk if e.resilience_cell else "",
+                        "maturity": e.resilience_cell.maturity if e.resilience_cell else "",
+                        "state": e.resilience_cell.state.value if e.resilience_cell else "unknown",
+                        "next_rationale": e.resilience_cell.next_rationale
+                        if e.resilience_cell
+                        else "",
                         "execution_context": e.cell.execution_context,
                         "parameter_band": e.cell.parameter_band,
                         "cell_key": e.cell.key,
@@ -177,7 +187,8 @@ def _render_dry_run(dry: ExploreDryRun, *, json_mode: bool = False) -> str:
         )
         if entry.gate_decision and entry.gate_decision.rejected:
             lines.append(
-                f"       {style.yellow('rejected:')} {entry.gate_decision.gate.value}: {entry.gate_decision.reason}"
+                f"       {style.yellow('rejected:')} "
+                f"{entry.gate_decision.gate.value}: {entry.gate_decision.reason}"
             )
     lines.append("")
     lines.append(
@@ -204,6 +215,10 @@ def _render_run(run: ExploreRun, *, json_mode: bool = False) -> str:
                 "cells": [
                     {
                         "run_id": r.run_id,
+                        "campaign_id": r.campaign_id,
+                        "coverage_cell_key": r.coverage_cell_key,
+                        "plan_id": r.plan_id,
+                        "evidence_id": r.evidence_id,
                         "target": r.cell.target,
                         "fault_kind": r.cell.fault_kind,
                         "state": r.state.value,
@@ -239,7 +254,8 @@ def _render_run(run: ExploreRun, *, json_mode: bool = False) -> str:
     # §3.1.10 failure lines for blocked cells
     for r in run.blocked:
         lines.append(
-            f"  {_format_state_char(CellState.BLOCKED)} {r.cell.target} / {r.cell.fault_kind} → {style.yellow('blocked')}"
+            f"  {_format_state_char(CellState.BLOCKED)} "
+            f"{r.cell.target} / {r.cell.fault_kind} → {style.yellow('blocked')}"
         )
         lines.append("    reason: (see gate output)")
 
@@ -259,6 +275,10 @@ def _render_run(run: ExploreRun, *, json_mode: bool = False) -> str:
 @click.option(
     "--dry-run", is_flag=True, default=False, help="Print ranked queue without executing."
 )
+@click.option(
+    "--plan-only", is_flag=True, default=False, help="Plan ranked cells without executing."
+)
+@click.option("--execute", is_flag=True, default=False, help="Execute the ranked cells.")
 @click.option("--allow-critical", is_flag=True, default=False, help="Allow critical-risk faults.")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Output as JSON.")
 @click.option("--quiet", is_flag=True, default=False, help="Minimal output.")
@@ -276,6 +296,8 @@ def explore(
     seed: int,
     supervised: bool,
     dry_run: bool,
+    plan_only: bool,
+    execute: bool,
     allow_critical: bool,
     json_output: bool,
     quiet: bool,
@@ -296,6 +318,8 @@ def explore(
       mayhem explore --supervised --deadline 30m
       mayhem explore --json --quiet
     """
+    if plan_only and execute:
+        raise click.UsageError("--plan-only and --execute are mutually exclusive")
     if no_color:
         import os
 
@@ -318,7 +342,7 @@ def explore(
     # Build landscape from the live compose graph.
     landscape = _build_landscape(graph)
 
-    if dry_run:
+    if dry_run or plan_only:
         from mayhem.controller.explore_flow import dry_run as explore_dry_run
 
         gates = _runtime_gate_pipeline(allow_critical=allow_critical)
@@ -327,6 +351,7 @@ def explore(
             seed=seed,
             covered_keys=coverage.covered_keys(),
             gate_pipeline=gates,
+            coverage=coverage,
         )
         if not quiet:
             click.echo(_render_dry_run(result, json_mode=json_output))

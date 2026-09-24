@@ -1,33 +1,19 @@
-"""Root CLI assembly and top-level error -> exit-code mapping.
-
-The tree is registered here; every group is a :class:`PrefixGroup`, so unique
-prefix resolution works at every level. ``main()`` is the single place where
-mayhem exceptions become documented exit codes — handlers raise typed domain
-errors and never format exit codes themselves.
-"""
-
 from __future__ import annotations
 
+import os
 import sys
+import traceback
 from typing import TYPE_CHECKING
 
 import click
 
 from mayhem.cli import style
-from mayhem.cli.campaign import campaign
-from mayhem.cli.config_cmd import config
+from mayhem.cli.command_registry import register_legacy_commands
 from mayhem.cli.context import CliContext
-from mayhem.cli.coverage_cmd import coverage_cmd
-from mayhem.cli.dependency import dependency
+from mayhem.cli.deprecation import warn_deprecated
+from mayhem.cli.errors import MayhemCliError, map_exception_to_error
 from mayhem.cli.exit_codes import ExitCode
-from mayhem.cli.experiment import experiment
-from mayhem.cli.expert import expert_cmd
-from mayhem.cli.explore import explore
-from mayhem.cli.lifecycle import history, janitor, maniac, plan, recover, run, status, validate
-from mayhem.cli.next_cmd import next_cmd
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
-from mayhem.cli.toolkit import toolkit
-from mayhem.cli.topology import topology
 from mayhem.controller.planner import PlanningError
 from mayhem.controller.safety import SafetyRefusedError
 from mayhem.domain.errors import (
@@ -44,7 +30,24 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-_STATE: dict[str, str] = {"debug": "", "engine": ""}
+_STATE: dict[str, str] = {
+    "debug": "",
+    "engine": "",
+    "target": "",
+    "gate": "1",
+    "format": "text",
+    "no_color": "",
+}
+
+
+def _maybe_warn_deprecated(argv: list[str] | None) -> None:
+    if not argv:
+        return
+    for token in argv:
+        if token.startswith("-"):
+            continue
+        warn_deprecated(token)
+        break
 
 
 @click.group(
@@ -56,6 +59,8 @@ _STATE: dict[str, str] = {"debug": "", "engine": ""}
 @click.option("--db", default=None, help="SQLite database path [default: mayhem.db].")
 @click.option("--config", "config_path", default=None, help="Path to mayhem.yaml.")
 @click.option("--profile", default=None, help="Configuration profile name.")
+@click.option("--policy", default=None, help="Named policy profile (strict, permissive, etc.).")
+@click.option("--dry-run", is_flag=True, help="Evaluate policy without mutating.")
 @click.option("--allow-critical", is_flag=True, help="Acknowledge critical-risk faults.")
 @click.option(
     "--skip-gate",
@@ -79,51 +84,57 @@ _STATE: dict[str, str] = {"debug": "", "engine": ""}
     help="Use Kubernetes instead of Docker/Podman (kubeconfig-driven discovery).",
 )
 @click.option("-d", "--debug", is_flag=True, help="Re-raise errors instead of rendering them.")
+@click.option("--target", default=None, help="Target profile name.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"], case_sensitive=False),
+    default=None,
+    help="Output format: text (default), json, or yaml. Preserves --json compatibility.",
+)
+@click.option("--no-color", is_flag=True, default=False, help="Disable colored output.")
 @click.pass_context
 def app(
     ctx: click.Context,
     db: str | None,
     config_path: str | None,
     profile: str | None,
+    policy: str | None,
+    dry_run: bool,
     allow_critical: bool,
     skip_gate: bool,
     podman: bool,
     kubernetes: bool,
     debug: bool,
+    target: str | None,
+    output_format: str | None,
+    no_color: bool,
 ) -> None:
     if podman and kubernetes:
         raise click.UsageError("--podman and --kubernetes are mutually exclusive")
     _STATE["debug"] = "1" if debug else ""
     _STATE["engine"] = "podman" if podman else ("kubernetes" if kubernetes else "")
     _STATE["gate"] = "0" if skip_gate else "1"
+    _STATE["target"] = target or ""
+    _STATE["policy"] = policy or ""
+    _STATE["dry_run"] = "1" if dry_run else ""
+    _STATE["format"] = output_format.lower() if output_format else "text"
+    _STATE["no_color"] = "1" if no_color else ""
+    if no_color:
+        os.environ["NO_COLOR"] = "1"
     ctx.obj = CliContext(
         db=db or "mayhem.db",
         config=config_path,
         profile=profile,
+        policy=policy,
         allow_critical=allow_critical,
         debug=debug,
+        target=target,
+        dry_run=dry_run,
     )
 
 
-for _cmd in (
-    validate,
-    plan,
-    run,
-    maniac,
-    status,
-    history,
-    recover,
-    janitor,
-    dependency,
-    explore,
-    next_cmd,
-    coverage_cmd,
-    expert_cmd,
-):
-    app.add_command(_cmd)
-for _group in (experiment, topology, toolkit, config, campaign):
-    app.add_command(_group)
-app.add_command(config, "cfg")
+register_legacy_commands(app)
 
 
 def _fail(message: str, code: int) -> int:
@@ -131,35 +142,74 @@ def _fail(message: str, code: int) -> int:
     return code
 
 
+def _fail_error(err: MayhemCliError) -> int:
+    debug = bool(_STATE.get("debug"))
+    fmt = _STATE.get("format", "text")
+    as_json = fmt == "json"
+    if as_json:
+        click.echo(err.to_json(), err=True)
+    else:
+        if err.code == "safety_refusal":
+            click.echo(
+                f"{style.danger('error:')} safety refused: {err.message} [{err.code}]", err=True
+            )
+        else:
+            click.echo(f"{style.danger('error:')} [{err.code}] {err.message}", err=True)
+        if err.remediation:
+            click.echo(f"  remediation: {err.remediation}", err=True)
+        if err.details:
+            for k in sorted(err.details.keys()):
+                click.echo(f"  {k}: {err.details[k]}", err=True)
+        if err.evidence_ref:
+            click.echo(f"  evidence_ref: {err.evidence_ref}", err=True)
+    if debug:
+        tb = traceback.format_exc()
+        if tb and "NoneType: None" not in tb:
+            click.echo(tb.strip(), err=True)
+    return int(err.exit_code)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Dispatch argv and map every failure mode onto a documented exit code."""
+    args = list(argv) if argv is not None else sys.argv[1:]
+    _maybe_warn_deprecated(args)
     rv: int | None = None
     try:
         rv = app.main(
-            args=list(argv) if argv is not None else sys.argv[1:],
+            args=args,
             prog_name="mayhem",
             standalone_mode=False,
             windows_expand_args=False,
         )
+    except MayhemCliError as exc:
+        return _fail_error(exc)
     except CommandResolutionError as exc:
-        code = ExitCode.USAGE_ERROR if not exc.candidates else ExitCode.AMBIGUOUS_COMMAND
-        return _fail(str(exc), int(code))
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     except click.UsageError as exc:
+        mapped = map_exception_to_error(exc)
+        if _STATE.get("format") == "json":
+            click.echo(mapped.to_json(), err=True)
+            if _STATE.get("debug"):
+                tb = traceback.format_exc()
+                if tb and "NoneType: None" not in tb:
+                    click.echo(tb.strip(), err=True)
+            return int(mapped.exit_code)
         exc.show()
+        if _STATE.get("debug"):
+            tb = traceback.format_exc()
+            if tb and "NoneType: None" not in tb:
+                click.echo(tb.strip(), err=True)
         return int(ExitCode.USAGE_ERROR)
     except click.exceptions.Exit as exc:
         return int(exc.exit_code)
     except click.exceptions.Abort:
         return _fail("aborted.", int(ExitCode.GENERAL_FAILURE))
     except SafetyRefusedError as exc:
-        return _fail(f"safety refused: {exc}", int(ExitCode.SAFETY_REFUSAL))
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     except SchemaValidationError as exc:
-        code = (
-            ExitCode.CONFIG_ERROR
-            if getattr(exc, "subject", "") == "config"
-            else ExitCode.VALIDATION_ERROR
-        )
-        return _fail(str(exc), int(code))
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     except (
         InvariantViolationError,
         ManiacError,
@@ -168,17 +218,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         TargetDriftError,
         FileNotFoundError,
     ) as exc:
-        return _fail(str(exc), int(ExitCode.VALIDATION_ERROR))
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     except ToolError as exc:
-        return _fail(str(exc), int(ExitCode.TOOLKIT_ERROR))
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     except DomainError as exc:
-        return _fail(str(exc), int(ExitCode.GENERAL_FAILURE))
-    except Exception as exc:  # last-resort boundary; see exit-code contract
-        if _STATE["debug"]:
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
+    except Exception as exc:
+        if _STATE.get("debug"):
             raise
-        return _fail(f"{type(exc).__name__}: {exc}", int(ExitCode.GENERAL_FAILURE))
-    # Click with ``standalone_mode=False`` returns the code from ``ctx.exit()``
-    # instead of raising; a clean return yields ``None``.
+        err = map_exception_to_error(exc)
+        return _fail_error(err)
     return int(ExitCode.SUCCESS) if rv is None else int(rv)
 
 

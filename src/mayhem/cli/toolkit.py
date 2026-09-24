@@ -13,14 +13,16 @@ toolkit = make_group("toolkit", "Inspect the fault catalog and local tool capabi
 
 
 @toolkit.command("faults")
-def faults() -> None:
-    """List the fault catalog with risk and compensatability.
-
-    Honors the global ``-k/--kubernetes`` flag: with Kubernetes selected, only
-    the faults the k8s driver can actually execute are listed (pod/node
-    targets), each annotated with its delivery lane. Without it the full
-    cross-runtime catalog is shown.
-    """
+@click.option(
+    "--engine",
+    "engine_opt",
+    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
+    default=None,
+    help="Filter catalog by engine; kubernetes shows support labels per fault.",
+)
+@click.option("--coverage", is_flag=True, help="Emit the generated catalog coverage matrix.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
+def faults(engine_opt: str | None, coverage: bool, as_json: bool) -> None:
     from mayhem.cli.app import _STATE
     from mayhem.controller.k8s_runtime import (
         K8S_ARGV_FAULTS,
@@ -29,9 +31,24 @@ def faults() -> None:
         K8S_NETWORK_FAULTS,
         K8S_NODE_FAULTS,
         k8s_available_faults,
+        k8s_contract_for,
     )
 
-    kubernetes = str(_STATE.get("engine", "")) == "kubernetes"
+    engine = engine_opt or str(_STATE.get("engine", "")) or ""
+    if coverage:
+        from mayhem.infra.catalog_report import build_coverage
+
+        report = build_coverage(engine=engine or None)
+        if as_json:
+            click.echo(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            for label, values in report.items():
+                if isinstance(values, dict):
+                    click.echo(f"{label}: {json.dumps(values, sort_keys=True)}")
+                else:
+                    click.echo(f"{label}: {values}")
+        return
+    kubernetes = engine == "kubernetes"
     available = k8s_available_faults() if kubernetes else None
 
     def _lane(fault_id: str) -> str:
@@ -48,16 +65,63 @@ def faults() -> None:
         return "in-pod-signal"
 
     for definition in sorted(all_definitions(), key=lambda d: d.id):
-        if available is not None and definition.id not in available:
-            continue
-        undoable = "yes" if definition.reversible else "no"
         if kubernetes:
+            if (
+                available is not None
+                and definition.id not in available
+                and not definition.id.startswith("k8s.")
+            ):
+                continue
+            supported = definition.id in available if available is not None else True
+            support_label = "supported" if supported else "catalog-only"
+            undoable = "yes" if definition.reversible else "no"
+            contract = None
+            if definition.id.startswith("k8s."):
+                try:
+                    contract = k8s_contract_for(definition.id)
+                except LookupError:
+                    contract = None
+            contract_text = ""
+            if contract is not None:
+                contract_text = (
+                    f" target={contract.target_kind} targets={','.join(contract.target_kinds)}"
+                    f" capability={contract.capability}"
+                    f" safety={contract.safety_decision} executor={contract.executor}"
+                    f" compensation={contract.compensation}"
+                )
             click.echo(
                 f"{definition.id:<24} risk={definition.risk.value:<6} "
-                f"undo={undoable} lane={_lane(definition.id)}"
+                f"undo={undoable} lane={_lane(definition.id)} support={support_label}"
+                f"{contract_text}"
             )
         else:
+            if available is not None and definition.id not in available:
+                continue
+            undoable = "yes" if definition.reversible else "no"
             click.echo(f"{definition.id:<24} risk={definition.risk.value:<6} undo={undoable}")
+
+
+@toolkit.group("fault")
+def fault_group() -> None:
+    """Explain one catalog fault without planning or executing it."""
+
+
+@fault_group.command("explain")
+@click.argument("fault_id")
+@click.option(
+    "--engine",
+    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
+    default="docker",
+    show_default=True,
+)
+def explain_fault(fault_id: str, engine: str) -> None:
+    from mayhem.infra.catalog_report import explain_catalog_fault
+
+    try:
+        report = explain_catalog_fault(fault_id, engine=engine.lower())
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(report, indent=2, sort_keys=True))
 
 
 @toolkit.command("list")

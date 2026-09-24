@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from mayhem.cli import style
-from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import build_graph, open_store
+
+if TYPE_CHECKING:
+    from mayhem.cli.context import CliContext
 
 
 def _compose_option[F: Callable[..., object]](fn: F) -> F:
@@ -63,7 +65,7 @@ def _probe_compose(compose_path: str | None) -> dict[str, Any]:
         try:
             import yaml
 
-            with open(path) as f:
+            with path.open() as f:
                 data = yaml.safe_load(f)
             if not isinstance(data, dict):
                 result["status"] = "error"
@@ -197,6 +199,7 @@ def _probe_docker() -> dict[str, Any]:
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    check=False,
                 )
                 if proc.returncode == 0:
                     version = proc.stdout.strip()
@@ -304,11 +307,85 @@ def _analyze_recent_failures(
     return result
 
 
+def _structured_expert(
+    compose_probe: dict[str, Any],
+    config_probe: dict[str, Any],
+    docker_probe: dict[str, Any],
+    failures: dict[str, Any],
+    run_id: str | None,
+) -> list[dict[str, Any]]:
+    from mayhem.infra.diagnostics import (
+        Diagnostic,
+        DiagnosticCategory,
+        DiagnosticSeverity,
+        DiagnosticStatus,
+    )
+
+    categories = {
+        "compose": DiagnosticCategory.topology,
+        "config": DiagnosticCategory.config,
+        "docker": DiagnosticCategory.engine,
+    }
+    diagnostics: list[Diagnostic] = []
+    for probe_name, probe in (
+        ("compose", compose_probe),
+        ("config", config_probe),
+        ("docker", docker_probe),
+    ):
+        for check in probe.get("checks", []):
+            probe_status = str(check.get("status", "unknown"))
+            severity = (
+                DiagnosticSeverity.error
+                if probe_status == "error"
+                else DiagnosticSeverity.warning
+                if probe_status == "warning"
+                else DiagnosticSeverity.info
+            )
+            status = (
+                DiagnosticStatus.blocked
+                if probe_status == "error"
+                else DiagnosticStatus.warning
+                if probe_status == "warning"
+                else DiagnosticStatus.healthy
+            )
+            diagnostics.append(
+                Diagnostic(
+                    check_id=f"expert.{probe_name}.{check.get('name', 'unknown')}",
+                    category=categories[probe_name],
+                    severity=severity,
+                    status=status,
+                    message=str(check.get("detail", "")),
+                    evidence={"probe": probe_name, "status": probe_status},
+                    remediation="review the expert finding",
+                    related_run=run_id,
+                )
+            )
+    for failure in failures.get("failures", []):
+        related_run = str(failure.get("run_id", "")) or run_id
+        diagnostics.append(
+            Diagnostic(
+                check_id="expert.run.failure",
+                category=DiagnosticCategory.database,
+                severity=DiagnosticSeverity.error,
+                status=DiagnosticStatus.blocked,
+                message=(
+                    f"run {related_run} status={failure.get('status')} "
+                    f"verdict={failure.get('verdict')}"
+                ),
+                evidence=dict(failure),
+                remediation="inspect the run evidence and recovery plan",
+                related_run=related_run,
+            )
+        )
+    return [item.model_dump(mode="json") for item in diagnostics]
+
+
 def _render_expert_json(
     compose_probe: dict[str, Any],
     config_probe: dict[str, Any],
     docker_probe: dict[str, Any],
     failures: dict[str, Any],
+    run_id: str | None = None,
 ) -> str:
     """Render expert output as JSON."""
     return json.dumps(
@@ -319,6 +396,9 @@ def _render_expert_json(
                 "docker": docker_probe,
             },
             "analysis": failures,
+            "diagnostics": _structured_expert(
+                compose_probe, config_probe, docker_probe, failures, run_id
+            ),
         },
         indent=2,
     )
@@ -459,7 +539,11 @@ def expert_cmd(
         failures = _analyze_recent_failures(ctx_obj.db)
 
     if as_json:
-        click.echo(_render_expert_json(compose_probe, config_probe, docker_probe, failures))
+        click.echo(
+            _render_expert_json(
+                compose_probe, config_probe, docker_probe, failures, run_id
+            )
+        )
     elif not quiet:
         click.echo(_render_expert_human(compose_probe, config_probe, docker_probe, failures))
 

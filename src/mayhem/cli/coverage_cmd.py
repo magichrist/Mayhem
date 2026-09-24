@@ -1,55 +1,36 @@
-"""``mayhem coverage`` — §3.3 command implementation.
-
-Show coverage map, per-service progress, untested/blocked lists, and state
-filters.
-
-Shape::
-
-    mayhem coverage [drill.yaml] [--compose PATH] [--json] [--quiet]
-                    [--no-color] [--db PATH] [--profile NAME]
-                    [--service NAME] [--fault KIND | --fault-category CATEGORY]
-                    [--state unknown|covered|inconclusive|failed|blocked]
-"""
+"""``mayhem coverage`` — one coverage vocabulary for humans and JSON."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import click
 
 from mayhem.cli import style
-from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import build_graph, open_store
-from mayhem.domain.coverage import CellState, CoverageCell
-from mayhem.domain.topology import TopologyGraph
+from mayhem.domain.coverage import CellFilters, CellState, CoverageCell, ResilienceCell
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
-# §3.3.1 state character map (for matrix rendering).
-_STATE_CHAR: dict[str | None, str] = {
-    None: "\u00b7",  # unknown: ·
-    CellState.COVERED: "\u2588",  # covered: █
-    CellState.INCONCLUSIVE: "~",  # inconclusive: ~
-    CellState.FAILED: "!",  # failed: !
-    CellState.BLOCKED: "#",  # blocked: #
+if TYPE_CHECKING:
+    from mayhem.cli.context import CliContext
+    from mayhem.domain.topology import TopologyGraph
+
+_STATE_CHAR: dict[CellState, str] = {
+    CellState.UNKNOWN: "·",
+    CellState.PLANNED: "P",
+    CellState.EXECUTED: "E",
+    CellState.PASSED: "█",
+    CellState.INCONCLUSIVE: "~",
+    CellState.FAILED: "!",
+    CellState.BLOCKED: "#",
+    CellState.SKIPPED: "-",
 }
 
-_STATE_LABEL: dict[str | None, str] = {
-    None: "unknown",
-    CellState.COVERED: "covered",
-    CellState.INCONCLUSIVE: "inconclusive",
-    CellState.FAILED: "failed",
-    CellState.BLOCKED: "blocked",
-}
-
-_STATE_STYLE: dict[str | None, Callable[[str], str]] = {
-    None: style.info,
-    CellState.COVERED: style.green,
-    CellState.INCONCLUSIVE: style.yellow,
-    CellState.FAILED: style.danger,
-    CellState.BLOCKED: style.warn,
-}
+_STATE_LABEL = {state: state.value for state in CellState}
 
 
 def _compose_option[F: Callable[..., object]](fn: F) -> F:
@@ -73,199 +54,137 @@ def _graph_from(ctx: click.Context, compose: str | None) -> TopologyGraph:
 
 
 def _landscape_cells(graph: TopologyGraph, seed: int = 0) -> tuple[CoverageCell, ...]:
-    """Build a CoverageCell landscape from a topology graph."""
+    from mayhem.cli.services import engine_fault_kinds
     from mayhem.infra.candidate_generator import CandidateLandscape, SeededCandidateGenerator
     from mayhem.infra.maniac import coverage_cell_for_candidate
 
-    targets = tuple(sorted({n.id for n in graph.nodes}))
-    # Fault kinds: scoped to the engine selected at the root — with ``-k``
-    # only kubernetes-executable families are counted in coverage land.
-    from mayhem.cli.services import engine_fault_kinds
-
-    fault_kinds = engine_fault_kinds()
-
     landscape_obj = CandidateLandscape(
-        targets=targets,
-        fault_kinds=fault_kinds,
+        targets=tuple(sorted({node.id for node in graph.nodes})),
+        fault_kinds=engine_fault_kinds(),
     )
-
-    gen = SeededCandidateGenerator(landscape_obj, seed=seed)
+    generated = SeededCandidateGenerator(landscape_obj, seed=seed).generate()
     cells: list[CoverageCell] = []
-    seen_keys: set[str] = set()
-    for candidate in gen.generate():
+    seen: set[str] = set()
+    for candidate in generated:
         cell = coverage_cell_for_candidate(candidate)
-        if cell.key not in seen_keys:
-            seen_keys.add(cell.key)
+        if cell.key not in seen:
+            seen.add(cell.key)
             cells.append(cell)
-
     return tuple(cells)
 
 
-def _render_summary(
-    cells: tuple[CoverageCell, ...],
-    state_map: dict[str, CellState],
-    service_filter: str | None,
-    fault_filter: str | None,
-    fault_category_filter: str | None,
+def _filter_cells(
+    cells: tuple[ResilienceCell, ...],
+    *,
+    service: str | None,
+    fault: str | None,
+    fault_category: str | None,
     state_filter: str | None,
-) -> str:
-    """Render the §3.3 human summary block."""
-    lines: list[str] = []
+    target_profile: str | None,
+    engine: str | None,
+    failure_domain: str | None,
+    risk: str | None,
+    maturity: str | None,
+) -> tuple[ResilienceCell, ...]:
+    from mayhem.domain.faults import FaultCategory
 
-    # Apply filters
-    filtered = cells
-    if service_filter:
-        filtered = tuple(c for c in filtered if service_filter.lower() in c.target.lower())
-    if fault_filter:
-        filtered = tuple(c for c in filtered if fault_filter.lower() in c.fault_kind.lower())
-    if fault_category_filter:
-        from mayhem.domain.faults import FaultCategory
+    filters = CellFilters(
+        target_profile=target_profile,
+        engine=engine,
+        service=service,
+        failure_domain=failure_domain,
+        risk=risk,
+        maturity=maturity,
+        state=state_filter,
+    )
+    result = tuple(cell for cell in cells if filters.matches(cell))
+    if fault:
+        result = tuple(cell for cell in result if fault.lower() in cell.fault.lower())
+    if fault_category:
+        result = tuple(
+            cell
+            for cell in result
+            if cell.fault.split(".", 1)[0].lower() in fault_category.lower()
+            or FaultCategory.from_fault_id(cell.fault).value == fault_category.lower()
+        )
+    return result
 
-        matching = set()
-        for c in filtered:
-            try:
-                cat = FaultCategory.from_fault_id(c.fault_kind)
-                if fault_category_filter.lower() in cat.value.lower():
-                    matching.add(c.key)
-            except Exception:
-                pass
-        filtered = tuple(c for c in filtered if c.key in matching)
 
-    # Count states
-    counts: dict[str, int] = {
-        "unknown": 0,
-        "covered": 0,
-        "inconclusive": 0,
-        "failed": 0,
-        "blocked": 0,
-    }
-    for cell in filtered:
-        st = state_map.get(cell.key)
-        if st is None:
-            counts["unknown"] += 1
-        else:
-            counts[st.value] += 1
-
-    total = len(filtered)
-    blocked = counts.get("blocked", 0)
+def _render_summary(cells: tuple[ResilienceCell, ...]) -> str:
+    counts = dict.fromkeys(CellState, 0)
+    for cell in cells:
+        counts[cell.state] += 1
+    total = len(cells)
+    blocked = counts[CellState.BLOCKED]
     testable = total - blocked
-    covered = counts.get("covered", 0)
-    pct = (covered / testable * 100) if testable > 0 else 0.0
-
-    lines.append(style.cyan("coverage summary"))
-    lines.append(f"  total cells:       {total}")
-    lines.append(f"  testable (excl. blocked): {testable}")
-    lines.append(f"  covered:           {covered} ({pct:.1f}%)")
-    lines.append(f"  inconclusive:      {counts.get('inconclusive', 0)}")
-    lines.append(f"  failed:            {counts.get('failed', 0)}")
-    lines.append(f"  blocked:           {counts.get('blocked', 0)}")
-    lines.append(f"  unknown:           {counts.get('unknown', 0)}")
-
-    # Per-service matrix (§3.3.1)
-    targets = sorted({c.target for c in filtered})
+    covered = counts[CellState.PASSED]
+    percent = (covered / testable * 100) if testable else 0.0
+    lines = [
+        style.cyan("coverage summary"),
+        f"  total cells:       {total}",
+        f"  testable (excl. blocked): {testable}",
+        f"  passed:            {covered} ({percent:.1f}%)",
+        f"  unknown:           {counts[CellState.UNKNOWN]}",
+        f"  planned:           {counts[CellState.PLANNED]}",
+        f"  executed:          {counts[CellState.EXECUTED]}",
+        f"  inconclusive:      {counts[CellState.INCONCLUSIVE]}",
+        f"  failed:            {counts[CellState.FAILED]}",
+        f"  blocked:           {blocked}",
+        f"  skipped:           {counts[CellState.SKIPPED]}",
+    ]
+    targets = sorted({cell.target for cell in cells})
     if targets:
-        lines.append("")
-        lines.append(style.cyan("per-target state"))
+        lines.extend(("", style.cyan("per-target state")))
         for target in targets:
-            target_cells = [c for c in filtered if c.target == target]
-            # Pick the "worst" state per cell (blocked > failed > inconclusive > covered)
-            worst_order = [
-                CellState.BLOCKED,
-                CellState.FAILED,
-                CellState.INCONCLUSIVE,
-                CellState.COVERED,
-            ]
-            symbols: list[str] = []
-            for cell in target_cells:
-                st = state_map.get(cell.key)
-                char = _STATE_CHAR.get(st, "?")
-                symbols.append(char)
-            bar = "".join(symbols)
+            target_cells = tuple(cell for cell in cells if cell.target == target)
+            bar = "".join(_STATE_CHAR[cell.state] for cell in target_cells)
             lines.append(f"  {target:<30s} [{bar}] {len(target_cells)} cells")
-
     return "\n".join(lines)
 
 
-def _render_json(
-    cells: tuple[CoverageCell, ...],
-    state_map: dict[str, CellState],
-    service_filter: str | None,
-    fault_filter: str | None,
-    fault_category_filter: str | None,
-    state_filter: str | None,
-) -> str:
-    """Render §3.3 JSON output."""
-    filtered = cells
-    if service_filter:
-        filtered = tuple(c for c in filtered if service_filter.lower() in c.target.lower())
-    if fault_filter:
-        filtered = tuple(c for c in filtered if fault_filter.lower() in c.fault_kind.lower())
-    if fault_category_filter:
-        from mayhem.domain.faults import FaultCategory
-
-        matching = set()
-        for c in filtered:
-            try:
-                cat = FaultCategory.from_fault_id(c.fault_kind)
-                if fault_category_filter.lower() in cat.value.lower():
-                    matching.add(c.key)
-            except Exception:
-                pass
-        filtered = tuple(c for c in filtered if c.key in matching)
-
-    counts: dict[str, int] = {
-        "unknown": 0,
-        "covered": 0,
-        "inconclusive": 0,
-        "failed": 0,
-        "blocked": 0,
-    }
-    cells_list: list[dict[str, object]] = []
-    for cell in filtered:
-        st = state_map.get(cell.key)
-        label = _STATE_LABEL.get(st, "unknown")
-        counts[label] += 1
-        cells_list.append(
-            {
-                "cell_key": cell.key,
-                "target": cell.target,
-                "fault_kind": cell.fault_kind,
-                "execution_context": cell.execution_context,
-                "parameter_band": cell.parameter_band,
-                "state": label,
-            }
-        )
-
-    total = len(filtered)
-    testable = total - counts.get("blocked", 0)
-    covered = counts.get("covered", 0)
-    pct = (covered / testable * 100) if testable > 0 else 0.0
-
+def _render_json(cells: tuple[ResilienceCell, ...]) -> str:
+    counts = dict.fromkeys(CellState, 0)
+    for cell in cells:
+        counts[cell.state] += 1
+    total = len(cells)
+    testable = total - counts[CellState.BLOCKED]
+    covered = counts[CellState.PASSED]
+    percent = (covered / testable * 100) if testable else 0.0
     output = {
         "summary": {
             "total": total,
             "testable": testable,
             "covered": covered,
-            "coverage_pct": round(pct, 1),
-            **counts,
+            "coverage_pct": round(percent, 1),
+            "coverage_delta": covered,
+            "blocked": counts[CellState.BLOCKED],
+            "unknown": counts[CellState.UNKNOWN],
+            "planned": counts[CellState.PLANNED],
+            "executed": counts[CellState.EXECUTED],
+            "inconclusive": counts[CellState.INCONCLUSIVE],
+            "failed": counts[CellState.FAILED],
+            "skipped": counts[CellState.SKIPPED],
         },
-        "cells": cells_list,
+        "cells": [cell.to_dict() for cell in cells],
     }
-    return json.dumps(output, indent=2)
+    return json.dumps(output, indent=2, sort_keys=True)
 
 
 @click.command("coverage")
 @_compose_option
 @click.argument("spec", required=False, type=click.Path(exists=True))
-@click.option(
-    "--service", default=None, help="Filter to a specific service name (substring match)."
-)
-@click.option("--fault", default=None, help="Filter to a specific fault kind (substring match).")
-@click.option("--fault-category", default=None, help="Filter to an entire fault category.")
+@click.option("--service", default=None, help="Filter to a service name.")
+@click.option("--fault", default=None, help="Filter to a fault kind.")
+@click.option("--fault-category", default=None, help="Filter to a fault category.")
+@click.option("--target-profile", default=None, help="Filter to a target profile.")
+@click.option("--engine", default=None, help="Filter to an execution engine.")
+@click.option("--failure-domain", default=None, help="Filter to a failure domain.")
+@click.option("--risk", default=None, help="Filter to a risk level.")
+@click.option("--maturity", default=None, help="Filter to a maturity level.")
 @click.option(
     "--state",
     "state_filter",
-    type=click.Choice(["unknown", "covered", "inconclusive", "failed", "blocked"]),
+    type=click.Choice([*(state.value for state in CellState), "covered"]),
     default=None,
     help="Show only cells in this state.",
 )
@@ -280,22 +199,22 @@ def coverage_cmd(
     service: str | None,
     fault: str | None,
     fault_category: str | None,
+    target_profile: str | None,
+    engine: str | None,
+    failure_domain: str | None,
+    risk: str | None,
+    maturity: str | None,
     state_filter: str | None,
     as_json: bool,
     quiet: bool,
     no_color: bool,
 ) -> None:
-    """Show coverage map, per-service progress, and untested/blocked lists (§3.3).
-
-    Filters narrow the view: --service, --fault, --fault-category, --state.
-    """
+    """Show the same resilience cells in human and JSON output."""
     ctx_obj: CliContext = ctx.obj
-
     if no_color:
         import os
 
         os.environ["NO_COLOR"] = "1"
-
     if fault and fault_category:
         click.echo(
             f"{style.danger('error:')} --fault and --fault-category are mutually exclusive",
@@ -303,26 +222,41 @@ def coverage_cmd(
         )
         ctx.exit(int(ExitCode.USAGE_ERROR))
         return
-
     graph = _graph_from(ctx, compose)
     landscape = _landscape_cells(graph)
-
     if not landscape:
         if not quiet:
             click.echo("no testable cells in the landscape.")
         ctx.exit(int(ExitCode.SUCCESS))
         return
-
     store = open_store(ctx_obj.db)
-    coverage_repo = SQLiteCoverageRepository(store)
+    try:
+        repository = SQLiteCoverageRepository(store)
+        cells = repository.resilience_cells(landscape)
+        if not engine:
+            from mayhem.cli.services import selected_engine
 
-    state_map = coverage_repo.states(landscape)
-
-    if as_json:
-        click.echo(_render_json(landscape, state_map, service, fault, fault_category, state_filter))
-    elif not quiet:
-        click.echo(
-            _render_summary(landscape, state_map, service, fault, fault_category, state_filter)
+            engine = selected_engine() or None
+        if engine:
+            cells = tuple(replace(cell, engine=engine) for cell in cells)
+        if not target_profile:
+            target_profile = ctx_obj.target
+        cells = _filter_cells(
+            cells,
+            service=service,
+            fault=fault,
+            fault_category=fault_category,
+            state_filter=state_filter,
+            target_profile=target_profile,
+            engine=engine,
+            failure_domain=failure_domain,
+            risk=risk,
+            maturity=maturity,
         )
-
+        if as_json:
+            click.echo(_render_json(cells))
+        elif not quiet:
+            click.echo(_render_summary(cells))
+    finally:
+        store.close()
     ctx.exit(int(ExitCode.SUCCESS))

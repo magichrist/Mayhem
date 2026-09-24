@@ -19,6 +19,8 @@ from mayhem.cli.services import (
     prepare,
     run_campaign_sequence,
 )
+from mayhem.domain.campaigns import CampaignStatus, transition_campaign
+from mayhem.domain.m5_campaign import CampaignExecutionManifest, CampaignManifestEntry
 
 if TYPE_CHECKING:
     from click import Context
@@ -32,6 +34,45 @@ def _ctx(ctx: Context):
     obj = ctx.obj
     assert isinstance(obj, CliContext)
     return obj
+
+
+
+
+def _db_status(status: CampaignStatus) -> str:
+    if status is CampaignStatus.APPROVED:
+        return "scheduled"
+    if status is CampaignStatus.ARCHIVED:
+        return "completed"
+    return status.value
+
+
+def _campaign_status(value: str) -> CampaignStatus:
+    if value == "scheduled":
+        return CampaignStatus.APPROVED
+    return CampaignStatus(value)
+
+
+def _transition_row(
+    store,
+    campaign_id: str,
+    new_status: CampaignStatus,
+    *,
+    legacy_start: bool = False,
+) -> dict:
+    rows = store.query("SELECT status FROM campaigns WHERE id = ?", (campaign_id,))
+    if not rows:
+        raise FileNotFoundError(f"campaign not found: {campaign_id}")
+    current = _campaign_status(rows[0]["status"])
+    next_status = transition_campaign(current, new_status, legacy_start=legacy_start)
+    from datetime import datetime
+
+    now = datetime.now(UTC).isoformat()
+    with store.write() as conn:
+        conn.execute(
+            "UPDATE campaigns SET status = ?, updated_at = ? WHERE id = ?",
+            (_db_status(next_status), now, campaign_id),
+        )
+    return dict(store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))[0])
 
 
 campaign = make_group("campaign", "Create, list, and inspect chaos campaigns.")
@@ -63,6 +104,16 @@ def list_campaigns(ctx: Context, db_opt: str | None, as_json: bool) -> None:
 @click.argument("name")
 @click.option("--description", "-d", default="", help="Campaign description.")
 @click.option("--hypothesis", "-h", default=None, help="Campaign hypothesis.")
+@click.option(
+    "--target-profile",
+    "target_profiles",
+    multiple=True,
+    help="Target profile to include.",
+)
+@click.option("--engine-policy", default="", help="Engine policy for the campaign.")
+@click.option("--budget", type=int, default=0, help="Maximum campaign runs.")
+@click.option("--deadline", type=float, default=None, help="Campaign deadline as epoch seconds.")
+@click.option("--stop-condition", "stop_conditions", multiple=True, help="Campaign stop condition.")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
@@ -71,6 +122,11 @@ def create_campaign(
     name: str,
     description: str,
     hypothesis: str | None,
+    target_profiles: tuple[str, ...],
+    engine_policy: str,
+    budget: int,
+    deadline: float | None,
+    stop_conditions: tuple[str, ...],
     db_opt: str | None,
     as_json: bool,
 ) -> None:
@@ -84,10 +140,19 @@ def create_campaign(
         campaign_id = f"camp-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC).isoformat()
         with store.write() as conn:
+            labels = {
+                "hypothesis": hypothesis or "",
+                "target_profiles": list(target_profiles),
+                "engine_policy": engine_policy,
+                "budget": budget,
+                "deadline_epoch_s": deadline,
+                "stop_conditions": list(stop_conditions),
+            }
             conn.execute(
-                "INSERT INTO campaigns (id, name, description, status, created_at, updated_at)"
-                " VALUES (?, ?, ?, 'draft', ?, ?)",
-                (campaign_id, name, description, now, now),
+                "INSERT INTO campaigns ("
+                "id, name, description, status, labels_json, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'draft', ?, ?, ?)",
+                (campaign_id, name, description, json.dumps(labels), now, now),
             )
         if as_json:
             row = store.query(
@@ -207,42 +272,152 @@ def delete_campaign(
         store.close()
 
 
+@campaign.command("approve")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def approve_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
+    """Approve a draft campaign."""
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        row = _transition_row(store, campaign_id, CampaignStatus.APPROVED)
+        if as_json:
+            click.echo(json.dumps(dict(row), indent=2, sort_keys=True))
+        else:
+            click.echo(style.ok(f"Campaign '{campaign_id}' approved."))
+    finally:
+        store.close()
+
+
+@campaign.command("pause")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def pause_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
+    """Persistently pause a running campaign."""
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        row = _transition_row(store, campaign_id, CampaignStatus.PAUSED)
+        if as_json:
+            click.echo(json.dumps(dict(row), indent=2, sort_keys=True))
+        else:
+            click.echo(style.ok(f"Campaign '{campaign_id}' paused."))
+    finally:
+        store.close()
+
+
+@campaign.command("resume")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def resume_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
+    """Resume a paused campaign and report recovery status."""
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+        if not rows:
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        current = _campaign_status(rows[0]["status"])
+        if current is CampaignStatus.PAUSED:
+            row = _transition_row(store, campaign_id, CampaignStatus.RUNNING)
+        elif current is CampaignStatus.RUNNING:
+            row = dict(rows[0])
+        else:
+            raise click.UsageError(f"cannot resume campaign in '{current.value}' status")
+        store.save_observation(
+            "campaign_resume",
+            source=campaign_id,
+            data={"recovery_status": "resumed", "campaign_id": campaign_id},
+        )
+        if as_json:
+            payload = dict(row)
+            payload["recovery_status"] = "resumed"
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(style.ok(f"Campaign '{campaign_id}' resumed (recovery: ready)."))
+    finally:
+        store.close()
+
+
+@campaign.command("plan")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def plan_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
+    """Build a side-effect-free campaign execution manifest."""
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+        if not rows:
+            raise FileNotFoundError(f"campaign not found: {campaign_id}")
+        row = dict(rows[0])
+        labels = json.loads(row.get("labels_json") or "{}")
+        experiments = json.loads(row.get("experiments_json") or "[]")
+        manifest = CampaignExecutionManifest(
+            campaign_id=campaign_id,
+            entries=tuple(
+                CampaignManifestEntry(
+                    candidate_id=spec,
+                    target=labels.get("target_profiles", [""])[0]
+                    if labels.get("target_profiles")
+                    else "",
+                    fault="",
+                )
+                for spec in experiments
+            ),
+            engine_policy=labels.get("engine_policy", ""),
+            target_profiles=tuple(labels.get("target_profiles", [])),
+            budget=labels.get("budget") or None,
+            deadline_epoch_s=labels.get("deadline_epoch_s"),
+            stop_conditions=tuple(labels.get("stop_conditions", [])),
+        )
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {"dry_run": True, **manifest.to_dict()},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            click.echo(f"Campaign {campaign_id} execution plan ({len(manifest.entries)} cells).")
+            for entry in manifest.entries:
+                click.echo(f"  {entry.candidate_id} -> planned")
+    finally:
+        store.close()
+
+
 @campaign.command("start")
 @click.argument("campaign_id")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
 def start_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
-    """Start a draft campaign (set status to 'running')."""
-    from datetime import datetime
-
-    db = db_opt or _ctx(ctx).db
-    store = open_store(db)
+    """Start a draft or approved campaign (legacy draft start is preserved)."""
+    store = open_store(db_opt or _ctx(ctx).db)
     try:
-        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
+        rows = store.query("SELECT status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
             click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        row = dict(rows[0])
-        if row["status"] != "draft":
-            click.echo(
-                f"Cannot start campaign in '{row['status']}' status (must be 'draft').",
-                err=True,
-            )
-            raise click.UsageError(f"cannot start campaign in '{row['status']}' status")
-        now = datetime.now(UTC).isoformat()
-        with store.write() as conn:
-            conn.execute(
-                "UPDATE campaigns SET status = 'running', updated_at = ? WHERE id = ?",
-                (now, campaign_id),
-            )
+        current = _campaign_status(rows[0]["status"])
+        if current not in (CampaignStatus.DRAFT, CampaignStatus.APPROVED):
+            raise click.UsageError(f"cannot start campaign in '{current.value}' status")
+        row = _transition_row(
+            store,
+            campaign_id,
+            CampaignStatus.RUNNING,
+            legacy_start=current is CampaignStatus.DRAFT,
+        )
         if as_json:
-            rows2 = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
-            r = dict(rows2[0])
             for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
-                if r.get(key):
-                    r[key] = json.loads(r[key])
-            click.echo(json.dumps(r, indent=2))
+                if row.get(key):
+                    row[key] = json.loads(row[key])
+            click.echo(json.dumps(row, indent=2, sort_keys=True))
         else:
             click.echo(style.ok(f"Campaign '{campaign_id}' started."))
     finally:
@@ -255,29 +430,32 @@ def start_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: 
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
 def archive_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
-    """Archive a campaign (set status to 'completed')."""
-    from datetime import datetime
-
-    db = db_opt or _ctx(ctx).db
-    store = open_store(db)
+    """Archive a completed or aborted campaign; legacy storage remains completed."""
+    store = open_store(db_opt or _ctx(ctx).db)
     try:
-        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
+        rows = store.query("SELECT status FROM campaigns WHERE id = ?", (campaign_id,))
         if not rows:
-            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
             raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        now = datetime.now(UTC).isoformat()
-        with store.write() as conn:
-            conn.execute(
-                "UPDATE campaigns SET status = 'completed', updated_at = ? WHERE id = ?",
-                (now, campaign_id),
-            )
+        current = _campaign_status(rows[0]["status"])
+        if current is CampaignStatus.RUNNING:
+            from datetime import datetime
+
+            now = datetime.now(UTC).isoformat()
+            with store.write() as conn:
+                conn.execute(
+                    "UPDATE campaigns SET status = 'completed', updated_at = ? WHERE id = ?",
+                    (now, campaign_id),
+                )
+            row = dict(store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))[0])
+            row["lifecycle_status"] = CampaignStatus.ARCHIVED.value
+        else:
+            row = _transition_row(store, campaign_id, CampaignStatus.ARCHIVED)
         if as_json:
-            rows2 = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
-            r = dict(rows2[0])
             for key in ("experiments_json", "window_json", "policy_json", "labels_json"):
-                if r.get(key):
-                    r[key] = json.loads(r[key])
-            click.echo(json.dumps(r, indent=2))
+                if row.get(key):
+                    row[key] = json.loads(row[key])
+            row["lifecycle_status"] = CampaignStatus.ARCHIVED.value
+            click.echo(json.dumps(row, indent=2, sort_keys=True))
         else:
             click.echo(style.ok(f"Campaign '{campaign_id}' archived."))
     finally:
@@ -289,22 +467,10 @@ def archive_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.pass_context
 def abort_campaign(ctx: Context, campaign_id: str, db_opt: str | None) -> None:
-    """Abort a draft campaign (set status to 'aborted')."""
-    from datetime import datetime
-
-    db = db_opt or _ctx(ctx).db
-    store = open_store(db)
+    """Abort an active campaign (set status to 'aborted')."""
+    store = open_store(db_opt or _ctx(ctx).db)
     try:
-        rows = store.query("SELECT id, name, status FROM campaigns WHERE id = ?", (campaign_id,))
-        if not rows:
-            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
-            raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        now = datetime.now(UTC).isoformat()
-        with store.write() as conn:
-            conn.execute(
-                "UPDATE campaigns SET status = 'aborted', updated_at = ? WHERE id = ?",
-                (now, campaign_id),
-            )
+        _transition_row(store, campaign_id, CampaignStatus.ABORTED)
         click.echo(style.ok(f"Campaign '{campaign_id}' aborted."))
     finally:
         store.close()
@@ -357,6 +523,15 @@ def _resolve_engine_from_state() -> str:
     from mayhem.cli.topology import _resolve_engine
 
     return _resolve_engine(str(_STATE.get("engine", ""))) or "podman"
+
+
+def _record_campaign_resume(store, campaign_id: str, status: str) -> None:
+    if status == "paused":
+        store.save_observation(
+            "campaign_resume",
+            source=campaign_id,
+            data={"recovery_status": "resumed", "campaign_id": campaign_id},
+        )
 
 
 @campaign.command("run")
@@ -414,6 +589,7 @@ def run_campaign(
         engine_name = _resolve_engine_from_state()
         gate = _gate_enabled() and not no_gate
 
+        _record_campaign_resume(store, campaign_id, row["status"])
         now = datetime.now(UTC).isoformat()
         with store.write() as conn:
             conn.execute(

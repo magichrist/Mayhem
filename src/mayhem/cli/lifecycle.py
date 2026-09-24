@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
+import json as _json
 import os
 import threading
 from collections.abc import Callable
@@ -14,7 +16,20 @@ import click
 
 from mayhem.cli import style
 from mayhem.cli.context import DEFAULT_DB, CliContext
+from mayhem.cli.execution import (
+    blast_radius_display,
+    compensation_display,
+    expected_evidence_display,
+    migration_warning,
+    reject_if_stale,
+)
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.cli.render import (
+    render_evidence_human,
+    render_plan_diff,
+    render_preflight_human,
+    render_preflight_json,
+)
 from mayhem.cli.services import (
     build_graph,
     engine_for,
@@ -27,14 +42,26 @@ from mayhem.cli.services import (
     run_journal,
 )
 from mayhem.controller.janitor import Janitor
+from mayhem.controller.plan_diff import diff_plans
 from mayhem.controller.planner import (
     restrict_plan_to_container,
     synthesize_k8s_maniac_spec,
     synthesize_maniac_spec,
 )
+from mayhem.controller.preflight import build_preflight
+from mayhem.controller.recovery import RecoveryService
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
+from mayhem.domain.evidence import EvidenceEnvelope
+from mayhem.infra.evidence import (
+    build_evidence,
+    load_evidence,
+    verify_evidence,
+    write_evidence,
+    write_evidence_file,
+)
 from mayhem.infra.lease_repository import SQLiteLeaseSink
+from mayhem.infra.report import report_id_for_run
 
 if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
@@ -93,7 +120,7 @@ def _sweep_before_run(store: Store) -> None:
     reclaimed). Owner-gone leases are reclaimed before TTL; anything still
     live is skipped and acquire() re-attempts the reap."""
     sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep(
-        run_liveness=_run_liveness_resolver(store)
+        run_liveness=_run_liveness_resolver(store), execute=True
     )
     for lease_id in sweep.expired:
         click.echo(style.info(f"cleaned stale lease {lease_id} (expired)"))
@@ -241,7 +268,7 @@ def _debug_progress() -> Callable[[Event], None]:
 
     lock = threading.Lock()
 
-    def _line(event: Event) -> str | None:  # noqa: PLR0911 (one return per event kind)
+    def _line(event: Event) -> str | None:
         kind = event.kind
         ts = style.ts(utc_now().strftime("%H:%M:%S"))
         if kind is EventKind.RUN_STARTED:
@@ -421,18 +448,35 @@ def _resolve_engine_from_state() -> str:
     return _resolve_engine(str(_STATE.get("engine", ""))) or "podman"
 
 
-def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph, str | None]:
+def _k8s_context_for_target(config_path: str | None, target: str | None) -> str | None:
+    if target is None:
+        return None
+    from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+
+    profile = load_profiles_from_mayhem_yaml(config_path).get(target)
+    return profile.context if profile is not None else None
+
+
+def _graph_from(
+    ctx: click.Context,
+    compose: str | None,
+    *,
+    engine: str | None = None,
+    target: str | None = None,
+) -> tuple[TopologyGraph, str | None]:
     from mayhem.cli.topology import _resolve_compose
 
     resolved = _resolve_compose(compose)
     try:
-        return build_graph(resolved), resolved
+        config_path = getattr(ctx.obj, "config", None) if ctx.obj is not None else None
+        return build_graph(
+            resolved, engine_name=engine, target=target, config_path=config_path
+        ), resolved
     except ValueError as exc:
         raise click.UsageError(str(exc), ctx=ctx) from None
 
 
 def _require_container(ctr: str, graph: TopologyGraph, ctx: click.Context) -> None:
-    """Loud guard for ``--ctr``: the container must exist in the topology."""
     if not graph.node_ids_for_container(ctr):
         available = ", ".join(graph.container_names()) or "<none>"
         raise click.UsageError(
@@ -441,6 +485,182 @@ def _require_container(ctr: str, graph: TopologyGraph, ctx: click.Context) -> No
             "from the blueprint or the runtime container name",
             ctx=ctx,
         )
+
+
+def _preflight_for_run(
+    *,
+    graph: object,
+    store: object,
+    prepared: object,
+    plan: object,
+    target: str | None,
+    engine: str,
+    config_path: str | None = None,
+) -> object:
+    fingerprint = getattr(prepared, "fingerprint", "") if prepared is not None else ""
+    cfg_id = getattr(prepared, "config_snapshot_id", "") if prepared is not None else ""
+    topo_id = getattr(prepared, "topology_snapshot_id", "") if prepared is not None else ""
+    safety = getattr(prepared, "safety", None) if prepared is not None else None
+    return build_preflight(
+        spec_path=None,
+        compose=None,
+        graph=graph,
+        store=store,
+        config_path=config_path,
+        profile=None,
+        allow_critical=getattr(safety, "allow_critical_cli", False)
+        if safety is not None
+        else False,
+        target=target,
+        engine=engine,
+        plan=plan,
+        safety=safety,
+        fingerprint=fingerprint,
+        config_snapshot_id=cfg_id,
+        topology_snapshot_id=topo_id,
+    )
+
+
+def _emit_preflight(preflight: object, as_json: bool) -> None:
+    if as_json:
+        click.echo(render_preflight_json(preflight))
+    else:
+        click.echo(render_preflight_human(preflight))
+        blast = getattr(preflight, "blast_radius", {}) or {}
+        if blast:
+            click.echo(blast_radius_display(blast))
+        comp = getattr(preflight, "compensation_status", "")
+        if comp:
+            click.echo(compensation_display(comp))
+        expected = getattr(preflight, "expected_evidence", ()) or ()
+        if expected:
+            click.echo(expected_evidence_display(expected))
+
+
+def _write_evidence_after_run(
+    *,
+    store: object,
+    preflight: object,
+    result: object,
+    engine: str,
+    evidence_dir: str | None,
+    skip_gate: bool = False,
+) -> EvidenceEnvelope | None:
+    import contextlib
+
+    try:
+        run_id = str(getattr(result, "run_id", getattr(preflight, "plan_id", "")) or "")
+        plan = getattr(preflight, "plan", None)
+        step_reports = tuple(
+            {
+                "step_id": str(getattr(s, "step_id", "")),
+                "ok": bool(getattr(s, "ok", False)),
+                "detail": str(getattr(s, "detail", "")),
+                "status": str(getattr(s, "status", "")),
+            }
+            for s in getattr(result, "steps", []) or []
+        )
+        leases: tuple[dict[str, object], ...] = ()
+        try:
+            journal = run_journal(store, run_id) if hasattr(store, "query") else {"leases": []}
+            leases = tuple(journal.get("leases", []) or [])
+        except Exception:
+            leases = ()
+        resolved_targets: list[str] = []
+        for lease in leases:
+            raw_target = lease.get("resolved_target_json")
+            if not isinstance(raw_target, str) or not raw_target:
+                continue
+            try:
+                target_data = json.loads(raw_target)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(target_data, dict):
+                authority = target_data.get("authority_key")
+                if authority:
+                    resolved_targets.append(str(authority))
+                else:
+                    resolved_targets.append(
+                        f"{target_data.get('namespace', '?')}/{target_data.get('pod') or target_data.get('node') or '?'}"
+                    )
+        observations: tuple[dict[str, object], ...] = tuple(
+            getattr(result, "observability", []) or []
+        )
+        try:
+            obs_list: list[dict[str, object]] = []
+            for item in observations:
+                if hasattr(item, "model_dump"):
+                    try:
+                        obs_list.append(item.model_dump(mode="json"))  # type: ignore[call-arg]
+                    except Exception:
+                        obs_list.append({"raw": str(item)})
+                elif isinstance(item, dict):
+                    obs_list.append(item)
+                else:
+                    obs_list.append({"raw": str(item)})
+            observations = tuple(obs_list)
+        except Exception:
+            observations = ()
+        verdict = ""
+        try:
+            v = getattr(result, "verdict", None)
+            if v is not None and hasattr(v, "value"):
+                try:
+                    verdict = str(v.value)  # type: ignore[attr-defined]
+                except Exception:
+                    verdict = str(v)
+            else:
+                verdict = str(v or "")
+            if not verdict:
+                verdict = str(getattr(result, "status", "") or "")
+        except Exception:
+            verdict = str(getattr(result, "status", "") or "")
+        recovery_state = "recovered" if not getattr(result, "dirty_leases", None) else "dirty"
+        raw_rem = getattr(result, "dirty_leases", []) or []
+        try:
+            remediation = tuple(str(x) for x in raw_rem)
+        except Exception:
+            remediation = ()
+        envelope = build_evidence(
+            run_id=run_id,
+            plan=plan,
+            target_profile=getattr(preflight, "target_profile", None),
+            engine=engine,
+            safety_decisions=tuple(
+                str(x) for x in getattr(preflight, "safety_decisions", []) or []
+            ),
+            step_reports=step_reports,
+            lease_timeline=leases,
+            observations=observations,
+            verdict=str(verdict),
+            recovery_state=str(recovery_state),
+            remediation=remediation,
+            environment_fingerprint=str(getattr(preflight, "environment_fingerprint", "") or ""),
+            target_identity=str(getattr(preflight, "target_identity", "") or ""),
+            blast_radius=dict(getattr(preflight, "blast_radius", {}) or {}),
+            compensation_status=str(getattr(preflight, "compensation_status", "") or ""),
+            logical_target=str(getattr(preflight, "k8s_target_scope", "") or ""),
+            resolved_target=",".join(resolved_targets),
+            drift_status=(
+                "drift recorded"
+                if any("drift" in str(report.get("detail", "")).lower() for report in step_reports)
+                else "no drift recorded"
+            ),
+            k8s_context=str(getattr(preflight, "k8s_context", "") or ""),
+            k8s_namespace=str(getattr(preflight, "k8s_namespace", "") or ""),
+            k8s_capability_verdict=str(getattr(preflight, "k8s_capability_verdict", "") or ""),
+            k8s_wait_strategy=str(getattr(preflight, "k8s_wait_strategy", "") or ""),
+            k8s_recovery_guidance=str(getattr(preflight, "k8s_recovery_guidance", "") or ""),
+            skip_gate=skip_gate,
+        )
+        with contextlib.suppress(Exception):
+            write_evidence(store, envelope)
+        if evidence_dir:
+            with contextlib.suppress(Exception):
+                write_evidence_file(envelope, evidence_dir)
+        return envelope
+    except Exception:
+        return None
 
 
 def _suggest_next_cell(
@@ -532,10 +752,27 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
 
 @click.command("plan")
 @_compose_option
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option(
+    "--diff",
+    "diff_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Compare authored plan with last accepted plan file.",
+)
+@click.option(
+    "--evidence-dir", type=click.Path(), default=None, help="Directory to write evidence artifacts."
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
-def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
-    """Compile a drill spec against a topology and print the frozen plan JSON."""
+def plan(
+    ctx: click.Context,
+    experiment: str | None,
+    compose: str | None,
+    as_json: bool,
+    diff_path: str | None,
+    evidence_dir: str | None,
+) -> None:
     graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
     experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
@@ -553,9 +790,52 @@ def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> Non
         compiled = plan_from_spec(
             experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
         )
+        preflight = _preflight_for_run(
+            graph=graph,
+            store=store,
+            prepared=prepared,
+            plan=compiled.plan,
+            target=obj.target,
+            engine=_resolve_engine_from_state(),
+        )
+        if diff_path is not None:
+            try:
+                diff = diff_plans(compiled.plan, _json.loads(Path(diff_path).read_text()))
+            except Exception:
+                diff = diff_plans(compiled.plan.model_dump(mode="json"), {})
+            if as_json:
+                ordered = {k: diff[k] for k in sorted(diff.keys())}
+                click.echo(_json.dumps(ordered, indent=2))
+            else:
+                click.echo(render_plan_diff(diff))
+            return
+        if as_json:
+            click.echo(render_preflight_json(preflight))
+        else:
+            click.echo(compiled.plan.model_dump_json(indent=2))
+        if evidence_dir is not None:
+            from pathlib import Path as _Path
+
+            env = build_evidence(
+                run_id=compiled.run_id,
+                plan=compiled.plan,
+                target_profile=obj.target,
+                engine=_resolve_engine_from_state(),
+                safety_decisions=tuple(preflight.safety_decisions),
+                step_reports=(),
+                lease_timeline=(),
+                observations=(),
+                verdict="planned",
+                recovery_state="pending",
+                remediation=(),
+                environment_fingerprint=preflight.environment_fingerprint,
+                target_identity=preflight.target_identity,
+                blast_radius=dict(preflight.blast_radius),
+                compensation_status=preflight.compensation_status,
+            )
+            write_evidence_file(env, _Path(evidence_dir))
     finally:
         store.close()
-    click.echo(compiled.plan.model_dump_json(indent=2))
 
 
 @click.command("run")
@@ -566,8 +846,21 @@ def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> Non
     type=str,
     default=None,
     metavar="CONTAINER",
-    help="Only execute faults on this container (container_name from the compose "
-    "blueprint, or the runtime container name).",
+    help="Only execute faults on this container (container_name from the compose blueprint, or the runtime container name).",
+)
+@click.option(
+    "--engine",
+    "run_engine",
+    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
+    default=None,
+    help="Engine for this run (overrides global --kubernetes/--podman).",
+)
+@click.option(
+    "--target",
+    "run_target",
+    type=str,
+    default=None,
+    help="Target profile name for kubernetes runs (logical target).",
 )
 @click.option(
     "--next",
@@ -576,6 +869,30 @@ def plan(ctx: click.Context, experiment: str | None, compose: str | None) -> Non
     default=False,
     help="After execution, suggest the most valuable untested cell to run next.",
 )
+@click.option(
+    "--execute", is_flag=True, default=False, help="Explicit approval to execute the plan."
+)
+@click.option(
+    "--from-plan",
+    "from_plan",
+    type=click.Path(exists=True),
+    default=None,
+    help="Execute a reviewed plan file.",
+)
+@click.option(
+    "--plan-id", type=str, default=None, help="Execute a plan previously stored by run id."
+)
+@click.option(
+    "--diff",
+    "diff_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Compare authored plan with last accepted plan.",
+)
+@click.option(
+    "--evidence-dir", type=click.Path(), default=None, help="Directory to write evidence artifacts."
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output preflight as JSON.")
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
 def run(
@@ -583,17 +900,186 @@ def run(
     experiment: str | None,
     compose: str | None,
     ctr: str | None,
+    run_engine: str | None,
+    run_target: str | None,
     show_next: bool,
+    execute: bool,
+    from_plan: str | None,
+    plan_id: str | None,
+    diff_path: str | None,
+    evidence_dir: str | None,
+    as_json: bool,
 ) -> None:
-    """Compile then execute a drill spec; prints the run summary."""
-    graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
+    effective_engine = run_engine or _resolve_engine_from_state()
+    target_name = run_target or obj.target
+    k8s_context = _k8s_context_for_target(obj.config, target_name)
+    graph, resolved_compose = _graph_from(
+ctx, compose, engine=effective_engine, target=target_name)
     if ctr is not None:
+        if effective_engine == "kubernetes":
+            raise click.UsageError(
+                "--ctr is not a Kubernetes target selector; use --target", ctx=ctx
+            )
         _require_container(ctr, graph, ctx)
-    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
     store = open_store(obj.db)
     try:
         _sweep_before_run(store)
+        if from_plan is not None or plan_id is not None:
+            if from_plan is not None and plan_id is not None:
+                raise click.UsageError("--from-plan and --plan-id are mutually exclusive", ctx=ctx)
+            loaded = None
+            if from_plan is not None:
+                loaded = _json.loads(Path(from_plan).read_text())
+                try:
+                    from mayhem.domain.experiments import ExecutionPlan
+
+                    loaded_plan = ExecutionPlan.model_validate(loaded)
+                except Exception:
+                    loaded_plan = None
+                if loaded_plan is not None:
+                    preflight = _preflight_for_run(
+                        graph=graph,
+                        store=store,
+                        prepared=None,
+                        plan=loaded_plan,
+                        target=target_name,
+                        config_path=obj.config,
+                        engine=effective_engine,
+                    )
+                    _emit_preflight(preflight, as_json)
+                    if not execute:
+                        click.echo("plan loaded; pass --execute to run", err=True)
+                        return
+                    compiled_plan = loaded_plan
+                    prepared_dummy = None
+                    try:
+                        from mayhem.cli.services import prepare as _prep
+
+                        prepared_dummy = _prep(
+                            config_path=None,
+                            profile=obj.profile,
+                            allow_critical=obj.allow_critical,
+                            store=store,
+                            graph=graph,
+                            compose=resolved_compose,
+                            spec_path=experiment or from_plan,
+                            target=target_name,
+                        )
+                        reject_if_stale(
+                            preflight_fingerprint=loaded_plan.environment_fingerprint,
+                            current_fingerprint=prepared_dummy.fingerprint,
+                            preflight_target=target_name,
+                            current_target=target_name,
+                        )
+                    except ValueError as exc:
+                        raise click.UsageError(str(exc), ctx=ctx) from None
+                    engine_name = effective_engine
+                    bypass: dict[tuple[str, str], str] = {}
+                    if _gate_enabled():
+                        bypass = _gate_bypasses(engine_name, compiled_plan, graph)
+                    eng = engine_for(
+                        store,
+                        engine_name,
+                        live_graph=lambda: build_graph(
+                            resolved_compose,
+                            engine_name=effective_engine,
+                            target=target_name,
+                            config_path=obj.config,
+                        ),
+                        on_event=_debug_progress() if obj.debug else None,
+                        bypass=bypass,
+                        recovery_grace=prepared_dummy.recovery_grace if prepared_dummy else 300.0,
+                        k8s_context=k8s_context,
+                    )
+                    result = eng.execute(compiled_plan)
+                    preflight2 = _preflight_for_run(
+                        graph=graph,
+                        store=store,
+                        prepared=prepared_dummy,
+                        plan=compiled_plan,
+                        target=target_name,
+                        config_path=obj.config,
+                        engine=engine_name,
+                    )
+                    _write_evidence_after_run(
+                        store=store,
+                        preflight=preflight2,
+                        result=result,
+                        engine=engine_name,
+                        evidence_dir=evidence_dir,
+                    )
+                    click.echo(result.summary_md())
+                    return
+            if plan_id is not None:
+                rows = store.query("SELECT plan_json FROM runs WHERE id = ?", (plan_id,))
+                if not rows:
+                    raise click.UsageError(f"no such plan: {plan_id}", ctx=ctx)
+                raw = (
+                    rows[0]["plan_json"]
+                    if isinstance(rows[0], dict) or hasattr(rows[0], "__getitem__")
+                    else rows[0][0]
+                )
+                loaded = _json.loads(raw) if isinstance(raw, str) else {}
+                try:
+                    from mayhem.domain.experiments import ExecutionPlan
+
+                    loaded_plan = ExecutionPlan.model_validate(loaded)
+                except Exception:
+                    raise click.UsageError(
+                        f"stored plan {plan_id!r} is not a valid ExecutionPlan", ctx=ctx
+                    ) from None
+                if not execute:
+                    preflight = _preflight_for_run(
+                        graph=graph,
+                        store=store,
+                        prepared=None,
+                        plan=loaded_plan,
+                        target=target_name,
+                        config_path=obj.config,
+                        engine=effective_engine,
+                    )
+                    _emit_preflight(preflight, as_json)
+                    click.echo("plan loaded; pass --execute to run", err=True)
+                    return
+                engine_name = effective_engine
+                eng = engine_for(
+                    store,
+                    engine_name,
+                    live_graph=lambda: build_graph(
+                        resolved_compose,
+                        engine_name=effective_engine,
+                        target=target_name,
+                        config_path=obj.config,
+                    ),
+                    on_event=_debug_progress() if obj.debug else None,
+                    bypass={},
+                    recovery_grace=300.0,
+                    k8s_context=k8s_context,
+                )
+                result = eng.execute(loaded_plan)
+                preflight_tmp = _preflight_for_run(
+                    graph=graph,
+                    store=store,
+                    prepared=None,
+                    plan=loaded_plan,
+                    target=target_name,
+                    config_path=obj.config,
+                    engine=engine_name,
+                )
+                _write_evidence_after_run(
+                    store=store,
+                    preflight=preflight_tmp,
+                    result=result,
+                    engine=engine_name,
+                    evidence_dir=evidence_dir,
+                )
+                click.echo(result.summary_md())
+                return
+        if experiment is None:
+            experiment, config_for_layers = _resolve_spec_pair(None, obj.config)
+        else:
+            experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
         prepared = prepare(
             config_path=config_for_layers,
             profile=obj.profile,
@@ -602,10 +1088,9 @@ def run(
             graph=graph,
             compose=resolved_compose,
             spec_path=experiment,
+            target=target_name,
         )
-        compiled = plan_from_spec(
-            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
-        )
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, engine=effective_engine)
         if ctr is not None:
             compiled = dataclasses.replace(
                 compiled, plan=restrict_plan_to_container(compiled.plan, ctr, graph)
@@ -614,26 +1099,95 @@ def run(
                 style.info("info:") + f" --ctr scoped the plan to container {style.cyan(ctr)}",
                 err=True,
             )
-        engine_name = _resolve_engine_from_state()
-        bypass: dict[tuple[str, str], str] = {}
+        preflight = _preflight_for_run(
+            graph=graph,
+            store=store,
+            prepared=prepared,
+            plan=compiled.plan,
+            target=target_name,
+            config_path=obj.config,
+            engine=effective_engine,
+        )
+        if diff_path is not None:
+            try:
+                diff = diff_plans(compiled.plan, _json.loads(Path(diff_path).read_text()))
+            except Exception:
+                diff = diff_plans(compiled.plan.model_dump(mode="json"), {})
+            if as_json:
+                ordered = {k: diff[k] for k in sorted(diff.keys())}
+                click.echo(_json.dumps(ordered, indent=2))
+            else:
+                click.echo(render_plan_diff(diff))
+            if not execute:
+                return
+        _emit_preflight(preflight, as_json)
+        if not execute:
+            if experiment is not None and not from_plan and not plan_id:
+                click.echo(migration_warning(), err=True)
+                click.echo(
+                    "executing via compatibility adapter; use --execute --from-plan for plan-first flow",
+                    err=True,
+                )
+            else:
+                click.echo("plan ready; pass --execute to run", err=True)
+                return
+        if experiment is not None and not from_plan and not plan_id and not execute:
+            pass
+        should_execute = execute or (
+            experiment is not None and diff_path is None and from_plan is None and plan_id is None
+        )
+        if not should_execute:
+            return
+        if obj.dry_run:
+            from mayhem.controller.safety import dry_run_policy_evaluation
+
+            decisions = dry_run_policy_evaluation(compiled.plan, graph, prepared.safety)
+            for d in decisions:
+                click.echo(f"dry-run {d.rule_id}: {d.outcome} {d.reason} -> {d.remediation}")
+            return
+        skip_gate_used = not _gate_enabled()
+        override = (
+            os.getenv("MAYHEM_ALLOW_SKIP_GATE") == "1" or os.getenv("MAYHEM_BREAK_GLASS") == "1"
+        )
+        engine_name = effective_engine
+        bypass2: dict[tuple[str, str], str] = {}
         if _gate_enabled():
-            bypass = _gate_bypasses(engine_name, compiled.plan, graph)
+            bypass2 = _gate_bypasses(engine_name, compiled.plan, graph)
         else:
             click.echo(
-                style.warn("warning:") + " impact gate skipped (--skip-gate); inert faults may run",
+                style.danger("!!! BREAK-GLASS WARNING !!!")
+                + " impact gate skipped (--skip-gate); inert faults may run; audit field break-glass: --skip-gate",
                 err=True,
             )
-        engine = engine_for(
+            click.echo(
+                style.warn("warning:")
+                + " --skip-gate requires MAYHEM_ALLOW_SKIP_GATE=1 or MAYHEM_BREAK_GLASS=1 to be considered automation-success; otherwise evidence will be marked and automation must treat run as failed",
+                err=True,
+            )
+        engine_obj = engine_for(
             store,
             engine_name,
-            live_graph=lambda: build_graph(resolved_compose),
+            live_graph=lambda: build_graph(
+                resolved_compose,
+                engine_name=effective_engine,
+                target=target_name,
+                config_path=obj.config,
+            ),
             on_event=_debug_progress() if obj.debug else None,
-            bypass=bypass,
+            bypass=bypass2,
             recovery_grace=prepared.recovery_grace,
+            k8s_context=k8s_context,
         )
-        result = engine.execute(compiled.plan)
+        result = engine_obj.execute(compiled.plan)
+        _write_evidence_after_run(
+            store=store,
+            preflight=preflight,
+            result=result,
+            engine=engine_name,
+            evidence_dir=evidence_dir,
+            skip_gate=skip_gate_used,
+        )
         if obj.debug:
-            # per-step lines were streamed live; print the consolidated trailer
             trailer = [
                 f"**status**: {style.state(result.status)}",
                 f"**wall**: {style.ts(f'{result.wall_seconds:.1f}s')}",
@@ -646,13 +1200,22 @@ def run(
             click.echo("\n".join(trailer))
         else:
             click.echo(result.summary_md())
-        # Copy-paste handle for follow-up commands: `mayhem history <run_id>`.
         click.echo(
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
             f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
         )
+        try:
+            envelope = load_evidence(store, compiled.run_id)
+            if envelope is not None:
+                click.echo(render_evidence_human(envelope))
+        except Exception:
+            pass
         if show_next and result.status == "completed":
             _suggest_next_cell(ctx, obj.db, graph, resolved_compose)
+        from mayhem.cli.app import _STATE as _S
+
+        if skip_gate_used and not override and _S.get("format") == "json":
+            ctx.exit(int(ExitCode.VALIDATION_ERROR))
         if result.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))
     finally:
@@ -797,12 +1360,28 @@ def maniac(
         engine = engine_for(
             store,
             engine_name,
-            live_graph=lambda: build_graph(resolved_compose),
+            live_graph=lambda: build_graph(
+                resolved_compose, engine_name=engine_name, target=obj.target
+            ),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass,
             recovery_grace=prepared.recovery_grace,
         )
         result = engine.execute(compiled.plan)
+        try:
+            pf = _preflight_for_run(
+                graph=graph,
+                store=store,
+                prepared=prepared,
+                plan=compiled.plan,
+                target=obj.target,
+                engine=engine,
+            )
+            _write_evidence_after_run(
+                store=store, preflight=pf, result=result, engine=engine, evidence_dir=None
+            )
+        except Exception:
+            pass
         if obj.debug:
             trailer = [
                 f"**status**: {style.state(result.status)}",
@@ -837,7 +1416,6 @@ def maniac(
 def status(
     ctx: click.Context, db_opt: str | None, run_id: str | None, limit: int, json_flag: bool
 ) -> None:
-    """Show runs recorded in the database."""
     db = db_opt or _ctx(ctx).db or DEFAULT_DB
     store = open_store(db)
     try:
@@ -845,6 +1423,12 @@ def status(
             row = run_detail(store, run_id)
             if row is None:
                 raise click.UsageError(f"no such run: {run_id}", ctx=ctx)
+            try:
+                envelope = load_evidence(store, run_id)
+                if envelope is not None:
+                    row["evidence"] = envelope.model_dump(mode="json")
+            except Exception:
+                pass
             click.echo(json.dumps(row, indent=2))
             return
         rows = recent_runs(store, limit)
@@ -859,49 +1443,260 @@ def status(
         store.close()
 
 
-@click.command("history")
+@click.command("verify")
 @click.argument("run_id")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON.")
 @click.pass_context
-def history(ctx: click.Context, run_id: str, json_flag: bool) -> None:
-    """Print steps, events, and leases recorded for one run."""
+def verify(ctx: click.Context, run_id: str, json_flag: bool) -> None:
+    store = open_store(_ctx(ctx).db)
+    try:
+        envelope = load_evidence(store, run_id)
+        if envelope is None:
+            journal = run_journal(store, run_id)
+            if not journal.get("steps") and not journal.get("leases"):
+                raise click.UsageError(f"no such run: {run_id}", ctx=ctx)
+            envelope = EvidenceEnvelope(
+                run_id=run_id,
+                plan_hash="",
+                verdict="",
+                step_reports=tuple(journal.get("steps", [])),
+                lease_timeline=tuple(journal.get("leases", [])),
+            )
+        result = verify_evidence(envelope)
+        if json_flag:
+            ordered = {k: result[k] for k in sorted(result.keys())}
+            click.echo(json.dumps(ordered, indent=2, sort_keys=False))
+        else:
+            click.echo(f"verify {run_id}: {'complete' if result['complete'] else 'incomplete'}")
+            if result["errors"]:
+                for err in result["errors"]:
+                    click.echo(f"  - {err}")
+            else:
+                click.echo("  evidence complete")
+        if not result["complete"]:
+            ctx.exit(int(ExitCode.VALIDATION_ERROR))
+    finally:
+        store.close()
+
+
+@click.command("history")
+@click.argument("run_id")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON.")
+@click.option(
+    "--evidence-dir", type=click.Path(), default=None, help="Directory for evidence artifacts."
+)
+@click.pass_context
+def history(ctx: click.Context, run_id: str, json_flag: bool, evidence_dir: str | None) -> None:
     store = open_store(_ctx(ctx).db)
     try:
         journal = run_journal(store, run_id)
+        if run_detail(store, run_id) is not None:
+            journal["report_id"] = report_id_for_run(run_id)
+        try:
+            envelope = load_evidence(store, run_id)
+            if envelope is not None:
+                journal["evidence"] = envelope.model_dump(mode="json")
+                journal["evidence_human"] = render_evidence_human(envelope)
+                if evidence_dir is not None:
+                    with contextlib.suppress(Exception):
+                        write_evidence_file(envelope, Path(evidence_dir))
+
+        except Exception:
+            pass
     finally:
         store.close()
-    click.echo(json.dumps(journal, indent=2))
+    if json_flag:
+        click.echo(json.dumps(journal, indent=2))
+    else:
+        click.echo(json.dumps(journal, indent=2))
+        try:
+            envelope = load_evidence(open_store(_ctx(ctx).db), run_id)
+            if envelope is not None:
+                click.echo("---")
+                click.echo(render_evidence_human(envelope))
+        except Exception:
+            pass
 
 
-@click.command("recover")
-@click.argument("run_id")
-@click.pass_context
-def recover(ctx: click.Context, run_id: str) -> None:
-    """Recover every orphaned fault lease belonging to a run."""
-    store = open_store(_ctx(ctx).db)
-    try:
-        recovered = engine_for(store, _resolve_engine_from_state()).recover_run(run_id)
-        if not recovered:
+def _recovery_service(store: Store) -> RecoveryService:
+    return RecoveryService(
+        SQLiteLeaseSink(store),
+        run_liveness=_run_liveness_resolver(store),
+    )
+
+
+class RecoverGroup(click.Group):
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        if args and args[0] not in self.commands:
+            legacy = click.Command(
+                "legacy",
+                params=[click.Argument(["run_id"])],
+                callback=self._legacy_execute,
+                help="Recover one run id.",
+            )
+            return legacy.name, legacy, args
+        return super().resolve_command(ctx, args)
+
+    def _legacy_execute(self, run_id: str) -> None:
+        store = open_store(_ctx(click.get_current_context()).db)
+        try:
+            service = _recovery_service(store)
+            result = service.execute(service.plan((run_id,)))
+        finally:
+            store.close()
+        if not result.recovered:
             click.echo(f"nothing to recover for {style.cyan(run_id)}")
             return
-        for lease_id in recovered:
+        for lease_id in result.recovered:
             click.echo(f"recovered lease {style.cyan(lease_id)}")
-    finally:
-        store.close()
 
 
-@click.command("janitor")
+@click.group("recover", cls=RecoverGroup)
+def recover() -> None:
+    """Inspect and execute explicit run recovery."""
+
+
+@recover.command("status")
+@click.argument("run_ids", nargs=-1, required=True)
+@click.option("--target", "target_profiles", multiple=True)
+@click.option("--json", "as_json", is_flag=True)
 @click.pass_context
-def janitor(ctx: click.Context) -> None:
-    """Reclaim leases past TTL — or owned by a controller that is gone."""
+def recover_status(
+    ctx: click.Context,
+    run_ids: tuple[str, ...],
+    target_profiles: tuple[str, ...],
+    as_json: bool,
+) -> None:
     store = open_store(_ctx(ctx).db)
     try:
-        sweep: SweepResult = Janitor(SQLiteLeaseSink(store)).sweep(
-            run_liveness=_run_liveness_resolver(store)
+        result = _recovery_service(store).status(run_ids, target_profiles=target_profiles)
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(result.model_dump(mode="json"), default=str))
+        return
+    click.echo(f"recovery {result.state.value} for {', '.join(result.run_ids)}")
+    for lease in result.leases:
+        click.echo(
+            f"  {lease.id} owner={lease.owner} expires={lease.expires_at} "
+            f"target={','.join(lease.target)} fault={lease.fault} "
+            f"state={lease.state} recovery={lease.recovery.value}"
+        )
+
+
+@recover.command("plan")
+@click.argument("run_ids", nargs=-1, required=True)
+@click.option("--target", "target_profiles", multiple=True)
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_context
+def recover_plan(
+    ctx: click.Context,
+    run_ids: tuple[str, ...],
+    target_profiles: tuple[str, ...],
+    as_json: bool,
+) -> None:
+    store = open_store(_ctx(ctx).db)
+    try:
+        result = _recovery_service(store).plan(run_ids, target_profiles=target_profiles)
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(result.model_dump(mode="json"), default=str))
+        return
+    click.echo(f"recovery plan {result.state.value}")
+    for lease in result.leases:
+        click.echo(
+            f"  {lease.id}: compensate={json.dumps(list(lease.compensation))} "
+            f"probe={json.dumps(list(lease.verification_probes))} "
+            f"escalation={'; '.join(lease.escalation) or 'none'}"
+        )
+
+
+@recover.command("execute")
+@click.argument("run_ids", nargs=-1, required=True)
+@click.option("--target", "target_profiles", multiple=True)
+@click.option("--artifact-dir", type=click.Path(), default=None)
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_context
+def recover_execute(
+    ctx: click.Context,
+    run_ids: tuple[str, ...],
+    target_profiles: tuple[str, ...],
+    artifact_dir: str | None,
+    as_json: bool,
+) -> None:
+    store = open_store(_ctx(ctx).db)
+    try:
+        service = _recovery_service(store)
+        result = service.execute(
+            service.plan(run_ids, target_profiles=target_profiles),
+            artifact_dir=artifact_dir,
         )
     finally:
         store.close()
-    if sweep.quiet:
+    if as_json:
+        click.echo(json.dumps(result.model_dump(mode="json"), default=str))
+        if result.dirty:
+            ctx.exit(int(ExitCode.RECOVERY_FAILURE))
+        return
+    for lease_id in result.recovered:
+        click.echo(f"recovered lease {style.cyan(lease_id)}")
+    for lease_id in result.expired:
+        click.echo(f"expired lease {style.cyan(lease_id)}")
+    for lease_id in result.dirty:
+        click.echo(style.danger(f"DIRTY lease {lease_id}: manual action required"))
+    if result.handoff_path is not None:
+        click.echo(f"handoff artifact: {result.handoff_path}")
+    if result.dirty:
+        ctx.exit(int(ExitCode.RECOVERY_FAILURE))
+
+
+@click.command("janitor")
+@click.option("--execute", is_flag=True, default=False, help="Apply the planned lease transitions.")
+@click.option("--json", "as_json", is_flag=True, help="Emit a JSON projection.")
+@click.pass_context
+def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
+    """Preview lease cleanup by default; pass --execute to apply it."""
+    store = open_store(_ctx(ctx).db)
+    try:
+        janitor_service = Janitor(SQLiteLeaseSink(store))
+        liveness = _run_liveness_resolver(store)
+        if execute:
+            sweep: SweepResult = janitor_service.sweep(
+                run_liveness=liveness, execute=True
+            )
+            payload = {
+                "execute": True,
+                "expired": list(sweep.expired),
+                "recovered": list(sweep.recovered),
+                "dirty": list(sweep.dirty),
+            }
+        else:
+            preview = janitor_service.plan(run_liveness=liveness)
+            sweep = None
+            payload = {
+                "execute": False,
+                "would_expire": list(preview.would_expire),
+                "would_recover": list(preview.would_recover),
+                "would_mark_dirty": list(preview.would_mark_dirty),
+            }
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(payload))
+        if execute and sweep is not None and sweep.dirty:
+            ctx.exit(int(ExitCode.RECOVERY_FAILURE))
+        return
+    if not execute:
+        click.echo(style.cyan("janitor dry-run: pass --execute to apply changes"))
+        for lease_id in payload["would_expire"]:
+            click.echo(f"would expire lease {style.cyan(lease_id)}")
+        for lease_id in payload["would_recover"]:
+            click.echo(f"would recover lease {style.cyan(lease_id)}")
+        return
+    if sweep is None or sweep.quiet:
         click.echo(style.cyan("janitor: nothing to do"))
         return
     for lease_id in sweep.expired:

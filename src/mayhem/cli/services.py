@@ -73,10 +73,16 @@ def engine_fault_kinds() -> tuple[str, ...]:
         from mayhem.controller.k8s_runtime import k8s_available_faults
 
         return tuple(k8s_available_faults())
-    return tuple(sorted(d.id for d in all_definitions()))
+    return tuple(sorted(d.id for d in all_definitions() if not d.catalog_only))
 
 
-def build_graph(compose: str | None) -> TopologyGraph:
+def build_graph(
+    compose: str | None,
+    *,
+    engine_name: str | None = None,
+    target: str | None = None,
+    config_path: str | None = None,
+) -> TopologyGraph:
     """Build a topology graph from a compose blueprint or the live cluster.
 
     Drill specs are compose-native (Phase 6): the graph is derived from
@@ -92,11 +98,11 @@ def build_graph(compose: str | None) -> TopologyGraph:
     from mayhem.topology.providers.compose import ComposeFileProvider
     from mayhem.topology.service import TopologyService
 
-    engine = _resolve_engine(str(_STATE.get("engine", "")))
+    engine = engine_name or _resolve_engine(str(_STATE.get("engine", "")))
 
     if engine == "kubernetes":
         if compose is None:
-            return _kubernetes_discovery_graph()
+            return _kubernetes_discovery_graph(target=target, config_path=config_path)
         from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
         from mayhem.topology.service import TopologyService as _ManifestTopologyService
 
@@ -147,7 +153,9 @@ def build_graph(compose: str | None) -> TopologyGraph:
     return result
 
 
-def _kubernetes_discovery_graph() -> TopologyGraph:
+def _kubernetes_discovery_graph(
+    target: str | None = None, config_path: str | None = None
+) -> TopologyGraph:
     """Discover the topology from the live cluster (``--kubernetes`` engine).
 
     Mirrors the kubernetes branch of ``mayhem topology discover``: the graph
@@ -164,11 +172,32 @@ def _kubernetes_discovery_graph() -> TopologyGraph:
 
     if KUBERNETES_IMPORT_ERROR is not None:
         raise ValueError("Kubernetes discovery needs the k8s SDK. " + KUBERNETES_INSTALL_HINT)
-    provider = KubernetesProvider("kubernetes", context=None, namespace=None)
+    context = None
+    namespace = None
+    workload_selector = None
+    if target is not None:
+        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+
+        profiles = load_profiles_from_mayhem_yaml(config_path)
+        profile = profiles.get(target)
+        if profile is None:
+            raise ValueError(f"unknown Kubernetes target profile {target!r}")
+        if profile.engine != "kubernetes":
+            raise ValueError(f"target profile {target!r} is not a Kubernetes profile")
+        context = profile.context
+        namespace = profile.namespace
+        workload_selector = profile.workload_selector
+    provider = KubernetesProvider(
+        "kubernetes",
+        context=context,
+        namespace=namespace,
+        workload_selector=workload_selector,
+    )
     if not provider.is_available():
+        details = provider.readiness_details()
         raise ValueError(
-            "Kubernetes cluster is not reachable: check the active kubeconfig "
-            "context the target cluster is reachable through."
+            "Kubernetes cluster is not reachable: "
+            f"{details.get('error', 'check context and namespace')}"
         )
     return TopologyService().discover([provider]).graph
 
@@ -186,24 +215,33 @@ def prepare(
     *,
     config_path: str | None,
     profile: str | None,
+    policy: str | None = None,
     allow_critical: bool,
     store: Store,
     graph: TopologyGraph,
     compose: str | None,
     spec_path: str | None = None,
+    target: str | None = None,
 ) -> Prepared:
+    from mayhem.cli.app import _STATE
+
+    effective_policy = policy or _STATE.get("policy") or None
     cfg, sources = load_config(
         config_path=config_path,
         profile=profile,
+        policy=effective_policy,
         environ={"MAYHEM_LOG_LEVEL": "INFO"},
         skip_default_file_if_spec=spec_path,
     )
     cfg_snapshot_id = save_snapshot(store, cfg, sources)
+    target_profile = target or _STATE.get("target", "") or None
 
     fingerprint = environment_fingerprint(
         host_names=[n.name for n in graph.of_kind(NodeKind.HOST)],
         compose_digest=_compose_digest(compose),
         profile=profile,
+        policy_id=effective_policy,
+        target_profile=target_profile,
     )
     topo_snapshot_id = "topo-" + fingerprint[:12]
     with store.write() as conn:
@@ -214,6 +252,7 @@ def prepare(
         )
 
     budget = cfg.blast_radius or BlastRadiusBudget()
+    effective_policy = policy or _STATE.get("policy") or ""
     return Prepared(
         config_snapshot_id=cfg_snapshot_id,
         topology_snapshot_id=topo_snapshot_id,
@@ -223,6 +262,8 @@ def prepare(
             budget=budget,
             fingerprint=fingerprint,
             allow_critical_cli=allow_critical,
+            policy_id=effective_policy,
+            target_profile=target_profile,
         ),
         recovery_grace=cfg.recovery_grace,
     )
@@ -254,10 +295,16 @@ def plan_from_spec(
     # same spec be recorded in one persistent DB without colliding on the
     # `runs.id` PRIMARY KEY.
     run_id = f"r-{spec.name}-{uuid.uuid4().hex[:8]}"
+    policy_id = getattr(prepared.safety, "policy_id", "") or ""
+    if not policy_id:
+        from mayhem.cli.app import _STATE
+
+        policy_id = _STATE.get("policy", "") or "default"
     common: dict[str, str] = {
         "config_snapshot_id": prepared.config_snapshot_id,
         "topology_snapshot_id": prepared.topology_snapshot_id,
         "environment_fingerprint": prepared.fingerprint,
+        "policy_id": policy_id,
     }
     plan = plan_drill(
         run_id,
@@ -334,6 +381,7 @@ def engine_for(
     on_event: Callable[[Event], None] | None = None,
     bypass: dict[tuple[str, str], str] | None = None,
     recovery_grace: float = 300.0,
+    k8s_context: str | None = None,
 ) -> RunEngine:
     return RunEngine(
         store,
@@ -343,6 +391,7 @@ def engine_for(
         on_event=on_event,
         bypass=bypass,
         recovery_grace=recovery_grace,
+        k8s_context=k8s_context,
     )
 
 
@@ -378,7 +427,7 @@ def run_journal(store: Store, run_id: str) -> dict[str, Any]:
     leases = [
         dict(row)
         for row in store.query(
-            "SELECT id, state, fault_id, release_mechanism FROM fault_leases"
+            "SELECT id, state, fault_id, release_mechanism, resolved_target_json FROM fault_leases"
             " WHERE run_id = ? ORDER BY created_epoch_s",
             (run_id,),
         )
@@ -386,8 +435,15 @@ def run_journal(store: Store, run_id: str) -> dict[str, Any]:
     return {"steps": steps, "events": events, "leases": leases}
 
 
-def effective_config(config_path: str | None, profile: str | None) -> tuple[Any, dict[str, str]]:
-    return load_config(config_path=config_path, profile=profile, environ={})
+def effective_config(
+    config_path: str | None, profile: str | None, policy: str | None = None
+) -> tuple[Any, dict[str, str]]:
+    from mayhem.cli.app import _STATE
+
+    effective_policy = policy or _STATE.get("policy") or None
+    return load_config(
+        config_path=config_path, profile=profile, policy=effective_policy, environ={}
+    )
 
 
 def probe_capabilities(host: str) -> CapabilityReport:
@@ -421,6 +477,8 @@ class CampaignRunEntry:
     run_id: str
     status: str  # completed | failed
     verdict: str = ""
+    plan_id: str = ""
+    evidence_id: str = ""
 
 
 @dataclass
@@ -491,13 +549,23 @@ def run_campaign_sequence(
                     run_id=ran.run_id,
                     status=ran.status,
                     verdict=ran.verdict.value if ran.verdict else "",
+                    plan_id=ran.run_id,
+                    evidence_id=f"evidence-{ran.run_id}",
                 )
             )
             store.save_observation(
                 "campaign_run",
                 run_id=ran.run_id,
                 source=campaign_id,
-                data={"spec": _sp, "status": ran.status, "index": _i},
+                data={
+                    "spec": _sp,
+                    "status": ran.status,
+                    "index": _i,
+                    "campaign_id": campaign_id,
+                    "plan_id": ran.run_id,
+                    "evidence_id": f"evidence-{ran.run_id}",
+                    "verdict": ran.verdict.value if ran.verdict else "",
+                },
             )
 
         ran = _attempt(spec_path)
