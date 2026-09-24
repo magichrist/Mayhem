@@ -59,6 +59,11 @@ def _labels(meta: dict[str, Any] | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in (meta.get("labels") or {}).items()}
 
 
+def _workload_labels(doc: dict[str, Any], meta: dict[str, Any]) -> dict[str, str]:
+    template = ((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}
+    return _labels(template) or _labels(meta)
+
+
 def _selectors(doc: dict[str, Any]) -> dict[str, str]:
     spec = doc.get("spec") or {}
     return {str(k): str(v) for k, v in (spec.get("selector") or {}).get("matchLabels", {}).items()}
@@ -78,15 +83,29 @@ def _node_name(doc: dict[str, Any]) -> str | None:
 
 
 class KubernetesManifestProvider:
-    """Blueprint topology provider reading a multi-doc k8s manifest bundle."""
-
     id = "k8s-manifest"
 
     def __init__(self, compose_path: str | Path) -> None:
         self._path = Path(compose_path)
 
     def is_available(self) -> bool:
-        return self._path.exists()
+        return self._path.is_file()
+
+    def manifest_inspection_available(self) -> bool:
+        if not self.is_available():
+            return False
+        try:
+            return bool(self.resource_kinds)
+        except (OSError, ValueError, yaml.YAMLError):
+            return False
+
+    def live_readiness_available(self) -> bool:
+        return False
+
+    def inspection_notes(self) -> tuple[str, ...]:
+        if not self.manifest_inspection_available():
+            return ("manifest inspection unavailable",)
+        return ("manifest inspection available; live cluster not required",)
 
     @property
     def resource_kinds(self) -> tuple[str, ...]:
@@ -98,6 +117,8 @@ class KubernetesManifestProvider:
         )
 
     def _documents(self) -> tuple[dict[str, Any], ...]:
+        if not self.is_available():
+            raise FileNotFoundError(self._path)
         raw = self._path.read_text(encoding="utf-8")
         docs = tuple(d for d in yaml.safe_load_all(raw) if d)
         return tuple(d for d in docs if isinstance(d, dict))
@@ -166,7 +187,7 @@ class KubernetesManifestProvider:
                     containers=_containers(doc),
                     owner_kind=owner_kind,
                     owner_name=owner_name,
-                    labels=_labels(meta),
+                    labels=_workload_labels(doc, meta),
                 )
             )
             pinned = _node_name(doc)

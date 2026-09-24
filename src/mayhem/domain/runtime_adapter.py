@@ -9,6 +9,10 @@ planner uses to accept or refuse execution.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -16,9 +20,118 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mayhem.domain.errors import InvariantViolationError
+
 if TYPE_CHECKING:
     from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
     from mayhem.topology.providers.base import PartialGraph
+
+
+class EngineDescriptor(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    binary: str
+    compose_supported: bool = True
+    signals: tuple[str, ...] = ("SIGSTOP", "SIGCONT", "SIGTERM", "SIGKILL")
+    network_capabilities: frozenset[str] = frozenset({"netem", "iptables", "tc"})
+    storage_capabilities: frozenset[str] = frozenset({"overlay", "volume"})
+    version: str | None = None
+    binary_available: bool = False
+
+
+_ENGINE_DESCRIPTORS: dict[str, EngineDescriptor] = {
+    "docker": EngineDescriptor(
+        name="docker",
+        binary="docker",
+        compose_supported=True,
+        signals=("SIGSTOP", "SIGCONT", "SIGTERM", "SIGKILL", "SIGUSR1", "SIGUSR2"),
+        network_capabilities=frozenset({"netem", "iptables", "tc", "bridge", "overlay"}),
+        storage_capabilities=frozenset({"overlay", "volume", "bind"}),
+    ),
+    "podman": EngineDescriptor(
+        name="podman",
+        binary="podman",
+        compose_supported=True,
+        signals=("SIGSTOP", "SIGCONT", "SIGTERM", "SIGKILL", "SIGUSR1", "SIGUSR2"),
+        network_capabilities=frozenset({"netem", "iptables", "tc", "bridge", "pasta"}),
+        storage_capabilities=frozenset({"overlay", "volume", "bind"}),
+    ),
+}
+
+
+def describe_engine(name: str) -> EngineDescriptor:
+    desc = _ENGINE_DESCRIPTORS.get(name)
+    if desc is None:
+        raise LookupError(f"unknown engine {name!r}")
+    return desc
+
+
+def detect_available_engines() -> list[EngineDescriptor]:
+    result: list[EngineDescriptor] = []
+    for _key, base in _ENGINE_DESCRIPTORS.items():
+        binary_available = shutil.which(base.binary) is not None
+        version: str | None = None
+        if binary_available:
+            try:
+                out = subprocess.run(
+                    [base.binary, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                raw = (out.stdout or out.stderr or "").strip()
+                version = raw.splitlines()[0][:120] if raw else None
+            except Exception:
+                version = None
+        result.append(
+            base.model_copy(update={"binary_available": binary_available, "version": version})
+        )
+    return result
+
+
+def resolve_engine_selection(explicit: str | None) -> EngineDescriptor:
+    if explicit is not None and explicit.strip():
+        name = explicit.strip().lower()
+        desc = _ENGINE_DESCRIPTORS.get(name)
+        if desc is None:
+            raise InvariantViolationError("engine_unknown", f"unknown engine {explicit!r}")
+        available = detect_available_engines()
+        match = next((d for d in available if d.name == name), None)
+        if match is not None and not match.binary_available:
+            raise InvariantViolationError(
+                "engine_unavailable",
+                f"engine {name!r} selected but binary {desc.binary!r} not on PATH",
+            )
+        if match is not None:
+            return match
+        return desc.model_copy(update={"binary_available": False})
+    available = [d for d in detect_available_engines() if d.binary_available]
+    if len(available) == 0:
+        raise InvariantViolationError(
+            "engine_unavailable",
+            "no engine on PATH (checked docker, podman); install or pass --runtime",
+        )
+    if len(available) > 1:
+        names = ", ".join(d.name for d in available)
+        raise InvariantViolationError(
+            "engine_ambiguous",
+            f"multiple engines available ({names}); pass --runtime docker or podman",
+        )
+    return available[0]
+
+
+def topology_fingerprint_for_engine(engine: str, graph: object) -> str:
+    try:
+        payload = json.dumps(
+            {"engine": engine, "graph": getattr(graph, "model_dump", lambda **_: {})(mode="json")},
+            sort_keys=True,
+            default=str,
+        )
+    except Exception:
+        payload = f"{engine}:{graph!s}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +152,7 @@ class RuntimeCapability(StrEnum):
     # k8s adapter only (ADR-M7-1 seam): node-level control-plane access
     # (``kubectl get nodes``) that the node-killer families require.
     NODE_CONTROL = "node_control"
+    DNS_CONTROL = "dns_control"
 
 
 class CapabilityVerdict(StrEnum):

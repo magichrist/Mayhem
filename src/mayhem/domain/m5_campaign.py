@@ -25,11 +25,15 @@ class CampaignMode(StrEnum):
 
 
 class CampaignState(StrEnum):
-    IDLE = "idle"
+    DRAFT = "draft"
+    APPROVED = "approved"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
-    STOPPED = "stopped"
     ABORTED = "aborted"
+    ARCHIVED = "archived"
+    IDLE = DRAFT
+    STOPPED = ABORTED
 
 
 class StopReason(StrEnum):
@@ -70,11 +74,77 @@ class M5Campaign:
     mode: CampaignMode = CampaignMode.SUPERVISED
     risk_ceiling: RiskLevel = RiskLevel.HIGH
     deadline_epoch_s: float | None = None
-    stop_condition: str = ""  # free-form durable note; caller enforces it
+    stop_condition: str = ""
+    target_profiles: tuple[str, ...] = ()
+    engine_policy: str = ""
+    budget: int | None = None
+    stop_conditions: tuple[str, ...] = ()
 
     def with_defaults(self, **kwargs: Any) -> M5Campaign:
         """Return a copy with overridden bounds (immutable-equivalent helper)."""
         return M5Campaign(**{**self.__dict__, **kwargs})
+
+
+@dataclass(frozen=True)
+class CampaignManifestEntry:
+    """One planned campaign cell and its durable links."""
+
+    candidate_id: str
+    target: str
+    fault: str
+    state: str = "planned"
+    run_id: str = ""
+    plan_id: str = ""
+    evidence_id: str = ""
+    verdict: str = ""
+
+
+@dataclass(frozen=True)
+class CampaignExecutionManifest:
+    """Side-effect-free campaign plan."""
+
+    campaign_id: str
+    entries: tuple[CampaignManifestEntry, ...]
+    engine_policy: str = ""
+    target_profiles: tuple[str, ...] = ()
+    budget: int | None = None
+    deadline_epoch_s: float | None = None
+    stop_conditions: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "engine_policy": self.engine_policy,
+            "target_profiles": list(self.target_profiles),
+            "budget": self.budget,
+            "deadline_epoch_s": self.deadline_epoch_s,
+            "stop_conditions": list(self.stop_conditions),
+            "entries": [
+                {
+                    "candidate_id": entry.candidate_id,
+                    "target": entry.target,
+                    "fault": entry.fault,
+                    "state": entry.state,
+                    "run_id": entry.run_id,
+                    "plan_id": entry.plan_id,
+                    "evidence_id": entry.evidence_id,
+                    "verdict": entry.verdict,
+                }
+                for entry in self.entries
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class CampaignCellLink:
+    """Links a campaign cell to a run, plan, evidence and verdict."""
+
+    campaign_id: str
+    coverage_cell_key: str
+    run_id: str = ""
+    plan_id: str = ""
+    evidence_id: str = ""
+    verdict: str = ""
 
 
 @dataclass

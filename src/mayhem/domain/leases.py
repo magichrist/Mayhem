@@ -7,7 +7,7 @@ transitions; the janitor, watchdog, and release paths all go through it.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -182,6 +182,42 @@ class FaultLease(BaseModel):
             LeaseState.RELEASING,
             LeaseState.DIRTY,
         )
+
+    @property
+    def owner(self) -> str:
+        return self.owner_agent
+
+    @property
+    def target(self) -> tuple[str, ...]:
+        return tuple(sorted(self.targets))
+
+    @property
+    def fault(self) -> str:
+        return self.fault_id
+
+    @property
+    def expires_at(self) -> datetime:
+        return self.created_at + timedelta(seconds=float(self.ttl_seconds))
+
+    @property
+    def compensation(self) -> tuple[UndoOp, ...]:
+        return self.undo_ops
+
+    @property
+    def verification_probes(self) -> tuple[VerifyProbe, ...]:
+        return self.verify_probes
+
+    @property
+    def recovery(self) -> str:
+        if self.state is LeaseState.DIRTY:
+            return "escalated" if "escalat" in (self.escalation_notes or "").lower() else "dirty"
+        if self.state is LeaseState.RELEASING:
+            return "running"
+        if self.state is LeaseState.RELEASED:
+            return "recovered"
+        if self.state is LeaseState.EXPIRED:
+            return "abandoned"
+        return "pending"
 
 
 def assert_all_recovered(leases: list[FaultLease]) -> None:

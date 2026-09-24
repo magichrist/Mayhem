@@ -100,6 +100,18 @@ class TargetScope(BaseModel):
     container: str | None = None  # k8s: container within the pod
     selection: SelectionSpec | None = None
 
+    @property
+    def name(self) -> str:
+        return self.authority.get("name", "")
+
+    @property
+    def namespace(self) -> str:
+        return self.authority.get("namespace", "")
+
+    @property
+    def pod_uid(self) -> str | None:
+        return self.authority.get("pod_uid")
+
     @field_validator("logical_id")
     @classmethod
     def _logical_id_clean(cls, value: str) -> str:

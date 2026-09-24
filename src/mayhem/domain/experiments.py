@@ -281,10 +281,10 @@ class KubernetesTargetSpec(BaseModel):
 class DrillTarget(BaseModel):
     """One logical target under the ``targets:`` block (k-plan-1 §1.2).
 
-    Cross-runtime: declares the runtime label and the locator block for that
-    runtime. Both the ``docker:`` and ``kubernetes:`` blocks are optional in
-    the schema but exactly one must match the ``runtime`` label, and the two
-    may not be mixed in one target.
+    Cross-runtime: declares the runtime label and optional locator block.
+    Kubernetes targets require a matching ``kubernetes:`` locator. Docker
+    targets may omit the locator when the logical target key is the container
+    name. The two locator blocks may not be mixed in one target.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -315,17 +315,11 @@ class DrillTarget(BaseModel):
                     "target.mixed_locators",
                     "a target may not carry both `docker:` and `kubernetes:` blocks",
                 )
-        else:
-            if self.docker is None:
-                raise InvariantViolationError(
-                    "target.runtime_mismatch",
-                    f"target runtime {self.runtime.value} requires a `docker:` locator block",
-                )
-            if self.kubernetes is not None:
-                raise InvariantViolationError(
-                    "target.mixed_locators",
-                    f"target runtime {self.runtime.value} may not carry a `kubernetes:` block",
-                )
+        elif self.kubernetes is not None:
+            raise InvariantViolationError(
+                "target.mixed_locators",
+                f"target runtime {self.runtime.value} may not carry a `kubernetes:` block",
+            )
         return self
 
     def to_scope(self, logical_id: str) -> TargetScope:
@@ -346,12 +340,15 @@ class DrillTarget(BaseModel):
                 container=self.kubernetes.container,
             )
         else:
-            assert self.docker is not None
             scope = TargetScope(
                 logical_id=logical_id,
                 runtime=self.runtime,
                 kind=ResourceKind.CONTAINER,
-                authority={"container_name": self.docker.container_name},
+                authority={
+                    "container_name": self.docker.container_name
+                    if self.docker is not None
+                    else logical_id
+                },
             )
         return scope.model_copy(update={"selection": self.selection})
 
@@ -479,6 +476,7 @@ class ExecutionPlan(BaseModel):
     config_snapshot_id: str
     topology_snapshot_id: str
     environment_fingerprint: str
+    policy_id: str = ""
     seed: int | None = None
     success: SuccessCriteria | None = None  # copied from the spec (ADR-M4-3)
     observability: ObservabilityConfig | None = None  # copied from the spec (ADR-M4-4)
@@ -525,6 +523,7 @@ class PlannedStep(BaseModel):
     id: str
     seq: int
     fault: PlannedFault | None = None
+    target: TargetRef | None = None
     raw_action: StepAction  # for non-fault steps (wait/check)
     runtime_identity: RuntimeIdentity | None = None  # planned identity (ADR-M1-1/1-3)
     execution_group_id: str | None = None  # group attribution (ADR-M2-1/2-2)

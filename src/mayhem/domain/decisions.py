@@ -9,7 +9,34 @@ persisted on the run row by the executor.
 
 from __future__ import annotations
 
+from enum import StrEnum
+from typing import Any, Literal
+
 from pydantic import BaseModel, ConfigDict
+
+
+class SafetySeverity(StrEnum):
+    info = "info"
+    warning = "warning"
+    error = "error"
+    critical = "critical"
+
+
+class SafetyDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    rule_id: str
+    inputs: dict[str, Any] = {}
+    outcome: Literal["allow", "deny", "warn"] = "allow"
+    reason: str = ""
+    remediation: str = ""
+    severity: SafetySeverity = SafetySeverity.info
+
+    def is_refusal(self) -> bool:
+        return self.outcome == "deny"
+
+    def summarize(self) -> str:
+        return f"[{self.rule_id}] {self.outcome}: {self.reason} -> {self.remediation}"
 
 
 class DecisionRef(BaseModel):
@@ -54,4 +81,10 @@ DECISION_M5_1_MANIAC = DecisionRef(
     decision_id="ADR-M5-1",
     decided_on="2026-09-06",
     title="Maniac mode: random fault injection dialed by config",
+)
+
+DECISION_POLICY_SAFETY = DecisionRef(
+    decision_id="ADR-POLICY-05",
+    decided_on="2026-09-24",
+    title="Configuration, policy, and environment safety",
 )

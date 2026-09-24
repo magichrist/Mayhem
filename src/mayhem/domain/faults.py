@@ -7,12 +7,13 @@ counts cells proven by tests.
 
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mayhem.domain.capabilities import Capability, Identifier
-from mayhem.domain.common import Duration
+from mayhem.domain.common import Duration, parse_bytes, parse_duration
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.risks import EnvironmentClass, RiskLevel
 from mayhem.domain.topology import NodeKind
@@ -62,6 +63,7 @@ _PREFIX_TO_CATEGORY: dict[str, FaultCategory] = {
     "container": FaultCategory.CONTAINER,
     "node": FaultCategory.NODE,
     "http": FaultCategory.HTTP_API,
+    "app": FaultCategory.HTTP_API,
     "db": FaultCategory.DATABASE,
     "load": FaultCategory.LOAD,
     "fuzz": FaultCategory.FUZZ,
@@ -72,6 +74,64 @@ _PREFIX_TO_CATEGORY: dict[str, FaultCategory] = {
     "dependency": FaultCategory.DEPENDENCY,
     "k8s": FaultCategory.K8S,
 }
+
+
+class FailureDomain(StrEnum):
+    PROCESS = "process"
+    CPU = "cpu"
+    MEMORY = "memory"
+    STORAGE = "storage"
+    NETWORK = "network"
+    APPLICATION = "application"
+    DEPENDENCY = "dependency"
+    PLATFORM = "platform"
+
+
+class TargetKind(StrEnum):
+    CONTAINER = "container"
+    PROCESS = "process"
+    SERVICE = "service"
+    POD = "pod"
+    WORKLOAD = "workload"
+    NODE = "node"
+    CLUSTER_OBJECT = "cluster_object"
+    EXTERNAL_DEPENDENCY = "external_dependency"
+    HPA = "hpa"
+    PDB = "pdb"
+
+
+class EngineLane(StrEnum):
+    DOCKER = "docker"
+    PODMAN = "podman"
+    KUBERNETES = "kubernetes"
+    HOST = "host"
+    MULTI_ENGINE = "multi-engine"
+
+
+class Reversibility(StrEnum):
+    REVERSIBLE = "reversible"
+    RECONCILED = "reconciled"
+    IRREVERSIBLE = "irreversible"
+
+
+class VerificationMethod(StrEnum):
+    PROCESS_SIGNAL = "process-signal"
+    PROCESS_EXIT = "process-exit"
+    RESOURCE_METRIC = "resource-metric"
+    HTTP_RESPONSE = "http-response"
+    DEPENDENCY_RESPONSE = "dependency-response"
+    NETWORK_PATH = "network-path"
+    STORAGE_ACCESS = "storage-access"
+    DNS_RESOLUTION = "dns-resolution"
+    KUBERNETES_OBJECT = "kubernetes-object"
+    PLATFORM_STATE = "platform-state"
+
+
+class MaturityLevel(StrEnum):
+    EXPERIMENTAL = "experimental"
+    VERIFIED_UNIT = "verified-unit"
+    VERIFIED_LIVE = "verified-live"
+    STABLE = "stable"
 
 
 class ParamType(StrEnum):
@@ -93,6 +153,7 @@ class ParamSpec(BaseModel):
     default: str | int | float | bool | None = None
     minimum: float | None = None
     maximum: float | None = None
+    min_length: int | None = None
 
 
 class FaultDefinition(BaseModel):
@@ -112,6 +173,20 @@ class FaultDefinition(BaseModel):
         default_factory=lambda: frozenset(EnvironmentClass)
     )
     params_schema: tuple[ParamSpec, ...] = ()
+    failure_domain: FailureDomain | None = None
+    target_kind: TargetKind | None = None
+    target_kinds: frozenset[TargetKind] = Field(default_factory=frozenset)
+    engine_lanes: frozenset[EngineLane] = Field(default_factory=frozenset)
+    observable_effect: str = ""
+    compensation_evidence: tuple[str, ...] = ()
+    verification_method: VerificationMethod | None = None
+    reversibility: Reversibility | None = None
+    maturity: MaturityLevel = MaturityLevel.EXPERIMENTAL
+    verification_date: date | None = None
+    catalog_only: bool = False
+    refusal_reason: str | None = None
+    replacement_fault_id: str | None = None
+    deprecation_path: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -188,6 +263,12 @@ def _numeric(raw: object) -> float:
     return float(raw)
 
 
+def _convert_duration(raw: object) -> float:
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    return parse_duration(str(raw))
+
+
 def _convert(spec: ParamSpec, raw: object) -> object:
     match spec.type:
         case ParamType.STRING:
@@ -204,15 +285,8 @@ def _convert(spec: ParamSpec, raw: object) -> object:
                 raise ValueError("expected boolean")
             value = raw
         case ParamType.DURATION:
-            from mayhem.domain.common import parse_duration  # noqa: PLC0415
-
-            if isinstance(raw, (int, float)):
-                value = float(raw)  # numeric seconds (e.g. a 10.0 catalog default)
-            else:
-                value = parse_duration(str(raw))
+            value = _convert_duration(raw)
         case ParamType.BYTES:
-            from mayhem.domain.common import parse_bytes  # noqa: PLC0415
-
             value = parse_bytes(str(raw))
         case ParamType.PERCENT:
             number = _numeric(raw)
@@ -236,4 +310,12 @@ def _coerce(spec: ParamSpec, raw: object) -> object:
             raise SchemaValidationError(f"params[{spec.name}]", f"below minimum {spec.minimum}")
         if spec.maximum is not None and float(result) > spec.maximum:
             raise SchemaValidationError(f"params[{spec.name}]", f"above maximum {spec.maximum}")
+    if (
+        spec.type is ParamType.STRING
+        and spec.min_length is not None
+        and len(str(result).strip()) < spec.min_length
+    ):
+        raise SchemaValidationError(
+            f"params[{spec.name}]", f"must contain at least {spec.min_length} character(s)"
+        )
     return result

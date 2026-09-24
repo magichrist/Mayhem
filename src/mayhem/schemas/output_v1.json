@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Mayhem CLI Output Envelope v1",
+  "description": "Versioned output schema for mayhem CLI machine-readable output. Location: src/mayhem/schemas/output_v1.json",
+  "version": "1.0",
+  "type": "object",
+  "required": ["status", "schema_version", "data", "warnings", "errors", "evidence_refs", "meta"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "error"]
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "data": {
+      "description": "Command payload, additive keys only during migration window"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "renderer": {"type": "string"},
+        "format": {"type": "string", "enum": ["text", "json", "yaml"]},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

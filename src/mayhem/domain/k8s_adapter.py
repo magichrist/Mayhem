@@ -55,6 +55,39 @@ UNSUPPORTED_MSG = (
     "kubernetes execution not yet supported; see the RuntimeAdapter contract at ADR-M7-1"
 )
 
+K8S_UNSUPPORTED_REMEDIATION = (
+    "k8s.unsupported: attach a live cluster (kubeconfig context/namespace) "
+    "and ensure required capability is available; manifest mode remains usable for planning"
+)
+
+
+def k8s_unsupported_remediation(
+    fault_id: str,
+    *,
+    capability: str | None = None,
+    context: str | None = None,
+    namespace: str | None = None,
+) -> str:
+    details = [K8S_UNSUPPORTED_REMEDIATION, f"fault: {fault_id}"]
+    if capability:
+        details.append(f"missing capability: {capability}")
+    if context:
+        details.append(f"context: {context}")
+    if namespace:
+        details.append(f"namespace: {namespace}")
+    return " — ".join(details)
+
+
+def k8s_adapter_doctor_status() -> dict[str, object]:
+    adapter = KubernetesAdapter()
+    return {
+        "available": adapter.is_available(),
+        "engine": adapter.id,
+        "remediation": K8S_UNSUPPORTED_REMEDIATION if not adapter.is_available() else "",
+        "supported": sorted(c.value for c in adapter.capabilities().supported),
+        "client": "not wired to the legacy adapter",
+    }
+
 
 class KubernetesAdapter(RuntimeAdapter):
     """Stub Kubernetes adapter — every capability UNSUPPORTED (ADR-M7-1).
@@ -67,8 +100,18 @@ class KubernetesAdapter(RuntimeAdapter):
 
     ENGINE = "kubernetes"
 
-    def __init__(self, engine: str = ENGINE) -> None:
+    def __init__(
+        self,
+        engine: str = ENGINE,
+        *,
+        client: object | None = None,
+        context: str | None = None,
+        namespace: str | None = None,
+    ) -> None:
         self._engine = engine
+        self._client = client
+        self.context = context
+        self.namespace = namespace
 
     # ── RuntimeAdapter contract ──────────────────────────────────────────────
 
@@ -77,8 +120,8 @@ class KubernetesAdapter(RuntimeAdapter):
         return self._engine
 
     def is_available(self) -> bool:
-        """No transport implemented; never *available* for execution yet."""
-        return False
+        """The compatibility adapter is available only with an explicit client."""
+        return self._client is not None
 
     def capabilities(self) -> AdapterCapabilities:
         """Capability snapshot for the k8s driver seam.

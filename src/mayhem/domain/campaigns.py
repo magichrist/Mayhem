@@ -19,10 +19,49 @@ from mayhem.domain.risks import RiskLevel
 class CampaignStatus(StrEnum):
     DRAFT = "draft"
     SCHEDULED = "scheduled"
+    APPROVED = "approved"
     RUNNING = "running"
     PAUSED = "paused"
     COMPLETED = "completed"
     ABORTED = "aborted"
+    ARCHIVED = "archived"
+
+
+_CAMPAIGN_TRANSITIONS: dict[CampaignStatus, frozenset[CampaignStatus]] = {
+    CampaignStatus.DRAFT: frozenset({CampaignStatus.APPROVED, CampaignStatus.ABORTED}),
+    CampaignStatus.APPROVED: frozenset({CampaignStatus.RUNNING, CampaignStatus.ABORTED}),
+    CampaignStatus.SCHEDULED: frozenset({CampaignStatus.RUNNING, CampaignStatus.ABORTED}),
+    CampaignStatus.RUNNING: frozenset(
+        {CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.ABORTED}
+    ),
+    CampaignStatus.PAUSED: frozenset({CampaignStatus.RUNNING, CampaignStatus.ABORTED}),
+    CampaignStatus.COMPLETED: frozenset({CampaignStatus.ARCHIVED}),
+    CampaignStatus.ABORTED: frozenset({CampaignStatus.ARCHIVED}),
+    CampaignStatus.ARCHIVED: frozenset(),
+}
+
+
+def can_transition(current: CampaignStatus | str, new: CampaignStatus | str) -> bool:
+    current_value = current if isinstance(current, CampaignStatus) else CampaignStatus(current)
+    new_value = new if isinstance(new, CampaignStatus) else CampaignStatus(new)
+    return new_value in _CAMPAIGN_TRANSITIONS[current_value]
+
+
+def transition_campaign(
+    current: CampaignStatus | str,
+    new: CampaignStatus | str,
+    *,
+    legacy_start: bool = False,
+) -> CampaignStatus:
+    current_value = current if isinstance(current, CampaignStatus) else CampaignStatus(current)
+    new_value = new if isinstance(new, CampaignStatus) else CampaignStatus(new)
+    if not can_transition(current_value, new_value) and not (
+        legacy_start
+        and current_value is CampaignStatus.DRAFT
+        and new_value is CampaignStatus.RUNNING
+    ):
+        raise ValueError(f"invalid campaign transition {current_value.value} -> {new_value.value}")
+    return new_value
 
 
 class ExperimentOnFailure(StrEnum):
@@ -84,6 +123,13 @@ class Campaign(BaseModel):
     window: CampaignWindow = Field(default_factory=CampaignWindow)
     policy: CampaignPolicy = Field(default_factory=CampaignPolicy)
     labels: dict[str, str] = Field(default_factory=dict)
+    target_profiles: tuple[str, ...] = ()
+    engine_policy: str = ""
+    budget: int = Field(default=0, ge=0)
+    deadline_epoch_s: float | None = None
+    stop_conditions: tuple[str, ...] = ()
+    execution_manifest: dict[str, object] = Field(default_factory=dict)
+    recovery_status: str = "none"
 
     @field_validator("experiments")
     @classmethod

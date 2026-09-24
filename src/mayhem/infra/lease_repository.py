@@ -78,6 +78,10 @@ class SQLiteLeaseSink:
         )
         return tuple(_row_to_lease(dict(row)) for row in rows)
 
+    def all_leases(self) -> tuple[FaultLease, ...]:
+        rows = self._store.query("SELECT * FROM fault_leases ORDER BY created_epoch_s")
+        return tuple(_row_to_lease(dict(row)) for row in rows)
+
     def expired_pending(self, now_epoch_s: float) -> tuple[FaultLease, ...]:
         rows = self._store.query(
             "SELECT * FROM fault_leases WHERE created_epoch_s + ttl_seconds < ? "

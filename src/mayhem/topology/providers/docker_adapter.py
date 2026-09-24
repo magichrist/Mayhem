@@ -190,6 +190,7 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
             Edge,
             EdgeKind,
             HostNode,
+            ProcessNode,
         )
 
         try:
@@ -268,6 +269,22 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
                 edges.append(
                     Edge(src=node.id, dst=f"svc-{service_name}", kind=EdgeKind.CONTAINED_IN)
                 )
+
+            process_name = service_name or _container_name(row)
+            pid = _inspect_pid(self._engine, container_id)
+            if pid is not None and process_name:
+                proc_id = f"proc-{process_name}-{short_id}"
+                proc_node = ProcessNode(
+                    id=proc_id,
+                    name=process_name,
+                    pid=pid,
+                    host_id=host_id,
+                    cmdline=f"{self._engine} container {short_id}",
+                    container_id=short_id,
+                    container_name=container_name,
+                )
+                nodes.append(proc_node)
+                edges.append(Edge(src=proc_id, dst=node.id, kind=EdgeKind.RUNS_ON))
 
         return PartialGraph(
             source=self._engine,

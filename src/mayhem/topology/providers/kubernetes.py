@@ -110,13 +110,16 @@ class KubernetesProvider:
         *,
         context: str | None = None,
         namespace: str | None = None,
+        workload_selector: str | None = None,
         _api: KubeApis | None = None,
     ) -> None:
         self._engine = engine
         self.context = context
         self.namespace = namespace
+        self.workload_selector = workload_selector
         self._api = _api
         self._probed: bool | None = None
+        self._readiness_error = ""
 
     @property
     def id(self) -> str:
@@ -128,24 +131,55 @@ class KubernetesProvider:
             return self._api
         if _client is None or _kube_config is None:
             raise ImportError(KUBERNETES_INSTALL_HINT)
-        try:
+        if self.context is None:
+            try:
+                _kube_config.load_kube_config()
+            except Exception:
+                _kube_config.load_incluster_config()
+        else:
             _kube_config.load_kube_config(context=self.context)
-        except Exception:
-            _kube_config.load_incluster_config()
         return KubeApis(core=_client.CoreV1Api(), apps=_client.AppsV1Api())
 
     def is_available(self) -> bool:
-        """Live reachability probe — flipped by one successful list call."""
         if self._probed is not None:
             return self._probed
         try:
             api = self._resolve_api()
-            api.core.list_namespace(limit=1)
-        except Exception:
+            if self.namespace is None:
+                api.core.list_namespace(limit=1)
+            else:
+                api.core.list_namespaced_pod(self.namespace)
+        except Exception as exc:
             self._probed = False
+            self._readiness_error = str(exc)
         else:
             self._probed = True
         return self._probed
+
+    def manifest_inspection_available(self) -> bool:
+        return False
+
+    def live_readiness_available(self) -> bool:
+        return self.is_available()
+
+    def readiness_details(self) -> dict[str, object]:
+        available = self.is_available()
+        detail: dict[str, object] = {
+            "available": available,
+            "sdk_available": _client is not None and _kube_config is not None,
+            "client_available": self._api is not None or self._probed is True,
+            "context": self.context,
+            "namespace": self.namespace,
+            "workload_selector": self.workload_selector,
+        }
+        if not available:
+            detail["error"] = (
+                self._readiness_error or "kubeconfig context or namespace is not reachable"
+            )
+        return detail
+
+    def discovery_status(self) -> dict[str, object]:
+        return self.readiness_details()
 
     # ── discovery ─────────────────────────────────────────────────
     def discover(self) -> PartialGraph:
@@ -241,6 +275,17 @@ class KubernetesProvider:
             raw_deletion = getattr(meta, "deletion_timestamp", None)
             if raw_deletion is not None:
                 deletion_timestamp = str(raw_deletion)
+            if self.workload_selector:
+                wanted = {
+                    key: value
+                    for item in self.workload_selector.split(",")
+                    if "=" in item
+                    for key, value in [item.split("=", 1)]
+                }
+                if not all(
+                    dict(meta.labels or {}).get(key) == value for key, value in wanted.items()
+                ):
+                    continue
             pod_nodes.append(
                 PodNode(
                     id=pod_id(namespace, pod_name),

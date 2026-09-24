@@ -103,7 +103,7 @@ def draw_maniac_rounds(
             fault = pool[target].faults[0]
         if jitter_pct > 0:
             fault = _jitter_duration(fault, jitter_pct, rng)
-        draws.append(ManiacDraw(container=target, fault=fault, round=round_no))
+        draws.append(ManiacDraw(container=target, target=target, fault=fault, round=round_no))
     return tuple(draws)
 
 

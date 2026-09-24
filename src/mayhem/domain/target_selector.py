@@ -148,7 +148,7 @@ def _candidate_pods(graph: TopologyGraph, scope: TargetScope) -> tuple[PodNode, 
 
 def _is_eligible(pod: PodNode) -> bool:
     """Filter: ``phase == Running``, zero pending deletion timestamp."""
-    if pod.state != "Running":
+    if pod.state.lower() != "running":
         return False
     return pod.deletion_timestamp is None
 
@@ -257,7 +257,7 @@ def select_many(
         label = scope.authority.get("name", scope.logical_id)
         raise SelectionError(
             "selection.no_eligible_pods",
-            f"target {scope.logical_id!r} ({scope.kind.value} '{label}') has "
+            f"no live pod for target {scope.logical_id!r} ({scope.kind.value} '{label}'): "
             f"{len(candidates)} pod(s), none Running and not terminating",
         )
     picked = _dispatch(scope, eligible, seed=seed)

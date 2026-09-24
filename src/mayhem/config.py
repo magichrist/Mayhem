@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
+from mayhem.domain.policy import BUILTIN_PROFILES
 from mayhem.domain.risks import RiskLevel
 
 
@@ -78,6 +79,22 @@ _ENV_ALLOWED = {
     "ARTIFACTS_DIR": "storage.artifacts_dir",
     "LOG_LEVEL": "log_level",
 }
+
+_POLICY_ENV_VAR = "MAYHEM_POLICY"
+_SECRET_FIELD_NAMES = frozenset(
+    {
+        "password",
+        "secret",
+        "token",
+        "credentials",
+        "api_key",
+        "apikey",
+        "kubeconfig",
+        "registry_token",
+        "secret_value",
+        "secrets",
+    }
+)
 
 
 class PolicyCfg(BaseModel):
@@ -189,10 +206,98 @@ def _apply_env(data: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
     return merged
 
 
+def _sanitize_value(key: str, value: Any) -> Any:
+    if key.lower() in _SECRET_FIELD_NAMES:
+        return "***REDACTED***"
+    if isinstance(value, dict):
+        return {k: _sanitize_value(k, v) for k, v in value.items()}
+    return value
+
+
+def explain_config(
+    config: MayhemConfig, sources: dict[str, str]
+) -> list[dict[str, Any]]:
+    safe_mutable = {"log_level", "blast_radius", "storage"}
+    rows: list[dict[str, Any]] = []
+    dump = config.model_dump(mode="json", by_alias=True)
+    fields = (
+        "policy",
+        "blast_radius",
+        "storage",
+        "toolkit",
+        "runtime",
+        "target",
+        "kubernetes",
+        "log_level",
+        "recovery_grace",
+        "maniac",
+        "apiVersion",
+    )
+    for field_name in fields:
+        if field_name == "apiVersion":
+            raw_value = dump.get("apiVersion", API_VERSION)
+            rows.append(
+                {
+                    "field": "apiVersion",
+                    "value": raw_value,
+                    "source": sources.get("api_version", "defaults"),
+                    "safe_for_mutation": False,
+                }
+            )
+            continue
+        key = field_name
+        if key not in dump:
+            continue
+        raw_value = dump[key]
+        display_value = _sanitize_value(key, raw_value)
+        src = sources.get(key, "defaults")
+        rows.append(
+            {
+                "field": key,
+                "value": display_value,
+                "source": src,
+                "safe_for_mutation": key in safe_mutable,
+            }
+        )
+    return rows
+
+
+def _apply_policy_profile(
+    merged: dict[str, Any],
+    sources: dict[str, str],
+    profile_name: str,
+    policy_source: str,
+) -> None:
+    profile = BUILTIN_PROFILES.get(profile_name)
+    if profile is None:
+        raise SchemaValidationError("config", f"unknown policy profile {profile_name!r}")
+    if sources.get("policy", "defaults") != "defaults":
+        raise SchemaValidationError(
+            "config",
+            f"conflicting policy sources: --policy {profile_name!r} and "
+            f"{sources['policy']} both set policy; use one",
+        )
+    policy_dict: dict[str, Any] = {}
+    if profile.risk_ceiling is not None:
+        policy_dict["risk_ceiling"] = profile.risk_ceiling
+    if profile.allowed_faults is not None:
+        policy_dict["allow_faults"] = sorted(profile.allowed_faults)
+    if profile.denied_faults:
+        policy_dict["deny_faults"] = sorted(profile.denied_faults)
+    policy_dict["allow_critical"] = profile.allow_critical
+    if profile.critical_fault_acks:
+        policy_dict["critical_fault_acks"] = sorted(profile.critical_fault_acks)
+    merged["policy"] = policy_dict
+    merged["blast_radius"] = profile.blast_radius.model_dump(mode="json")
+    sources["policy"] = policy_source
+    sources["blast_radius"] = policy_source
+
+
 def load_config(
     *,
     config_path: str | Path | None = None,
     profile: str | None = None,
+    policy: str | None = None,
     cli_overrides: dict[str, Any] | None = None,
     environ: dict[str, str] | None = None,
     skip_default_file_if_spec: str | Path | None = None,
@@ -211,6 +316,13 @@ def load_config(
     is handled by :func:`_config_layer_from_spec` directly.
     """
     env = dict(os.environ if environ is None else environ)
+    env_policy = env.get(_POLICY_ENV_VAR)
+    effective_policy = policy or env_policy
+    if policy is not None and env_policy is not None and policy != env_policy:
+        raise SchemaValidationError(
+            "config",
+            f"conflicting policy sources: --policy {policy!r} and {_POLICY_ENV_VAR}={env_policy!r}",
+        )
     sources: dict[str, str] = dict.fromkeys(
         ("policy", "blast_radius", "storage", "toolkit", "log_level"),
         "defaults",
@@ -251,7 +363,16 @@ def load_config(
         overlay = base_path.parent / f"mayhem.{profile}.yaml"
         absorb(_read_document(overlay), f"profile:{profile}")
     absorb(_apply_env({}, env), "env")
+    if effective_policy is not None:
+        _apply_policy_profile(merged, sources, effective_policy, "policy:" + effective_policy)
     if cli_overrides:
+        if effective_policy is not None and any(
+            key in cli_overrides for key in ("policy", "blast_radius")
+        ):
+            raise SchemaValidationError(
+                "config",
+                "conflicting policy sources: --policy and cli_overrides both set policy fields",
+            )
         absorb({k: v for k, v in cli_overrides.items() if v is not None}, "cli")
 
     try:

@@ -11,13 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from mayhem.domain.coverage import CellState, CoverageCell, ResilienceCell
 from mayhem.domain.faults import FaultCategory
 from mayhem.domain.risks import RiskLevel
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from mayhem.domain.coverage import CellState, CoverageCell
 
 # §7.2 weights.
 W_INFO = 1.0
@@ -42,9 +42,21 @@ class RankInputs:
 class RankedCell:
     """A cell with its deterministic score and the --explain factors."""
 
-    cell: CoverageCell
+    cell: CoverageCell | ResilienceCell
     score: float
     factors: dict[str, float] = field(default_factory=dict)
+    next_rationale: str = ""
+
+    @property
+    def explanation(self) -> str:
+        if self.next_rationale:
+            return self.next_rationale
+        return (
+            f"selected by score {self.score:.3f}; "
+            f"information={self.factors.get('info', 0.0):.3f}, "
+            f"criticality={self.factors.get('criticality', 0.0):.3f}, "
+            f"diversity={self.factors.get('diversity', 0.0):.3f}"
+        )
 
 
 def score(inputs: RankInputs) -> float:
@@ -144,7 +156,37 @@ def rank(
                     "risk_rank": float(risk_rank),
                     "recall": recall,
                 },
+                next_rationale=str(getattr(cell, "next_rationale", "")),
             )
         )
     ranked.sort(key=lambda rc: (-rc.score, rc.factors["risk_rank"], rc.cell.key))
     return tuple(ranked)
+
+
+def rank_resilience_cells(
+    cells: tuple[ResilienceCell, ...] | list[ResilienceCell],
+    *,
+    division_map: Mapping[str, int] | None = None,
+    criticality_map: Mapping[str, float] | None = None,
+    risk_map: Mapping[str, RiskLevel] | None = None,
+    failed_targets: frozenset[str] = frozenset(),
+    failed_faults: frozenset[str] = frozenset(),
+) -> tuple[RankedCell, ...]:
+    """Rank enriched cells while preserving the original cell records."""
+    effective_risk_map = dict(risk_map or {})
+    for cell in cells:
+        if cell.risk:
+            try:
+                effective_risk_map.setdefault(cell.fault_kind, RiskLevel(cell.risk))
+            except ValueError:
+                continue
+    unknown_cells = [cell for cell in cells if cell.state is CellState.UNKNOWN]
+    return rank(
+        unknown_cells,
+        state_map={},
+        division_map=division_map or {},
+        criticality_map=criticality_map or {},
+        risk_map=effective_risk_map,
+        failed_targets=failed_targets,
+        failed_faults=failed_faults,
+    )

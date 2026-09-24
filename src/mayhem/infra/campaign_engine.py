@@ -18,8 +18,11 @@ from mayhem.domain.candidates import CandidateGate
 from mayhem.domain.coverage import CoverageCell
 from mayhem.domain.m5_campaign import (
     ApproveDecision,
+    CampaignExecutionManifest,
+    CampaignManifestEntry,
     CampaignMode,
     CampaignProgress,
+    CampaignState,
     M5Campaign,
     StopReason,
 )
@@ -75,6 +78,7 @@ class M5CampaignEngine:
         blast_check: Callable[[ExperimentCandidate, CampaignProgress], str | None] | None = None,
         rationale_fn: Callable[[ExperimentCandidate], str] | None = None,
         now_epoch_s: Callable[[], float] = time.time,
+        state_transition_fn: Callable[[CampaignState, CampaignState], None] | None = None,
     ) -> None:
         self.campaign = campaign
         self._source = source
@@ -89,6 +93,75 @@ class M5CampaignEngine:
         self.state_stack: list[StopReason] = []
         self.covered_cells: set[str] = set()
         self._stop_requested = False
+        self._state_transition_fn = state_transition_fn
+        self.state = CampaignState.DRAFT
+        self.recovery_status = "not_started"
+
+    def _transition(self, new_state: CampaignState) -> None:
+        allowed = {
+            CampaignState.DRAFT: {CampaignState.APPROVED, CampaignState.ABORTED},
+            CampaignState.APPROVED: {CampaignState.RUNNING, CampaignState.ABORTED},
+            CampaignState.RUNNING: {
+                CampaignState.PAUSED,
+                CampaignState.COMPLETED,
+                CampaignState.ABORTED,
+            },
+            CampaignState.PAUSED: {CampaignState.RUNNING, CampaignState.ABORTED},
+            CampaignState.COMPLETED: {CampaignState.ARCHIVED},
+            CampaignState.ABORTED: {CampaignState.ARCHIVED},
+            CampaignState.ARCHIVED: set(),
+        }
+        if new_state not in allowed[self.state]:
+            raise ValueError(f"invalid campaign transition {self.state.value} -> {new_state.value}")
+        old_state = self.state
+        self.state = new_state
+        if self._state_transition_fn is not None:
+            self._state_transition_fn(old_state, new_state)
+
+    def start(self) -> None:
+        if self.state is CampaignState.DRAFT:
+            self._transition(CampaignState.APPROVED)
+        if self.state is CampaignState.APPROVED:
+            self._transition(CampaignState.RUNNING)
+        self.recovery_status = "ready"
+
+    def pause(self) -> None:
+        self._transition(CampaignState.PAUSED)
+        self.recovery_status = "paused"
+
+    def resume(self) -> None:
+        if self.state is not CampaignState.PAUSED:
+            raise ValueError(f"cannot resume campaign in {self.state.value!r} state")
+        self._transition(CampaignState.RUNNING)
+        self.recovery_status = "resumed"
+
+    def plan(self) -> CampaignExecutionManifest:
+        source_candidates = getattr(self._source, "candidates", None)
+        if source_candidates is None:
+            source_candidates = getattr(self._source, "_items", ())
+        entries = tuple(
+            CampaignManifestEntry(
+                candidate_id=candidate.id,
+                target=candidate.target,
+                fault=candidate.primary_fault,
+            )
+            for candidate in source_candidates
+        )
+        return CampaignExecutionManifest(
+            campaign_id=self.campaign.id,
+            entries=entries,
+            engine_policy=self.campaign.engine_policy,
+            target_profiles=self.campaign.target_profiles,
+            budget=(
+                self.campaign.budget
+                if self.campaign.budget is not None
+                else self.campaign.max_runs
+            ),
+            deadline_epoch_s=self.campaign.deadline_epoch_s,
+            stop_conditions=self.campaign.stop_conditions or (self.campaign.stop_condition,)
+            if self.campaign.stop_condition
+            else self.campaign.stop_conditions,
+        )
 
     def request_stop(self) -> None:
         """Explicitly request a manual stop (surfaces STOP_CONDITION)."""
@@ -197,9 +270,15 @@ class M5CampaignEngine:
 
     def run_until_stop(self) -> StopReason:
         """Drive the loop until a stop condition is met; return it."""
+        if self.state is CampaignState.DRAFT:
+            self.start()
         while True:
             try:
                 self.iterate()
             except CampaignStopError as stop:
                 self.state_stack.append(stop.reason)
+                if stop.reason is StopReason.RESOURCE_CONFLICT:
+                    self._transition(CampaignState.ABORTED)
+                else:
+                    self._transition(CampaignState.COMPLETED)
                 return stop.reason
