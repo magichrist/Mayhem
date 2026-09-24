@@ -1,5 +1,11 @@
 # M7 k8s executor flip — discovery & design (k-plan-3: kubernetes executor milestone)
 
+> **Historical discovery report — not current behavior.** The pre-implementation
+> descriptions in this file are retained for traceability. Use
+> [`README.md`](README.md#kubernetes-status-vocabulary) and current source for
+> manifest planning, planner, executor, resolver, adapter, and catalog-only
+> status.
+
 **Status:** RECORDED — executor flip shipped (SP-3.1→3.4 of `k-plan-3-implementation-subplans.md`); registry carries `K8sExecutor` + per-family signal executors + `K8sArgvExecutor` for the portable generic-catalog lane.
 **Owner:** Mayhem / M7 k8s executor milestone agent (me)
 **Prepared for:** planner.py + safety.py + agents/executors.py + domain/leases.py implementers, planner ADR-M7-1 reviewers, Mayhem planner/executor architecture board.

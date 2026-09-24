@@ -399,16 +399,37 @@ node-worker workload objects.
 - **Ordering** — the full file must pass both standalone and in-suite (no
   cross-test mutation aliasing: fake `_do_patch` deep-copies stored objects).
 
+## Implementation status
+
+- **Implemented in production Python:** all ten catalog entries, the controller
+  family unions, node routing, workload/quota/PVC executors, in-pod crash-loop
+  supervisor, and node-control workers are registered. The node families use
+  `NODE_CONTROL`; the two critical families retain the existing critical
+  admission policy.
+- **Mocked-unit-tested:** the ten ids are covered by focused fake-kubectl
+  tests, including node-worker pinning, crash-loop argv/pidfile cleanup,
+  workload scheduling/scale/mount patches, quota and PVC snapshot round-trips,
+  and the unavailable-node-control refusal.
+- **Unverified-live:** no E2E tests, Minikube, kubectl, Podman, Docker, or
+  external-cluster verification was performed. Readiness transitions,
+  kubelet masking, kube-proxy recovery, endpoint reconvergence, and real
+  admission/controller convergence remain to be verified in a live cluster.
+- **Unsupported by design:** DNS/CoreDNS, autoscaler/HPA, disruption budgets,
+  image-pull latency, termination delay, and preemption tuning remain delegated
+  to `k8s-plan-2` or later plans. No live operation is represented by a
+  false-success no-op.
+
 ## Acceptance criteria
 
-- Ten new faults planned, gated, executed, and undone; `mayhem plan` compiles an
-  example drill naming each without schema error.
-- Node faults refuse cleanly without `NODE_CONTROL`; criticals refuse without
-  `--allow-critical`.
-- `kubectl get/delete/patch/apply/exec` all route through the canonical
-  alias-normalised fake; all new undo paths restore byte-identical snapshots.
-- `uv run pytest`, `ruff`, and `mypy` green; catalog and README/`features`
-  surfaces list the ten ids; `-k` fault-kind assertion includes them.
+- [x] Ten new faults are catalogued, gated, routed, executed, and undone through
+  the existing Kubernetes executor/lease seams.
+- [x] Node faults refuse cleanly without `NODE_CONTROL`; criticals remain
+  refused by the existing critical opt-in.
+- [x] Snapshot and worker undo paths are idempotent and tested against the
+  canonical fake-tool seams; unavailable operations return loud failures.
+- [x] `python3 -m pytest tests/unit/ -q` passes.
+- [ ] Live-cluster behavior and cluster-specific recovery waits are unverified;
+  run the plan in an authorized test cluster before production use.
 
 ## Deliberately out of scope (→ k8s-plan-2)
 

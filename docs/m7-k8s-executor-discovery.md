@@ -1,5 +1,10 @@
 # k-plan-3 milestone — Kubernetes exec-family executor (planner→safety→executor flip)
 
+> **Historical discovery report — not current behavior.** Statements such as
+> "today" describe the source observed when this report was written. Use
+> [`README.md`](README.md#kubernetes-status-vocabulary) and current source for
+> support status.
+
 **Status**: Discovery complete. Design contract locked (k-plan-3 §3 annotations, ADR-M7-1, ADR-M7-3, ADR-2.3 cluster-modes, ADR-2.2 kubernetes runtime apparatus).
 **Verdict**: **GO — planner admits exec-superfamilies against live-eligible k8s pods; safety flips from blanket k8s refusal to per-family capability-supervised admission; executor family gains a `K8sExecExecutor` (+ k8s-tolerant compensator + resolved-target evidence).**
 Open item: *exact migration id/name* is not yet pinned in a checked-in ADR — see §7.

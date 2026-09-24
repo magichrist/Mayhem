@@ -1,5 +1,11 @@
 # Kubernetes exec-family executor — planner → safety → executor flip (design report)
 
+> **Implemented design record with dated snapshots.** This ADR and the code
+> examples inside it describe the design and rollout state recorded on
+> 2026-09-12. For current Kubernetes support, use
+> [`../README.md`](../README.md#kubernetes-status-vocabulary) and the executable
+> source anchors listed there.
+
 **Status:** Discovery complete · contract locked against k-plan-3 / ADR-M7-1
 **Owner:** Mayhem controller exploration agent (M7 k8s milestone)
 **Date:** 2026-09-12

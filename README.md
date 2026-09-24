@@ -1,14 +1,20 @@
 # Mayhem
 
-**Chaos engineering for Docker, Podman, and Kubernetes.** Mayhem discovers your
-system from a compose blueprint (Docker/Podman) or a live cluster (Kubernetes),
-compiles one declarative
-`kind: drill` YAML file into a frozen, safety-gated execution plan, injects
-faults through a capability-aware toolkit, and ends every run with a machine
-verdict derived from the observations it actually recorded.
+**Chaos engineering for Docker and Podman, with separately scoped Kubernetes
+planning and execution seams.** The documented quickstart uses a compose
+blueprint. Mayhem compiles a declarative `kind: drill` document into a frozen,
+safety-gated plan, injects supported faults through a capability-aware toolkit,
+and derives the run verdict from recorded observations.
 
 Everything lands in SQLite — steps, probes, criteria evaluations, decisions —
 so nothing is ever "trust me, it worked."
+
+Kubernetes source support is layered and must not be collapsed into one
+"supported" claim: manifest planning, planner support, executor support, and
+live resolution are separate states. The legacy `KubernetesAdapter` remains
+unavailable, and catalog-only faults are not executable merely because they are
+defined. See the [Kubernetes status](#kubernetes-status) section and the
+[documentation authority index](docs/README.md).
 
 ```
 compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen plan
@@ -37,8 +43,10 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 **Prerequisites**
 
 - Python 3.12+
-- Docker with Compose v2 (or Podman, used via the `--podman` flag)
-- *(Optional)* A running Kubernetes cluster and `kubectl` for `k8s.*` faults
+- Docker with Compose v2, or Podman selected with `--podman`
+
+The Kubernetes paths have additional SDK, client, cluster, and capability
+requirements. The checked-in documentation does not certify any live cluster.
 
 **Install**
 
@@ -62,18 +70,17 @@ mayhem run mayhem.yaml --compose docker-compose.yml      # 3. inject → observe
 Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
 `compose.yml`) in the current directory.
 
-`validate` and `plan` work against the blueprint alone and never touch live
-containers. `run` re-proves every fault at the impact gate against the live
-graph and bypasses — or, without `--skip-gate`, refuses — anything it cannot
-prove injectable.
+`validate` and `plan` compile from the compose blueprint and do not inject a
+fault. Topology construction may still inspect an available container runtime
+for current-state data. `run` applies its impact gate and records the actual
+execution outcome.
 
-The bundled spec exercises **38 distinct faults** across the `testcase-lb`
-load-balancer — one concurrent fault (`max_faults: 1`, `risk_ceiling:
-critical`), auto-recovery off — so the checks observe whether the stack
-self-heals on its own. The nine `k8s.*` catalog faults are exercised against a
-Kubernetes blueprint in [`examples/k8s`](examples/k8s) — see
-[Top-level fields (targets)](docs/drill-spec.md#top-level-fields) for the
-cross-runtime target syntax, so **every fault in the catalog has an example.**
+The bundled spec exercises the compose-supported fault families used by the
+example stack. The [`examples/k8s`](examples/k8s) directory is a separate
+manifest-backed planning example. Its presence does not prove live-cluster
+execution, and the current catalog is larger than the original nine-fault
+example. See [Targets (cross-runtime)](docs/drill-spec.md#targets-cross-runtime)
+for the authored target syntax.
 
 ---
 
@@ -132,12 +139,13 @@ name: checkout-recovery
 hypothesis: "checkout stays available while cart writes are throttled"
 
 config:
-  risk_ceiling: high      # refuse faults riskier than this (policy ceilings only tighten)
-  max_faults: 1           # never inject more than one fault at once
+  risk_ceiling: high
+  max_faults: 1
   timeout: 30m
+  recovery: true
 
 containers:
-  cart-api:               # keys ARE compose container_name values
+  cart-api:
     faults:
       - fault: net.latency
         duration: 10s
@@ -146,36 +154,11 @@ containers:
           jitter_ms: 25
 
 execution:
-  strategy: sequential    # sequential | parallel | random (ADR-M5-1)
-
-checks:
-  preconditions:          # everything must hold before anything is injected
-    - type: container_running
-      container: cart-api
-    - type: http
-      url: http://cart-api:8080/_health
-      expected: 200
-
-success:
-  require_all: true
-  criteria:
-    - type: status
-      source_id: cart-health.status
-      expected: 200
-    - type: latency
-      source_id: cart-health.latency_ms
-      lt_ms: 800
-
-observability:            # evidence sources
-  sources:
-    - kind: logs
-      source_id: cart-logs
-      container: cart-api
-      tail: 200
-    - kind: probe
-      source_id: cart-probe
-      probe: { type: http, url: http://cart-api:8080/_health }
-      cadence: 2s
+  - sequential: [cart-api]
+  - check:
+      - http: http://cart-api:8080/_health
+        expect:
+          status: 200
 ```
 
 Validate with `mayhem validate mayhem.yaml`; unknown parameters, out-of-range
@@ -213,36 +196,39 @@ policy:
   risk_ceiling: null         # tightened by the drill ceiling at plan time
   allow_critical: false      # config-side half of the critical opt-in
   critical_fault_acks: []    # per-fault acks; critical faults need allow_critical + ack + --allow-critical
-  kubernetes:                # discovery overrides for k8s drills
-    context: null            # kubeconfig context (null = current-context)
-    namespace: null          # namespace filter (null = all)
 blast_radius:
   max_services_pct: 50.0
   max_hosts: 2
   max_concurrent_faults: 3
   max_duration_per_fault_s: 300.0
-  forbidden_fault_pairs: []  # e.g. ["net.packet_loss", "net.bandwidth"]
+  forbidden_fault_pairs: []  # pairs such as [net.packet_loss, net.bandwidth]
 storage:
-  path: mayhem.db            # SQLite database (same default as --db)
+  path: mayhem.db
   artifacts_dir: .mayhem/artifacts
 toolkit:
-  binaries: {}               # pin a named tool's binary, keyed by fault backend
-runtime: docker              # docker | podman | kubernetes (CLI: --podman)
+  binaries: {}               # pin a named tool's binary
+runtime: docker              # docker | podman | kubernetes
 target:
-  containers: []             # explicit targets when no compose file is used
+  containers: []             # explicit discovery targets without compose
+kubernetes:
+  context: null              # kubeconfig context
+  namespace: null            # null = no namespace filter
+recovery_grace: 300.0
 log_level: INFO              # DEBUG | INFO | WARNING | ERROR
-maniac:                      # fallback for `mayhem maniac` when the spec omits config.maniac
+maniac:
   level: 2
   run_level: 10
-  seed: null                 # null = fresh random seed each run
+  seed: null
 ```
 
-Layering, in increasing precedence: **built-in defaults → `mayhem.yaml` →
-`mayhem.{profile}.yaml` → environment variables → CLI flags**. Profile
-overlays are separate per-profile files (selected with `--profile NAME`) —
-there is no `profiles:` key inside `mayhem.yaml`. The environment layer only
-honours allowlisted variables: `MAYHEM_STORAGE_PATH`,
-`MAYHEM_ARTIFACTS_DIR`, `MAYHEM_LOG_LEVEL`.
+Layering, in increasing precedence: **built-in defaults → selected YAML →
+`mayhem.{profile}.yaml` → allowlisted environment variables → programmatic
+CLI overrides**. Profile overlays are separate files selected with `--profile
+NAME`; there is no `profiles:` key inside the base file. The environment layer
+only honours `MAYHEM_STORAGE_PATH`, `MAYHEM_ARTIFACTS_DIR`, and
+`MAYHEM_LOG_LEVEL`. The current CLI uses `--config` and `--profile` to select
+layers; it does not expose a generic flag that maps arbitrary fields into
+configuration.
 
 Drill-level `config.risk_ceiling` composes with the policy ceiling and can
 only tighten it.
@@ -252,81 +238,55 @@ The full configuration reference is in
 
 ---
 
-## CLI Reference
+## CLI direction and migration
 
-Global options (accepted at any level, before or after the command):
+The current command surface remains supported. The next CLI generation will move toward workflow groups (`discover`, `prepare`, `experiment`, `run`, `inspect`, `recover`, and `extend`), add guided `init`/`doctor` flows, make mutations plan-first, and provide stable machine output. Existing commands, exit codes, JSON keys, and database migrations remain compatibility contracts during the migration window.
 
-| Option | Meaning |
-|--------|---------|
-| `--db PATH` | SQLite database path (default `mayhem.db`). |
-| `--config PATH` | Path to `mayhem.yaml` (overrides auto-detection). |
-| `--profile NAME` | Configuration profile to merge. |
-| `--allow-critical` | Acknowledge `critical`-risk faults (e.g. `k8s.node_drain`). |
-| `--skip-gate` | Run even when the impact gate proved some faults inert. |
-| `-p, --podman` | Use Podman instead of Docker. |
-| `-d, --debug` | Re-raise errors instead of rendering them. |
+See [`docs/product/cli-product-direction.md`](docs/product/cli-product-direction.md), [`docs/product/command-architecture.md`](docs/product/command-architecture.md), and [`docs/new-plan/README.md`](docs/new-plan/README.md).
 
-Every command (and the whole tree) abbreviates to any unique prefix: `mayhem
-ex valid`, `mayhem t f`.
+Root options precede the command. The current surface includes `--db`,
+`--config`, `--profile`, `--allow-critical`, `--skip-gate`, `--podman`,
+`--kubernetes`, and `--debug`. Unique prefixes work at the root and in the
+`PrefixGroup` command trees; `dependency` currently uses a plain Click group,
+so use its subcommand names in full.
 
-| Command | Description |
-|---------|-------------|
-| `mayhem topology discover` | Discover live services/hosts/dependency edges from the blueprint. `--runtime kubernetes` (with `--kube-context` / `--namespace`) discovers a live cluster instead of a compose stack. |
-| `mayhem validate SPEC` | Compile a drill spec and run every safety gate without injecting. |
-| `mayhem plan SPEC` | Compile against the topology and print the frozen plan JSON. |
-| `mayhem run SPEC` | Compile and execute a drill; print the run summary. `--ctr CONTAINER` scopes execution to one container; `--next` prints the plan that would run. |
-| `mayhem maniac SPEC` | Compile and execute a random-injection drill — draws `run_level` single-fault rounds governed by the maniac seed/level (spec `config.maniac`, falling back to the `maniac:` layer of `mayhem.yaml`). `--steps N` overrides the round count; `--ctr CONTAINER` narrows draws to one container. |
-| `mayhem explore [EXPERIMENT]` | Generate a ranked candidate queue from the topology, gate it, execute the highest-value cells, and report coverage gained. |
-| `mayhem next [SPEC]` | Suggest the most valuable untested cell to run next (§3.2). Deterministic under the same inputs. |
-| `mayhem coverage [SPEC]` | Show the coverage map, per-service progress, and untested/blocked lists (§3.3). Filters: `--service`, `--fault`, `--fault-category`, `--state`. |
-| `mayhem expert` | Run diagnostic probes and analyze recent failures. |
-| `mayhem dependency …` | Inspect and install in-image tooling that gates fault families (`check`, `compile`, `install`). |
-| `mayhem status` | Show runs recorded in the database (`--json` supported). |
-| `mayhem history RUN_ID` | Replay steps, events, and leases recorded for one run. |
-| `mayhem recover RUN_ID` | Recover every orphaned fault lease belonging to a run. |
-| `mayhem janitor` | Sweep leases past their TTL; expire pending runs; compensate. |
-| `mayhem toolkit faults` | List the fault catalog with risk and compensatability. |
-| `mayhem toolkit list` | Probe the host for the tools/capabilities faults require. |
-| `mayhem experiment show SPEC` | Print the parsed drill spec as JSON. |
-| `mayhem experiment validate` | Alias of `validate`. |
-| `mayhem config show` / `validate` | Inspect / validate the effective layered configuration (alias: `cfg`). `show --json` reports each section's provenance. |
-| `mayhem campaign …` | See [Campaigns](#campaigns) below. |
+| Command group | Current purpose |
+|---------------|-----------------|
+| `mayhem validate`, `plan`, `run`, `maniac` | Compile, validate, execute, and randomly exercise drill specs. |
+| `mayhem status`, `history RUN_ID`, `recover RUN_ID`, `janitor` | Inspect runs and perform recovery sweeps. `recover` requires a run id; `janitor` has no `sweep` subcommand. |
+| `mayhem topology discover` | Discover compose or live-cluster topology. Kubernetes live discovery uses `--context` and `--namespace`, not the removed `--kube-context` spelling. |
+| `mayhem explore`, `next`, `coverage` | Generate, rank, and report the experiment landscape. |
+| `mayhem dependency check`, `install`, `compile` | Inspect or prepare container tooling required by planned faults. |
+| `mayhem expert` | Run local diagnostic probes and analyze recent failures. |
+| `mayhem experiment show`, `validate` | Parse or validate authored drill specs. |
+| `mayhem config show`, `validate` (`cfg` alias) | Inspect or validate layered configuration. |
+| `mayhem toolkit faults`, `list` | Inspect the catalog and local tool capabilities. |
+| `mayhem campaign …` | Create, populate, run, and manage authored campaign experiments. |
+
+Use each command's current `--help` output for its accepted arguments. See the
+complete [`docs/reference/cli.md`](docs/reference/cli.md) for options, command
+specificity, and campaign subcommands.
 
 ---
 
 ## Campaigns
 
-A campaign groups drill specs under one execution umbrella (ADR-0022/0023):
-experiments run sequentially in priority order, and the campaign's failure
-policy and time window govern the whole run.
+A campaign groups authored drill-spec paths and runs them sequentially.
 
 ```bash
 mayhem campaign create black-friday \
   --description "BFCM chaos" --hypothesis "checkout survives every single-fault failure"
 mayhem campaign add-experiment black-friday mayhem.yaml
 mayhem campaign add-experiment black-friday checkout-recovery.yaml
-mayhem campaign start black-friday                      # draft -> running
+mayhem campaign start black-friday
 mayhem campaign run black-friday --compose docker-compose.yml
 ```
 
-A campaign is born `draft` and moves through
-`scheduled → running → paused → completed / aborted` (`archive` closes a
-finished campaign). Per-experiment results land in the observations table
-under the campaign id, and the failure policy selects the next action when
-one experiment fails:
-
-| `on_experiment_failure` | Meaning |
-|-------------------------|---------|
-| `abort_campaign` (default) | Stop the remaining experiments. |
-| `skip_and_continue` | Record the failure and run the next experiment. |
-| `retry_then_abort` | Retry the failed experiment once, then abort the campaign. |
-
-Window fields (`window_json`): `start_epoch_s` / `end_epoch_s`,
-`max_duration_s` (hard stop), and `cooldown_between_experiments_s` between
-successive experiments.
-
-**Campaign subcommands:** `create`, `list`, `show`, `status`, `delete`,
-`add-experiment`, `start`, `abort`, `archive`, `run`.
+The current CLI creates campaigns in `draft`, `start` moves a draft to
+`running`, `run` executes the stored spec paths, and `archive` or `abort` sets
+the corresponding terminal status. The current command surface does not expose
+campaign scheduling, pause, resume, priority-order, or policy/window editing
+options. See the [campaign reference](docs/reference/cli.md#campaign-commands).
 
 ---
 
@@ -356,22 +316,10 @@ successive experiments.
 
 ## Exit Codes
 
-Stable contract for scripts and CI (definition:
-[`src/mayhem/cli/exit_codes.py`](src/mayhem/cli/exit_codes.py)):
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General failure |
-| 2 | Usage error (bad flags/arguments) |
-| 3 | Configuration layering/validation failed |
-| 4 | Spec/target validation failed |
-| 5 | A safety gate refused the operation |
-| 6 | Experiment ran and did not complete |
-| 7 | Recovery/janitor left dirty state behind |
-| 8 | Agent transport/runtime failure |
-| 9 | External tool invocation failed structurally |
-| 10 | Command prefix matched multiple commands |
+The stable identifiers and numeric values are defined in
+[`src/mayhem/cli/exit_codes.py`](src/mayhem/cli/exit_codes.py) and documented in
+[`docs/reference/cli.md`](docs/reference/cli.md#exit-codes). The deterministic
+documentation test rejects identifiers that are not declared in source.
 
 ---
 
@@ -380,28 +328,31 @@ Stable contract for scripts and CI (definition:
 The pipeline is staged so everything expensive is done up front and execution
 is as small as possible:
 
-1. **Discover** — the topology provider builds a graph (services, hosts,
-   dependency edges) from the compose blueprint (Docker/Podman) or a live
-   Kubernetes cluster, plus live containers/nodes.
-2. **Prepare** — `mayhem config` layering (defaults → `mayhem.yaml` → profile →
-   env → flags) plus topology, drift detection, and target revalidation.
+1. **Discover** — compose discovery builds a Docker/Podman graph. Kubernetes
+   has separate live-discovery and offline-manifest providers; the manifest
+   provider creates logical placeholders, not live pod selections.
+2. **Prepare** — `mayhem config` layering (defaults → selected YAML → separate
+   profile overlay → allowlisted environment values → programmatic overrides),
+   plus topology, drift detection, and target revalidation.
 3. **Compile & plan** — the drill spec becomes a frozen `ExecutionPlan` with
    step sequences, per-fault compensations, success criteria, and observability
-   sources; every fault, target kind, capability, and duration is validated
-   against the catalog.
-4. **Execute** — the engine runs rounds (inject → observe → compensate) through
-   the runtime adapter, evaluates criteria, collects observability, and writes
-   step/event/lease rows with the governing-decision trace.
+   sources; fault, target, capability, and duration inputs are validated
+   against the current models.
+4. **Execute** — supported runtimes execute inject → hold → compensate rounds
+   and record evidence. Kubernetes planner/executor presence does not by itself
+   establish a reachable cluster or an available capability.
 5. **Recover & report** — the janitor sweeps orphaned leases; `status`,
-   `history`, and run summaries replay the evidence.
+   `history`, and run summaries replay recorded evidence.
 
 **Documentation**
 
 | Document | Contents |
 |----------|----------|
-| [`docs/drill-spec.md`](docs/drill-spec.md) | **The drill DSL reference** — config, containers, execution, checks, success criteria, observability, and the full fault catalog. |
-| [`docs/config.md`](docs/config.md) | **Configuration reference** — discovery order, merged syntax, every field with type and default, env/CLI overrides. |
-| [`docs/compensation.md`](docs/compensation.md) | **Fault compensation lifecycle** — inject / undo / verify contracts, executor routing, marker conventions, and the per-fault template table. |
+| [`docs/README.md`](docs/README.md) | Documentation authority, classifications, source-of-truth map, and Kubernetes status vocabulary. |
+| [`docs/drill-spec.md`](docs/drill-spec.md) | Drill DSL reference. |
+| [`docs/config.md`](docs/config.md) | Current layered configuration contract. |
+| [`docs/reference/cli.md`](docs/reference/cli.md) | Current commands, options, and stable exit codes. |
+| [`docs/compensation.md`](docs/compensation.md) | Compensation lifecycle and verification contracts. |
 
 ---
 
@@ -409,21 +360,23 @@ is as small as possible:
 
 | Area | Status |
 |------|--------|
-| Domain models, configuration system | Complete |
-| Topology discovery (Docker/Podman/Kubernetes) + compose project filtering + drift detection | Complete |
-| Fault catalog + registry + capability probing (`toolkit`) | Complete |
-| Drill spec DSL (config / containers / execution / checks) | Complete |
-| Deterministic + random planners, frozen plans | Complete |
-| Success criteria + machine verdict | Complete |
-| Declarative observability sources | Complete |
-| Run engine with compensation + leases + janitor + recover | Complete |
-| Safety gates + impact gate | Complete |
-| CLI with prefix abbreviation, stable exit codes | Complete |
-| SQLite persistence + restart, migrations (schema freeze) | Complete |
-| Campaigns (multi-spec runs) | Complete |
-| Tests, ruff, mypy (per-file strict) | Complete |
-| Kubernetes topology discovery + runtime | Complete (see [`examples/k8s`](examples/k8s)) |
+| Compose-oriented Docker/Podman workflow | Documented user path |
+| Layered configuration, drill planning, SQLite evidence, CLI exit codes | Current checked-in references |
+| Kubernetes manifest topology | Supported as an offline planning input; blueprint pods are placeholders |
+| Kubernetes planner | Supports normalized `targets:` scopes and frozen-plan metadata |
+| Kubernetes executor/resolver seams | Present in source and unit-tested with fakes; availability is runtime/capability dependent |
+| Legacy `KubernetesAdapter` | Compatibility seam only; reports unavailable |
+| Live Kubernetes cluster acceptance | Not claimed by repository documentation |
+| Catalog-only Kubernetes faults | `k8s.image_pull_slow`; excluded from the available-fault register and refused before mutation |
 | Web UI / REST API | Planned |
+
+### Kubernetes status
+
+The [examples/k8s README](examples/k8s/README.md) and
+[documentation authority index](docs/README.md#kubernetes-status-vocabulary)
+explain the separate Kubernetes states. Historical discovery reports and the
+dated [grounding log](docs/grounding-log.md) are retained for traceability and
+must not be treated as live-cluster evidence.
 
 ---
 

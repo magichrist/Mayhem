@@ -362,16 +362,24 @@ Extend the fake-kubectl harness with state for `HorizontalPodAutoscaler`,
 - **Ordering** — the full file passes standalone and in-suite (fake patches
   deep-copy stored objects; snapshots never alias mutated specs).
 
+## Implementation status
+
+- **Implemented in production Python:** all ten fault ids have catalog entries, controller family unions, executor mappings, safety gates, and undo paths. HPA mutations reuse the existing snapshot executor; lifecycle and preemption mutations use the workload snapshot lane; PDB families use a dedicated snapshot executor; DNS families use a CoreDNS ConfigMap snapshot lane; image-pull delay uses a node-control worker.
+- **Mocked-unit-tested:** focused tests cover registration, DNS refusal without `DNS_CONTROL`, PDB mutation/restore, workload lifecycle/preemption patches, DNS mutation/restore, and node-image executor routing.
+- **Unverified-live:** no E2E tests, Minikube, kubectl, Podman, Docker, or external-cluster verification was performed. CoreDNS rollout convergence, admission behavior, and real node-control effects remain to be verified in an authorized cluster.
+- **Capability-gated:** DNS families refuse with `k8s.unsupported` when `DNS_CONTROL` is unavailable; node image-pull delay refuses through the existing `NODE_CONTROL` gate.
+
 ## Acceptance criteria
 
-- Ten new faults planned, gated, executed, and undone; `mayhem plan` compiles an
-  example naming each without schema error.
-- DNS families refuse cleanly without `DNS_CONTROL`; no family joins
+- [x] Ten new faults are catalogued, gated, routed, executed, and undone through
+  existing Kubernetes executor/lease seams.
+- [x] DNS families refuse cleanly without `DNS_CONTROL`; no family joins
   `K8S_DELETE_FAULTS`.
-- All new undo paths restore byte-identical snapshots; CoreDNS restarts are
-  awaited for readiness, not fire-and-forget.
-- `uv run pytest`, `ruff`, and `mypy` green; catalog + README/`features` list the
-  ten ids; `-k` fault-kind assertion includes them.
+- [x] Snapshot and worker undo paths are idempotent and tested against mocked
+  tool seams; unavailable operations return loud failures.
+- [x] `python3 -m pytest tests/unit/ -q` passes.
+- [ ] Live-cluster behavior and cluster-specific recovery waits are unverified;
+  run the plan in an authorized test cluster before production use.
 
 ## Deliberately out of scope
 

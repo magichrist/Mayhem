@@ -1,5 +1,10 @@
 # Grounding log — feat-1 §1 claim verification
 
+> **Historical snapshot — not current behavior.** This log records evidence
+> gathered on 2026-09-10. A `verified` row means the claim matched the working
+> tree on that date; it does not certify current behavior. Use
+> [`README.md`](README.md) and current source as the authority.
+
 Verification date: 2026-09-10. Phase A of `docs/plan-feat-1.md`.
 
 Each factual claim in `docs/feat-1.md` §1 is verified against the listed seam

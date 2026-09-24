@@ -77,8 +77,8 @@ mayhem campaign run weekly-drill --compose examples/testCase/docker-compose.yml
 Each spec still compiles and gates exactly as `mayhem run` would; the campaign
 only layers execution policy on top (failure action, deadlines, cooldowns) and
 records per-experiment observations under the campaign id. See
-[`campaign`](README.md#campaigns) in the README for the lifecycle and policy
-options.
+[`campaign`](../README.md#campaigns) in the README for the current lifecycle
+commands.
 
 ---
 
