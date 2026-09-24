@@ -38,6 +38,7 @@ from mayhem.controller.safety import pre_exec_assertion, validate_plan
 from mayhem.domain.cancellation import CancellationLevel, CancellationToken
 from mayhem.domain.checks import CheckLocus
 from mayhem.domain.common import utc_now
+from mayhem.domain.errors import ResolutionError, SelectionError
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.experiments import OnFailure
 from mayhem.domain.identity import RuntimeLabel
@@ -123,7 +124,6 @@ class RunResult:
         return self.ended_at_epoch_s - self.started_at_epoch_s
 
     def summary_md(self) -> str:
-        """End-of-run report: outcome, criteria, steps, cleanup, resilience."""
         lines = [f"# Run {self.run_id}", "", "## outcome"]
         lines.append(f"- **status**: {self.status}")
         if self.verdict is not None:
@@ -146,6 +146,23 @@ class RunResult:
             lines.append(f"- **window**: {start_iso} → {end_iso} ({self.wall_seconds:.1f}s)")
         else:
             lines.append(f"- **wall time**: {self.wall_seconds:.1f}s")
+        affected = sorted({s.detail.split(":")[0] for s in self.steps if s.detail})
+        if affected:
+            lines.append(f"- **affected services**: {', '.join(affected[:8])}")
+        symptoms = []
+        for step in self.steps:
+            if step.status == "bypassed":
+                symptoms.append(f"{step.step_id} bypassed")
+            elif not step.ok:
+                symptoms.append(f"{step.step_id} failed: {step.detail[:80]}")
+            elif "injected" in step.detail.lower():
+                symptoms.append(f"{step.step_id} perturbed")
+        if symptoms:
+            lines.append(f"- **observed symptoms**: {'; '.join(symptoms[:5])}")
+        if self.dirty_leases:
+            lines.append(f"- **recovery status**: dirty ({len(self.dirty_leases)} leases need manual remediation)")
+        else:
+            lines.append("- **recovery status**: recovered")
         if self.criteria_evaluation is not None and not self.criteria_evaluation.empty:
             lines += ["", "## success criteria"]
             lines.append(self.criteria_evaluation.summary_md())
@@ -162,6 +179,15 @@ class RunResult:
         if self.resilience_report is not None:
             lines += ["", "## resilience"]
             lines.append(self.resilience_report.summary_md())
+        if self.status == "completed" and not self.dirty_leases:
+            lines += ["", "## next"]
+            lines.append("- inspect with `mayhem inspect run <id>`; next recommended: `mayhem inspect next`")
+        elif self.dirty_leases:
+            lines += ["", "## next"]
+            lines.append("- recover with `mayhem recover <run_id>` then `mayhem inspect run <run_id>`")
+        else:
+            lines += ["", "## next"]
+            lines.append("- review `mayhem prepare plan` dependency gaps and target fit before retry")
         return "\n".join(lines)
 
 
@@ -389,6 +415,7 @@ class RunEngine:
         bypass: Mapping[tuple[str, str], str] | None = None,
         cancellation: CancellationToken | None = None,
         k8s_resolver: KubernetesRuntimeResolver | None = None,
+        k8s_context: str | None = None,
         recovery_grace: float = 300.0,
     ) -> None:
         self._store = store
@@ -419,6 +446,7 @@ class RunEngine:
         # Execution-time Kubernetes resolver (k-plan-3 SP-3.4): None means
         # "build lazily on demand from the kubectl/SDK gate."
         self._k8s_resolver = k8s_resolver
+        self._k8s_context = k8s_context
         # k-plan-4 §4.5: how long pod-lifecycle compensation waits for a
         # replacement pod to reach Ready before declaring a timeout.
         self._recovery_grace_s = max(float(recovery_grace), 10.0)
@@ -711,7 +739,7 @@ class RunEngine:
         writes funnel through the single ``Store`` connection, which is
         internally serialized, so no executor-side locking is required here.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         reports: list[StepReport] = []
         dirty: list[str] = []
@@ -736,17 +764,17 @@ class RunEngine:
         (payload/lifecycle) fail loud with ``k8s.unsupported`` before any
         lease forms.
         """
-        from mayhem.agents.executors import (  # noqa: PLC0415
+        from mayhem.agents.executors import (
             K8S_SIGNAL_FAULTS,
             k8s_unsupported_reason,
         )
-        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+        from mayhem.controller.k8s_runtime import (
             K8S_NODE_FAULTS,
             k8s_undo_spec,
             make_k8s_resolver,
             preferred_pod_from_graph,
         )
-        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+        from mayhem.domain.errors import ResolutionError, SelectionError
 
         fault = step.fault
         assert fault is not None and fault.target is not None
@@ -754,7 +782,7 @@ class RunEngine:
             return self._execute_k8s_node_fault(plan, step)
         if fault.fault_id in K8S_MUTATION_FAULTS:
             return self._execute_k8s_pod_fault(plan, step)
-        resolver = make_k8s_resolver(self._k8s_resolver)
+        resolver = make_k8s_resolver(self._k8s_resolver, self._k8s_context)
         if resolver is None or not resolver.available:
             return (
                 StepReport(
@@ -951,17 +979,17 @@ class RunEngine:
         the k-plan-3 exec path.  Every durable transition flows through the
         LeaseClient, one lease per resolved pod.
         """
-        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+        from mayhem.controller.k8s_runtime import (
             K8S_REVERSIBLE_FAULTS,
             k8s_mutation_spec,
             k8s_undo_ops_for,
             make_k8s_resolver,
         )
-        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+        from mayhem.domain.errors import ResolutionError, SelectionError
 
         fault = step.fault
         assert fault is not None and fault.target is not None
-        resolver = make_k8s_resolver(self._k8s_resolver)
+        resolver = make_k8s_resolver(self._k8s_resolver, self._k8s_context)
         if resolver is None or not resolver.available:
             return (
                 StepReport(
@@ -1226,21 +1254,20 @@ class RunEngine:
         domain rules.  Node faults are always reversible (``k8s.node_drain``
         undo = uncordon, ``k8s.node_pressure`` undo = workload delete).
         """
-        from mayhem.agents.executors import (  # noqa: PLC0415
+        from mayhem.agents.executors import (
             executor_for,
         )
-        from mayhem.controller.k8s_runtime import (  # noqa: PLC0415
+        from mayhem.controller.k8s_runtime import (
             K8S_NODE_FAULTS,
             k8s_node_routing,
-            k8s_node_spec,
             k8s_node_undo_ops,
             make_k8s_resolver,
         )
-        from mayhem.domain.errors import ResolutionError, SelectionError  # noqa: PLC0415
+        from mayhem.domain.errors import ResolutionError, SelectionError
 
         fault = step.fault
         assert fault is not None and fault.target is not None
-        resolver = make_k8s_resolver(self._k8s_resolver)
+        resolver = make_k8s_resolver(self._k8s_resolver, self._k8s_context)
         if resolver is None or not resolver.available:
             return (
                 StepReport(
@@ -1280,7 +1307,6 @@ class RunEngine:
         if resolved is None:
             return StepReport(step.id, False, "node resolve returned no target"), []
         params: dict[str, object] = dict(fault.params or {})
-        mutation = k8s_node_spec(fault.fault_id, resolved, params)
         lease = self._client.acquire(
             run_id=plan.run_id,
             fault_id=fault.fault_id,
@@ -1412,7 +1438,7 @@ class RunEngine:
             [mark.id],
         )
 
-    def _execute_fault(  # noqa: PLR0915, PLR0912  (converging inject/monitor/recover pipeline)
+    def _execute_fault(
         self, plan: ExecutionPlan, step: PlannedStep
     ) -> tuple[StepReport, list[str]]:
         fault = step.fault
@@ -1509,8 +1535,8 @@ class RunEngine:
         # Resource ownership tracking (ADR-0015)
         tracked_resource = None
         if self._resource_manager is not None:
-            from mayhem.domain.leases import UndoOp, VerifyProbe  # noqa: PLC0415
-            from mayhem.domain.resources import ResourceType  # noqa: PLC0415
+            from mayhem.domain.leases import UndoOp, VerifyProbe
+            from mayhem.domain.resources import ResourceType
 
             tracked_resource = self._resource_manager.register(
                 resource_type=ResourceType.GENERIC,  # specific type inferred from fault_id
@@ -1609,7 +1635,7 @@ class RunEngine:
             and inject_outcome is not None
             and inject_outcome.ok
         ):
-            from mayhem.domain.leases import UndoOp as _UndoOp  # noqa: PLC0415
+            from mayhem.domain.leases import UndoOp as _UndoOp
 
             self._resource_manager.journal_mutation(
                 lease_id=lease.id,
@@ -1781,7 +1807,7 @@ class RunEngine:
         if self._live_graph is None:
             return {}
         graph = self._live_graph()
-        from mayhem.domain.topology import ContainerNode, ProcessNode  # noqa: PLC0415
+        from mayhem.domain.topology import ContainerNode, ProcessNode
 
         resolved: dict[str, tuple[int, str]] = {}
         node_pool: set[str] = set()
@@ -1851,7 +1877,7 @@ class RunEngine:
             container_name: str | None = None
             if self._live_graph is not None:
                 graph = self._live_graph()
-                from mayhem.domain.topology import ContainerNode  # noqa: PLC0415
+                from mayhem.domain.topology import ContainerNode
 
                 for target in fault.targets:
                     for node_id in target.node_ids:
@@ -1921,7 +1947,7 @@ class RunEngine:
         bridging the host/VM boundary. Unmatched or unresolvable hosts keep a
         plain on-host HTTP probe.
         """
-        from mayhem.domain.leases import VerifyProbe  # noqa: PLC0415
+        from mayhem.domain.leases import VerifyProbe
 
         parts = None
         host = None

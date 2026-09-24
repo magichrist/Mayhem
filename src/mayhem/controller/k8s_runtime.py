@@ -18,18 +18,27 @@ pure composition over in-memory objects.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from mayhem.agents.executors import (
+    _K8S_EXECUTORS,
     K8S_SIGNAL_FAULTS,
     K8S_UNDO_COMMAND,
     k8s_unsupported_reason,
     node_control_worker_name,
 )
 from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver, default_client
+from mayhem.domain.catalog import definition_for
 from mayhem.domain.errors import ResolutionError, SelectionError
-from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
+from mayhem.domain.faults import TargetKind
 from mayhem.domain.topology import NodeKind
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from mayhem.domain.leases import UndoOp
+    from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 
 UNDO_OP = "k8s.exec"
 NO_UNDO_MARKER = "noop"  # signal families with nothing live to undo (TERM/KILL)
@@ -43,6 +52,8 @@ K8S_MUTATION_FAULTS: frozenset[str] = frozenset(
         "k8s.pod_evict",
         "k8s.pod_oom",
         "k8s.pod_pressure",
+        "k8s.pod_restart_churn",
+        "k8s.sidecar_termination",
         "k8s.network_policy",
         "k8s.pod_partition",
         "k8s.pod_latency",  # k-plan-5 §5.3: netns-routed pod fault
@@ -59,9 +70,14 @@ K8S_REVERSIBLE_FAULTS: frozenset[str] = frozenset(
     {
         "k8s.network_policy",
         "k8s.pod_pressure",
+        "k8s.pod_restart_churn",
+        "k8s.sidecar_termination",
         "k8s.pod_partition",
         "k8s.node_drain",  # undo = uncordon (k-plan-5 §5.2)
         "k8s.node_pressure",  # undo = delete pressure workload (k-plan-5 §5.4)
+        "k8s.node_disk_pressure",
+        "k8s.node_memory_pressure",
+        "k8s.node_pid_pressure",
         "k8s.pod_latency",  # undo = qdisc clear (k-plan-5 §5.3)
         # ── k-plan-6: next-20 families (docs/k8s-new.md) ──
         "k8s.pod_readiness_fail",
@@ -89,15 +105,35 @@ K8S_REVERSIBLE_FAULTS: frozenset[str] = frozenset(
 # k-plan-6 §24: the node-killer families are NODE_CONTROL-gated and join the
 # same node pipeline (their executors refuse before any mutation when the
 # capability gate is closed).
-K8S_NODE_FAULTS: frozenset[str] = frozenset(
-    {
-        "k8s.node_drain",
-        "k8s.node_pressure",
-        "k8s.node_cordon",
-        "k8s.taint_evict",
-        "k8s.nvidia_smi_error",
-        "k8s.crash_loop",
-    }
+K8S_NODE_PRESSURE_FAULTS: frozenset[str] = frozenset(
+    {"k8s.node_disk_pressure", "k8s.node_memory_pressure", "k8s.node_pid_pressure"}
+)
+K8S_NODE_HEALTH_FAULTS: frozenset[str] = frozenset({"k8s.node_not_ready", "k8s.kube_proxy_failure"})
+K8S_NODE_NET_FAULTS: frozenset[str] = frozenset({"k8s.node_network_partition"})
+K8S_CRASH_FAULTS: frozenset[str] = frozenset({"k8s.pod_crash_loop"})
+K8S_PENDING_FAULTS: frozenset[str] = frozenset({"k8s.pod_pending"})
+K8S_CONTROLLER_SCALE_FAULTS: frozenset[str] = frozenset(
+    {"k8s.deployment_scale_failure", "k8s.statefulset_scale_failure"}
+)
+K8S_QUOTA_FAULTS: frozenset[str] = frozenset({"k8s.resource_quota_exhaust"})
+K8S_PVC_FAULTS: frozenset[str] = frozenset({"k8s.persistent_volume_claim_pending"})
+K8S_MOUNT_FAULTS: frozenset[str] = frozenset({"k8s.persistent_volume_mount_failure"})
+
+K8S_NODE_FAULTS: frozenset[str] = (
+    frozenset(
+        {
+            "k8s.node_drain",
+            "k8s.node_pressure",
+            "k8s.node_cordon",
+            "k8s.taint_evict",
+            "k8s.nvidia_smi_error",
+            "k8s.crash_loop",
+        }
+    )
+    | K8S_NODE_HEALTH_FAULTS
+    | K8S_NODE_NET_FAULTS
+    | K8S_NODE_PRESSURE_FAULTS
+    | frozenset({"k8s.pod_image_pull_delay"})
 )
 # k-plan-5 §5.3: network-namespace-injected pod faults (tc netem via nsenter).
 # The NETNS capability gates delivery; without it the driver refuses with
@@ -174,6 +210,9 @@ K8S_WORKLOAD_FAULTS: frozenset[str] = frozenset(
         "k8s.replica_reduce",
         "k8s.rollout_pause",
         "k8s.rollout_failure",
+        "k8s.workload_stall",
+        "k8s.pod_restart_churn",
+        "k8s.sidecar_termination",
     }
 )
 K8S_POD_DELETE_FAULTS: frozenset[str] = frozenset({"k8s.pod_delete_uncontrolled"})
@@ -182,6 +221,7 @@ K8S_SERVICE_FAULTS: frozenset[str] = frozenset(
         "k8s.service_no_endpoints",
         "k8s.service_endpoint_flap",
         "k8s.service_port_mismatch",
+        "k8s.service_5xx",
     }
 )
 K8S_CONFIG_FAULTS: frozenset[str] = frozenset(
@@ -197,13 +237,24 @@ K8S_STORAGE_FAULTS: frozenset[str] = frozenset(
         "k8s.persistent_volume_detach",
     }
 )
-# k-plan-2 §14–§15: HorizontalPodAutoscaler mutation (scale delay / scale pin).
+# k-plan-2 §14-§15: HorizontalPodAutoscaler mutation (scale delay / scale pin).
 K8S_HPA_FAULTS: frozenset[str] = frozenset(
     {
         "k8s.hpa_scale_delay",
         "k8s.hpa_scale_failure",
+        "k8s.hpa_oscillation",
     }
 )
+K8S_DISRUPTION_FAULTS: frozenset[str] = frozenset(
+    {"k8s.pdb_violation", "k8s.eviction_block", "k8s.pdb_over_eviction"}
+)
+K8S_DNS_FAULTS: frozenset[str] = frozenset(
+    {"k8s.dns_failure", "k8s.dns_delay", "k8s.service_dns_mismatch", "k8s.dns_timeout"}
+)
+K8S_LIFECYCLE_FAULTS: frozenset[str] = frozenset(
+    {"k8s.pod_image_pull_delay", "k8s.container_termination_delay"}
+)
+K8S_PREEMPT_FAULTS: frozenset[str] = frozenset({"k8s.preemption_failure"})
 # Controller-level families = everything that mutates a k8s object other than
 # the pod's own container (workload / service / config / storage / probes).
 # image_pull_slow stays out of the executable surface (no kubectl primitive);
@@ -217,6 +268,16 @@ K8S_CONTROLLER_FAULTS: frozenset[str] = frozenset(
     | K8S_CONFIG_FAULTS
     | K8S_STORAGE_FAULTS
     | K8S_HPA_FAULTS
+    | K8S_CRASH_FAULTS
+    | K8S_PENDING_FAULTS
+    | K8S_CONTROLLER_SCALE_FAULTS
+    | K8S_QUOTA_FAULTS
+    | K8S_PVC_FAULTS
+    | K8S_MOUNT_FAULTS
+    | K8S_DISRUPTION_FAULTS
+    | K8S_DNS_FAULTS
+    | K8S_LIFECYCLE_FAULTS
+    | K8S_PREEMPT_FAULTS
     | frozenset({"k8s.image_pull_failure"})
 )
 K8S_MUTATION_FAULTS = K8S_MUTATION_FAULTS | K8S_CONTROLLER_FAULTS
@@ -227,8 +288,128 @@ K8S_REVERSIBLE_FAULTS = K8S_REVERSIBLE_FAULTS | K8S_CONTROLLER_FAULTS - K8S_POD_
 K8S_DELETE_FAULTS = K8S_DELETE_FAULTS | K8S_POD_DELETE_FAULTS
 
 
+@dataclass(frozen=True)
+class K8sFaultContract:
+    family: str
+    target_kind: str
+    target_kinds: tuple[str, ...]
+    capability: str
+    safety_decision: str
+    executor: str
+    compensation: str
+    evidence: tuple[str, ...]
+
+
+_K8S_FAMILY_IDS: dict[str, frozenset[str]] = {
+    "workload": K8S_WORKLOAD_FAULTS
+    | K8S_PROBE_FAULTS
+    | K8S_SCHEDULER_FAULTS
+    | K8S_CONTROLLER_SCALE_FAULTS
+    | K8S_PENDING_FAULTS
+    | K8S_CONFIG_FAULTS
+    | K8S_QUOTA_FAULTS
+    | K8S_PREEMPT_FAULTS,
+    "pod": frozenset(
+        {
+            "k8s.pod_kill",
+            "k8s.pod_evict",
+            "k8s.pod_oom",
+            "k8s.pod_pressure",
+            "k8s.network_policy",
+            "k8s.pod_partition",
+            "k8s.pod_latency",
+            "k8s.pod_crash_loop",
+            "k8s.pod_delete_uncontrolled",
+            "k8s.container_termination_delay",
+        }
+    ),
+    "node": K8S_NODE_FAULTS,
+    "service": K8S_SERVICE_FAULTS,
+    "storage": K8S_STORAGE_FAULTS | K8S_MOUNT_FAULTS | K8S_PVC_FAULTS,
+    "dns": K8S_DNS_FAULTS,
+    "autoscaling": K8S_HPA_FAULTS,
+    "disruption": K8S_DISRUPTION_FAULTS,
+    "image_lifecycle": K8S_REGISTRY_FAULTS | frozenset({"k8s.pod_image_pull_delay"}),
+}
+_K8S_FAMILY_BY_ID: dict[str, str] = {
+    fault_id: family for family, fault_ids in _K8S_FAMILY_IDS.items() for fault_id in fault_ids
+}
+_K8S_ROUTES = {
+    "k8s.pod_restart_churn": "workload",
+    "k8s.sidecar_termination": "workload",
+    "k8s.workload_stall": "workload",
+    "k8s.service_5xx": "service",
+    "k8s.dns_timeout": "service",
+    "k8s.node_disk_pressure": "node",
+    "k8s.node_memory_pressure": "node",
+    "k8s.node_pid_pressure": "node",
+    "k8s.hpa_oscillation": "hpa",
+    "k8s.pdb_over_eviction": "disruption",
+}
+
+
+def k8s_family_for(fault_id: str) -> str:
+    return _K8S_FAMILY_BY_ID.get(fault_id, "other")
+
+
+def k8s_contract_for(fault_id: str) -> K8sFaultContract:
+    definition = definition_for(fault_id)
+    family = k8s_family_for(fault_id)
+    target_kind = "node" if TargetKind.NODE in definition.target_kinds else "pod"
+    target_kinds = tuple(sorted(kind.value for kind in definition.target_kinds))
+    capability = "KUBERNETES_ENGINE"
+    if family == "node":
+        capability = "NODE_CONTROL"
+    elif fault_id in K8S_NETNS_FAULTS or fault_id.startswith("net."):
+        capability = "NETNS"
+    elif family == "dns":
+        capability = "DNS_CONTROL"
+    executor = _K8S_EXECUTORS.get(fault_id)
+    executor_name = "k8s.unsupported" if executor is None else executor.__name__
+    reversible = definition.reversible
+    safety_decision = "reversible-with-undo" if reversible else "compensation-required"
+    if definition.risk.value == "critical":
+        safety_decision = "critical-triple-opt-in"
+    if executor is None:
+        compensation = "k8s.unsupported remediation: no live executor for this catalog entry"
+    else:
+        compensation = {
+            "pod": "undo on the resolved pod, or wait for replacement when irreversible",
+            "workload": "restore the workload snapshot from the mayhem restore annotation",
+            "node": "uncordon, remove the injected worker, or restore the node control service",
+            "service": "restore the Service snapshot and verify endpoints",
+            "storage": "restore the object snapshot or clean the in-pod worker",
+            "dns": "restore the DNS add-on object and verify resolution",
+            "autoscaling": "restore the HPA snapshot and verify desired replicas",
+            "disruption": "restore the PDB snapshot and verify eviction behavior",
+            "image_lifecycle": "restore the workload image or remove the image-pull worker",
+        }.get(family, "k8s.unsupported remediation required")
+    evidence = {
+        "pod": ("resolved pod UID", "container ID", "namespace", "node", "drift note"),
+        "workload": ("workload kind/name", "namespace", "restore annotation", "post-restore state"),
+        "node": ("node name", "node UID", "Ready condition", "schedulable state"),
+        "service": ("Service name", "selector", "ports", "endpoint result"),
+        "storage": ("claim or mount name", "namespace", "restore annotation", "mount result"),
+        "dns": ("CoreDNS object", "domain", "resolution result", "restore result"),
+        "autoscaling": ("HPA name", "scale target", "desired/current replicas"),
+        "disruption": ("PDB name", "maxUnavailable", "eviction result"),
+        "image_lifecycle": ("workload image", "image pull result", "node evidence"),
+    }.get(family, ("catalog entry", "explicit refusal"))
+    return K8sFaultContract(
+        family=family,
+        target_kind=target_kind,
+        target_kinds=target_kinds,
+        capability=capability,
+        safety_decision=safety_decision,
+        executor=executor_name,
+        compensation=compensation,
+        evidence=evidence,
+    )
+
+
 def make_k8s_resolver(
     resolver: KubernetesRuntimeResolver | None = None,
+    context: str | None = None,
 ) -> KubernetesRuntimeResolver | None:
     """Return the injected resolver or a lazily-built process-wide one.
 
@@ -237,7 +418,7 @@ def make_k8s_resolver(
     """
     if resolver is not None:
         return resolver
-    client = default_client()
+    client = default_client(context)
     if client is None:
         return None
     return KubernetesRuntimeResolver(client)
@@ -311,7 +492,7 @@ def k8s_mutation_spec(
     reversible = fault_id in K8S_REVERSIBLE_FAULTS
     # UndoOp.args is dict[str, str], so the params bag rides along JSON-encoded
     # (k-plan-4 §4.4); _lease_fault_params decodes it on the executor side.
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     return {
         "op": "k8s.mutation" if reversible else "k8s.mutation.noop",
@@ -370,7 +551,7 @@ def k8s_node_spec(
     spec always carries a live undo intent.  ``params`` rides along JSON-encoded
     so :func:`~mayhem.agents.executors._lease_fault_params` can recover it.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     return {
         "op": "k8s.node.mutation",
@@ -405,9 +586,9 @@ def k8s_node_undo_ops(
     authored ``grace_period`` / ``target_percent`` / ``resource`` at both
     injection and undo time.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
-    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
+    from mayhem.domain.leases import UndoOp
 
     bag = _json.dumps(dict(params or {}), sort_keys=True, separators=(",", ":"))
     if fault_id == "k8s.node_drain":
@@ -421,7 +602,7 @@ def k8s_node_undo_ops(
                 },
             ),
         )
-    if fault_id == "k8s.node_pressure":
+    if fault_id == "k8s.node_pressure" or fault_id in K8S_NODE_PRESSURE_FAULTS:
         name = _node_pressure_workload(target.node)
         return (
             UndoOp(
@@ -465,10 +646,10 @@ def _node_kill_undo_op(
     Everything else returns ``None`` so the caller falls back to its empty
     undo-intent contract (k-plan-5 §5.4).
     """
-    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
+    from mayhem.domain.leases import UndoOp
 
     if fault_id == "k8s.taint_evict":
-        from json import loads as _loads  # noqa: PLC0415
+        from json import loads as _loads
 
         taint = _loads(bag) if bag else {}
         return UndoOp(
@@ -494,7 +675,7 @@ def _node_kill_undo_op(
             },
         )
     if fault_id == "k8s.crash_loop":
-        from json import loads as _loads  # noqa: PLC0415
+        from json import loads as _loads
 
         runtime = _loads(bag).get("runtime") if bag else None
         runtime = str(runtime or "kubelet").strip().lower()
@@ -508,6 +689,22 @@ def _node_kill_undo_op(
                 "kind": "daemonset",
                 "node_uid": target.node_uid,
                 "runtime": runtime,
+                "params": bag,
+            },
+        )
+    worker_kind = {
+        "k8s.node_not_ready": "node-not-ready",
+        "k8s.node_network_partition": "node-partition",
+        "k8s.kube_proxy_failure": "kube-proxy",
+    }.get(fault_id)
+    if worker_kind is not None:
+        return UndoOp(
+            op="k8s.node.worker.undo",
+            args={
+                "node": target.node,
+                "node_uid": target.node_uid,
+                "worker": node_control_worker_name(worker_kind, target.node),
+                "kind": "pod",
                 "params": bag,
             },
         )
@@ -529,7 +726,7 @@ def k8s_node_verify_spec(
     * node_pressure → ``k8s.node_restored`` with the pressure-workload name
       (evidence RHS: workload absent = capacity returned).
     """
-    if fault_id == "k8s.node_pressure":
+    if fault_id == "k8s.node_pressure" or fault_id in K8S_NODE_PRESSURE_FAULTS:
         op = "k8s.node_restored"
         args: dict[str, object] = {
             "node": target.node,
@@ -567,7 +764,7 @@ def k8s_undo_ops_for(fault_id: str, target: ResolvedPodTarget) -> tuple[UndoOp, 
     Every mutation family records an undo op so ``_lease_fault_params`` can
     recover the write-ahead params bag from ``args["params"]`` (k-plan-4 §4.4).
     """
-    from mayhem.domain.leases import UndoOp  # noqa: PLC0415
+    from mayhem.domain.leases import UndoOp
 
     if fault_id in K8S_MUTATION_FAULTS:
         reversible = fault_id in K8S_REVERSIBLE_FAULTS
@@ -610,14 +807,27 @@ __all__ = (
     "K8S_ARGV_FAULTS",
     "K8S_CONFIG_FAULTS",
     "K8S_CONTROLLER_FAULTS",
+    "K8S_CONTROLLER_SCALE_FAULTS",
+    "K8S_CRASH_FAULTS",
     "K8S_DELETE_FAULTS",
+    "K8S_DISRUPTION_FAULTS",
+    "K8S_DNS_FAULTS",
     "K8S_HPA_FAULTS",
+    "K8S_LIFECYCLE_FAULTS",
+    "K8S_MOUNT_FAULTS",
     "K8S_MUTATION_FAULTS",
     "K8S_NETNS_FAULTS",
     "K8S_NETWORK_FAULTS",
     "K8S_NODE_FAULTS",
+    "K8S_NODE_HEALTH_FAULTS",
+    "K8S_NODE_NET_FAULTS",
+    "K8S_NODE_PRESSURE_FAULTS",
+    "K8S_PENDING_FAULTS",
     "K8S_POD_DELETE_FAULTS",
+    "K8S_PREEMPT_FAULTS",
     "K8S_PROBE_FAULTS",
+    "K8S_PVC_FAULTS",
+    "K8S_QUOTA_FAULTS",
     "K8S_REGISTRY_FAULTS",
     "K8S_REVERSIBLE_FAULTS",
     "K8S_SCHEDULER_FAULTS",
@@ -627,9 +837,14 @@ __all__ = (
     "K8S_WORKLOAD_FAULTS",
     "NO_UNDO_MARKER",
     "UNDO_OP",
+    "_K8S_FAMILY_IDS",
+    "_K8S_ROUTES",
+    "K8sFaultContract",
     "ResolutionError",
     "SelectionError",
     "k8s_available_faults",
+    "k8s_contract_for",
+    "k8s_family_for",
     "k8s_mutation_spec",
     "k8s_node_routing",
     "k8s_node_spec",

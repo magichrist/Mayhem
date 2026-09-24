@@ -30,13 +30,179 @@ import random
 import shutil
 import zlib
 from dataclasses import dataclass, field
-from typing import Protocol
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
-from mayhem.domain.errors import ResolutionError, SelectionError
-from mayhem.domain.experiments import TargetScope
+from mayhem.domain.errors import InvariantViolationError, ResolutionError, SelectionError
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
+from mayhem.domain.target import SelectionMode, SelectionSpec
 from mayhem.toolkit.tool_runner import ToolResult, run_tool
+
+if TYPE_CHECKING:
+    from mayhem.domain.experiments import TargetScope
+
+
+class K8sEngineMode(StrEnum):
+    MANIFEST = "manifest"
+    LIVE = "live"
+    DRY_RUN = "dry-run"
+
+
+@dataclass(frozen=True)
+class K8sTargetContext:
+    context: str | None = None
+    namespace: str | None = None
+    workload_selector: str | None = None
+    capability_policy: str | None = None
+    mode: K8sEngineMode = K8sEngineMode.LIVE
+    target_profile: str | None = None
+
+
+def _reject_conflicting_selection(
+    *,
+    field: str,
+    profile_value: str | None,
+    explicit_value: str | None,
+) -> str | None:
+    if profile_value is not None and explicit_value is not None and profile_value != explicit_value:
+        raise InvariantViolationError(
+            "k8s.selection_ambiguous",
+            f"conflicting Kubernetes {field}: profile={profile_value!r} "
+            f"explicit={explicit_value!r}",
+        )
+    return explicit_value if explicit_value is not None else profile_value
+
+
+def resolve_k8s_target_context(
+    *,
+    profile_context: str | None = None,
+    explicit_context: str | None = None,
+    profile_namespace: str | None = None,
+    explicit_namespace: str | None = None,
+    profile_workload_selector: str | None = None,
+    workload_selector: str | None = None,
+    profile_capability_policy: str | None = None,
+    capability_policy: str | None = None,
+    target_profile: str | None = None,
+    mode: str | K8sEngineMode | None = None,
+) -> K8sTargetContext:
+    context = _reject_conflicting_selection(
+        field="context", profile_value=profile_context, explicit_value=explicit_context
+    )
+    namespace = _reject_conflicting_selection(
+        field="namespace", profile_value=profile_namespace, explicit_value=explicit_namespace
+    )
+    selected_workload_selector = _reject_conflicting_selection(
+        field="workload selector",
+        profile_value=profile_workload_selector,
+        explicit_value=workload_selector,
+    )
+    selected_capability_policy = _reject_conflicting_selection(
+        field="capability policy",
+        profile_value=profile_capability_policy,
+        explicit_value=capability_policy,
+    )
+    if mode is None:
+        resolved_mode = K8sEngineMode.LIVE
+    elif isinstance(mode, K8sEngineMode):
+        resolved_mode = mode
+    else:
+        try:
+            resolved_mode = K8sEngineMode(mode)
+        except ValueError as exc:
+            raise InvariantViolationError(
+                "k8s.mode_invalid",
+                f"invalid Kubernetes engine mode {mode!r}; choose manifest, live, or dry-run",
+            ) from exc
+    return K8sTargetContext(
+        context=context,
+        namespace=namespace,
+        workload_selector=selected_workload_selector,
+        capability_policy=selected_capability_policy,
+        mode=resolved_mode,
+        target_profile=target_profile,
+    )
+
+
+@dataclass(frozen=True)
+class K8sDiscoveryStatus:
+    manifest_available: bool
+    live_ready: bool
+    sdk_available: bool
+    client_available: bool
+    context: str | None
+    namespace: str | None
+    error: str = ""
+    warning: str = ""
+
+    @property
+    def healthy(self) -> bool:
+        return self.live_ready and self.sdk_available and self.client_available
+
+
+def discover_k8s_status(
+    *,
+    manifest_path: str | None = None,
+    client: K8sClusterClient | None = None,
+    sdk_available: bool = True,
+    context: str | None = None,
+    namespace: str | None = None,
+) -> K8sDiscoveryStatus:
+    manifest_available = discover_k8s_manifest_available(manifest_path)
+    if client is None:
+        warning = (
+            "Kubernetes live client is unavailable; manifest inspection may still be available"
+        )
+        return K8sDiscoveryStatus(
+            manifest_available=manifest_available,
+            live_ready=False,
+            sdk_available=sdk_available,
+            client_available=False,
+            context=context,
+            namespace=namespace,
+            warning=warning,
+        )
+    if not sdk_available:
+        return K8sDiscoveryStatus(
+            manifest_available=manifest_available,
+            live_ready=False,
+            sdk_available=False,
+            client_available=True,
+            context=context,
+            namespace=namespace,
+            error="Kubernetes SDK is unavailable",
+        )
+    try:
+        if hasattr(client, "nodes"):
+            client.nodes()  # type: ignore[attr-defined]
+    except Exception as exc:
+        return K8sDiscoveryStatus(
+            manifest_available=manifest_available,
+            live_ready=False,
+            sdk_available=True,
+            client_available=True,
+            context=context,
+            namespace=namespace,
+            error=f"Kubernetes live readiness probe failed: {exc}",
+        )
+    return K8sDiscoveryStatus(
+        manifest_available=manifest_available,
+        live_ready=True,
+        sdk_available=True,
+        client_available=True,
+        context=context,
+        namespace=namespace,
+    )
+
+
+def discover_k8s_manifest_available(manifest_path: str | None) -> bool:
+    return manifest_path is not None and Path(manifest_path).is_file()
+
+
+def discover_k8s_live_ready(client: K8sClusterClient | None) -> bool:
+    return discover_k8s_status(client=client).live_ready
 
 
 # ── client protocol ──────────────────────────────────────────────────────────
@@ -133,6 +299,7 @@ class SdkK8sClient:
 
     kubectl: str = "kubectl"
     timeout_s: float = 30.0  # per-invocation kubectl budget
+    context: str | None = None
 
     @classmethod
     @functools.lru_cache(maxsize=1)
@@ -158,7 +325,10 @@ class SdkK8sClient:
         *,
         stdin_data: str | None = None,
     ) -> ToolResult:
-        return run_tool(argv, timeout_s=self.timeout_s, stdin_data=stdin_data)
+        command = tuple(argv)
+        if self.context and "--context" not in command:
+            command = (command[0], "--context", self.context, *command[1:])
+        return run_tool(command, timeout_s=self.timeout_s, stdin_data=stdin_data)
 
     def workload(self, workload: K8sWorkload) -> K8sWorkload | None:
         outcome = self._run(
@@ -371,7 +541,7 @@ class SdkK8sClient:
         )
 
     def exec(self, target: ResolvedPodTarget, argv: tuple[str, ...]) -> str:
-        head, separator, tail = argv, "--", ()
+        head, _, tail = argv, "--", ()
         if "--" in argv:
             head, _, tail = argv.partition("--")
         outcome = self._run((*head, "--request-timeout", f"{self.timeout_s}s", "--", *tail))
@@ -384,9 +554,9 @@ class SdkK8sClient:
         return outcome.stdout
 
 
-def default_client() -> K8sClusterClient | None:
-    """The process-wide client, lazily built once (kubectl gate, SP-4.3)."""
-    return SdkK8sClient() if SdkK8sClient.available() else None
+def default_client(context: str | None = None) -> K8sClusterClient | None:
+    """Build the kubectl-backed client when the local kubectl gate is present."""
+    return SdkK8sClient(context=context) if SdkK8sClient.available() else None
 
 
 # ── resolver ────────────────────────────────────────────────────────────────
@@ -406,15 +576,19 @@ def _workload_from_scope(scope: TargetScope) -> K8sWorkload:
     )
 
 
-def _exec_base(target: ResolvedPodTarget, kubectl: str = "kubectl") -> tuple[str, ...]:
+def _exec_base(
+    target: ResolvedPodTarget, kubectl: str = "kubectl", context: str | None = None
+) -> tuple[str, ...]:
     """The kubectl exec argv prefix for a resolved pod (evidence shape §3.4).
 
     The executor appends the actual command; this base is what the
     ``ResolvedPodTarget.exec_argv`` record carries so a persisted lease shows
     exactly how the mutation would be (and was) delivered.
     """
+    context_args = ("--context", context) if context else ()
     return (
         kubectl,
+        *context_args,
         "exec",
         "-n",
         target.namespace,
@@ -432,7 +606,8 @@ def _parse_proc_stat(line: str) -> tuple[int, int]:
     the pid is the token before the comm parens, ``starttime`` (field 22) is
     the 20th field after them.
     """
-    head, _, tail = line.rpartition(")")
+    _, _, tail = line.rpartition(")")
+
     fields = tail.split()
     if len(fields) < 20:
         raise ResolutionError(
@@ -460,10 +635,12 @@ class KubernetesRuntimeResolver:
         *,
         kubectl: str = "kubectl",
         timeout_s: float = 30.0,
+        context: str | None = None,
     ) -> None:
-        self._client = client if client is not None else default_client()
+        self._client = client if client is not None else default_client(context)
         self._kubectl = kubectl
         self._timeout_s = timeout_s
+        self._context = context
 
     @property
     def available(self) -> bool:
@@ -548,6 +725,7 @@ class KubernetesRuntimeResolver:
                     container=container_name,
                 ),
                 self._kubectl,
+                self._context,
             ),
         )
 
@@ -642,10 +820,7 @@ class KubernetesRuntimeResolver:
             )
         authority = scope.authority
         name = node_name or str(authority.get("name") or "")
-        if name in ("", "*"):
-            matches = self._select_node_by_selector(scope)
-        else:
-            matches = [name]
+        matches = self._select_node_by_selector(scope) if name in ("", "*") else [name]
         info = self._client.node(matches[0]) if matches else None
         if info is None:
             # fall back to a label-selector pass when a single node 404s only if
@@ -706,8 +881,6 @@ class KubernetesRuntimeResolver:
         ``count``/``percentage``/``all`` consume pods in sorted order, ``random``
         is a seedable single draw, ``one`` is the deterministic first pick.
         """
-        from mayhem.domain.target import SelectionMode, SelectionSpec
-
         selection = scope.selection or SelectionSpec(mode=SelectionMode.ONE)
         ordered = sorted(eligible, key=self._pod_key)
         mode = selection.mode

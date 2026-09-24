@@ -136,6 +136,65 @@ def _payload_marker(fault: PlannedFault, node: TopologyNode) -> str:
     return f"/tmp/mayhem.{tag}.pid"
 
 
+def _payload_expansion_source(fault: PlannedFault, marker: str) -> str:
+    fid = fault.fault_id
+    hold = "while True:\n    time.sleep(3600)\n"
+    if fid == "cpu.burst":
+        percent = min(_fparam(fault, "percent", 80.0), 100.0)
+        return (
+            "import threading, hashlib\n"
+            "def burn():\n"
+            "    buf = bytes(64 * 1024)\n"
+            "    while True:\n"
+            "        hashlib.sha256(buf).digest()\n"
+            f"n = max(1, (os.cpu_count() or 1) * {percent:g} // 100)\n"
+            "for _ in range(n):\n"
+            "    threading.Thread(target=burn, daemon=True).start()\n" + hold
+        )
+    if fid == "mem.freeze":
+        percent = min(_fparam(fault, "percent", 80.0), 99.0)
+        duration = max(1.0, _fparam(fault, "hold_s", 30.0))
+        goal = (
+            f"goal = max(1, int((os.sysconf('SC_PHYS_PAGES') * "
+            f"os.sysconf('SC_PAGE_SIZE') * {percent:g} / 100) / 1048576))\n"
+        )
+        return (
+            "chunks = []\n"
+            + goal
+            + "while len(chunks) < goal:\n"
+            + "    chunks.append(bytearray(1048576))\n"
+            + f"time.sleep({duration:g})\n"
+            + hold
+        )
+    if fid == "mem.swap_pressure":
+        swap_mb = max(1, _iparam(fault, "swap_mb", 64))
+        percent = min(_fparam(fault, "percent", 80.0), 99.0)
+        return (
+            "import subprocess\n"
+            "subprocess.Popen(['sh', '-c', 'dd if=/dev/zero of=/dev/shm/mayhem-swap-' + "
+            f"str(os.getpid()) + '.blk bs=1M count={swap_mb}'])\n"
+            f"time.sleep({percent:g})\n" + hold
+        )
+    if fid == "fs.quota":
+        quota_mb = max(1, _iparam(fault, "quota_mb", 64))
+        return (
+            "block = bytearray(1024 * 1024)\n"
+            f"for i in range({quota_mb}):\n"
+            "    with open(marker + '.quota.' + str(i), 'wb') as f:\n"
+            "        f.write(block)\n" + hold
+        )
+    delay_ms = max(1, _iparam(fault, "delay_ms", 100))
+    return (
+        "import threading\n"
+        "def writer():\n"
+        "    with open(marker + '.write', 'wb', buffering=0) as f:\n"
+        "        while True:\n"
+        "            f.write(b'x' * 4096)\n"
+        f"            time.sleep({delay_ms / 1000.0:.3f})\n"
+        "threading.Thread(target=writer, daemon=True).start()\n" + hold
+    )
+
+
 def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
     """Python payload that produces a *real* effect inside the target container.
 
@@ -206,12 +265,6 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
     if fid == "cpu.saturate":
         percent = min(_fparam(fault, "percent", 80.0), 100.0)
         return header + (
-            # Pin ``percent`` of the container's visible cores. A pure-Python
-            # arithmetic loop is GIL-bound to a single core no matter how many
-            # threads run, so the burner spins the OpenSSL-backed ``hashlib`` in
-            # each thread instead — C work that releases the GIL, letting N
-            # threads genuinely saturate N cores. Undo stays intact: SIGKILLing
-            # the marker pid kills every burner thread with the process.
             "import threading, hashlib\n"
             "def burn():\n"
             "    buf = bytes(64 * 1024)\n"
@@ -221,6 +274,14 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
             "for _ in range(n):\n"
             "    threading.Thread(target=burn, daemon=True).start()\n" + _hold
         )
+    if fid in {
+        "cpu.burst",
+        "mem.freeze",
+        "mem.swap_pressure",
+        "fs.quota",
+        "fs.write_delay",
+    }:
+        return header + _payload_expansion_source(fault, marker)
     if fid == "fs.fill":
         percent = min(_fparam(fault, "percent", 45.0), 99.0)
         capped = 1024**3
@@ -514,6 +575,11 @@ def _payload_verify(
 
 _PAYLOAD_FAULTS = frozenset(
     {
+        "cpu.burst",
+        "mem.freeze",
+        "mem.swap_pressure",
+        "fs.quota",
+        "fs.write_delay",
         "mem.exhaust",
         "mem.leak",
         "cpu.saturate",
@@ -1498,7 +1564,8 @@ def _http_proxy_ops(
         f"p={pidf}\n"
         f'[ ! -f "$p" ] || kill "$(cat "$p")" 2>/dev/null\n'
         f"PORT=$(cat {portf} 2>/dev/null)\n"
-        f'[ -z "$PORT" ] || iptables -t nat -D OUTPUT -p tcp --dport {target} -j REDIRECT --to-ports "$PORT"\n'
+        f'[ -z "$PORT" ] || iptables -t nat -D OUTPUT -p tcp --dport {target} '
+        f'-j REDIRECT --to-ports "$PORT"\n'
         f"rm -f {pidf} {portf} {srcf}\n"
         f"true\n"
     )
@@ -1931,6 +1998,106 @@ def _process_crash_loop_verify(
     return (_exec_verify(node, ["true"], incontainer=False),)
 
 
+def _net_corrupt_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    percent = min(_iparam(fault, "percent", 1), 100)
+    return _tc_qdisc_undo(fault, node, ["netem", "corrupt", f"{percent}%"])
+
+
+def _net_corrupt_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "netem")
+
+
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    rate = max(1, _iparam(fault, "rate_kbps", 128))
+    return _tc_qdisc_undo(
+        fault,
+        node,
+        ["tbf", "rate", f"{rate}kbit", "burst", "32kb", "latency", "50ms"],
+    )
+
+
+def _net_congestion_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    rate = max(1, _iparam(fault, "rate_kbps", 128))
+    return _tc_qdisc_undo(
+        fault,
+        node,
+        ["tbf", "rate", f"{rate}kbit", "burst", "32kb", "latency", "50ms"],
+    )
+
+
+def _net_congestion_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return _tc_qdisc_verify(fault, node, "tbf")
+
+
+def _process_restart_delay_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    restarts = max(1, min(20, _iparam(fault, "restarts", 3)))
+    delay = str(_param(fault, "delay", "5s"))
+    step = (
+        f"{_ENGINE_TOKEN} stop {_CONTAINER_TOKEN}; sleep {delay}; "
+        f"{_ENGINE_TOKEN} start {_CONTAINER_TOKEN}"
+    )
+    return (
+        _tool_op(
+            fault,
+            node,
+            "engine.restart",
+            ["sh", "-c", " && ".join([step] * restarts)],
+            _engine_argv("start"),
+        ),
+    )
+
+
+def _process_restart_delay_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    return (_exec_verify(node, ["true"], incontainer=False),)
+
+
+def _http_upstream_timeout_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(delay_ms=_iparam(fault, "timeout_ms", 1000)),
+        op_name="http.upstream_timeout",
+    )
+
+
+def _app_response_5xx_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    return _http_error_inject()(fault, nodes)
+
+
 def _clock_skew_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
@@ -2055,6 +2222,8 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
     return {
         "net.latency": _tool_template(_net_latency_undo, _net_latency_verify),
         "net.partition": _tool_template(_net_partition_undo, _net_partition_verify),
+        "net.corrupt": _tool_template(_net_corrupt_undo, _net_corrupt_verify),
+        "net.congestion": _tool_template(_net_congestion_undo, _net_congestion_verify),
         "net.load": _tool_template(_net_load_undo, _net_load_verify),
         "container.kill": _tool_template(
             _engine_signal_undo("kill", "start"), _engine_restart_verify
@@ -2069,6 +2238,10 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             _engine_restart_undo("stop", "start"), _engine_restart_verify
         ),
         "http.error_injection": _tool_template(_http_error_inject(), _http_error_verify),
+        "http.upstream_timeout": _tool_template(
+            _http_upstream_timeout_undo, _http_proxy_verify
+        ),
+        "app.response_5xx": _tool_template(_app_response_5xx_undo, _http_error_verify),
         "http.latency": _tool_template(_http_latency_undo, _http_latency_verify),
         "net.packet_loss": _tool_template(_net_packet_loss_undo, _net_packet_loss_verify),
         "net.bandwidth": _tool_template(_net_bandwidth_undo, _net_bandwidth_verify),
@@ -2124,6 +2297,9 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "net.duplicate": _tool_template(_net_duplicate_undo, _net_duplicate_verify),
         "fs.read_only": _tool_template(_fs_read_only_undo, _fs_read_only_verify),
         "process.crash_loop": _tool_template(_process_crash_loop_undo, _process_crash_loop_verify),
+        "process.restart_delay": _tool_template(
+            _process_restart_delay_undo, _process_restart_delay_verify
+        ),
         "cpu.throttle": _tool_template(_cpu_throttle_undo, _cpu_throttle_verify),
     }
 

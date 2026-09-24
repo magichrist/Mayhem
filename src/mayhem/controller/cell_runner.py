@@ -15,21 +15,23 @@ store) are passed in — never imported as module-level singletons.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mayhem.cli.services import Prepared, engine_for
 from mayhem.controller.planner import plan_drill, synthesize_candidate_spec
-from mayhem.domain.candidates import ExperimentCandidate
 from mayhem.domain.coverage import CellState
 from mayhem.domain.run_outcome import RunVerdict
-from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.maniac import coverage_cell_for_candidate
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mayhem.controller.executor import RunResult
+    from mayhem.domain.candidates import ExperimentCandidate
     from mayhem.domain.coverage import CoverageCell
     from mayhem.domain.topology import TopologyGraph
+    from mayhem.infra.coverage_repository import SQLiteCoverageRepository
     from mayhem.infra.store import Store
 
 
@@ -64,6 +66,13 @@ class CellRunResult:
     cell: CoverageCell
     run_result: RunResult | None  # None for blocked (never executed)
     state: CellState
+    campaign_id: str = ""
+    plan_id: str = ""
+    evidence_id: str = ""
+
+    @property
+    def coverage_cell_key(self) -> str:
+        return self.cell.key
 
 
 class CellRunner:
@@ -99,6 +108,7 @@ class CellRunner:
         engine_name: str = "podman",
         bypass: dict[tuple[str, str], str] | None = None,
         live_graph: Callable[[], TopologyGraph] | None = None,
+        campaign_id: str = "",
     ) -> None:
         self._store = store
         self._graph = graph
@@ -107,14 +117,13 @@ class CellRunner:
         self._engine_name = engine_name
         self._bypass = bypass or {}
         self._live_graph = live_graph
+        self._campaign_id = campaign_id
 
     def run(self, candidate: ExperimentCandidate) -> CellRunResult:
         """Execute the candidate through the canonical ``run`` path.
 
         Returns a ``CellRunResult`` with the executed cell's state.
         """
-        from mayhem.cli.services import Prepared, engine_for
-
         cell = coverage_cell_for_candidate(candidate)
         spec = synthesize_candidate_spec(
             candidate, candidate.target, name=f"explore-{uuid.uuid4().hex[:8]}"
@@ -156,6 +165,8 @@ class CellRunner:
             cell=cell,
             run_result=result,
             state=state,
+            campaign_id=self._campaign_id,
+            plan_id=run_id,
         )
 
     def record_blocked(
@@ -172,4 +183,5 @@ class CellRunner:
             cell=cell,
             run_result=None,
             state=CellState.BLOCKED,
+            campaign_id=self._campaign_id,
         )

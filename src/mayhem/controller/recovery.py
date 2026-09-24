@@ -16,12 +16,24 @@ recovery_audit_log table. This gives us:
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mayhem.controller.janitor import Janitor
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.leases import LeaseState
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from mayhem.agents.sinks import LeaseSink
+    from mayhem.domain.leases import FaultLease
 
 
 class RecoveryStatus(StrEnum):
@@ -31,6 +43,60 @@ class RecoveryStatus(StrEnum):
     RECOVERING = "recovering"  # cleanup in progress
     VERIFIED = "verified"  # cleanup succeeded and verified
     DIRTY = "dirty"  # cleanup failed or verify failed
+
+
+class RecoveryState(StrEnum):
+    NOT_NEEDED = "not_needed"
+    PENDING = "pending"
+    RUNNING = "running"
+    RECOVERED = "recovered"
+    DIRTY = "dirty"
+    ESCALATED = "escalated"
+    ABANDONED = "abandoned"
+    not_needed = "not_needed"
+    pending = "pending"
+    running = "running"
+    recovered = "recovered"
+    dirty = "dirty"
+    escalated = "escalated"
+    abandoned = "abandoned"
+
+
+class RecoveryLeasePlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    run_id: str
+    owner: str
+    ttl_seconds: float
+    expires_at: datetime
+    target: tuple[str, ...]
+    fault: str
+    state: str
+    recovery: RecoveryState
+    compensation: tuple[dict[str, object], ...] = ()
+    verification_probes: tuple[dict[str, object], ...] = ()
+    escalation: tuple[str, ...] = ()
+
+
+class RecoveryPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_ids: tuple[str, ...]
+    target_profiles: tuple[str, ...]
+    state: RecoveryState
+    leases: tuple[RecoveryLeasePlan, ...] = ()
+
+
+class RecoveryExecutionResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    state: RecoveryState
+    run_ids: tuple[str, ...]
+    expired: tuple[str, ...] = ()
+    recovered: tuple[str, ...] = ()
+    dirty: tuple[str, ...] = ()
+    handoff_path: Path | None = None
 
 
 # Valid transitions: source → set of targets
@@ -243,3 +309,147 @@ class RecoveryStateMachine:
             for t in self._audit.for_resource(resource_id)
             if t.to_status == RecoveryStatus.RECOVERING
         )
+
+
+class RecoveryService:
+    def __init__(
+        self,
+        sink: LeaseSink,
+        *,
+        run_liveness: Callable[[str], bool | None] | None = None,
+    ) -> None:
+        self._sink = sink
+        self._run_liveness = run_liveness
+
+    def plan(
+        self,
+        run_ids: tuple[str, ...] | list[str],
+        *,
+        target_profiles: tuple[str, ...] | list[str] = (),
+        now_epoch_s: float | None = None,
+    ) -> RecoveryPlan:
+        normalized_runs = tuple(dict.fromkeys(run_ids))
+        normalized_targets = tuple(dict.fromkeys(target_profiles))
+        leases = self._leases(normalized_runs)
+        lease_plans = tuple(self._lease_plan(lease) for lease in leases)
+        return RecoveryPlan(
+            run_ids=normalized_runs,
+            target_profiles=normalized_targets,
+            state=self._aggregate_state(leases),
+            leases=lease_plans,
+        )
+
+    def status(
+        self,
+        run_ids: tuple[str, ...] | list[str],
+        *,
+        target_profiles: tuple[str, ...] | list[str] = (),
+    ) -> RecoveryPlan:
+        return self.plan(run_ids, target_profiles=target_profiles)
+
+    def execute(
+        self,
+        plan: RecoveryPlan,
+        *,
+        artifact_dir: str | Path | None = None,
+        now_epoch_s: float | None = None,
+    ) -> RecoveryExecutionResult:
+        sweep = Janitor(self._sink).sweep(
+            now_epoch_s=now_epoch_s,
+            run_liveness=self._run_liveness,
+            run_ids=plan.run_ids,
+            include_states=(
+                LeaseState.PENDING,
+                LeaseState.ACTIVE,
+                LeaseState.ORPHANED,
+                LeaseState.RELEASING,
+            ),
+        )
+        final_plan = self.plan(plan.run_ids, target_profiles=plan.target_profiles)
+        dirty = tuple(
+            item.id
+            for item in final_plan.leases
+            if item.recovery in {RecoveryState.DIRTY, RecoveryState.ESCALATED}
+        )
+        handoff_path: Path | None = None
+        if dirty and artifact_dir is not None:
+            directory = Path(artifact_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            run_slug = "_".join(plan.run_ids) or "unscoped"
+            handoff_path = directory / f"report-{run_slug}__recovery-handoff.json"
+            handoff_path.write_text(
+                json.dumps(
+                    {
+                        "report_id": f"report-{run_slug}__recovery-handoff",
+                        "run_ids": list(plan.run_ids),
+                        "target_profiles": list(plan.target_profiles),
+                        "state": final_plan.state.value,
+                        "dirty_leases": list(dirty),
+                        "leases": [item.model_dump(mode="json") for item in final_plan.leases],
+                    },
+                    indent=2,
+                )
+            )
+        return RecoveryExecutionResult(
+            state=final_plan.state,
+            run_ids=plan.run_ids,
+            expired=sweep.expired,
+            recovered=sweep.recovered,
+            dirty=dirty,
+            handoff_path=handoff_path,
+        )
+
+    def _leases(self, run_ids: tuple[str, ...]) -> tuple[FaultLease, ...]:
+        all_leases = getattr(self._sink, "all_leases", None)
+        leases = all_leases() if callable(all_leases) else self._sink.active_leases()
+        if not run_ids:
+            return tuple(leases)
+        selected = frozenset(run_ids)
+        return tuple(lease for lease in leases if lease.run_id in selected)
+
+    def _lease_plan(self, lease: FaultLease) -> RecoveryLeasePlan:
+        recovery = self._lease_state(lease)
+        return RecoveryLeasePlan(
+            id=lease.id,
+            run_id=lease.run_id,
+            owner=lease.owner_agent,
+            ttl_seconds=float(lease.ttl_seconds),
+            expires_at=lease.created_at + timedelta(seconds=float(lease.ttl_seconds)),
+            target=tuple(sorted(lease.targets)),
+            fault=lease.fault_id,
+            state=lease.state.value,
+            recovery=recovery,
+            compensation=tuple(op.model_dump(mode="json") for op in lease.undo_ops),
+            verification_probes=tuple(
+                probe.model_dump(mode="json") for probe in lease.verify_probes
+            ),
+            escalation=(lease.escalation_notes,) if lease.escalation_notes else (),
+        )
+
+    def _aggregate_state(self, leases: tuple[FaultLease, ...]) -> RecoveryState:
+        if not leases:
+            return RecoveryState.NOT_NEEDED
+        states = {self._lease_state(lease) for lease in leases}
+        for state in (
+            RecoveryState.ESCALATED,
+            RecoveryState.DIRTY,
+            RecoveryState.RUNNING,
+            RecoveryState.PENDING,
+            RecoveryState.ABANDONED,
+            RecoveryState.RECOVERED,
+        ):
+            if state in states:
+                return state
+        return RecoveryState.NOT_NEEDED
+
+    def _lease_state(self, lease: FaultLease) -> RecoveryState:
+        state = {
+            LeaseState.RELEASING: RecoveryState.RUNNING,
+            LeaseState.RELEASED: RecoveryState.RECOVERED,
+            LeaseState.EXPIRED: RecoveryState.ABANDONED,
+        }.get(lease.state, RecoveryState.PENDING)
+        if lease.state is LeaseState.DIRTY:
+            if "escalat" in (lease.escalation_notes or "").lower():
+                return RecoveryState.ESCALATED
+            return RecoveryState.DIRTY
+        return state

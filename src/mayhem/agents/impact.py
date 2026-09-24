@@ -67,9 +67,14 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "mem.exhaust": FaultRequirement(bins=frozenset({"python"})),
     "mem.leak": FaultRequirement(bins=frozenset({"python"})),
     "cpu.saturate": FaultRequirement(bins=frozenset({"python"})),
+    "cpu.burst": FaultRequirement(bins=frozenset({"python"})),
+    "mem.freeze": FaultRequirement(bins=frozenset({"python"})),
+    "mem.swap_pressure": FaultRequirement(bins=frozenset({"python"})),
     "fs.fill": FaultRequirement(bins=frozenset({"python"})),
     "fs.inode_exhaust": FaultRequirement(bins=frozenset({"python"})),
     "fs.io_stress": FaultRequirement(bins=frozenset({"python"})),
+    "fs.quota": FaultRequirement(bins=frozenset({"python"})),
+    "fs.write_delay": FaultRequirement(bins=frozenset({"python"})),
     "fs.read_only": FaultRequirement(bins=frozenset({"sh"}), need_root=True),
     "fd.exhaust": FaultRequirement(bins=frozenset({"python"})),
     "load.spike": FaultRequirement(bins=frozenset({"python"})),
@@ -83,10 +88,18 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "net.partition": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.reorder": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.duplicate": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.corrupt": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.congestion": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "dependency.timeout": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.load": FaultRequirement(bins=frozenset({"k6"}), host=True),
     "http.error_injection": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "http.upstream_timeout": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "app.response_5xx": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
     "net.connection_reset": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
@@ -126,8 +139,17 @@ _ENGINE_FAULTS = frozenset(
         "container.restart",
         "container.pause",
         "process.crash_loop",
+        "process.restart_delay",
         "cpu.throttle",
         "node.service_stop",
+    }
+)
+
+_CATALOG_ONLY_FAULTS = frozenset(
+    {
+        "dependency.malformed_response",
+        "fs.permission_failure",
+        "process.startup_delay",
     }
 )
 
@@ -359,7 +381,18 @@ def gate_fault(
         return GateVerdict(fault_id, container, True, note="engine-addressed fault")
     requirement = REQUIREMENTS.get(fault_id)
     if requirement is None:
-        return GateVerdict(fault_id, container, True, note="no in-image tooling required")
+        note = (
+            "catalog-only: no supported executor; planner refuses before execution"
+            if fault_id in _CATALOG_ONLY_FAULTS
+            else "no in-image tooling required"
+        )
+        return GateVerdict(
+            fault_id,
+            container,
+            fault_id not in _CATALOG_ONLY_FAULTS,
+            probed=fault_id in _CATALOG_ONLY_FAULTS,
+            note=note,
+        )
     if requirement.host:
         return _gate_host_requirement(fault_id, container, requirement)
     rootless_gate = _gate_sys_time_for_rootless(fault_id, container, engine, requirement)
@@ -433,6 +466,9 @@ def scan_plan_faults(
     for step in plan.steps:
         fault = step.fault
         if fault is None:
+            continue
+        if fault.fault_id in _CATALOG_ONLY_FAULTS:
+            verdicts.append(gate_fault(fault.fault_id, "catalog-only", engine))
             continue
         container = _container_for(graph, fault)
         if container is None:

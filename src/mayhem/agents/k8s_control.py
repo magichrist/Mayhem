@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import json as _json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mayhem.domain.resolution import ResolvedPodTarget
+if TYPE_CHECKING:
+    from mayhem.domain.resolution import ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolResult, run_tool
 
 RESTORE_ANNOTATION = "mayhem.io/restore"
@@ -34,7 +35,13 @@ WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
 CONFIG_KINDS = ("ConfigMap",)
 SECRET_KINDS = ("Secret",)
 SERVICE_KINDS = ("Service",)
-ALL_CTRL_KINDS = WORKLOAD_KINDS + SERVICE_KINDS + CONFIG_KINDS + SECRET_KINDS
+ALL_CTRL_KINDS = (
+    WORKLOAD_KINDS
+    + SERVICE_KINDS
+    + CONFIG_KINDS
+    + SECRET_KINDS
+    + ("ResourceQuota", "PersistentVolumeClaim")
+)
 
 
 @dataclass(frozen=True)
@@ -227,6 +234,36 @@ def secret_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
     return _secret_ref_for_pod_impl(target)
 
 
+def pvc_ref_for_pod(target: ResolvedPodTarget) -> ResourceRef | None:
+    """Locate the first PersistentVolumeClaim mounted by the resolved pod."""
+    obj = kubectl_json(ResourceRef(kind="Pod", name=target.pod, namespace=target.namespace))
+    if obj is None:
+        return None
+    for volume in obj.get("spec", {}).get("volumes", []):
+        claim = volume.get("persistentVolumeClaim", {}) if isinstance(volume, dict) else {}
+        name = claim.get("claimName") if isinstance(claim, dict) else None
+        if name:
+            return ResourceRef(
+                kind="PersistentVolumeClaim",
+                name=str(name),
+                namespace=target.namespace,
+            )
+    return None
+
+
+def resourcequota_ref(namespace: str) -> ResourceRef | None:
+    """Return the first ResourceQuota in a namespace."""
+    result = kubectl(("get", "resourcequota", "-n", namespace, "-o", "json"))
+    if result.exit_code != 0:
+        return None
+    items = _json.loads(result.stdout).get("items", [])
+    if not items:
+        return None
+    metadata = items[0].get("metadata", {})
+    name = metadata.get("name")
+    return ResourceRef(kind="ResourceQuota", name=str(name), namespace=namespace) if name else None
+
+
 def _vol_named(obj: dict[str, Any], vol_name: str) -> dict[str, Any]:
     for v in obj.get("spec", {}).get("volumes", []):
         if v.get("name") == vol_name:
@@ -256,10 +293,10 @@ def preferred_mount_path(target: ResolvedPodTarget) -> str:
 # ── snapshot annotation helpers ──────────────────────────────────────────────
 
 
-def write_annotation(ref: ResourceRef, snapshot: dict[str, Any]) -> None:
-    """Write the restore annotation onto *ref*."""
+def write_annotation(ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
+    """Write the restore annotation onto *ref* and report kubectl success."""
     value = _json.dumps(snapshot, sort_keys=True)
-    kubectl(
+    result = kubectl(
         (
             "annotate",
             ref.kind,
@@ -270,6 +307,7 @@ def write_annotation(ref: ResourceRef, snapshot: dict[str, Any]) -> None:
             "--overwrite",
         )
     )
+    return result.exit_code == 0
 
 
 def clear_annotation(ref: ResourceRef) -> None:
@@ -337,6 +375,11 @@ def rollout_control(ref: ResourceRef, *, pause: bool) -> bool:
     """``kubectl rollout pause/resume <kind>/<name>``."""
     verb = "pause" if pause else "resume"
     result = kubectl(("rollout", verb, ref.kind, ref.name, "-n", ref.namespace))
+    return result.exit_code == 0
+
+
+def rollout_restart(ref: ResourceRef) -> bool:
+    result = kubectl(("rollout", "restart", ref.kind, ref.name, "-n", ref.namespace))
     return result.exit_code == 0
 
 

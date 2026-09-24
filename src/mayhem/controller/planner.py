@@ -238,12 +238,11 @@ def synthesize_k8s_maniac_spec(  # noqa: PLR0912
             )
         if not node_faults:
             continue
-        ns = getattr(kn, "namespace", "default") or "default"
         targets[logical_id] = DrillTarget(
             runtime=RuntimeLabel.KUBERNETES,
             kubernetes=KubernetesTargetSpec(
-                kind=ResourceKind.K8S_NODE,
-                namespace=ns,
+                kind=kind_val,
+                namespace="",
                 name=kn.name,
             ),
             faults=tuple(node_faults),
@@ -369,6 +368,7 @@ def plan_drill(
     config_snapshot_id: str,
     topology_snapshot_id: str,
     environment_fingerprint: str,
+    policy_id: str = "",
     engine: str = "podman",
     spec_dir: str | None = None,
 ) -> ExecutionPlan:
@@ -479,6 +479,7 @@ def plan_drill(
     if not any(s.fault for s in steps):
         raise PlanningError(f"drill {spec.name!r} contains no fault injection")
 
+    eff_policy = policy_id or "default"
     return ExecutionPlan(
         run_id=run_id,
         kind=ExperimentKind.DRILL,
@@ -486,6 +487,7 @@ def plan_drill(
         config_snapshot_id=config_snapshot_id,
         topology_snapshot_id=topology_snapshot_id,
         environment_fingerprint=environment_fingerprint,
+        policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
         decision_refs=_governing_decisions(spec),
@@ -500,6 +502,7 @@ def _plan_targeted_drill(
     config_snapshot_id: str,
     topology_snapshot_id: str,
     environment_fingerprint: str,
+    policy_id: str = "",
     spec_dir: str | None = None,
 ) -> ExecutionPlan:
     """Compile a ``targets:`` drill (k-plan-1 §1.2/§1.5).
@@ -588,6 +591,7 @@ def _plan_targeted_drill(
     if not any(s.fault for s in steps):
         raise PlanningError(f"drill {spec.name!r} contains no fault injection")
 
+    eff_policy = policy_id or "default"
     return ExecutionPlan(
         run_id=run_id,
         kind=ExperimentKind.DRILL,
@@ -595,6 +599,7 @@ def _plan_targeted_drill(
         config_snapshot_id=config_snapshot_id,
         topology_snapshot_id=topology_snapshot_id,
         environment_fingerprint=environment_fingerprint,
+        policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
         decision_refs=_governing_decisions(spec),
@@ -777,6 +782,7 @@ def plan_maniac(
     config_snapshot_id: str,
     topology_snapshot_id: str,
     environment_fingerprint: str,
+    policy_id: str = "",
     engine: str = "podman",
     spec_dir: str | None = None,
     maniac: ManiacCfg,
@@ -866,6 +872,7 @@ def plan_maniac(
     if not any(s.fault for s in steps):
         raise PlanningError(f"maniac drill {spec.name!r} drew no fault injection")
 
+    eff_policy = policy_id or "default"
     return ExecutionPlan(
         run_id=run_id,
         kind=ExperimentKind.DRILL,
@@ -873,6 +880,7 @@ def plan_maniac(
         config_snapshot_id=config_snapshot_id,
         topology_snapshot_id=topology_snapshot_id,
         environment_fingerprint=environment_fingerprint,
+        policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
         decision_refs=(*_governing_decisions(spec), DECISION_M5_1_MANIAC),
@@ -1101,6 +1109,8 @@ def _plan_fault_step(
         definition = definition_for(drill_fault.fault)
     except (SchemaValidationError, LookupError) as exc:
         raise PlanningError(str(exc)) from None
+    if definition.catalog_only:
+        raise PlanningError(definition.refusal_reason or f"fault {definition.id!r} is catalog-only")
 
     # The fault applies to a specific kind subset, so target only the nodes it
     # can actually act on. A kubernetes logical target without a live node
@@ -1172,6 +1182,7 @@ def _plan_fault_step(
         id=f"{container_name}-{seq:04d}",
         seq=seq,
         fault=planned,
+        target=planned.target,
         runtime_identity=_resolve_planned_identity(matched),
         execution_group_id=execution_group_id,
         group_mode=group_mode,

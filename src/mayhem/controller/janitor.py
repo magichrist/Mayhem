@@ -11,6 +11,7 @@ fault running because its owner vanished.
 from __future__ import annotations
 
 import contextlib
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,17 @@ class SweepResult:
         return not (self.expired or self.recovered or self.dirty)
 
 
+@dataclass(frozen=True)
+class SweepPlan:
+    would_expire: tuple[str, ...]
+    would_recover: tuple[str, ...]
+    would_mark_dirty: tuple[str, ...]
+
+    @property
+    def quiet(self) -> bool:
+        return not (self.would_expire or self.would_recover or self.would_mark_dirty)
+
+
 class Janitor:
     """TTL enforcement over any LeaseSink; state transitions only.
 
@@ -74,6 +86,9 @@ class Janitor:
         *,
         now_epoch_s: float | None = None,
         run_liveness: Callable[[str], bool | None] | None = None,
+        run_ids: tuple[str, ...] = (),
+        include_states: tuple[LeaseState, ...] | None = None,
+        execute: bool = True,
     ) -> SweepResult:
         now = utc_now()
         current = now.timestamp() if now_epoch_s is None else now_epoch_s
@@ -81,9 +96,19 @@ class Janitor:
         recovered: list[str] = []
         dirty: list[str] = []
         for lease in self._sink.active_leases():
+            if run_ids and lease.run_id not in run_ids:
+                continue
+            if include_states is not None and lease.state not in include_states:
+                continue
             deadline = lease.created_at.timestamp() + float(lease.ttl_seconds)
             owner_gone = run_liveness is not None and _owner_gone(run_liveness, lease.run_id)
             if deadline >= current and not owner_gone:
+                continue
+            if not execute:
+                if lease.state in {LeaseState.PENDING, LeaseState.DIRTY}:
+                    expired.append(lease.id)
+                else:
+                    recovered.append(lease.id)
                 continue
             notes = _LOST_OWNER if owner_gone else None
             if lease.state is LeaseState.PENDING:
@@ -95,6 +120,30 @@ class Janitor:
             else:  # ACTIVE or ORPHANED
                 self._recover_orphan(lease, now, recovered, dirty, notes=notes)
         return SweepResult(tuple(expired), tuple(recovered), tuple(dirty))
+
+    def plan(
+        self,
+        *,
+        now_epoch_s: float | None = None,
+        run_liveness: Callable[[str], bool | None] | None = None,
+        run_ids: tuple[str, ...] = (),
+    ) -> SweepPlan:
+        current = time.time() if now_epoch_s is None else now_epoch_s
+        expired: list[str] = []
+        recovered: list[str] = []
+        dirty: list[str] = []
+        for lease in self._sink.active_leases():
+            if run_ids and lease.run_id not in run_ids:
+                continue
+            deadline = lease.created_at.timestamp() + float(lease.ttl_seconds)
+            owner_gone = run_liveness is not None and _owner_gone(run_liveness, lease.run_id)
+            if deadline >= current and not owner_gone:
+                continue
+            if lease.state in {LeaseState.PENDING, LeaseState.DIRTY}:
+                expired.append(lease.id)
+            else:
+                recovered.append(lease.id)
+        return SweepPlan(tuple(expired), tuple(recovered), tuple(dirty))
 
     def _expire(
         self, lease: FaultLease, now: datetime, expired: list[str], *, notes: str | None = None

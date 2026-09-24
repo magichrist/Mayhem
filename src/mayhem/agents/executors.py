@@ -26,8 +26,11 @@ from mayhem.agents.k8s_control import (
     kubectl_apply_json,
     kubectl_json,
     preferred_mount_path,
+    pvc_ref_for_pod,
     read_snapshot,
+    resourcequota_ref,
     rollout_control,
+    rollout_restart,
     scale,
     secret_ref_for_pod,
     service_ref_for_pod,
@@ -135,7 +138,7 @@ class ProcPauseExecutor(FaultExecutor):
         vanished between plan time and the mutation boundary, this fault cannot
         be applied — report ``failed_to_apply`` instead of mutating.
         """
-        import shutil  # noqa: PLC0415
+        import shutil
 
         _pid, cont, engine, _boot = self._signal_spec(lease)
         if cont is None or engine is None:
@@ -300,6 +303,11 @@ class PayloadExecutor(FaultExecutor):
             payload, marker = op.args.get("payload"), op.args.get("marker")
             if engine and cont and payload and marker:
                 return str(engine), str(cont), str(payload), str(marker)
+        return None
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if self._spec(lease) is None:
+            return "capability missing: payload engine and container address are required"
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
@@ -478,7 +486,7 @@ def _lease_fault_params(lease: FaultLease) -> dict[str, object]:
     free-form params bag on the lease.  ``UndoOp.args`` is ``dict[str, str]``,
     so the bag is JSON-encoded on the spec and decoded here.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     for op in lease.undo_ops or ():
         params = op.args.get("params")
@@ -567,8 +575,8 @@ class K8sPodEvictExecutor(K8sExecutor):
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_evict: no resolved target")
         try:
-            from kubernetes import client as _k8s_client  # noqa: PLC0415
-            from kubernetes import config as _k8s_config  # noqa: PLC0415
+            from kubernetes import client as _k8s_client
+            from kubernetes import config as _k8s_config
 
             _k8s_config.load_kube_config()
             api = _k8s_client.CoreV1Api()
@@ -758,7 +766,7 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
 
     @staticmethod
     def _policy_body(target: ResolvedPodTarget, name: str, params: dict[str, object] | None) -> str:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         direction = str((params or {}).get("direction") or "ingress").lower()
         if direction not in ("ingress", "egress"):
@@ -895,9 +903,8 @@ class K8sPodPartitionExecutor(K8sNetworkPolicyExecutor):
 
 # ── k-plan-5: node-level faults ──────────────────────────────────────────────
 NETNS_UNSUPPORTED_MESSAGE = (
-    "k8s.unsupported: k8s.pod_latency needs node-side network-namespace access "
-    "(nsenter into the pod's netns); the NETNS runtime capability is "
-    "UNSUPPORTED this milestone — see k-plan-5 §5.3"
+    "k8s.unsupported: missing capability NETNS; k8s.pod_latency requires "
+    "node-side network-namespace access and a resolved pod context"
 )
 
 
@@ -908,8 +915,8 @@ def k8s_netns_supported() -> bool:
     driver; the adapter's capability matrix is the single source of truth for
     whether that delivery path is wired this milestone (k-plan-5 §5.3).
     """
-    from mayhem.domain.k8s_adapter import KubernetesAdapter  # noqa: PLC0415
-    from mayhem.domain.runtime_adapter import RuntimeCapability  # noqa: PLC0415
+    from mayhem.domain.k8s_adapter import KubernetesAdapter
+    from mayhem.domain.runtime_adapter import RuntimeCapability
 
     return RuntimeCapability.NETNS in KubernetesAdapter().capabilities().supported
 
@@ -920,33 +927,46 @@ def k8s_netns_supported() -> bool:
 # gate.  Kept here (not in k8s_runtime) to avoid an import cycle: the run
 # engine imports executors, and this set is used at can_apply time.
 K8S_NODE_CONTROL_FAULTS: frozenset[str] = frozenset(
-    {"k8s.taint_evict", "k8s.nvidia_smi_error", "k8s.crash_loop"}
+    {
+        "k8s.taint_evict",
+        "k8s.nvidia_smi_error",
+        "k8s.crash_loop",
+        "k8s.node_not_ready",
+        "k8s.node_network_partition",
+        "k8s.kube_proxy_failure",
+        "k8s.pod_image_pull_delay",
+    }
 )
 
 NODE_CONTROL_UNSUPPORTED_MESSAGE = (
-    "k8s.unsupported: node-killer families (k8s.taint_evict / k8s.nvidia_smi_error / "
-    "k8s.crash_loop) need node-level kubelet control-plane access (kubectl get "
-    "nodes); the NODE_CONTROL runtime capability is UNSUPPORTED this milestone "
-    "— see k-plan-6 §24"
+    "k8s.unsupported: missing capability NODE_CONTROL; node-killer families "
+    "require a reachable kubeconfig context and namespace"
 )
 
 
 def k8s_node_control_supported() -> bool:
-    """NODE_CONTROL capability verdict from the kubernetes runtime adapter.
-
-    Node-killer delivery (taints, node-pinned GPU/CRI workers) goes through
-    the kubernetes driver; the adapter's capability matrix is the single
-    source of truth for whether the kubelet control-plane path is wired this
-    milestone (k-plan-6 §24, ADR-M7-1).
-    """
-    from mayhem.domain.k8s_adapter import KubernetesAdapter  # noqa: PLC0415
-    from mayhem.domain.runtime_adapter import RuntimeCapability  # noqa: PLC0415
+    """Return the configured node-control capability verdict."""
+    from mayhem.domain.k8s_adapter import KubernetesAdapter
+    from mayhem.domain.runtime_adapter import RuntimeCapability
 
     return RuntimeCapability.NODE_CONTROL in KubernetesAdapter().capabilities().supported
 
 
+
+def k8s_dns_supported() -> bool:
+    from mayhem.domain.k8s_adapter import KubernetesAdapter
+    from mayhem.domain.runtime_adapter import RuntimeCapability
+
+    return RuntimeCapability.DNS_CONTROL in KubernetesAdapter().capabilities().supported
+
+
+DNS_CONTROL_UNSUPPORTED_MESSAGE = (
+    "k8s.unsupported: missing capability DNS_CONTROL; DNS faults require a "
+    "reachable cluster DNS add-on context"
+)
+
+
 def node_control_unsupported_reason(fault_id: str) -> str:
-    """Stable refusal reason when the NODE_CONTROL gate is closed."""
     if fault_id in K8S_NODE_CONTROL_FAULTS:
         return NODE_CONTROL_UNSUPPORTED_MESSAGE
     return k8s_unsupported_reason(fault_id)
@@ -1048,13 +1068,15 @@ class K8sNodePressureExecutor(K8sExecutor):
     capacity; undo deletes that workload — live and reversible.
     """
 
-    prefixes = ("k8s.node_pressure",)
+    prefixes = ("k8s.node_pressure", "k8s.node_disk_pressure", "k8s.node_memory_pressure", "k8s.node_pid_pressure")
 
     def can_apply(self, lease: FaultLease) -> str | None:
-        if lease.fault_id != "k8s.node_pressure":
+        if lease.fault_id not in self.prefixes:
             return None
         target = lease.resolved_target
         if not isinstance(target, ResolvedNodeTarget) or target.node in ("", "*"):
+            if lease.fault_id in {"k8s.node_disk_pressure", "k8s.node_memory_pressure", "k8s.node_pid_pressure"}:
+                return f"k8s.unsupported: {lease.fault_id} requires a resolved node target"
             return "k8s.node_pressure: no resolved node target on the lease"
         return None
 
@@ -1066,7 +1088,7 @@ class K8sNodePressureExecutor(K8sExecutor):
             return 50
 
     def _workload_name(self, target: ResolvedNodeTarget) -> str:
-        import re as _re  # noqa: PLC0415
+        import re as _re
 
         return "mayhem-node-pressure-" + _re.sub(r"[^a-z0-9-]", "-", target.node.lower())
 
@@ -1074,12 +1096,16 @@ class K8sNodePressureExecutor(K8sExecutor):
         return ("kubectl", "apply", "-f", "-")
 
     def _pressure_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         pct = self._target_percent(lease)
         resource = str(_lease_fault_params(lease).get("resource") or "cpu")
-        if resource == "memory":
+        if resource == "memory" or lease.fault_id == "k8s.node_memory_pressure":
             requests = {"memory": f"{pct}Mi"}
+        elif lease.fault_id == "k8s.node_disk_pressure":
+            requests = {"ephemeral-storage": f"{pct}M"}
+        elif lease.fault_id == "k8s.node_pid_pressure":
+            requests = {"pids": pct}
         else:
             requests = {"cpu": f"{pct}m"}
         body = {
@@ -1108,7 +1134,9 @@ class K8sNodePressureExecutor(K8sExecutor):
     def inject(self, lease: FaultLease) -> StepOutcome:
         target = lease.resolved_target
         if not isinstance(target, ResolvedNodeTarget):
-            return StepOutcome("inject", False, "k8s.node_pressure: no resolved node target")
+            return StepOutcome(
+                "inject", False, f"{lease.fault_id}: no resolved node target"
+            )
         argv = self._pressure_argv(lease, target)
         body = self._pressure_body(lease, target)
         result = run_tool(argv, timeout_s=30, stdin_data=body)
@@ -1116,14 +1144,14 @@ class K8sNodePressureExecutor(K8sExecutor):
             return StepOutcome(
                 "inject",
                 False,
-                "k8s.node_pressure: applying pressure workload failed "
+                f"{lease.fault_id}: applying pressure workload failed "
                 f"(rc={result.exit_code}): {result.stdout.strip()}",
                 tool_result=result,
             )
         return StepOutcome(
             "inject",
             True,
-            f"k8s.node_pressure: pressure workload {self._workload_name(target)} "
+            f"{lease.fault_id}: pressure workload {self._workload_name(target)} "
             f"applied to node {target.node}",
             tool_result=result,
         )
@@ -1131,7 +1159,9 @@ class K8sNodePressureExecutor(K8sExecutor):
     def undo(self, lease: FaultLease) -> StepOutcome:
         target = lease.resolved_target
         if not isinstance(target, ResolvedNodeTarget):
-            return StepOutcome("undo", False, "k8s.node_pressure: no resolved node target")
+            return StepOutcome(
+                "undo", False, f"{lease.fault_id}: no resolved node target"
+            )
         name = self._workload_name(target)
         result = run_tool(
             ("kubectl", "delete", "pod", name, "--ignore-not-found", "--grace-period=0"),
@@ -1141,12 +1171,12 @@ class K8sNodePressureExecutor(K8sExecutor):
             return StepOutcome(
                 "undo",
                 False,
-                "k8s.node_pressure: deleting pressure workload failed "
+                f"{lease.fault_id}: deleting pressure workload failed "
                 f"(rc={result.exit_code}): {result.stdout.strip()}",
                 tool_result=result,
             )
         return StepOutcome(
-            "undo", True, f"k8s.node_pressure: pressure workload {name} deleted", tool_result=result
+            "undo", True, f"{lease.fault_id}: pressure workload {name} deleted", tool_result=result
         )
 
 
@@ -1303,7 +1333,7 @@ class K8sArgvExecutor(K8sExecutor):
 
     # -- payload builders ---------------------------------------------------
 
-    def _worker_parts(  # noqa: PLR0911 (one branch per fault family)
+    def _worker_parts(
         self, lease: FaultLease, token: str, duration: int
     ) -> str:
         """The ``sh -c`` fragment that spawns the in-pod workers.
@@ -1481,7 +1511,7 @@ class K8sArgvExecutor(K8sExecutor):
 
     # -- inject / undo ------------------------------------------------------
 
-    def inject(self, lease: FaultLease) -> StepOutcome:  # noqa: PLR0911 (argv vs tc lane + per-lane failures)
+    def inject(self, lease: FaultLease) -> StepOutcome:
         target = lease.resolved_target
         if target is None:
             return StepOutcome("inject", False, f"{lease.fault_id}: no resolved target")
@@ -1580,8 +1610,124 @@ class K8sArgvExecutor(K8sExecutor):
         )
 
 
+class K8sCrashLoopExecutor(K8sExecutor):
+    """Bounded in-pod crash supervisor with a pidfile undo token."""
+
+    prefixes = ("k8s.pod_crash_loop", "k8s.pod_restart_churn")
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.pod_restart_churn":
+                return "k8s.unsupported: k8s.pod_restart_churn requires a resolved pod target"
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def _params(self, lease: FaultLease) -> dict[str, object]:
+        return _lease_fault_params(lease)
+
+    def _restarts(self, lease: FaultLease) -> int:
+        try:
+            return max(1, min(50, int(float(self._params(lease).get("restarts") or 5))))
+        except (TypeError, ValueError):
+            return 5
+
+    def _interval(self, lease: FaultLease) -> int:
+        raw = self._params(lease).get("interval") or "5s"
+        try:
+            return max(1, min(300, int(float(parse_duration(str(raw))))))
+        except (TypeError, ValueError):
+            return 5
+
+    def _pidfile(self, lease: FaultLease) -> str:
+        token = "".join(ch for ch in lease.id if ch.isalnum())[:24] or "mh"
+        return f"/tmp/mayhem-{token}.crash.pid"
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        restarts = self._restarts(lease)
+        interval = self._interval(lease)
+        pidfile = self._pidfile(lease)
+        command = (
+            f"rm -f {pidfile}; setsid sh -c 'i=0; while [ $i -lt {restarts} ]; do "
+            "kill -KILL 1 2>/dev/null; i=$((i+1)); sleep "
+            f"{interval}; done' >/tmp/mayhem-crashloop.log 2>&1 & echo $! > {pidfile}"
+        )
+        result = run_tool((*target.exec_argv, "sh", "-c", command), timeout_s=30)
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: supervisor launch failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        return StepOutcome("inject", True, f"{lease.fault_id}: supervisor launched", result)
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved pod target")
+        pidfile = self._pidfile(lease)
+        command = (
+            f"if [ -s {pidfile} ]; then kill $(cat {pidfile}) 2>/dev/null || true; fi; "
+            f"rm -f {pidfile}"
+        )
+        result = run_tool((*target.exec_argv, "sh", "-c", command), timeout_s=30)
+        return StepOutcome(
+            "undo",
+            result.exit_code == 0,
+            f"{lease.fault_id}: crash-loop supervisor reaped",
+            result,
+        )
+
+
+class K8sSidecarTerminationExecutor(K8sExecutor):
+    prefixes = ("k8s.sidecar_termination",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return "k8s.unsupported: k8s.sidecar_termination requires a resolved pod target"
+        return None
+
+    def _argv(self, lease: FaultLease, target: ResolvedPodTarget) -> tuple[str, ...]:
+        params = _lease_fault_params(lease)
+        argv = list(target.exec_argv)
+        container = str(params.get("container") or "sidecar")
+        try:
+            index = argv.index("-c")
+        except ValueError:
+            return (*argv, "sh", "-c", "kill -TERM 1")
+        if index + 1 < len(argv):
+            argv[index + 1] = container
+        return (*argv, "sh", "-c", "kill -TERM 1")
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, "k8s.unsupported: resolved pod target required")
+        result = run_tool(self._argv(lease, target), timeout_s=30)
+        return StepOutcome(
+            "inject",
+            result.exit_code == 0,
+            f"{lease.fault_id}: terminated sidecar in pod {target.pod}",
+            result,
+        )
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        return StepOutcome(
+            "undo", True, f"{lease.fault_id}: reconciliation will restore the sidecar"
+        )
+
+
 class K8sSnapshotExecutor(K8sExecutor):
     """Undo base for k-plan-6 controller-level mutations (docs/k8s-new.md).
+
 
     Reversible controller faults persist an undo snapshot on the *target
     object itself* (``mayhem.io/restore`` annotation): at inject the executor
@@ -1654,6 +1800,13 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
         "k8s.rollout_pause",
         "k8s.rollout_failure",
         "k8s.persistent_volume_detach",
+        "k8s.pod_pending",
+        "k8s.deployment_scale_failure",
+        "k8s.statefulset_scale_failure",
+        "k8s.persistent_volume_mount_failure",
+        "k8s.container_termination_delay",
+        "k8s.preemption_failure",
+        "k8s.workload_stall",
     )
     ref_kinds = ("Deployment", "StatefulSet", "DaemonSet")
 
@@ -1667,7 +1820,21 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
         if lease.fault_id not in self.prefixes:
             return k8s_unsupported_reason(lease.fault_id)
         if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.workload_stall":
+                return "k8s.unsupported: k8s.workload_stall requires a resolved pod target"
             return f"{lease.fault_id}: no resolved pod target on the lease"
+        if lease.fault_id == "k8s.pod_pending":
+            reason = str(_lease_fault_params(lease).get("reason") or "")
+            allowed = {
+                "insufficient_cpu",
+                "insufficient_memory",
+                "no_matching_node",
+                "taint",
+                "affinity",
+                "resource_quota",
+            }
+            if reason not in allowed:
+                return f"{lease.fault_id}: unsupported reason {reason!r}"
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
@@ -1686,8 +1853,21 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
             "k8s.rollout_pause",
             "k8s.rollout_failure",
             "k8s.persistent_volume_detach",
+            "k8s.deployment_scale_failure",
+            "k8s.statefulset_scale_failure",
         ):
-            if workload.kind not in ("Deployment", "StatefulSet"):
+            expected = {
+                "k8s.deployment_scale_failure": "Deployment",
+                "k8s.statefulset_scale_failure": "StatefulSet",
+            }.get(lease.fault_id)
+            if expected is not None and workload.kind != expected:
+                return StepOutcome(
+                    "inject",
+                    False,
+                    f"{lease.fault_id}: workload {workload.kind}/{workload.name} "
+                    f"is not a {expected}",
+                )
+            if expected is None and workload.kind not in ("Deployment", "StatefulSet"):
                 return StepOutcome(
                     "inject",
                     False,
@@ -1709,7 +1889,12 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
                 False,
                 f"{lease.fault_id}: workload spec too large for the restore annotation",
             )
-        write_annotation(workload, snapshot)
+        if not write_annotation(workload, snapshot):
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: failed to write restore annotation for {workload.kind}/{workload.name}",
+            )
         ok = self._mutate(lease, workload, obj)
         if ok:
             return StepOutcome(
@@ -1747,6 +1932,29 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
                     }
                 },
             )
+        if fault == "k8s.workload_stall":
+            seconds = max(1, min(300, int(float(parse_duration(str(params.get("stall_s") or "30s"))))))
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": container,
+                                        "readinessProbe": {
+                                            "exec": {
+                                                "command": ["/bin/sh", "-c", f"sleep {seconds}"]
+                                            }
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
         if fault == "k8s.pod_unschedulable":
             return apply_patch(
                 workload,
@@ -1761,6 +1969,165 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
             return apply_patch(
                 workload,
                 {"spec": {"template": {"spec": {"schedulerName": str(scheduler)}}}},
+            )
+        if fault == "k8s.pod_pending":
+            reason = str(params.get("reason") or "")
+            pod_spec: dict[str, object] = {}
+            container_patch: dict[str, object] = {}
+            if reason == "insufficient_cpu":
+                container_patch = {"resources": {"requests": {"cpu": "1000000"}}}
+            elif reason == "insufficient_memory":
+                container_patch = {"resources": {"requests": {"memory": "1000000Gi"}}}
+            elif reason == "resource_quota":
+                container_patch = {
+                    "resources": {"requests": {"cpu": "1000000", "memory": "1000000Gi"}}
+                }
+            elif reason == "no_matching_node":
+                pod_spec = {"nodeSelector": {"mayhem.invalid/node": "true"}}
+            elif reason == "taint":
+                pod_spec = {
+                    "affinity": {
+                        "nodeAffinity": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": {
+                                "nodeSelectorTerms": [
+                                    {
+                                        "matchExpressions": [
+                                            {
+                                                "key": "mayhem.invalid/taint",
+                                                "operator": "In",
+                                                "values": ["true"],
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            elif reason == "affinity":
+                pod_spec = {
+                    "affinity": {
+                        "podAntiAffinity": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": [
+                                {
+                                    "labelSelector": {"matchLabels": {"app": "mayhem.invalid"}},
+                                    "topologyKey": "kubernetes.io/hostname",
+                                }
+                            ]
+                        }
+                    }
+                }
+            else:
+                return False
+            template_spec = dict(pod_spec)
+            if container_patch:
+                template_spec["containers"] = [{"name": container, **container_patch}]
+            return apply_patch(workload, {"spec": {"template": {"spec": template_spec}}})
+
+        if fault in ("k8s.deployment_scale_failure", "k8s.statefulset_scale_failure"):
+            replicas = int(params.get("replicas"))
+            selector = obj.get("spec", {}).get("selector", {}).get("matchLabels", {})
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "replicas": replicas,
+                        "template": {
+                            "spec": {
+                                "topologySpreadConstraints": [
+                                    {
+                                        "maxSkew": 1,
+                                        "minDomains": max(replicas + 1, 2),
+                                        "topologyKey": "kubernetes.io/hostname",
+                                        "whenUnsatisfiable": "DoNotSchedule",
+                                        "labelSelector": {"matchLabels": dict(selector)},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                },
+            )
+        if fault == "k8s.persistent_volume_mount_failure":
+            volume = str(params.get("volume") or "")
+            containers = (
+                obj.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+            )
+            if not volume or not any(
+                mount.get("name") == volume
+                for item in containers
+                if item.get("name") == container
+                for mount in item.get("volumeMounts", [])
+            ):
+                return False
+            mounts = [
+                {
+                    "name": mount.get("name"),
+                    "mountPath": (
+                        f"/mayhem/shadow/{volume}"
+                        if mount.get("name") == volume
+                        else mount.get("mountPath")
+                    ),
+                }
+                for item in containers
+                if item.get("name") == container
+                for mount in item.get("volumeMounts", [])
+            ]
+            volumes = [
+                {**volume_entry, "emptyDir": {}}
+                if volume_entry.get("name") == volume
+                else volume_entry
+                for volume_entry in obj.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("volumes", [])
+            ]
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [{"name": container, "volumeMounts": mounts}],
+                                "volumes": volumes,
+                            }
+                        }
+                    }
+                },
+            )
+        if fault == "k8s.container_termination_delay":
+            try:
+                seconds = max(1, min(300, int(float(parse_duration(str(params.get("seconds") or "20s"))))))
+            except (TypeError, ValueError):
+                seconds = 20
+            return apply_patch(
+                workload,
+                {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "terminationGracePeriodSeconds": seconds + 5,
+                                "containers": [
+                                    {
+                                        "name": container,
+                                        "lifecycle": {
+                                            "preStop": {
+                                                "exec": {
+                                                    "command": ["/bin/sh", "-c", f"sleep {seconds}"]
+                                                }
+                                            }
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                },
+            )
+        if fault == "k8s.preemption_failure":
+            return apply_patch(
+                workload,
+                {"spec": {"template": {"spec": {"priority": -1}}}},
             )
         if fault == "k8s.image_pull_failure":
             image = str(params.get("image") or "mayhem.invalid/pull-fail:latest")
@@ -1843,6 +2210,7 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
         "k8s.service_no_endpoints",
         "k8s.service_endpoint_flap",
         "k8s.service_port_mismatch",
+        "k8s.service_5xx",
     )
     ref_kinds = ("Service",)
 
@@ -1850,6 +2218,8 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
         if lease.fault_id not in self.prefixes:
             return k8s_unsupported_reason(lease.fault_id)
         if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.service_5xx":
+                return "k8s.unsupported: k8s.service_5xx requires a resolved pod target"
             return f"{lease.fault_id}: no resolved pod target on the lease"
         return None
 
@@ -1868,6 +2238,8 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
         if obj is None:
             return StepOutcome("inject", False, f"{lease.fault_id}: Service {svc.name} not found")
         snapshot = {"spec": obj.get("spec", {})}
+        if lease.fault_id == "k8s.service_5xx":
+            snapshot["metadata"] = dict(obj.get("metadata") or {})
         write_annotation(svc, snapshot)
         ok = self._mutate(lease, svc, obj)
         if ok:
@@ -1882,6 +2254,20 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
     def _mutate(self, lease: FaultLease, svc: ResourceRef, obj: dict[str, object]) -> bool:
         fault = lease.fault_id
         params = _lease_fault_params(lease)
+        if fault == "k8s.service_5xx":
+            status = max(500, min(599, int(params.get("status") or 503)))
+            probability = max(1, min(100, int(params.get("probability") or 100)))
+            return apply_patch(
+                svc,
+                {
+                    "metadata": {
+                        "annotations": {
+                            "mayhem.io/response-status": str(status),
+                            "mayhem.io/response-probability": str(probability),
+                        }
+                    }
+                },
+            )
         if fault == "k8s.service_no_endpoints":
             key = str(params.get("selector_key") or "mayhem.no-endpoints")
             value = str(params.get("selector_value") or "true")
@@ -1910,7 +2296,7 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
             # Bounded synchronous flap: toggle the selector every interval_s
             # for ``cycles`` alternations, then leave the service pointing at
             # the broken selector (undo restores the original object).
-            from time import sleep  # noqa: PLC0415
+            from time import sleep
 
             key = str(params.get("selector_key") or "mayhem.no-endpoints")
             value = str(params.get("selector_value") or "true")
@@ -1934,7 +2320,10 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
         return dict(selector)
 
     def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
-        return apply_patch(ref, {"spec": snapshot["spec"]})
+        patch: dict[str, object] = {"spec": snapshot["spec"]}
+        if "metadata" in snapshot:
+            patch["metadata"] = snapshot["metadata"]
+        return apply_patch(ref, patch)
 
 
 class K8sHpaExecutor(K8sSnapshotExecutor):
@@ -1952,6 +2341,7 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
     prefixes = (
         "k8s.hpa_scale_delay",
         "k8s.hpa_scale_failure",
+        "k8s.hpa_oscillation",
     )
     ref_kinds = ("HorizontalPodAutoscaler",)
 
@@ -1959,6 +2349,8 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
         if lease.fault_id not in self.prefixes:
             return k8s_unsupported_reason(lease.fault_id)
         if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.hpa_oscillation":
+                return "k8s.unsupported: k8s.hpa_oscillation requires a resolved pod target"
             return f"{lease.fault_id}: no resolved pod target on the lease"
         if lease.fault_id == "k8s.hpa_scale_failure":
             direction = str(_lease_fault_params(lease).get("direction") or "up")
@@ -2009,6 +2401,23 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
         obj: dict[str, object],
     ) -> bool:
         params = _lease_fault_params(lease)
+        if lease.fault_id == "k8s.hpa_oscillation":
+            minimum = max(0, int(params.get("min_replicas") or 1))
+            maximum = max(minimum + 1, int(params.get("max_replicas") or max(minimum + 1, 3)))
+            window = max(1, min(300, int(params.get("window_s") or 30)))
+            return apply_patch(
+                hpa,
+                {
+                    "spec": {
+                        "minReplicas": minimum,
+                        "maxReplicas": maximum,
+                        "behavior": {
+                            "scaleUp": {"stabilizationWindowSeconds": window},
+                            "scaleDown": {"stabilizationWindowSeconds": window},
+                        },
+                    }
+                },
+            )
         if lease.fault_id == "k8s.hpa_scale_delay":
             raw = params.get("seconds")
             window = int(parse_duration(str(raw))) if raw else 60
@@ -2030,6 +2439,253 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
 
     def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
         return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+class K8sQuotaExecutor(K8sSnapshotExecutor):
+    prefixes = ("k8s.resource_quota_exhaust",)
+    ref_kinds = ("ResourceQuota",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        if "amount" not in _lease_fault_params(lease):
+            return f"{lease.fault_id}: amount is required"
+        return None
+
+    def _quota_key(self, resource: str) -> str:
+        return {
+            "cpu": "requests.cpu",
+            "memory": "requests.memory",
+            "storage": "requests.storage",
+        }.get(resource, resource)
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        ref = resourcequota_ref(target.namespace)
+        if ref is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: no ResourceQuota in {target.namespace}")
+        obj = kubectl_json(ref)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: ResourceQuota {ref.name} not found")
+        hard = dict((obj.get("spec") or {}).get("hard") or {})
+        params = _lease_fault_params(lease)
+        key = self._quota_key(str(params.get("resource") or "pods"))
+        if key not in hard:
+            return StepOutcome("inject", False, f"{lease.fault_id}: quota has no hard limit {key!r}")
+        try:
+            amount = int(float(params["amount"]))
+        except (TypeError, ValueError):
+            return StepOutcome("inject", False, f"{lease.fault_id}: amount must be an integer")
+        used = (obj.get("status") or {}).get("used") or {}
+        current = _quantity_as_number(used.get(key))
+        hard[key] = max(current, amount)
+        if not write_annotation(ref, {"spec": obj.get("spec", {})}):
+            return StepOutcome("inject", False, f"{lease.fault_id}: quota snapshot failed")
+        if not apply_patch(ref, {"spec": {"hard": hard}}):
+            clear_annotation(ref)
+            return StepOutcome("inject", False, f"{lease.fault_id}: quota patch failed")
+        return StepOutcome("inject", True, f"{lease.fault_id}: ResourceQuota {ref.name} exhausted")
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+class K8sPvcExecutor(K8sSnapshotExecutor):
+    prefixes = ("k8s.persistent_volume_claim_pending",)
+    ref_kinds = ("PersistentVolumeClaim",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        ref = pvc_ref_for_pod(target)
+        if ref is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: pod mounts no PersistentVolumeClaim")
+        obj = kubectl_json(ref)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: PVC {ref.name} not found")
+        if not write_annotation(ref, {"spec": obj.get("spec", {})}):
+            return StepOutcome("inject", False, f"{lease.fault_id}: PVC snapshot failed")
+        patch = {
+            "spec": {
+                "storageClassName": "mayhem-missing-storage-class",
+                "selector": {"matchLabels": {"mayhem.invalid/pvc": "true"}},
+            }
+        }
+        if not apply_patch(ref, patch):
+            clear_annotation(ref)
+            return StepOutcome("inject", False, f"{lease.fault_id}: PVC patch failed")
+        return StepOutcome("inject", True, f"{lease.fault_id}: PVC {ref.name} kept Pending")
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+def _quantity_as_number(value: object) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.rstrip("m")))
+        except ValueError:
+            return 0
+    return 0
+
+
+class K8sPdbExecutor(K8sSnapshotExecutor):
+    prefixes = ("k8s.pdb_violation", "k8s.eviction_block", "k8s.pdb_over_eviction")
+    ref_kinds = ("PodDisruptionBudget",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.pdb_over_eviction":
+                return "k8s.unsupported: k8s.pdb_over_eviction requires a resolved pod target"
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        if lease.fault_id == "k8s.pdb_violation" and "unavailable" not in _lease_fault_params(lease):
+            return f"{lease.fault_id}: unavailable is required"
+        return None
+
+    def _ref(self, lease: FaultLease) -> ResourceRef | None:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedPodTarget):
+            return None
+        params = _lease_fault_params(lease)
+        name = str(params.get("name") or target.pod)
+        return ResourceRef(kind="PodDisruptionBudget", name=name, namespace=target.namespace)
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        ref = self._ref(lease)
+        target = lease.resolved_target
+        if ref is None or not isinstance(target, ResolvedPodTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved pod target")
+        obj = kubectl_json(ref)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: PodDisruptionBudget {ref.name} not found")
+        if not write_annotation(ref, {"spec": obj.get("spec", {})}):
+            return StepOutcome("inject", False, f"{lease.fault_id}: PDB snapshot failed")
+        params = _lease_fault_params(lease)
+        if lease.fault_id == "k8s.eviction_block":
+            patch = {"spec": {"maxUnavailable": 0}}
+        elif lease.fault_id == "k8s.pdb_over_eviction":
+            patch = {"spec": {"maxUnavailable": max(0, int(params.get("unavailable") or 0))}}
+        else:
+            try:
+                unavailable = max(0, int(float(params["unavailable"])))
+            except (TypeError, ValueError):
+                clear_annotation(ref)
+                return StepOutcome("inject", False, f"{lease.fault_id}: unavailable must be an integer")
+            patch = {"spec": {"maxUnavailable": unavailable}}
+        if not apply_patch(ref, patch):
+            clear_annotation(ref)
+            return StepOutcome("inject", False, f"{lease.fault_id}: PDB patch failed")
+        return StepOutcome("inject", True, f"{lease.fault_id}: PDB {ref.name} mutated")
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"spec": snapshot["spec"]})
+
+
+class K8sDnsExecutor(K8sSnapshotExecutor):
+    prefixes = (
+        "k8s.dns_failure",
+        "k8s.dns_delay",
+        "k8s.service_dns_mismatch",
+        "k8s.dns_timeout",
+    )
+    ref_kinds = ("ConfigMap",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if lease.fault_id not in self.prefixes:
+            return k8s_unsupported_reason(lease.fault_id)
+        if not isinstance(lease.resolved_target, ResolvedPodTarget):
+            if lease.fault_id == "k8s.dns_timeout":
+                return "k8s.unsupported: k8s.dns_timeout requires a resolved pod target"
+            return f"{lease.fault_id}: no resolved pod target on the lease"
+        if not k8s_dns_supported():
+            return DNS_CONTROL_UNSUPPORTED_MESSAGE
+        params = _lease_fault_params(lease)
+        if lease.fault_id in (
+            "k8s.dns_failure",
+            "k8s.service_dns_mismatch",
+            "k8s.dns_timeout",
+        ) and not params.get("domain"):
+            return f"{lease.fault_id}: domain is required"
+        if lease.fault_id == "k8s.service_dns_mismatch" and not params.get("address"):
+            return f"{lease.fault_id}: address is required"
+        if lease.fault_id == "k8s.dns_failure" and str(params.get("mode") or "servfail") not in {
+            "servfail",
+            "nxdomain",
+            "refused",
+        }:
+            return f"{lease.fault_id}: unsupported DNS mode"
+        return None
+
+    def _ref(self) -> ResourceRef:
+        return ResourceRef(kind="ConfigMap", name="coredns", namespace="kube-system")
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        ref = self._ref()
+        obj = kubectl_json(ref)
+        if obj is None:
+            return StepOutcome("inject", False, f"{lease.fault_id}: CoreDNS ConfigMap not found")
+        data = dict(obj.get("data") or {})
+        corefile = str(data.get("Corefile") or ".:53 {\n}\n")
+        params = _lease_fault_params(lease)
+        fault = lease.fault_id
+        domain = str(params.get("domain") or "")
+        if fault == "k8s.dns_failure":
+            mode = str(params.get("mode") or "servfail")
+            block = f"template IN ANY {domain} {{\n    rcode {mode}\n}}\n"
+        elif fault == "k8s.dns_delay":
+            delay = max(1, min(30000, int(float(params.get("delay_ms") or 500))))
+            block = f"template IN A {domain} {{\n    forward . 10.255.255.1 {{\n        health_check no\n    }}\n    delay {delay}ms\n}}\n"
+        elif fault == "k8s.dns_timeout":
+            timeout_ms = max(1, min(30000, int(float(params.get("timeout_ms") or 500))))
+            block = f"template IN A {domain} {{\n    forward . 10.255.255.1 {{\n        health_check no\n    }}\n    timeout {timeout_ms}ms\n}}\n"
+        else:
+            address = str(params.get("address"))
+            block = f"hosts {{\n    {address} {domain}\n    fallthrough\n}}\n"
+        data["Corefile"] = corefile.rstrip() + "\n" + block
+        if not write_annotation(ref, {"data": dict(obj.get("data") or {})}):
+            return StepOutcome("inject", False, f"{lease.fault_id}: CoreDNS snapshot failed")
+        if not apply_patch(ref, {"data": data}):
+            clear_annotation(ref)
+            return StepOutcome("inject", False, f"{lease.fault_id}: CoreDNS patch failed")
+        rollout = ResourceRef(kind="Deployment", name="coredns", namespace="kube-system")
+        if not rollout_restart(rollout):
+            clear_annotation(ref)
+            return StepOutcome("inject", False, f"{lease.fault_id}: CoreDNS restart failed")
+        return StepOutcome("inject", True, f"{lease.fault_id}: CoreDNS mutated")
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        ref = self._ref()
+        snapshot = read_snapshot(ref)
+        if snapshot is None:
+            clear_annotation(ref)
+            return StepOutcome("undo", True, f"{lease.fault_id}: no DNS snapshot to restore")
+        data = snapshot.get("data")
+        if not isinstance(data, dict) or not apply_patch(ref, {"data": data}):
+            return StepOutcome("undo", False, f"{lease.fault_id}: CoreDNS restore failed")
+        clear_annotation(ref)
+        rollout = ResourceRef(kind="Deployment", name="coredns", namespace="kube-system")
+        if not rollout_restart(rollout):
+            return StepOutcome("undo", False, f"{lease.fault_id}: CoreDNS restart after restore failed")
+        return StepOutcome("undo", True, f"{lease.fault_id}: CoreDNS restored")
+
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+        return apply_patch(ref, {"data": snapshot.get("data", {})})
 
 
 class K8sConfigExecutor(K8sSnapshotExecutor):
@@ -2276,7 +2932,7 @@ class K8sPodDeleteExecutor(K8sExecutor):
     prefixes = ("k8s.pod_delete_uncontrolled",)
 
     def can_apply(self, lease: FaultLease) -> str | None:
-        if lease.fault_id != "k8s.pod_delete_uncontrolled":
+        if lease.fault_id not in self.prefixes:
             return k8s_unsupported_reason(lease.fault_id)
         if not isinstance(lease.resolved_target, ResolvedPodTarget):
             return f"{lease.fault_id}: no resolved pod target on the lease"
@@ -2356,7 +3012,7 @@ class K8sNodeCordonExecutor(K8sExecutor):
 
 def _sanitize_node(name: str) -> str:
     """k8s-safe object-name fragment for a node name (DNS-1123-ish)."""
-    import re as _re  # noqa: PLC0415
+    import re as _re
 
     return _re.sub(r"[^a-z0-9-]", "-", (name or "").lower())
 
@@ -2376,6 +3032,12 @@ def node_control_worker_name(kind: str, node: str) -> str:
         return "mayhem-nvidia-smi-" + _sanitize_node(node)
     if kind == "kubelet":
         return "k8s-kubelet-crash-loop-" + _sanitize_node(node)
+    if kind == "node-not-ready":
+        return "mayhem-node-not-ready-" + _sanitize_node(node)
+    if kind == "node-partition":
+        return "mayhem-node-partition-" + _sanitize_node(node)
+    if kind == "kube-proxy":
+        return "mayhem-kube-proxy-" + _sanitize_node(node)
     return "k8s-runtime-crash-loop-" + _sanitize_node(node)
 
 
@@ -2403,6 +3065,215 @@ class K8sNodeControlExecutor(K8sExecutor):
     @staticmethod
     def _params(lease: FaultLease) -> dict[str, object]:
         return _lease_fault_params(lease)
+
+
+class K8sNodeWorkerExecutor(K8sNodeControlExecutor):
+    """Node-pinned host worker with a real host-namespace restore step."""
+
+    worker_kind = ""
+    inject_command = ""
+    restore_command = ""
+
+    def _worker_name(self, target: ResolvedNodeTarget) -> str:
+        return node_control_worker_name(self.worker_kind, target.node)
+
+    def _restore_name(self, target: ResolvedNodeTarget) -> str:
+        return f"mayhem-restore-{self.worker_kind}-{_sanitize_node(target.node)}"
+
+    def _manifest(
+        self,
+        name: str,
+        command: str,
+        target: ResolvedNodeTarget,
+        *,
+        restore: bool = False,
+    ) -> str:
+        return json.dumps(
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "labels": {"mayhem.io/fault": self.prefixes[0]}},
+                "spec": {
+                    "nodeName": target.node,
+                    "hostPID": True,
+                    "hostNetwork": True,
+                    "restartPolicy": "Never" if restore else "Always",
+                    "tolerations": [{"operator": "Exists"}],
+                    "containers": [
+                        {
+                            "name": "host-control",
+                            "image": "busybox:1.36",
+                            "command": ["sh", "-c", command],
+                            "securityContext": {"privileged": True, "runAsUser": 0},
+                        }
+                    ],
+                },
+            },
+            separators=(",", ":"),
+        )
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("inject", False, f"{lease.fault_id}: no resolved node target")
+        name = self._worker_name(target)
+        result = run_tool(
+            ("kubectl", "apply", "-f", "-"),
+            timeout_s=30,
+            stdin_data=self._manifest(name, self.inject_command, target),
+        )
+        if result.exit_code != 0:
+            return StepOutcome(
+                "inject",
+                False,
+                f"{lease.fault_id}: applying node worker failed (rc={result.exit_code}): "
+                f"{result.stdout.strip()}",
+                tool_result=result,
+            )
+        if self.worker_kind == "node-not-ready":
+            ready = run_tool(
+                (
+                    "kubectl",
+                    "wait",
+                    f"node/{target.node}",
+                    "--for",
+                    "condition=Ready=false",
+                    "--timeout=300s",
+                ),
+                timeout_s=310,
+            )
+            if ready.exit_code != 0:
+                return StepOutcome(
+                    "inject",
+                    False,
+                    f"{lease.fault_id}: node did not become NotReady: {ready.stdout.strip()}",
+                    tool_result=ready,
+                )
+        return StepOutcome("inject", True, f"{lease.fault_id}: node worker {name} applied", result)
+
+    def undo(self, lease: FaultLease) -> StepOutcome:
+        target = lease.resolved_target
+        if not isinstance(target, ResolvedNodeTarget):
+            return StepOutcome("undo", False, f"{lease.fault_id}: no resolved node target")
+        restore = run_tool(
+            ("kubectl", "apply", "-f", "-"),
+            timeout_s=30,
+            stdin_data=self._manifest(
+                self._restore_name(target), self.restore_command, target, restore=True
+            ),
+        )
+        if restore.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: host restore worker failed (rc={restore.exit_code}): "
+                f"{restore.stdout.strip()}",
+                tool_result=restore,
+            )
+        deleted = run_tool(
+            ("kubectl", "delete", "pod", self._worker_name(target), "--ignore-not-found"),
+            timeout_s=30,
+        )
+        if deleted.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: deleting node worker failed (rc={deleted.exit_code}): "
+                f"{deleted.stdout.strip()}",
+                tool_result=deleted,
+            )
+        ready = run_tool(
+            (
+                "kubectl",
+                "wait",
+                f"node/{target.node}",
+                "--for",
+                "condition=Ready=true",
+                "--timeout=300s",
+            ),
+            timeout_s=310,
+        )
+        if ready.exit_code != 0:
+            return StepOutcome(
+                "undo",
+                False,
+                f"{lease.fault_id}: node did not become Ready: {ready.stdout.strip()}",
+                tool_result=ready,
+            )
+        return StepOutcome("undo", True, f"{lease.fault_id}: node worker restored", deleted)
+
+
+class K8sNodeNotReadyExecutor(K8sNodeWorkerExecutor):
+    worker_kind = "node-not-ready"
+    inject_command = "nsenter -t 1 -m -u -i -n -p -- systemctl mask --now kubelet"
+    restore_command = "nsenter -t 1 -m -u -i -n -p -- systemctl unmask --now kubelet"
+    prefixes = ("k8s.node_not_ready",)
+
+
+class K8sNodePartitionExecutor(K8sNodeWorkerExecutor):
+    worker_kind = "node-partition"
+    inject_command = (
+        "nsenter -t 1 -m -u -i -n -p -- sh -c "
+        "'iptables -N MH-PARTITION 2>/dev/null || true; "
+        "iptables -A MH-PARTITION -d 10.96.0.1 -j DROP; "
+        "iptables -A MH-PARTITION -p udp --dport 8472 -j DROP'"
+    )
+    restore_command = (
+        "nsenter -t 1 -m -u -i -n -p -- sh -c "
+        "'iptables -F MH-PARTITION 2>/dev/null || true; "
+        "iptables -X MH-PARTITION 2>/dev/null || true'"
+    )
+    prefixes = ("k8s.node_network_partition",)
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        reason = super().can_apply(lease)
+        if reason is not None:
+            return reason
+        direction = str(self._params(lease).get("direction") or "both")
+        if direction not in {"both", "ingress", "egress"}:
+            return f"{lease.fault_id}: unsupported direction {direction!r}"
+        return None
+
+    def inject(self, lease: FaultLease) -> StepOutcome:
+        direction = str(self._params(lease).get("direction") or "both")
+        if direction != "both":
+            self.inject_command = self.inject_command.replace(
+                "iptables -A MH-PARTITION -d 10.96.0.1 -j DROP; ",
+                "",
+            ) if direction == "ingress" else self.inject_command.replace(
+                "iptables -A MH-PARTITION -p udp --dport 8472 -j DROP",
+                "",
+            )
+        try:
+            return super().inject(lease)
+        finally:
+            self.inject_command = type(self).inject_command
+
+
+class K8sKubeProxyExecutor(K8sNodeWorkerExecutor):
+    worker_kind = "kube-proxy"
+    inject_command = "nsenter -t 1 -m -u -i -n -p -- systemctl stop --now kube-proxy"
+    restore_command = "nsenter -t 1 -m -u -i -n -p -- systemctl start kube-proxy"
+    prefixes = ("k8s.kube_proxy_failure",)
+
+
+class K8sNodeImagePullExecutor(K8sNodeWorkerExecutor):
+    worker_kind = "image-pull-delay"
+    prefixes = ("k8s.pod_image_pull_delay",)
+    inject_command = "nsenter -t 1 -m -u -i -n -p -- tc qdisc add dev eth0 root netem delay 3000ms"
+    restore_command = "nsenter -t 1 -m -u -i -n -p -- tc qdisc del dev eth0 root"
+
+    def can_apply(self, lease: FaultLease) -> str | None:
+        reason = super().can_apply(lease)
+        if reason is not None:
+            return reason
+        try:
+            seconds = int(float(parse_duration(str(self._params(lease).get("seconds") or "30s"))))
+        except (TypeError, ValueError):
+            return f"{lease.fault_id}: seconds must be a duration"
+        if not 1 <= seconds <= 300:
+            return f"{lease.fault_id}: seconds must be between 1s and 5m"
+        return None
 
 
 class K8sTaintEvictExecutor(K8sNodeControlExecutor):
@@ -2498,7 +3369,7 @@ class K8sNvidiaSmiErrorExecutor(K8sNodeControlExecutor):
             return 1
 
     def _worker_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         name = self._worker_name(target)
         interval = self._interval(lease)
@@ -2627,7 +3498,7 @@ class K8sNodeCrashLoopExecutor(K8sNodeControlExecutor):
         return node_control_worker_name(runtime, target.node)
 
     def _worker_body(self, lease: FaultLease, target: ResolvedNodeTarget) -> str:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         runtime = self._runtime(lease)
         restarts = self._restarts(lease)
@@ -2734,7 +3605,7 @@ class K8sNodeCrashLoopExecutor(K8sNodeControlExecutor):
 
 
 def _serialize(snapshot: dict[str, object]) -> str:
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     return _json.dumps(snapshot, sort_keys=True)
 
@@ -2744,10 +3615,15 @@ _K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
     "k8s.pod_evict": K8sPodEvictExecutor,
     "k8s.pod_oom": K8sPodOomExecutor,
     "k8s.pod_pressure": K8sPodPressureExecutor,
+    "k8s.pod_restart_churn": K8sCrashLoopExecutor,
+    "k8s.sidecar_termination": K8sSidecarTerminationExecutor,
     "k8s.network_policy": K8sNetworkPolicyExecutor,
     "k8s.pod_partition": K8sPodPartitionExecutor,
     "k8s.node_drain": K8sNodeDrainExecutor,
     "k8s.node_pressure": K8sNodePressureExecutor,
+    "k8s.node_disk_pressure": K8sNodePressureExecutor,
+    "k8s.node_memory_pressure": K8sNodePressureExecutor,
+    "k8s.node_pid_pressure": K8sNodePressureExecutor,
     "k8s.pod_latency": K8sPodLatencyExecutor,
     "cpu.saturate": K8sArgvExecutor,
     "cpu.throttle": K8sArgvExecutor,
@@ -2774,22 +3650,45 @@ _K8S_EXECUTORS: dict[str, type[K8sExecutor]] = {
     "k8s.rollout_pause": K8sWorkloadExecutor,
     "k8s.rollout_failure": K8sWorkloadExecutor,
     "k8s.persistent_volume_detach": K8sWorkloadExecutor,
+    "k8s.pod_crash_loop": K8sCrashLoopExecutor,
+    "k8s.pod_pending": K8sWorkloadExecutor,
+    "k8s.deployment_scale_failure": K8sWorkloadExecutor,
+    "k8s.statefulset_scale_failure": K8sWorkloadExecutor,
+    "k8s.persistent_volume_mount_failure": K8sWorkloadExecutor,
+    "k8s.container_termination_delay": K8sWorkloadExecutor,
+    "k8s.preemption_failure": K8sWorkloadExecutor,
+    "k8s.workload_stall": K8sWorkloadExecutor,
+    "k8s.pdb_violation": K8sPdbExecutor,
+    "k8s.eviction_block": K8sPdbExecutor,
+    "k8s.pdb_over_eviction": K8sPdbExecutor,
+    "k8s.dns_failure": K8sDnsExecutor,
+    "k8s.dns_delay": K8sDnsExecutor,
+    "k8s.service_dns_mismatch": K8sDnsExecutor,
+    "k8s.dns_timeout": K8sDnsExecutor,
     "k8s.service_no_endpoints": K8sServiceExecutor,
     "k8s.service_endpoint_flap": K8sServiceExecutor,
     "k8s.service_port_mismatch": K8sServiceExecutor,
+    "k8s.service_5xx": K8sServiceExecutor,
     "k8s.configmap_corrupt": K8sConfigExecutor,
     "k8s.secret_unavailable": K8sConfigExecutor,
     "k8s.persistent_volume_delay": K8sStorageExecutor,
     "k8s.persistent_volume_error": K8sStorageExecutor,
+    "k8s.resource_quota_exhaust": K8sQuotaExecutor,
+    "k8s.persistent_volume_claim_pending": K8sPvcExecutor,
     "k8s.pod_delete_uncontrolled": K8sPodDeleteExecutor,
     "k8s.node_cordon": K8sNodeCordonExecutor,
     # ── k-plan-6 §24: node-killer families (NODE_CONTROL-gated) ───────────────
     "k8s.taint_evict": K8sTaintEvictExecutor,
     "k8s.nvidia_smi_error": K8sNvidiaSmiErrorExecutor,
     "k8s.crash_loop": K8sNodeCrashLoopExecutor,
-    # ── k-plan-2 §14–§15: HPA scale mutations ────────────────────────────────
+    "k8s.node_not_ready": K8sNodeNotReadyExecutor,
+    "k8s.node_network_partition": K8sNodePartitionExecutor,
+    "k8s.kube_proxy_failure": K8sKubeProxyExecutor,
+    "k8s.pod_image_pull_delay": K8sNodeImagePullExecutor,
+    # ── k-plan-2 §14-§15: HPA scale mutations ────────────────────────────────
     "k8s.hpa_scale_delay": K8sHpaExecutor,
     "k8s.hpa_scale_failure": K8sHpaExecutor,
+    "k8s.hpa_oscillation": K8sHpaExecutor,
 }
 
 
@@ -2812,19 +3711,23 @@ def k8s_executor_for(
 
 
 def k8s_unsupported_reason(fault_id: str) -> str:
-    """Stable ``k8s.unsupported`` reason for faults the driver refuses."""
+    """Return a stable Kubernetes refusal with remediation details."""
+    from mayhem.domain.k8s_adapter import k8s_unsupported_remediation
+
     if fault_id == "k8s.pod.failure":
-        return (
-            "k8s.unsupported: k8s.pod.failure is the umbrella refusal id; "
-            "use k8s.pod_kill / k8s.pod_evict / k8s.pod_oom (k-plan-4)"
+        return k8s_unsupported_remediation(
+            fault_id, capability="workload executor", context="kubectl cluster"
+        )
+    if fault_id == "k8s.image_pull_slow":
+        return k8s_unsupported_remediation(
+            fault_id, capability="registry pacing", context="kubectl cluster"
         )
     prefix = fault_id.split(".", 1)[0]
     if prefix in ("mem", "cpu", "fs", "fd", "load", "fuzz"):
-        return (
-            f"k8s.unsupported: {prefix}.* payloads need an argv compensation "
-            "contract carrying their params (k-plan-3 SP-3.4)"
+        return k8s_unsupported_remediation(
+            fault_id, capability="argv compensation", context="resolved pod"
         )
-    return f"k8s.unsupported: driver {fault_id!r} is not executable this milestone"
+    return k8s_unsupported_remediation(fault_id, capability="Kubernetes executor", context="cluster")
 
 
 class NoopExecutor(FaultExecutor):
@@ -2857,6 +3760,7 @@ class ToolExecutor(FaultExecutor):
         "container",
         "node",
         "http",
+        "app",
         "db",
         "dns",
         "tls",
@@ -2890,6 +3794,11 @@ class ToolExecutor(FaultExecutor):
                     return decoded
         return []
 
+    def can_apply(self, lease: FaultLease) -> str | None:
+        if not self._argv_for(lease, "inject_argv"):
+            return "capability missing: tool execution contract is required"
+        return None
+
     def inject(self, lease: FaultLease) -> StepOutcome:
         argv = self._argv_for(lease, "inject_argv")
         if not argv:
@@ -2905,10 +3814,24 @@ class ToolExecutor(FaultExecutor):
         return StepOutcome("undo", result.succeeded, result.stderr[:200], result)
 
 
-# cpu.throttle applies a container-engine CPU share (``update --cpus``), which
+_FAULT_EXECUTOR_OVERRIDES: dict[str, FaultExecutor] = {}
+
 # is argv-pair work; it is not a burner payload, so it must not be claimed by
 # the prefix-based PayloadExecutor. Registered faults bypass prefix matching.
-_FAULT_EXECUTOR_OVERRIDES: dict[str, FaultExecutor] = {}
+_CONTAINER_EXECUTOR_ALIASES = {
+    "cpu.burst": "payload",
+    "mem.freeze": "payload",
+    "mem.swap_pressure": "payload",
+    "fs.quota": "payload",
+    "fs.write_delay": "payload",
+    "net.corrupt": "tool",
+    "net.congestion": "tool",
+    "process.restart_delay": "tool",
+    "http.upstream_timeout": "tool",
+    "app.response_5xx": "tool",
+}
+
+
 
 
 def _register_fault_executor(fault_id: str, executor: FaultExecutor) -> None:
@@ -2932,6 +3855,11 @@ _register_fault_executor("cpu.throttle", EXECUTORS[-1])
 _register_fault_executor("fs.read_only", EXECUTORS[-1])
 _register_fault_executor("process.crash_loop", EXECUTORS[-1])
 _register_fault_executor("k8s.pod.failure", _K8S_EXECUTOR)
+for _container_id, _container_family in _CONTAINER_EXECUTOR_ALIASES.items():
+    _register_fault_executor(
+        _container_id,
+        EXECUTORS[1] if _container_family == "payload" else EXECUTORS[-1],
+    )
 
 
 @functools.lru_cache(maxsize=512)
@@ -2942,8 +3870,8 @@ def _is_k8s_applicable(fault_id: str) -> bool:
     imported lazily to keep executors import-order independent.
     """
     try:
-        from mayhem.domain.catalog import definition_for  # noqa: PLC0415
-        from mayhem.domain.topology import NodeKind  # noqa: PLC0415
+        from mayhem.domain.catalog import definition_for
+        from mayhem.domain.topology import NodeKind
     except Exception:
         return False
     try:

@@ -17,15 +17,18 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mayhem.controller.cell_runner import CellRunResult
-from mayhem.domain.candidates import CandidateDecision, ExperimentCandidate
-from mayhem.domain.coverage import CoverageCell
+from mayhem.domain.candidates import CandidateDecision, CandidateGate, CandidateStatus
+from mayhem.infra.candidate_gates import CandidateGatePipeline, permissive_pipeline
 from mayhem.infra.candidate_generator import CandidateLandscape, SeededCandidateGenerator
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.maniac import coverage_cell_for_candidate
+from mayhem.infra.ranking import rank_resilience_cells
 
 if TYPE_CHECKING:
-    from mayhem.controller.cell_runner import CellRunner
+    from mayhem.controller.cell_runner import CellRunner, CellRunResult
+    from mayhem.domain.candidates import ExperimentCandidate
+    from mayhem.domain.coverage import CoverageCell, ResilienceCell
+    from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class ExploreQueueEntry:
     candidate: ExperimentCandidate
     cell: CoverageCell
     gate_decision: CandidateDecision | None = None  # None = not yet gated
+    resilience_cell: ResilienceCell | None = None
 
 
 @dataclass
@@ -73,6 +77,7 @@ def build_queue(
     *,
     seed: int = 0,
     covered_keys: frozenset[str] = frozenset(),
+    coverage: SQLiteCoverageRepository | None = None,
 ) -> tuple[ExperimentCandidate, ...]:
     """Generate the full ranked queue of candidates (§3.1.1 + §7 ranking).
 
@@ -81,7 +86,21 @@ def build_queue(
     """
     gen = SeededCandidateGenerator(landscape, seed=seed)
     all_candidates = list(gen.generate())
-    # Filter to unknown cells (not yet covered) for priority.
+    if coverage is not None:
+        cells = tuple(coverage_cell_for_candidate(candidate) for candidate in all_candidates)
+        enriched = coverage.resilience_cells(cells)
+        by_key = {
+            coverage_cell_for_candidate(candidate).key: candidate
+            for candidate in all_candidates
+        }
+        ranked = rank_resilience_cells(enriched)
+        ranked_candidates = [by_key[item.cell.key] for item in ranked if item.cell.key in by_key]
+        known = [
+            candidate
+            for candidate in all_candidates
+            if coverage_cell_for_candidate(candidate).key in covered_keys
+        ]
+        return tuple(ranked_candidates + known)
     unknown: list[ExperimentCandidate] = []
     already_known: list[ExperimentCandidate] = []
     for c in all_candidates:
@@ -90,7 +109,6 @@ def build_queue(
             already_known.append(c)
         else:
             unknown.append(c)
-    # Unknown first, then already-known (for re-runs).
     return tuple(unknown + already_known)
 
 
@@ -100,15 +118,13 @@ def dry_run(
     seed: int = 0,
     covered_keys: frozenset[str] = frozenset(),
     gate_pipeline: object | None = None,
+    coverage: SQLiteCoverageRepository | None = None,
 ) -> ExploreDryRun:
     """Execute the explore logic without running any drills (§3.1.8).
 
     Returns the ranked queue with gate results, no side effects.
     """
-    from mayhem.infra.candidate_gates import CandidateGatePipeline
-    from mayhem.infra.maniac import coverage_cell_for_candidate
-
-    queue = build_queue(landscape, seed=seed, covered_keys=covered_keys)
+    queue = build_queue(landscape, seed=seed, covered_keys=covered_keys, coverage=coverage)
     gates = (
         gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
     )
@@ -119,10 +135,17 @@ def dry_run(
     for candidate in queue:
         decision = gates.gate(candidate)
         cell = coverage_cell_for_candidate(candidate)
+        resilience_cell = None
+        if coverage is not None:
+            resilience_cell = next(
+                (item for item in coverage.resilience_cells((cell,)) if item.key == cell.key),
+                None,
+            )
         entry = ExploreQueueEntry(
             candidate=candidate,
             cell=cell,
             gate_decision=decision,
+            resilience_cell=resilience_cell,
         )
         entries.append(entry)
         if decision is not None and decision.rejected:
@@ -174,10 +197,14 @@ def run_explore(
         ``Callable[[ExperimentCandidate], bool]`` — returns True to approve,
         False to deny.  Required when ``supervised=True``.
     """
-    from mayhem.infra.candidate_gates import CandidateGatePipeline
-
     covered_keys = coverage.covered_keys()
-    queue = build_queue(landscape, seed=seed, covered_keys=covered_keys)
+    state_map = coverage.states(
+        tuple(
+            coverage_cell_for_candidate(candidate)
+            for candidate in SeededCandidateGenerator(landscape, seed=seed).generate()
+        )
+    )
+    queue = build_queue(landscape, seed=seed, covered_keys=covered_keys, coverage=coverage)
     gates = (
         gate_pipeline if isinstance(gate_pipeline, CandidateGatePipeline) else permissive_pipeline()
     )
@@ -198,8 +225,7 @@ def run_explore(
             break
 
         cell = coverage_cell_for_candidate(candidate)
-        # Already covered? Skip.
-        if cell.key in covered_keys:
+        if state_map.get(cell.key) is not None:
             continue
 
         # Gate check
@@ -219,8 +245,6 @@ def run_explore(
                 raise ValueError("supervised mode requires approve_fn")
             approved = approve_fn(candidate)
             if not approved:
-                from mayhem.domain.candidates import CandidateGate, CandidateStatus
-
                 denied.append(
                     CandidateDecision(
                         candidate=candidate,
