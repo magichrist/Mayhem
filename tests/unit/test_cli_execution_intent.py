@@ -1,13 +1,15 @@
 """CLI enforcement of the execution-intent contract (v0.9.0).
 
-Two properties are pinned here:
+Three properties are pinned here:
 
-* every mutating command refuses without an explicit intent, and
-* a preview never creates a lease (or even a run row).
+* every mutating command refuses without an explicit intent,
+* a preview never creates a lease (or even a run row), and
+* a global ``--dry-run`` never authorizes a mutation — not even when
+  ``--execute`` is also passed.
 
-The suite-wide compatibility switch is on by default (see ``tests/conftest.py``);
-each test that asserts a *refusal* deletes it first, so it exercises the v0.9.0
-default rather than the escape hatch.
+This module is *not* marked ``implicit_execution``: every test here either
+asserts a refusal (deleting the switch first, so the v0.9.0 default is what is
+under test) or names the switch explicitly.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mayhem.cli.app import main
+from mayhem.cli.app import implicit_execution_allowed, main
 from mayhem.cli.errors import error_to_exit_code, map_exception_to_error
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.domain.execution_intent import (
@@ -69,6 +71,56 @@ def _counts(db: Path) -> tuple[int, int]:
         return len(runs), len(leases)
     finally:
         store.close()
+
+
+def _stub_engine() -> MagicMock:
+    """A RunEngine stand-in that records the plan it was asked to execute."""
+    engine = MagicMock()
+    result = engine.execute.return_value
+    result.status = "completed"
+    result.summary_md.return_value = "run completed"
+    result.dirty_leases = ()
+    return engine
+
+
+def _seed_stored_plan(db: Path, plan: ExecutionPlan) -> str:
+    """Insert a completed run row so ``--plan-id`` can find its plan."""
+    store = Store.open_migrated(db)
+    try:
+        with store.write() as conn:
+            conn.execute(
+                "INSERT INTO config_snapshots (id, resolved_json, source_map, created_at)"
+                " VALUES (?, '{}', '{}', 'now')",
+                (f"c-{plan.run_id}",),
+            )
+            conn.execute(
+                "INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json, seed,"
+                " status, environment_fingerprint, config_snapshot_id)"
+                " VALUES (?, 'exp', 'deterministic', '{}', ?, 1, 'completed', 'env', ?)",
+                (plan.run_id, plan.model_dump_json(), f"c-{plan.run_id}"),
+            )
+    finally:
+        store.close()
+    return plan.run_id
+
+
+def _compiled_plan(tmp_path: Path, db: Path) -> ExecutionPlan:
+    """Compile a real plan by running once against a stubbed engine."""
+    engine = _stub_engine()
+    with patch("mayhem.cli.services.RunEngine", return_value=engine):
+        main(
+            [
+                "--db",
+                str(db),
+                "--skip-gate",
+                "run",
+                str(_spec(tmp_path)),
+                "-c",
+                str(COMPOSE_FILE),
+                "--execute",
+            ]
+        )
+    return engine.execute.call_args.args[0]
 
 
 class TestRunRequiresAnApproval:
@@ -461,3 +513,272 @@ class TestRefusalCodesAreStable:
         assert payload["exit_code"] == int(ExitCode.SAFETY_REFUSAL)
         assert payload["details"]["action"] == "explore"
         assert payload["remediation"] == "pass --execute"
+
+
+class TestDryRunNeverAuthorizes:
+    """A global ``--dry-run`` is a promise that nothing mutates (C1, M2).
+
+    It must not be usable as an approval, and it must win over ``--execute``
+    on every path that could otherwise reach ``RunEngine.execute``.
+    """
+
+    def test_run_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "run.db"
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "run",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--execute",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "dry-run" in captured.out + captured.err
+        assert engine.execute.called is False
+        assert _counts(db) == (0, 0)
+
+    def test_run_from_plan_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "run.db"
+        plan = _compiled_plan(tmp_path, db)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(plan.model_dump_json())
+        capsys.readouterr()
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "run",
+                    "--from-plan",
+                    str(plan_file),
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--execute",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing executed" in captured.err
+        assert engine.execute.called is False
+        assert _counts(db)[1] == 0  # no lease was created
+
+    def test_run_plan_id_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "run.db"
+        plan = _compiled_plan(tmp_path, db)
+        run_id = _seed_stored_plan(db, plan)
+        capsys.readouterr()
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "run",
+                    "--plan-id",
+                    run_id,
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--execute",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing executed" in captured.err
+        assert engine.execute.called is False
+        assert _counts(db)[1] == 0
+
+    def test_run_diff_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "run.db"
+        diff_file = tmp_path / "previous.json"
+        diff_file.write_text(json.dumps({"steps": {}}))
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "run",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--diff",
+                    str(diff_file),
+                    "--execute",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing executed" in captured.err
+        assert engine.execute.called is False
+        assert _counts(db) == (0, 0)
+
+    def test_maniac_dry_run_with_execute_injects_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "maniac.db"
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "maniac",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--execute",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing injected" in captured.out
+        assert engine.execute.called is False
+        assert _counts(db) == (0, 0)
+
+    def test_campaign_run_dry_run_with_execute_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "campaign.db"),
+                "--dry-run",
+                "campaign",
+                "run",
+                "c-1",
+                "--execute",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == int(ExitCode.SAFETY_REFUSAL)
+        assert INTENT_REQUIRED in err
+
+    def test_campaign_run_dry_run_alone_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A preview of a campaign run is not implemented, so --dry-run does not
+        # stand in for the approval: it is refused rather than half-honoured.
+        _no_implicit(monkeypatch)
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "campaign.db"),
+                "--dry-run",
+                "campaign",
+                "run",
+                "c-1",
+            ]
+        )
+        assert rc == int(ExitCode.SAFETY_REFUSAL)
+        assert INTENT_REQUIRED in capsys.readouterr().err
+
+    def test_explore_global_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "explore.db"
+        rc = main(
+            [
+                "--db",
+                str(db),
+                "--dry-run",
+                "explore",
+                "-c",
+                str(COMPOSE_FILE),
+                "--execute",
+            ]
+        )
+        assert rc == int(ExitCode.SUCCESS)
+        assert _counts(db) == (0, 0)
+
+    def test_explore_local_dry_run_with_execute_executes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        db = tmp_path / "explore.db"
+        rc = main(["--db", str(db), "explore", "-c", str(COMPOSE_FILE), "--dry-run", "--execute"])
+        assert rc == int(ExitCode.SUCCESS)
+        assert _counts(db) == (0, 0)
+
+    def test_recover_execute_dry_run_still_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _no_implicit(monkeypatch)
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "recover.db"),
+                "--dry-run",
+                "recover",
+                "execute",
+                "r-unknown",
+            ]
+        )
+        assert rc == int(ExitCode.SAFETY_REFUSAL)
+        assert INTENT_REQUIRED in capsys.readouterr().err
+
+
+class TestImplicitExecutionSwitchLivesInTheAppLayer:
+    """The environment is read once, by the application layer (M3)."""
+
+    def test_missing_variable_is_not_implicit(self) -> None:
+        assert implicit_execution_allowed({}) is False
+
+    def test_exactly_one_enables_it(self) -> None:
+        assert implicit_execution_allowed({IMPLICIT_EXECUTION_ENV: "1"}) is True
+
+    @pytest.mark.parametrize("value", ("0", "", "true", "yes", "11"))
+    def test_anything_but_one_is_not_implicit(self, value: str) -> None:
+        assert implicit_execution_allowed({IMPLICIT_EXECUTION_ENV: value}) is False
+
+    def test_surrounding_whitespace_is_ignored(self) -> None:
+        assert implicit_execution_allowed({IMPLICIT_EXECUTION_ENV: " 1 "}) is True
+
+    def test_the_process_environment_is_the_default_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(IMPLICIT_EXECUTION_ENV, raising=False)
+        assert implicit_execution_allowed() is False
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        assert implicit_execution_allowed() is True
+
+    def test_the_domain_never_reads_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A domain decision must not depend on ambient state."""
+        from mayhem.domain.execution_intent import require_execution_intent
+
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        with pytest.raises(ExecutionIntentRefused):
+            require_execution_intent(None, plan_hash="", action="run")

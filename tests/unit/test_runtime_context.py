@@ -22,6 +22,11 @@ from mayhem.domain.experiments import ExecutionPlan, ExperimentKind, PlannedStep
 from mayhem.domain.runtime_context import RuntimeContext
 from mayhem.domain.topology import ContainerNode, HostNode, TopologyGraph
 
+# v0.9.0 made execution an approved act. Several of these tests predate that
+# contract and drive `run`/`maniac` without the new approval flags, so they opt
+# in to the documented compatibility switch explicitly.
+pytestmark = pytest.mark.implicit_execution
+
 K8S_CONFIG = """\
 targets:
   prod:

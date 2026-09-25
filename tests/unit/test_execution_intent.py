@@ -2,7 +2,13 @@
 
 Execution is an approved act: a plan is only executed when an intent says *who*
 approved *which* plan, on *which* engine and target, and *until when*. These
-tests pin the three stable refusal codes and the compatibility switch.
+tests pin the three stable refusal codes and the "default is refuse" rule.
+
+The domain layer is pure — it never reads the environment. The compatibility
+switch is resolved by the application layer
+(:func:`mayhem.cli.app.implicit_execution_allowed`, exercised in
+``test_cli_execution_intent.py``) and passed in as ``allow_implicit``, so
+everything here is exercised with an explicit argument.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from mayhem.domain.execution_intent import (
     INTENT_REQUIRED,
     ExecutionIntent,
     ExecutionIntentRefused,
-    implicit_execution_allowed,
+    implicit_execution_requested,
     intent_for_plan,
     require_execution_intent,
     require_explicit_approval,
@@ -105,21 +111,33 @@ class TestPresence:
         assert excinfo.value.details["implicit_execution_env"] == IMPLICIT_EXECUTION_ENV
         assert excinfo.value.remediation
 
-    def test_compatibility_switch_allows_the_implicit_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv(IMPLICIT_EXECUTION_ENV, raising=False)
-        assert implicit_execution_allowed() is False
-        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
-        assert implicit_execution_allowed() is True
-        assert require_execution_intent(None, plan_hash=PLAN_HASH, action="run") is None
+    def test_allow_implicit_true_allows_the_implicit_path(self) -> None:
+        assert (
+            require_execution_intent(
+                None, plan_hash=PLAN_HASH, allow_implicit=True, action="run"
+            )
+            is None
+        )
 
-    def test_explicit_allow_implicit_argument_wins(self) -> None:
-        assert require_execution_intent(
-            None, plan_hash=PLAN_HASH, allow_implicit=True, action="run"
-        ) is None
-        with pytest.raises(ExecutionIntentRefused):
+    def test_allow_implicit_false_is_a_refusal(self) -> None:
+        with pytest.raises(ExecutionIntentRefused) as excinfo:
             require_execution_intent(None, plan_hash=PLAN_HASH, allow_implicit=False)
+        assert excinfo.value.code == INTENT_REQUIRED
+
+    def test_allow_implicit_default_none_is_a_refusal(self) -> None:
+        # The domain never guesses: nobody said, so the answer is refuse.
+        with pytest.raises(ExecutionIntentRefused) as excinfo:
+            require_execution_intent(None, plan_hash=PLAN_HASH)
+        assert excinfo.value.code == INTENT_REQUIRED
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"),
+        [(True, True), (False, False), (None, False)],
+    )
+    def test_implicit_execution_requested_defaults_to_refuse(
+        self, answer: bool | None, expected: bool
+    ) -> None:
+        assert implicit_execution_requested(answer) is expected
 
     def test_valid_intent_is_returned(self) -> None:
         intent = _intent()
@@ -228,10 +246,14 @@ class TestExplicitApproval:
         assert excinfo.value.code == INTENT_REQUIRED
         assert excinfo.value.details["action"] == "explore"
 
-    def test_compatibility_switch_covers_simple_approvals(self) -> None:
+    def test_allow_implicit_true_covers_simple_approvals(self) -> None:
         assert (
             require_explicit_approval("explore", approved=False, allow_implicit=True) is None
         )
+
+    def test_allow_implicit_defaults_to_refuse(self) -> None:
+        with pytest.raises(ExecutionIntentRefused):
+            require_explicit_approval("explore", approved=False)
 
 
 class TestEvidence:
@@ -272,3 +294,35 @@ class TestEvidence:
             remediation=(),
         )
         assert envelope.execution_intent is None
+
+
+class TestDomainPurity:
+    """The contract must not read the environment or the filesystem (M3).
+
+    ``pyproject.toml``'s import-linter contract ("Domain layer has zero IO and
+    no upward imports") forbids ``os``/``pathlib`` under ``mayhem.domain``. This
+    test documents the same rule where a reader will actually look, and fails
+    loudly in the normal unit suite rather than only in the lint job.
+    """
+
+    def test_module_imports_neither_os_nor_pathlib(self) -> None:
+        import ast
+        import inspect
+
+        from mayhem.domain import execution_intent as module
+
+        tree = ast.parse(inspect.getsource(module))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        assert "os" not in imported
+        assert "pathlib" not in imported
+        assert "subprocess" not in imported
+
+    def test_the_switch_name_is_still_part_of_the_contract(self) -> None:
+        # Purity does not hide the documented escape hatch: the name is
+        # published, only the lookup moved to the application layer.
+        assert IMPLICIT_EXECUTION_ENV == "MAYHEM_ALLOW_IMPLICIT_EXECUTION"

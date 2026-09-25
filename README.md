@@ -278,7 +278,7 @@ mayhem campaign create black-friday \
 mayhem campaign add-experiment black-friday mayhem.yaml
 mayhem campaign add-experiment black-friday checkout-recovery.yaml
 mayhem campaign start black-friday
-mayhem campaign run black-friday --compose docker-compose.yml
+mayhem campaign run black-friday --compose docker-compose.yml --execute
 ```
 
 The current CLI creates campaigns in `draft`, `approve` moves a draft to

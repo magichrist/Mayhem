@@ -163,15 +163,21 @@ def install(
     """
     from mayhem.agents.impact import dependency_plan as _dep_plan
     from mayhem.agents.impact import host_tooling_gaps as _host_gaps
+    from mayhem.cli.app import implicit_execution_allowed
     from mayhem.domain.execution_intent import require_explicit_approval
 
     obj = _ctx(ctx)
     # A global --dry-run means the same thing as the local one: preview only.
+    # It never authorizes a mutation.
     dry_run = bool(dry_run or obj.dry_run)
     # `-y` predates the intent contract and *is* an explicit confirmation, so
     # it still counts; without a flag the command is refused unless the
     # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch is set.
-    require_explicit_approval("dependency install", approved=bool(execute or yes or dry_run))
+    require_explicit_approval(
+        "dependency install",
+        approved=bool(execute or yes or dry_run),
+        allow_implicit=implicit_execution_allowed(),
+    )
 
     plan, graph, engine_name = _dependency_context(ctx, compose, experiment)
     deps = _dep_plan(plan, graph, engine_name)

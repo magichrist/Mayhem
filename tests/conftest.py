@@ -67,15 +67,37 @@ def compose_runtime_graph() -> TopologyGraph:
     return build_compose_runtime_graph()
 
 
-@pytest.fixture(autouse=True)
-def _implicit_execution_compat(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the pre-v0.9.0 implicit-execution path available to the suite.
+# --- execution intent (v0.9.0) -------------------------------------------------
+#
+# Since v0.9.0 execution is an approved act: a mutating command without an
+# explicit approval flag is refused. Tests that predate that contract drive the
+# CLI the way a v0.8 script did, so they must opt in to the documented
+# ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1`` compatibility switch *explicitly* —
+# there is no suite-wide default that would silently weaken the contract for
+# tests asserting a refusal.
+#
+# Opt in either per module/class/function::
+#
+#     pytestmark = pytest.mark.implicit_execution
+#
+# or per test by requesting the fixture::
+#
+#     def test_x(allow_implicit_execution): ...
 
-    v0.9.0 made execution an approved act: a mutating command without an
-    explicit approval flag is refused. Most of this suite drives the CLI the
-    way a v0.8 script did, so the documented compatibility switch is on by
-    default here. Tests that assert a *refusal* delete the variable
-    themselves (``monkeypatch.delenv(IMPLICIT_EXECUTION_ENV, raising=False)``)
-    so they exercise the v0.9.0 default rather than the escape hatch.
-    """
+
+@pytest.fixture
+def allow_implicit_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run one test against the pre-v0.9.0 implicit-execution path."""
     monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Make ``@pytest.mark.implicit_execution`` request the opt-in fixture.
+
+    Declaring the fixture inside the marker at collection time keeps the
+    opt-in visible at the test site and works at module, class, and function
+    level, which a plain ``pytestmark``-less fixture cannot.
+    """
+    for item in items:
+        if "implicit_execution" in item.keywords:
+            item.fixturenames.append("allow_implicit_execution")

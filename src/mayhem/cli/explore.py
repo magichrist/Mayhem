@@ -327,13 +327,23 @@ def explore(
         os.environ["NO_COLOR"] = "1"
 
     obj = _ctx(ctx)
+    # Normalize the two dry-run spellings *before* deciding what this
+    # invocation is: a global --dry-run is a preview, exactly like the local
+    # one, and it must never authorize a mutation.
+    dry_run = bool(dry_run or obj.dry_run)
     # v0.9.0: a live explore run injects faults. The ranked queue is still a
-    # preview (--dry-run/--plan-only), but executing a cell needs the explicit
-    # --execute approval (or the documented compatibility switch).
+    # preview (--dry-run/--plan-only), which needs no approval; a live run
+    # needs the explicit --execute approval (or the documented compatibility
+    # switch).
+    from mayhem.cli.app import implicit_execution_allowed
     from mayhem.domain.execution_intent import require_explicit_approval
 
     if not dry_run and not plan_only:
-        require_explicit_approval("explore", approved=execute or obj.dry_run)
+        require_explicit_approval(
+            "explore",
+            approved=execute,
+            allow_implicit=implicit_execution_allowed(),
+        )
 
     graph, resolved_compose = _graph_from(ctx, compose)
     db_path = db or obj.db

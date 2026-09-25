@@ -616,9 +616,12 @@ class RunEngine:
         """Validate the approval that authorizes this run (v0.9.0).
 
         Delegates to the shared domain gate so every mutating surface refuses
-        for the same reason with the same code. ``None`` means the run went
-        ahead through the documented compatibility switch.
+        for the same reason with the same code. The environment lookup for the
+        documented compatibility switch belongs to the application layer, so
+        it is asked here and passed in — the domain stays pure.
+        ``None`` means the run went ahead through that switch.
         """
+        from mayhem.cli.app import implicit_execution_allowed
         from mayhem.domain.execution_intent import require_execution_intent
         from mayhem.domain.preflight import plan_hash_for
 
@@ -627,6 +630,7 @@ class RunEngine:
             plan_hash=plan_hash_for(plan),
             engine=self._engine or "",
             action="run",
+            allow_implicit=implicit_execution_allowed(),
         )
 
     def _abort_requested(self) -> bool:

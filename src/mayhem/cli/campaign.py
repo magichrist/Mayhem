@@ -562,10 +562,13 @@ def run_campaign(
     deadline/cooldown are honored; per-experiment results are recorded in the
     observations table. ``--execute`` is the explicit approval: without it
     (and without the documented ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1``
-    compatibility switch) the command refuses before any experiment runs.
+    compatibility switch) the command refuses before any experiment runs. A
+    global ``--dry-run`` previews and never authorizes a mutation, so it is
+    refused here rather than treated as approval.
     """
     from datetime import datetime
 
+    from mayhem.cli.app import implicit_execution_allowed
     from mayhem.cli.lifecycle import (
         _debug_progress,
         _execution_intent,
@@ -576,7 +579,11 @@ def run_campaign(
     from mayhem.domain.execution_intent import require_explicit_approval
 
     obj = _ctx(ctx)
-    require_explicit_approval("campaign run", approved=execute or obj.dry_run)
+    require_explicit_approval(
+        "campaign run",
+        approved=execute and not obj.dry_run,
+        allow_implicit=implicit_execution_allowed(),
+    )
     db = db_opt or obj.db
     store = open_store(db)
     try:
@@ -614,6 +621,8 @@ def run_campaign(
             )
 
         def _run_one(spec_path: str) -> RunResult:
+            from mayhem.cli.lifecycle import _preflight_for_run
+
             prepared = prepare(
                 config_path=obj.config,
                 profile=obj.profile,
@@ -627,6 +636,17 @@ def run_campaign(
             bypass: dict[tuple[str, str], str] = {}
             if gate:
                 bypass = _gate_bypasses(engine_name, compiled.plan, graph)
+            # One approval covers the campaign, but every experiment is still
+            # bound to its own plan hash, policy, and blast radius.
+            preflight = _preflight_for_run(
+                graph=graph,
+                store=store,
+                prepared=prepared,
+                plan=compiled.plan,
+                target=obj.target,
+                config_path=obj.config,
+                engine=engine_name,
+            )
             eng = engine_for(
                 store,
                 engine_name,
@@ -634,10 +654,13 @@ def run_campaign(
                 on_event=_debug_progress() if obj.debug else None,
                 bypass=bypass,
                 recovery_grace=prepared.recovery_grace,
-                # One approval covers the campaign, but every experiment is
-                # still bound to its own plan hash.
                 intent=(
-                    _execution_intent(compiled.plan, engine=engine_name, target=obj.target)
+                    _execution_intent(
+                        compiled.plan,
+                        engine=engine_name,
+                        target=obj.target,
+                        preflight=preflight,
+                    )
                     if execute
                     else None
                 ),

@@ -26,18 +26,21 @@ share one rule and one set of stable refusal codes:
   bound to a different plan, engine, or target than the one about to run.
 
 Compatibility: the pre-v0.9.0 implicit path is still reachable, but only
-through the documented escape hatch :data:`IMPLICIT_EXECUTION_ENV`
-(``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1``). It is a *compatibility* switch for
-older automation, not a second way to skip approval: it is checked by the
-gate itself, so a surface that forgets to call the gate still executes
-exactly as it did in v0.8.
+through the documented escape hatch ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1``. The
+domain never reads the environment itself — that lookup belongs to the
+application layer (:func:`mayhem.cli.app.implicit_execution_allowed`), which
+passes the answer in as ``allow_implicit``. The contract therefore stays a pure
+value model plus a pure decision: same inputs, same refusal, on every host and
+in every test, and a surface cannot skip approval by forgetting to ask.
 
-This module imports nothing outside the domain layer.
+This module imports nothing outside the domain layer and touches neither the
+environment nor the filesystem. :class:`ExecutionPlan` hashing is delegated to
+:func:`mayhem.domain.preflight.plan_hash_for` so the intent and the gate always
+agree on what "this plan" means.
 """
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -45,9 +48,10 @@ from typing import Any
 
 from mayhem.domain.errors import DomainError
 
-#: Escape hatch that restores the pre-v0.9.0 implicit-execution behaviour.
-#: Documented in ``docs/reference/cli.md``; intended for legacy automation
-#: and for the test suite, not as a way to skip approval.
+#: The documented escape hatch that restores the pre-v0.9.0 implicit-execution
+#: behaviour. The *name* lives here (it is part of the documented contract);
+#: reading it is the application layer's job — see
+#: :func:`mayhem.cli.app.implicit_execution_allowed`.
 IMPLICIT_EXECUTION_ENV = "MAYHEM_ALLOW_IMPLICIT_EXECUTION"
 
 #: Stable refusal codes. Part of the CLI's error contract.
@@ -182,15 +186,14 @@ class ExecutionIntent:
         )
 
 
-def implicit_execution_allowed(environ: Mapping[str, str] | None = None) -> bool:
-    """True when the documented compatibility switch is set to ``"1"``.
+def implicit_execution_requested(allow_implicit: bool | None) -> bool:
+    """Normalize the caller's answer about the compatibility switch.
 
-    This is the *only* thing that keeps the pre-v0.9.0 implicit path alive.
-    It is consulted inside the gate so a surface cannot opt out of approval by
-    forgetting to ask.
+    ``None`` means "nobody said", which is a refusal: an approval is required
+    unless the application layer positively reports the documented switch.
+    Kept in the domain so the rule ("default is refuse") is stated once.
     """
-    env = os.environ if environ is None else environ
-    return str(env.get(IMPLICIT_EXECUTION_ENV, "")).strip() == "1"
+    return allow_implicit is True
 
 
 def require_execution_intent(
@@ -207,8 +210,12 @@ def require_execution_intent(
 
     Call this *immediately before* the first irreversible step — opening a
     run row, acquiring a lease, installing a package. Returns the validated
-    intent, or ``None`` when execution proceeded through the documented
-    compatibility switch.
+    intent, or ``None`` when execution proceeded through the compatibility
+    switch the application layer reported via ``allow_implicit``.
+
+    The function is pure: it reads no environment, opens no file, and calls no
+    adapter. ``allow_implicit=None`` (the default) is a refusal, so a caller
+    that forgets to ask still gets the safe answer.
 
     Raises:
         ExecutionIntentRefused: With code :data:`INTENT_REQUIRED` when there
@@ -216,7 +223,7 @@ def require_execution_intent(
             when the approval has lapsed, or :data:`INTENT_MISMATCH` when the
             approval is bound to a different plan, engine, or target.
     """
-    permitted = implicit_execution_allowed() if allow_implicit is None else allow_implicit
+    permitted = implicit_execution_requested(allow_implicit)
     if intent is None:
         if permitted:
             return None
@@ -271,15 +278,16 @@ def require_explicit_approval(
 
     The simpler sibling of :func:`require_execution_intent` for surfaces with
     no compiled plan to bind to (recovery sweeps, dependency installs):
-    ``approved`` is the command's own explicit opt-in.
+    ``approved`` is the command's own explicit opt-in. Like its sibling it is
+    pure — the environment switch is read by the application layer and passed
+    in as ``allow_implicit``.
 
     Raises:
         ExecutionIntentRefused: With code :data:`INTENT_REQUIRED`.
     """
     if approved:
         return
-    permitted = implicit_execution_allowed() if allow_implicit is None else allow_implicit
-    if permitted:
+    if implicit_execution_requested(allow_implicit):
         return
     raise ExecutionIntentRefused(
         INTENT_REQUIRED,

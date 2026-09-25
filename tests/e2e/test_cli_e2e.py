@@ -26,6 +26,13 @@ TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
 COMPOSE_FILE = TESTCASE / "docker-compose.yml"
 DRILL_SPEC = TESTCASE / "mayhem.yaml"
 
+# v0.9.0 made execution an approved act. This end-to-end sweep predates that
+# contract and drives `run` / `recover RUN_ID` without the new approval flags,
+# so it opts in to the documented compatibility switch explicitly. New
+# end-to-end coverage of the refusal lives in
+# tests/unit/test_cli_execution_intent.py.
+pytestmark = pytest.mark.implicit_execution
+
 DRILL_YAML = """\
 kind: drill
 name: drill-pause

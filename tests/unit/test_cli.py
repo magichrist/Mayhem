@@ -13,6 +13,11 @@ from mayhem.cli.services import engine_fault_kinds, selected_engine
 TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
 COMPOSE_FILE = TESTCASE / "docker-compose.yml"
 
+# v0.9.0 made execution an approved act. These tests predate that contract and
+# drive `run`/`maniac`/`recover RUN_ID` the way a v0.8 script did, so they opt
+# in to the documented compatibility switch explicitly.
+pytestmark = pytest.mark.implicit_execution
+
 DRILL_YAML = """\
 kind: drill
 apiVersion: "mayhem/v1"

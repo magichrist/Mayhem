@@ -22,11 +22,12 @@ from mayhem.domain.errors import (
     TargetDriftError,
     TargetResolutionError,
 )
+from mayhem.domain.execution_intent import IMPLICIT_EXECUTION_ENV
 from mayhem.domain.maniac import ManiacError
 from mayhem.toolkit.tool_runner import ToolError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 
 _STATE: dict[str, str] = {
@@ -129,6 +130,20 @@ register_commands(app)
 def _fail(message: str, code: int) -> int:
     click.echo(f"{style.danger('error:')} {message}", err=True)
     return code
+
+
+def implicit_execution_allowed(environ: Mapping[str, str] | None = None) -> bool:
+    """True when the documented ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1`` is set.
+
+    This is the *only* place the environment is consulted for the
+    execution-intent contract. The domain layer
+    (:mod:`mayhem.domain.execution_intent`) stays pure and receives the answer
+    as ``allow_implicit``; the application layer — this module — reads the
+    switch and passes it down, so every mutating surface sees one policy and a
+    domain test can never depend on the ambient environment.
+    """
+    env = os.environ if environ is None else environ
+    return str(env.get(IMPLICIT_EXECUTION_ENV, "")).strip() == "1"
 
 
 def _is_refusal(code: str) -> bool:

@@ -92,6 +92,10 @@ class TestCampaignRunCLI:
                 "--compose",
                 str(COMPOSE_FILE),
                 "--no-gate",
+                # v0.9.0: `campaign run` mutates the target, so the explicit
+                # approval is required; these tests exercise what happens
+                # *after* the approval, not the refusal.
+                "--execute",
             ]
         )
         out = capsys.readouterr().out
@@ -117,6 +121,10 @@ class TestCampaignRunCLI:
                 "--compose",
                 str(COMPOSE_FILE),
                 "--no-gate",
+                # v0.9.0: `campaign run` mutates the target, so the explicit
+                # approval is required; these tests exercise what happens
+                # *after* the approval, not the refusal.
+                "--execute",
             ]
         )
         out = capsys.readouterr().out
@@ -152,6 +160,10 @@ class TestCampaignRunCLI:
                 "--compose",
                 str(COMPOSE_FILE),
                 "--no-gate",
+                # v0.9.0: `campaign run` mutates the target, so the explicit
+                # approval is required; these tests exercise what happens
+                # *after* the approval, not the refusal.
+                "--execute",
             ]
         )
         assert rc == 2
@@ -172,6 +184,10 @@ class TestCampaignRunCLI:
                 "--compose",
                 str(COMPOSE_FILE),
                 "--no-gate",
+                # v0.9.0: `campaign run` mutates the target, so the explicit
+                # approval is required; these tests exercise what happens
+                # *after* the approval, not the refusal.
+                "--execute",
             ]
         )
         assert rc == 0
@@ -198,6 +214,10 @@ class TestCampaignRunCLI:
                 "--compose",
                 str(COMPOSE_FILE),
                 "--no-gate",
+                # v0.9.0: `campaign run` mutates the target, so the explicit
+                # approval is required; these tests exercise what happens
+                # *after* the approval, not the refusal.
+                "--execute",
             ]
         )
         capsys.readouterr()  # drain the run output

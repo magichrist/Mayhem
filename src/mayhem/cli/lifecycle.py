@@ -55,11 +55,7 @@ from mayhem.controller.recovery import RecoveryService
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.evidence import EvidenceEnvelope
-from mayhem.domain.execution_intent import (
-    implicit_execution_allowed,
-    intent_for_plan,
-    require_explicit_approval,
-)
+from mayhem.domain.execution_intent import intent_for_plan, require_explicit_approval
 from mayhem.infra.evidence import (
     build_evidence,
     load_evidence,
@@ -606,18 +602,22 @@ def _execution_intent(
     Built from the *preflight* that was just shown to the user, so the
     approval names exactly the plan, policy, and blast radius that were
     reviewed — and the engine re-checks the plan hash and engine before it
-    opens the run.
+    opens the run. When a preflight exists, its resolved target identity wins
+    over the raw ``--target`` string so the record matches what actually ran;
+    the argument is only the fallback for callers that have no preflight.
     """
     policy_id = ""
     blast: dict[str, object] = {}
+    identity = str(target or engine or "default")
     if preflight is not None:
         decisions = tuple(str(d) for d in getattr(preflight, "safety_decisions", ()) or ())
         policy_id = ";".join(decisions) or "default"
         blast = dict(getattr(preflight, "blast_radius", {}) or {})
+        identity = str(getattr(preflight, "target_identity", "") or identity)
     return intent_for_plan(
         plan,
         engine=engine,
-        target_identity=str(target or engine or "default"),
+        target_identity=identity,
         policy_id=policy_id,
         blast_radius=blast,
         actor="cli:--execute",
@@ -1049,6 +1049,16 @@ def run(
                         runtime=runtime,
                     )
                     _emit_preflight(preflight, as_json)
+                    if obj.dry_run:
+                        # A dry run loads and previews the plan and stops: it
+                        # must never reach the engine, and therefore never a
+                        # lease, even when --execute was also passed.
+                        click.echo(
+                            f"dry-run: plan {style.cyan(compiled_plan.run_id)} loaded; "
+                            "nothing executed",
+                            err=True,
+                        )
+                        return
                     if not execute:
                         click.echo("plan loaded; pass --execute to run", err=True)
                         return
@@ -1141,7 +1151,7 @@ def run(
                     raise click.UsageError(
                         f"stored plan {plan_id!r} is not a valid ExecutionPlan", ctx=ctx
                     ) from None
-                if not execute:
+                if not execute or obj.dry_run:
                     preflight = _preflight_for_run(
                         graph=graph,
                         store=store,
@@ -1153,10 +1163,32 @@ def run(
                         runtime=runtime,
                     )
                     _emit_preflight(preflight, as_json)
+                    if obj.dry_run:
+                        # Loading a stored plan is a preview under --dry-run,
+                        # even with --execute: nothing is executed.
+                        click.echo(
+                            f"dry-run: plan {style.cyan(loaded_plan.run_id)} loaded; "
+                            "nothing executed",
+                            err=True,
+                        )
+                        return
                     click.echo("plan loaded; pass --execute to run", err=True)
                     return
                 engine_name = effective_engine
-                preflight = None  # not resolved on the execute path; see below
+                # The stored plan is compiled against a different run's
+                # snapshots, so the preflight is resolved here (not reused from
+                # the preview branch) and the intent is bound to the policy and
+                # blast radius that were actually reviewed.
+                preflight = _preflight_for_run(
+                    graph=graph,
+                    store=store,
+                    prepared=None,
+                    plan=loaded_plan,
+                    target=target_name,
+                    config_path=obj.config,
+                    engine=engine_name,
+                    runtime=runtime,
+                )
                 stored_intent = _execution_intent(
                     loaded_plan,
                     engine=engine_name,
@@ -1180,19 +1212,9 @@ def run(
                     require_intent=True,
                 )
                 result = eng.execute(loaded_plan)
-                preflight_tmp = _preflight_for_run(
-                    graph=graph,
-                    store=store,
-                    prepared=None,
-                    plan=loaded_plan,
-                    target=target_name,
-                    config_path=obj.config,
-                    engine=engine_name,
-                    runtime=runtime,
-                )
                 _write_evidence_after_run(
                     store=store,
-                    preflight=preflight_tmp,
+                    preflight=preflight,
                     result=result,
                     engine=engine_name,
                     evidence_dir=evidence_dir,
@@ -1245,6 +1267,11 @@ def run(
                 click.echo(_json.dumps(ordered, indent=2))
             else:
                 click.echo(render_plan_diff(diff))
+            if obj.dry_run:
+                # The diff *is* the preview; --dry-run must not fall through
+                # into execution even when --execute was passed.
+                click.echo("dry-run: plan diff shown; nothing executed", err=True)
+                return
             if not execute:
                 return
         _emit_preflight(preflight, as_json)
@@ -1252,6 +1279,8 @@ def run(
         # ``mayhem run SPEC`` that executed anyway — now requires the
         # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch. Without it the
         # command previews, exactly like --dry-run, and never reaches a lease.
+        from mayhem.cli.app import implicit_execution_allowed
+
         implicit = (
             experiment is not None
             and diff_path is None
@@ -1435,7 +1464,14 @@ def maniac(
     refuses with ``execution_intent_required`` before any round is drawn.
     """
     obj = _ctx(ctx)
-    require_explicit_approval("maniac", approved=execute or obj.dry_run)
+    from mayhem.cli.app import implicit_execution_allowed
+
+    # --dry-run previews; it never authorizes a mutation.
+    require_explicit_approval(
+        "maniac",
+        approved=execute and not obj.dry_run,
+        allow_implicit=implicit_execution_allowed(),
+    )
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
     )
@@ -1735,7 +1771,11 @@ class RecoverGroup(click.Group):
         # v0.9.0: this shim is an *implicit* spelling of a mutating command, so
         # it needs its own approval. The explicit `recover execute RUN_ID`
         # spelling never needed one — naming the sub-command is the approval.
-        require_explicit_approval("recover execute", approved=execute)
+        from mayhem.cli.app import implicit_execution_allowed
+
+        require_explicit_approval(
+            "recover execute", approved=execute, allow_implicit=implicit_execution_allowed()
+        )
         store = open_store(_ctx(click.get_current_context()).db)
         try:
             service = _recovery_service(store)
@@ -1827,7 +1867,13 @@ def recover_execute(
     # Naming the sub-command is the approval; the global --dry-run is a
     # promise that nothing mutates, so it is refused here rather than honoured
     # by accident.
-    require_explicit_approval("recover execute", approved=not _ctx(ctx).dry_run)
+    from mayhem.cli.app import implicit_execution_allowed
+
+    require_explicit_approval(
+        "recover execute",
+        approved=not _ctx(ctx).dry_run,
+        allow_implicit=implicit_execution_allowed(),
+    )
     store = open_store(_ctx(ctx).db)
     try:
         service = _recovery_service(store)
@@ -1866,7 +1912,13 @@ def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
     # The default (no --execute) is a pure preview: it plans, never writes.
     # Applying transitions is a mutation and needs the explicit flag; a global
     # --dry-run promises nothing mutates, so it is refused even with --execute.
-    require_explicit_approval("janitor --execute", approved=execute and not obj.dry_run)
+    from mayhem.cli.app import implicit_execution_allowed
+
+    require_explicit_approval(
+        "janitor --execute",
+        approved=execute and not obj.dry_run,
+        allow_implicit=implicit_execution_allowed(),
+    )
     store = open_store(obj.db)
     try:
         janitor_service = Janitor(SQLiteLeaseSink(store))

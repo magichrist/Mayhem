@@ -1,6 +1,7 @@
 import json
 import pathlib
 
+import pytest
 from click.testing import CliRunner
 
 from mayhem.cli.app import app
@@ -35,6 +36,11 @@ containers:
 execution:
   - parallel: [testcase-api]
 """
+
+# v0.9.0 made execution an approved act. The CLI-level test below predates that
+# contract and invokes `run` without --execute, so it opts in to the documented
+# compatibility switch explicitly.
+pytestmark = pytest.mark.implicit_execution
 
 
 def _write(tmp_path, text):

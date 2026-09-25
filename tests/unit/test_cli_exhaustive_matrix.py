@@ -616,7 +616,10 @@ def test_campaign_delete_and_no_experiment_refusals(tmp_path: Path) -> None:
     code, created, _ = _main(["--db", str(db), "campaign", "create", "draft", "--json"])
     assert code == 0
     campaign_id = json.loads(created)["id"]
-    code, _, _ = _main(["--db", str(db), "campaign", "run", campaign_id])
+    # --execute is the explicit approval v0.9.0 requires; without it the
+    # command is refused before the campaign is even read, which is covered in
+    # test_cli_execution_intent.py.
+    code, _, _ = _main(["--db", str(db), "campaign", "run", campaign_id, "--execute"])
     assert code == 2
     code, _, _ = _main(["--db", str(db), "campaign", "delete", campaign_id, "--yes", "--json"])
     assert code == 0

@@ -67,7 +67,15 @@ Inspect authored experiments and run the active exploration loop.
 
 Execution is an approved act (v0.9.0). Without `--execute`, `run` previews the
 preflight and stops before any run row or lease exists; `maniac` refuses
-outright. `mayhem --dry-run run SPEC` previews without needing an approval.
+outright.
+
+A global `--dry-run` is a promise that nothing mutates, and it is never an
+approval. It wins over `--execute` everywhere: `mayhem --dry-run run SPEC`
+previews, `--from-plan`, `--plan-id`, and `--diff` load and print without
+executing, `explore` renders its ranked queue, `maniac` reports the draw and
+injects nothing, and the commands with no preview to fall back on
+(`campaign run`, `recover execute`, `janitor --execute`) are refused rather than
+half-honoured.
 
 ### Execution intent
 
@@ -97,7 +105,9 @@ that were reviewed. Refusals use stable codes and exit with
 for legacy automation. It is a compatibility escape hatch, not a second way to
 skip approval. When it is in play no intent is minted, so the run's evidence
 envelope records `execution_intent: null` and an auditor can still tell an
-implicit run from an approved one.
+implicit run from an approved one. The domain contract itself never reads the
+environment: `mayhem.cli.app` resolves the switch once and passes it to the
+validator as `allow_implicit`.
 
 ### `mayhem inspect`
 
@@ -129,7 +139,7 @@ Inspect and extend provider, fault, and capability coverage.
 
 ### Other active commands
 
-- `mayhem campaign` — create, inspect, and run chaos campaigns.
+- `mayhem campaign` — create, inspect, and run chaos campaigns (`campaign run` needs `--execute`).
 - `mayhem commands show` — print the active command map.
 - `mayhem init` — detect a project and create a safe starter configuration.
 - `mayhem doctor` — check configuration, database, engines, topology, capabilities, and permissions.
