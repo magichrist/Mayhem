@@ -20,7 +20,7 @@ from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, DrillSpec, ExecutionPlan
-from mayhem.domain.runtime_context import RuntimeContext
+from mayhem.domain.runtime_context import RuntimeContext, reconcile_engine
 from mayhem.domain.topology import (
     Edge,
     EdgeKind,
@@ -523,7 +523,14 @@ def plan_maniac_from_spec(
 
 
 class _EngineUnset:
-    """Sentinel type: the caller passed no engine name to :func:`engine_for`."""
+    """Sentinel type: the caller passed no engine name to :func:`engine_for`.
+
+    Distinguishes ``engine_for(store)`` from ``engine_for(store, None)`` only
+    for documentation purposes — both mean "unspecified" to
+    :func:`~mayhem.domain.runtime_context.reconcile_engine`. The sentinel keeps
+    the historical ``"podman"`` default without making a legitimate explicit
+    ``None`` look like an engine named ``None``.
+    """
 
     __slots__ = ()
 
@@ -551,22 +558,13 @@ def engine_for(
 
     Legacy callers that only pass ``engine`` keep working (the historical
     default is still ``podman``). Passing *both* is allowed only when they
-    agree — a disagreement is an ``InvariantViolationError``
-    (``runtime_engine_mismatch``) raised here, before any plan is compiled or
-    any lease acquired, rather than silently resolving to one of the two.
+    agree — a disagreement raises ``InvariantViolationError``
+    (``runtime_engine_mismatch``) here, before any plan is compiled or any
+    lease acquired. An omitted *or* ``None`` engine means "unspecified", not a
+    disagreement, so ``engine_for(store, runtime=ctx)`` is legal.
     """
-    from mayhem.domain.errors import InvariantViolationError
-
-    if isinstance(engine, _EngineUnset):
-        resolved_engine = runtime.engine if runtime is not None else "podman"
-    elif runtime is not None and engine != runtime.engine:
-        raise InvariantViolationError(
-            "runtime_engine_mismatch",
-            f"engine {engine!r} disagrees with the resolved runtime "
-            f"{runtime.engine!r}; resolve one runtime context per plan",
-        )
-    else:
-        resolved_engine = engine
+    requested: str | None = None if isinstance(engine, _EngineUnset) else engine
+    resolved_engine = reconcile_engine(requested, runtime) or "podman"
     return RunEngine(
         store,
         SQLiteLeaseSink(store),

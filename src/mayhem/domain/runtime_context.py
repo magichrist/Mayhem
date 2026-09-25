@@ -11,14 +11,17 @@ another.
 :func:`mayhem.cli.services.resolve_runtime_context`) and then carried unchanged
 through planning, preflight, and execution.
 
-This module is deliberately a *pure* value model: it imports nothing from
-``mayhem`` so the domain never depends on the runtime adapters, topology
-providers, or CLI services that produce it.
+This module is deliberately a *pure* value model plus one pure invariant
+helper: it imports nothing from ``mayhem`` except the domain's own error type,
+so the domain never depends on the runtime adapters, topology providers, or CLI
+services that produce and consume it.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
+
+from mayhem.domain.errors import InvariantViolationError
 
 
 class RuntimeContext(BaseModel):
@@ -67,3 +70,33 @@ class RuntimeContext(BaseModel):
             "provider_version": self.provider_version,
             "topology_fingerprint": self.topology_fingerprint,
         }
+
+
+def reconcile_engine(engine: str | None, runtime: RuntimeContext | None) -> str | None:
+    """Reconcile a caller-supplied engine name with a resolved runtime context.
+
+    This is the one place the "one resolved context per plan" rule is enforced,
+    so the planner, the preflight, and the executor cannot drift onto different
+    runtimes. It is pure: no probing, no IO, no adapters.
+
+    * Neither supplied → ``None`` ("unspecified"; the caller applies its own
+      compatibility default).
+    * Only one supplied → that one. A ``None`` or blank engine means
+      *unspecified*, never a disagreement.
+    * Both supplied and equal → the engine.
+    * Both supplied and different → ``InvariantViolationError``
+      (``runtime_engine_mismatch``), raised before any planning, safety
+      validation, or lease work happens.
+    """
+    specified = engine if (engine or "").strip() else None
+    if runtime is None:
+        return specified
+    if specified is None:
+        return runtime.engine
+    if specified != runtime.engine:
+        raise InvariantViolationError(
+            "runtime_engine_mismatch",
+            f"engine {specified!r} disagrees with the resolved runtime "
+            f"{runtime.engine!r}; resolve one runtime context per plan",
+        )
+    return runtime.engine

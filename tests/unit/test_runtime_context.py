@@ -1118,3 +1118,164 @@ def test_engine_mismatch_is_rendered_as_a_cli_error_not_a_traceback() -> None:
     assert err.code == "validation_error"
     assert "disagrees with the resolved runtime" in err.message
     assert err.remediation
+
+
+# ---------------------------------------------------------------------------
+# The preflight carries the same guard, and None always means "unspecified"
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_engine_semantics() -> None:
+    """The single shared rule: one source of truth for the guard."""
+    from mayhem.domain.runtime_context import reconcile_engine
+
+    ctx = RuntimeContext(engine="kubernetes", context="prod-eu")
+    # Neither: unspecified, the caller applies its own default.
+    assert reconcile_engine(None, None) is None
+    # Engine only (legacy callers).
+    assert reconcile_engine("podman", None) == "podman"
+    assert reconcile_engine("", None) is None  # blank == unspecified
+    # Runtime only.
+    assert reconcile_engine(None, ctx) == "kubernetes"
+    assert reconcile_engine("", ctx) == "kubernetes"
+    # Both, agreeing.
+    assert reconcile_engine("kubernetes", ctx) == "kubernetes"
+    # Both, disagreeing: refused, naming both sides.
+    with pytest.raises(InvariantViolationError) as excinfo:
+        reconcile_engine("podman", ctx)
+    assert excinfo.value.rule == "runtime_engine_mismatch"
+    assert "podman" in str(excinfo.value)
+    assert "kubernetes" in str(excinfo.value)
+
+
+def test_build_preflight_refuses_an_engine_runtime_mismatch() -> None:
+    with pytest.raises(InvariantViolationError) as excinfo:
+        _preflight(engine="podman", runtime=RuntimeContext(engine="docker"))
+    assert excinfo.value.rule == "runtime_engine_mismatch"
+    assert "podman" in str(excinfo.value)
+    assert "docker" in str(excinfo.value)
+
+
+def test_build_preflight_refuses_before_safety_or_plan_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal happens before any safety/blast-radius work runs."""
+    from mayhem.controller import preflight as preflight_module
+
+    touched: list[str] = []
+
+    def _boom(name: str) -> Any:
+        def _inner(*_args: Any, **_kwargs: Any) -> Any:
+            touched.append(name)
+            raise AssertionError(f"preflight ran {name} before reconciling the runtime")
+
+        return _inner
+
+    monkeypatch.setattr(preflight_module, "validate_plan", _boom("validate_plan"))
+    monkeypatch.setattr(preflight_module, "_blast_radius_for", _boom("_blast_radius_for"))
+
+    with pytest.raises(InvariantViolationError) as excinfo:
+        build_preflight(
+            spec_path=None,
+            compose=None,
+            graph=object(),
+            store=None,
+            config_path=None,
+            profile=None,
+            allow_critical=False,
+            target=None,
+            engine="docker",
+            plan=_plan(),
+            safety=object(),  # type: ignore[arg-type]
+            runtime=RuntimeContext(engine="podman"),
+        )
+    assert excinfo.value.rule == "runtime_engine_mismatch"
+    assert touched == [], "safety work ran before the runtime was reconciled"
+
+
+def test_preflight_from_services_refuses_a_mismatch_before_building_anything() -> None:
+    from mayhem.controller.preflight import preflight_from_services
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("preflight_from_services did work before reconciling")
+
+    import mayhem.cli.services as services_module
+
+    original_build_graph = services_module.build_graph
+    services_module.build_graph = _boom  # type: ignore[assignment]
+    try:
+        with pytest.raises(InvariantViolationError) as excinfo:
+            preflight_from_services(
+                spec_path=None,
+                compose=None,
+                store=None,
+                config_path=None,
+                profile=None,
+                allow_critical=False,
+                target=None,
+                engine="kubernetes",
+                runtime=RuntimeContext(engine="podman"),
+            )
+        assert excinfo.value.rule == "runtime_engine_mismatch"
+    finally:
+        services_module.build_graph = original_build_graph  # type: ignore[assignment]
+
+
+def test_build_preflight_accepts_engine_only_runtime_only_and_agreement() -> None:
+    # Legacy: engine only.
+    assert _preflight(engine="podman", runtime=None).engine == "podman"
+    # Runtime only (engine unspecified).
+    ctx = RuntimeContext(engine="kubernetes", context="prod-eu", namespace="checkout")
+    preflight = _preflight(engine=None, runtime=ctx)
+    assert preflight.engine == "kubernetes"
+    assert preflight.k8s_context == "prod-eu"
+    assert preflight.k8s_namespace == "checkout"
+    # Both, agreeing.
+    both = _preflight(engine="kubernetes", runtime=ctx)
+    assert both.engine == "kubernetes"
+    assert both.runtime_context is ctx
+
+
+def test_engine_for_treats_none_engine_as_unspecified() -> None:
+    from mayhem.cli.services import engine_for
+    from mayhem.infra.store import Store
+
+    ctx = RuntimeContext(engine="kubernetes", context="prod-eu")
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        # An explicit None is "unspecified", not an engine named None.
+        explicit_none = engine_for(store, None, runtime=ctx)
+        assert explicit_none._engine == "kubernetes"
+        assert explicit_none._k8s_context == "prod-eu"
+        # Omitted and explicit None behave identically.
+        assert engine_for(store, runtime=ctx)._engine == "kubernetes"
+        # Legacy positional default preserved.
+        assert engine_for(store, "podman")._engine == "podman"
+        assert engine_for(store)._engine == "podman"
+        assert engine_for(store, None)._engine == "podman"
+        # A real disagreement is still refused.
+        with pytest.raises(InvariantViolationError) as excinfo:
+            engine_for(store, "podman", runtime=ctx)
+        assert excinfo.value.rule == "runtime_engine_mismatch"
+    finally:
+        store.close()
+
+
+def test_runengine_treats_none_engine_as_unspecified() -> None:
+    from mayhem.controller.executor import RunEngine
+    from mayhem.infra.lease_repository import SQLiteLeaseSink
+    from mayhem.infra.store import Store
+
+    ctx = RuntimeContext(engine="kubernetes", context="prod-eu")
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        sink = SQLiteLeaseSink(store)
+        assert RunEngine(store, sink, engine=None, runtime=ctx)._engine == "kubernetes"
+        assert RunEngine(store, sink, engine=None)._engine is None
+        assert RunEngine(store, sink, engine="docker")._engine == "docker"
+        assert RunEngine(store, sink)._engine is None
+        with pytest.raises(InvariantViolationError) as excinfo:
+            RunEngine(store, sink, engine="podman", runtime=ctx)
+        assert excinfo.value.rule == "runtime_engine_mismatch"
+    finally:
+        store.close()

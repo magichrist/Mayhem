@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from mayhem.controller.safety import SafetyContext, environment_fingerprint, validate_plan
 from mayhem.domain.preflight import Preflight, plan_hash_for
+from mayhem.domain.runtime_context import reconcile_engine
 
 if TYPE_CHECKING:
     from mayhem.domain.runtime_context import RuntimeContext
@@ -82,7 +83,7 @@ def build_preflight(
     profile: str | None,
     allow_critical: bool,
     target: str | None,
-    engine: str,
+    engine: str | None,
     plan: Any,
     safety: SafetyContext | None = None,
     fingerprint: str | None = None,
@@ -90,12 +91,14 @@ def build_preflight(
     topology_snapshot_id: str | None = None,
     runtime: RuntimeContext | None = None,
 ) -> Preflight:
+    # One resolved context per plan: the engine name and the runtime must
+    # agree, checked *before* any safety validation, plan hashing, or lease
+    # work. A legacy caller that passes only ``engine`` (or only ``runtime``)
+    # is unaffected; see reconcile_engine.
+    effective_engine = reconcile_engine(engine, runtime) or ""
     resolved_target: str | None = (
         target if target is not None else (runtime.target_profile if runtime else None)
     )
-    # A resolved runtime context is authoritative: the engine is never
-    # re-derived from a raw flag once it has been resolved (v0.9.0).
-    effective_engine = (runtime.engine if runtime is not None else engine) or ""
     plan_hash = plan_hash_for(plan)
     plan_id = getattr(plan, "run_id", "") or plan_hash[:12]
 
@@ -311,15 +314,19 @@ def preflight_from_services(
     profile: str | None,
     allow_critical: bool,
     target: str | None,
-    engine: str,
+    engine: str | None,
     graph: Any = None,
     plan: Any = None,
     runtime: RuntimeContext | None = None,
 ) -> Preflight:
-    if runtime is not None:
-        engine = runtime.engine
-        if target is None:
-            target = runtime.target_profile
+    # Reconcile (and refuse a disagreement) before the graph, config, or plan
+    # work below runs.
+    reconciled = reconcile_engine(engine, runtime)
+    # The legacy planners take a plain engine name; an unspecified one keeps
+    # the historical podman default they have always applied.
+    plan_engine = reconciled or "podman"
+    if runtime is not None and target is None:
+        target = runtime.target_profile
     if graph is None:
         from mayhem.cli.services import build_graph as _build_graph
 
@@ -357,7 +364,14 @@ def preflight_from_services(
         try:
             from mayhem.cli.services import plan_from_spec as _plan
 
-            compiled = _plan(spec_path, graph, prepared=safety_ctx, engine=engine)  # type: ignore[arg-type]
+            # Legacy: this path passes a SafetyContext where the planner
+            # expects a Prepared; the call is guarded by try/except.
+            compiled = _plan(
+                spec_path,
+                graph,
+                prepared=safety_ctx,  # type: ignore[arg-type]
+                engine=plan_engine,
+            )
             plan = compiled.plan
             cfg_snapshot = cfg_snapshot or getattr(compiled, "run_id", "")
         except Exception:
@@ -375,7 +389,7 @@ def preflight_from_services(
                         compose=compose,
                         spec_path=spec_path,
                     )
-                    compiled2 = _plan2(spec_path, graph, prepared=prepared2, engine=engine)
+                    compiled2 = _plan2(spec_path, graph, prepared=prepared2, engine=plan_engine)
                     plan = compiled2.plan
                     cfg_snapshot = prepared2.config_snapshot_id
                     topo_snapshot = prepared2.topology_snapshot_id
