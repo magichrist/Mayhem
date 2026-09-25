@@ -12,7 +12,7 @@ Deliver the first complete end-to-end product slice for Docker and Podman. The g
 - Add engine auto-detection with explicit override and ambiguity refusal.
 - Normalize topology output so Docker and Podman use the same logical node and target vocabulary.
 - Add `discover engines` and `discover topology` views.
-- Preserve existing `topology discover`, `--podman`, and compose flags.
+- Preserve the `discover topology` view, `--podman`, and compose flags.
 
 ### Files
 

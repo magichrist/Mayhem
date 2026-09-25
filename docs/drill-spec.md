@@ -19,8 +19,8 @@ config plus a step-based fault spec. It declares:
 The spec is consumed by the lifecycle commands:
 
 ```bash
-mayhem validate examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
-mayhem plan     examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
+mayhem prepare validate examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
+mayhem prepare plan     examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 ```
@@ -37,7 +37,7 @@ mayhem --config examples/testCase/mayhem.yaml maniac --compose examples/testCase
 `mayhem run` and `mayhem maniac` accept `--ctr CONTAINER`, which restricts the
 execution to a single container. `CONTAINER` is any `container_name:`
 value from the blueprint or the runtime container name (use
-`mayhem topology discover --compose ...` to list them); a value that matches
+`mayhem discover topology --compose ...` to list them); a value that matches
 nothing in the topology is rejected before anything is planned.
 
 For `run`, the frozen plan is calculated normally and then filtered: every
@@ -309,7 +309,7 @@ containers:
         duration: 20s
 ```
 
-Unknown parameters are rejected with a schema error (`mayhem validate` fails);
+Unknown parameters are rejected with a schema error (`mayhem prepare validate` fails);
 every fault validates its parameters against the catalog `params_schema`.
 
 ## Execution
@@ -489,7 +489,7 @@ duration, the node kinds it applies to, and the runtime capability it needs
 (checked against the compute engine at validate time). Parameters and their
 types are catalog-native; table entries below are normative only as of this
 writing — the catalog implementation is authoritative and is what
-`mayhem validate` enforces.
+`mayhem prepare validate` enforces.
 
 | Fault | Category | Risk | Max | Node kinds | Capability | Parameters |
 |---|---|---|---|---|---|---|
@@ -548,8 +548,8 @@ writing — the catalog implementation is authoritative and is what
 | `tls.certificate_expired` | tls | high | 120s | external_dependency, service | — | — |
 | `tls.handshake_failure` | tls | high | 120s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, default `443`) |
 
-The full, authoritative catalog is available at runtime: `mayhem toolkit faults`
-lists every definition with its risk and compensatability; `mayhem toolkit list`
+The full, authoritative catalog is available at runtime: `mayhem discover faults`
+lists every definition with its risk and compensatability; `mayhem discover capabilities`
 probes the host for the tool capabilities (docker, podman, network tooling, …)
 the faults require.
 
@@ -568,7 +568,7 @@ container-side port (`http://<container-ip>:<port>/`). Either way `url`
 overrides the derived target. Both forms run the same marker/pid-undo contract. The
 impact gate treats `k6` as **host-side tooling**: `net.load` is gated on the
 `k6` binary being present on the drill host (never inside the container), and
-`mayhem dependency` never lists or installs it as a container package — install
+`mayhem prepare dependencies` never lists or installs it as a container package — install
 k6 on the host directly.
 
 ```yaml

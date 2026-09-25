@@ -93,6 +93,7 @@ def test_dry_run_catalog_inspection_never_imports_runtime(tmp_path: Path) -> Non
     catalog = tmp_path / "catalog.json"
     write_catalog(catalog, catalog_document())
     imports: list[str] = []
+
     def record_import(_: str) -> None:
         imports.append("runtime")
 
@@ -112,6 +113,7 @@ def test_metadata_is_validated_before_runtime_import(tmp_path: Path) -> None:
     invalid["providers"][0]["metadata"]["apiVersion"] = "mayhem.provider/v99"
     write_catalog(catalog, invalid)
     imports: list[str] = []
+
     def record_import(_: str) -> None:
         imports.append("runtime")
 
@@ -210,9 +212,7 @@ def test_invalid_entry_point_metadata_never_loads_implementation() -> None:
     implementation_entry = FakeEntryPoint("test.provider", TestRuntime)
     loader = ProviderLoader(
         entry_points_fn=lambda *, group: (
-            [metadata_entry]
-            if group == "mayhem.provider.metadata"
-            else [implementation_entry]
+            [metadata_entry] if group == "mayhem.provider.metadata" else [implementation_entry]
         )
     )
 

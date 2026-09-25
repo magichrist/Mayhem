@@ -2014,7 +2014,6 @@ def _net_corrupt_verify(
         raise NO_UNDO
     return _tc_qdisc_verify(fault, node, "netem")
 
-
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
@@ -2238,9 +2237,7 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
             _engine_restart_undo("stop", "start"), _engine_restart_verify
         ),
         "http.error_injection": _tool_template(_http_error_inject(), _http_error_verify),
-        "http.upstream_timeout": _tool_template(
-            _http_upstream_timeout_undo, _http_proxy_verify
-        ),
+        "http.upstream_timeout": _tool_template(_http_upstream_timeout_undo, _http_proxy_verify),
         "app.response_5xx": _tool_template(_app_response_5xx_undo, _http_error_verify),
         "http.latency": _tool_template(_http_latency_undo, _http_latency_verify),
         "net.packet_loss": _tool_template(_net_packet_loss_undo, _net_packet_loss_verify),

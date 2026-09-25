@@ -134,9 +134,7 @@ def sanitize_for_logging(data: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(value, dict):
             sanitized[key] = sanitize_for_logging(value)
         elif isinstance(value, list):
-            sanitized[key] = [
-                sanitize_for_logging(v) if isinstance(v, dict) else v for v in value
-            ]
+            sanitized[key] = [sanitize_for_logging(v) if isinstance(v, dict) else v for v in value]
         else:
             sanitized[key] = value
     return sanitized

@@ -62,7 +62,9 @@ class Preflight:
             "config_snapshot_id": self.config_snapshot_id,
             "topology_snapshot_id": self.topology_snapshot_id,
             "environment_fingerprint": self.environment_fingerprint,
-            "plan": self.plan.model_dump(mode="json") if hasattr(self.plan, "model_dump") else self.plan,
+            "plan": self.plan.model_dump(mode="json")
+            if hasattr(self.plan, "model_dump")
+            else self.plan,
             "safety_decisions": list(self.safety_decisions),
             "blocked_items": list(self.blocked_items),
             "warnings": list(self.warnings),

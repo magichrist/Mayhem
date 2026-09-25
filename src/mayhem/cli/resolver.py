@@ -53,6 +53,16 @@ class CommandResolutionError(click.UsageError):
 class PrefixGroup(click.Group):
     """A Click Group whose subcommands resolve by unique prefix."""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.hidden_commands: set[str] = set()
+
+    def hide_command(self, name: str) -> None:
+        self.hidden_commands.add(name)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        return sorted(name for name in self.commands if name not in self.hidden_commands)
+
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         exact = super().get_command(ctx, cmd_name)
         if exact is not None:

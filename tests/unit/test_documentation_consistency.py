@@ -33,8 +33,7 @@ def _source_exit_codes() -> frozenset[str]:
             return frozenset(
                 item.targets[0].id
                 for item in node.body
-                if isinstance(item, ast.Assign)
-                and isinstance(item.targets[0], ast.Name)
+                if isinstance(item, ast.Assign) and isinstance(item.targets[0], ast.Name)
             )
     raise AssertionError("ExitCode class not found in src/mayhem/cli/exit_codes.py")
 

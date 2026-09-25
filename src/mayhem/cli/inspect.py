@@ -72,8 +72,7 @@ def inspect_doctor(ctx: click.Context, as_json: bool, quiet: bool) -> None:
                             item.severity is DiagnosticSeverity.error for item in diagnostics
                         ),
                         "warnings": sum(
-                            item.severity is DiagnosticSeverity.warning
-                            for item in diagnostics
+                            item.severity is DiagnosticSeverity.warning for item in diagnostics
                         ),
                     },
                 },
@@ -152,9 +151,7 @@ def inspect_run(
                     ),
                     formats=(report_format,),
                 )
-                payload["artifacts"] = {
-                    key: str(path) for key, path in paths.items()
-                }
+                payload["artifacts"] = {key: str(path) for key, path in paths.items()}
             else:
                 click.echo(rendered)
                 return

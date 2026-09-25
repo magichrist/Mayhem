@@ -7,7 +7,7 @@ The catalog contract is defined by `FaultDefinition` in `src/mayhem/domain/fault
 Generate a runtime-free coverage report with:
 
 ```bash
-mayhem toolkit faults --coverage --json
+mayhem discover faults --coverage --json
 ```
 
 The report is grouped by engine, failure domain, risk, reversibility, and maturity. It is generated from catalog metadata and does not probe Docker, Podman, Kubernetes, or any other external runtime.
@@ -17,8 +17,8 @@ The report is grouped by engine, failure domain, risk, reversibility, and maturi
 Explain a definition without planning or executing it:
 
 ```bash
-mayhem toolkit fault explain proc.pause
-mayhem toolkit fault explain k8s.image_pull_slow --engine kubernetes
+mayhem discover faults -e proc.pause
+mayhem discover faults -e k8s.image_pull_slow --engine kubernetes
 ```
 
 The explanation includes parameters, target, capability, observable effect, verification method, undo or refusal, evidence, maturity, and deprecation path.

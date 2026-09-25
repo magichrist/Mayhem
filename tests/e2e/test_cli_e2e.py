@@ -130,10 +130,10 @@ class TestRootCLI:
         with patch("mayhem.cli.lifecycle.prepare", side_effect=RuntimeError("boom")):
             spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
             with pytest.raises(RuntimeError, match="boom"):
-                main(["--debug", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
+                main(["--debug", "prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
 
     def test_global_db_option_is_accepted(self) -> None:
-        rc = main(["--db", "/tmp/mayhem-e2e-test.db", "toolkit", "faults"])
+        rc = main(["--db", "/tmp/mayhem-e2e-test.db", "discover", "faults"])
         assert rc == 0
 
 
@@ -146,7 +146,7 @@ class TestToolkitGroup:
     """``mayhem toolkit faults`` and ``mayhem toolkit list``."""
 
     def test_faults_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["toolkit", "faults"])
+        rc = main(["discover", "faults"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "proc.pause" in out
@@ -160,25 +160,25 @@ class TestToolkitGroup:
         assert "undo=" in out
 
     def test_toolkit_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["too", "faults"])
+        rc = main(["discover", "faults"])
         assert rc == 0
         assert "proc.pause" in capsys.readouterr().out
 
     def test_list_probes_capabilities(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["toolkit", "list"])
+        rc = main(["discover", "capabilities"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "ok" in out or "MISSING" in out
 
     def test_list_json_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["toolkit", "list", "--json"])
+        rc = main(["discover", "capabilities", "--json"])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "tools" in data
 
     def test_list_custom_host(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["toolkit", "list", "--host", "local"])
+        rc = main(["discover", "capabilities", "--host", "local"])
         assert rc == 0
 
 
@@ -191,14 +191,14 @@ class TestConfigGroup:
     """``mayhem config show`` and ``mayhem config validate``."""
 
     def test_config_show_default(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["config", "show"])
+        rc = main(["prepare", "config", "show"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "apiVersion: mayhem/v1" in out
         assert "policy:" in out
 
     def test_config_show_json(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["config", "show", "--json"])
+        rc = main(["prepare", "config", "show", "--json"])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -213,11 +213,11 @@ class TestConfigGroup:
             "mayhem.yml",
             "apiVersion: mayhem/v1\npolicy:\n  allow_critical: false\n",
         )
-        rc = main(["--config", str(cfg), "config", "show"])
+        rc = main(["--config", str(cfg), "prepare", "config", "show"])
         assert rc == 0
 
     def test_config_validate_valid(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["config", "validate"])
+        rc = main(["prepare", "config", "validate"])
         assert rc == 0
         assert "valid" in capsys.readouterr().out
 
@@ -229,21 +229,21 @@ class TestConfigGroup:
             "mayhem.yml",
             "apiVersion: mayhem/v1\npolicy:\n  allow_critical: true\n",
         )
-        rc = main(["--config", str(cfg), "config", "validate"])
+        rc = main(["--config", str(cfg), "prepare", "config", "validate"])
         assert rc == 0
 
     def test_config_validate_bad_yaml(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         cfg = _write(tmp_path, "bad.yml", "not: valid: {yaml: ")
-        rc = main(["--config", str(cfg), "config", "validate"])
+        rc = main(["--config", str(cfg), "prepare", "config", "validate"])
         assert rc == ExitCode.CONFIG_ERROR
 
     def test_config_validate_unknown_keys(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         cfg = _write(tmp_path, "mayhem.yml", "apiVersion: mayhem/v1\nfoo_bar: 42\n")
-        rc = main(["--config", str(cfg), "config", "validate"])
+        rc = main(["--config", str(cfg), "prepare", "config", "validate"])
         assert rc == ExitCode.CONFIG_ERROR
 
 
@@ -316,7 +316,7 @@ class TestTopologyGroup:
     """``mayhem topology discover`` with compose and without."""
 
     def test_discover_with_compose_file(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -325,14 +325,14 @@ class TestTopologyGroup:
         assert "edges" in data["graph"]
 
     def test_discover_compose_has_service_nodes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         kinds = [n["kind"] for n in data["graph"]["nodes"]]
         assert "service" in kinds
 
     def test_discover_compose_no_self_edges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         for edge in data["graph"]["edges"]:
@@ -341,38 +341,38 @@ class TestTopologyGroup:
     def test_discover_compose_has_depends_on_edges(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         edge_kinds = [e["kind"] for e in data["graph"]["edges"]]
         assert "depends_on" in edge_kinds
 
     def test_discover_compose_with_directory(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE.parent)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE.parent)])
         assert rc == 0
 
     def test_discover_compose_has_drift_report(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "drift" in data
 
     def test_discover_no_compose_returns_graph(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without compose and without runtime, graph should be empty."""
-        rc = main(["topology", "discover"])
+        rc = main(["discover", "topology"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "graph" in data
 
     def test_discover_compose_service_names(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
         assert svc_names == {"api", "web", "download-1", "download-2", "lb", "db"}
 
     def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["top", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
 
@@ -393,7 +393,7 @@ class TestValidateCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["validate", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         assert "validated" in capsys.readouterr().out
 
@@ -405,21 +405,21 @@ class TestValidateCommand:
         shutil.copy(COMPOSE_FILE, tmp_path / "docker-compose.yml")
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
         with patch.object(Path, "cwd", return_value=tmp_path):
-            rc = main(["validate", str(spec)])
+            rc = main(["prepare", "validate", str(spec)])
         assert rc == 0
 
     def test_validate_missing_spec(self) -> None:
-        rc = main(["validate", "/nonexistent.yml", "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", "/nonexistent.yml", "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_validate_unknown_container_is_validation_error(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "missing.yml", DRILL_MISSING_CONTAINER_YAML)
-        rc = main(["validate", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_validate_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["v", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
 
@@ -443,7 +443,8 @@ class TestDependencyCompile:
             [
                 "--db",
                 str(tmp_path / "mayhem.db"),
-                "dependency",
+                "prepare",
+                "dependencies",
                 "compile",
                 str(spec),
                 "-c",
@@ -480,7 +481,8 @@ class TestDependencyCompile:
             [
                 "--db",
                 str(tmp_path / "mayhem.db"),
-                "dependency",
+                "prepare",
+                "dependencies",
                 "compile",
                 str(DRILL_SPEC),
                 "-c",
@@ -504,7 +506,8 @@ class TestDependencyCompile:
             [
                 "--db",
                 str(tmp_path / "mayhem.db"),
-                "dependency",
+                "prepare",
+                "dependencies",
                 "compile",
                 str(spec),
                 "-c",
@@ -533,7 +536,8 @@ class TestDependencyCompile:
             [
                 "--db",
                 str(tmp_path / "mayhem.db"),
-                "dependency",
+                "prepare",
+                "dependencies",
                 "compile",
                 str(spec),
                 "-c",
@@ -558,7 +562,8 @@ class TestDependencyCompile:
             [
                 "--db",
                 str(tmp_path / "mayhem.db"),
-                "dependency",
+                "prepare",
+                "dependencies",
                 "compile",
                 str(spec),
                 "-c",
@@ -581,7 +586,7 @@ class TestPlanCommand:
 
     def test_plan_drill(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -593,24 +598,24 @@ class TestPlanCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert any("proc.pause" in json.dumps(s) for s in data["steps"])
 
     def test_plan_unknown_container_is_validation_error(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "missing.yml", DRILL_MISSING_CONTAINER_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_plan_bad_spec_returns_validation_error(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "empty.yml", DRILL_EMPTY_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_plan_with_compose(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         assert json.loads(capsys.readouterr().out)["kind"] == "drill"
 
@@ -671,7 +676,7 @@ class TestStatusCommand:
     """``mayhem status`` — shows recent runs."""
 
     def test_status_empty_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "status"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "inspect", "runs"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "No runs" in out or "run-" in out or out.strip() == ""
@@ -709,13 +714,13 @@ class TestStatusCommand:
                 ),
             )
         store.close()
-        rc = main(["--db", str(db), "status"])
+        rc = main(["--db", str(db), "inspect", "runs"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "run-test-001" in out
 
     def test_status_json_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "status", "--json"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "inspect", "runs", "--json"])
         assert rc == 0
         out = capsys.readouterr().out
         if out.strip():
@@ -732,7 +737,7 @@ class TestHistoryCommand:
     """``mayhem history <run-id>`` — shows detailed run information."""
 
     def test_history_nonexistent_run(self, tmp_path: Path) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "history", "run-nonexistent"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "inspect", "history", "run-nonexistent"])
         assert rc == 0
 
     def test_history_after_run(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -746,11 +751,11 @@ class TestHistoryCommand:
             main(["--db", str(db), "run", str(spec), "--compose", str(COMPOSE_FILE)])
         run_id = _run_id(str(db))
         if run_id:
-            rc = main(["--db", str(db), "history", run_id])
+            rc = main(["--db", str(db), "inspect", "history", run_id])
             assert rc == 0
 
     def test_history_json_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["--db", str(tmp_path / "empty.db"), "history", "run-x", "--json"])
+        rc = main(["--db", str(tmp_path / "empty.db"), "inspect", "history", "run-x", "--json"])
         assert rc == 0
 
 
@@ -898,12 +903,12 @@ class TestDrillSpec:
     """Exercise the testCase ``mayhem.yaml`` spec through the CLI."""
 
     def test_validate_drill_spec(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["validate", str(DRILL_SPEC), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", str(DRILL_SPEC), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         assert "validated" in capsys.readouterr().out
 
     def test_plan_drill_spec(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["plan", str(DRILL_SPEC), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(DRILL_SPEC), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["kind"] == "drill"
@@ -936,11 +941,11 @@ class TestCaseConfig:
     built-in defaults)."""
 
     def test_config_show_default(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["config", "show"])
+        rc = main(["prepare", "config", "show"])
         assert rc == 0
 
     def test_config_validate_default(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["config", "validate"])
+        rc = main(["prepare", "config", "validate"])
         assert rc == 0
 
 
@@ -953,7 +958,7 @@ class TestCaseTopology:
     """Topology discovery against the testCase compose stack."""
 
     def test_discover_all_services_present(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
@@ -962,7 +967,7 @@ class TestCaseTopology:
     def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
         with patch("mayhem.topology.providers.adapter_registry.best_effort", return_value=None):
-            rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+            rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         drift = data.get("drift", {})
@@ -970,7 +975,7 @@ class TestCaseTopology:
         assert len(missing) == 6
 
     def test_discover_produces_edges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["topology", "discover", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert len(data["graph"]["edges"]) > 0
@@ -996,11 +1001,11 @@ class TestFullRoundTrip:
         compose = ["--compose", str(COMPOSE_FILE)]
 
         # validate
-        rc = main(["--db", db, "validate", str(spec), *compose])
+        rc = main(["--db", db, "prepare", "validate", str(spec), *compose])
         assert rc == 0
 
         # plan
-        rc = main(["--db", db, "plan", str(spec), *compose])
+        rc = main(["--db", db, "prepare", "plan", str(spec), *compose])
         assert rc == 0
 
         # run (mock the engine so no real faults are injected)
@@ -1016,7 +1021,7 @@ class TestFullRoundTrip:
         capsys.readouterr()
 
         # status (engine was mocked so no run row is persisted; either state passes)
-        rc = main(["--db", db, "status"])
+        rc = main(["--db", db, "inspect", "runs"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "run-" in out or "No runs" in out or out.strip() == ""
@@ -1024,7 +1029,7 @@ class TestFullRoundTrip:
         # history
         run_id = _run_id(db)
         if run_id:
-            rc = main(["--db", db, "history", run_id])
+            rc = main(["--db", db, "inspect", "history", run_id])
             assert rc == 0
 
 
@@ -1038,7 +1043,7 @@ class TestPrefixResolution:
 
     def test_toolkit_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
         """'too' uniquely resolves to 'toolkit'."""
-        rc = main(["too", "faults"])
+        rc = main(["discover", "faults"])
         assert rc == 0
 
     def test_experiment_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1047,21 +1052,21 @@ class TestPrefixResolution:
         assert rc == 0
 
     def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["top", "d", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "t", "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_config_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["cfg", "s"])
+        rc = main(["prepare", "config", "s"])
         assert rc == 0
 
     def test_validate_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["v", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_plan_prefix(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["pl", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_campaign_prefix_list(self, tmp_path: Path) -> None:
@@ -1082,7 +1087,7 @@ class TestExitCodeCoverage:
     """Verify every documented exit code is reachable."""
 
     def test_success(self) -> None:
-        assert main(["toolkit", "faults"]) == ExitCode.SUCCESS
+        assert main(["discover", "faults"]) == ExitCode.SUCCESS
 
     def test_usage_error(self) -> None:
         assert main(["--nonexistent-flag"]) == ExitCode.USAGE_ERROR
@@ -1092,13 +1097,15 @@ class TestExitCodeCoverage:
 
     def test_config_error(self, tmp_path: Path) -> None:
         cfg = _write(tmp_path, "bad.yml", "apiVersion: mayhem/v1\nunknown_key: 42\n")
-        assert main(["--config", str(cfg), "config", "validate"]) == ExitCode.CONFIG_ERROR
+        assert (
+            main(["--config", str(cfg), "prepare", "config", "validate"]) == ExitCode.CONFIG_ERROR
+        )
 
     def test_validation_error(self, tmp_path: Path) -> None:
         # An empty drill execution block fails schema validation.
         spec = _write(tmp_path, "bad.yml", DRILL_EMPTY_YAML)
         assert (
-            main(["validate", str(spec), "--compose", str(COMPOSE_FILE)])
+            main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
             == ExitCode.VALIDATION_ERROR
         )
 
@@ -1115,26 +1122,28 @@ class TestErrorHandling:
     """Edge cases, bad inputs, and error paths."""
 
     def test_plan_missing_spec_returns_validation_error(self) -> None:
-        rc = main(["plan", "/nonexistent.yml", "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", "/nonexistent.yml", "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_plan_unknown_container_returns_validation_error(self, tmp_path: Path) -> None:
         spec = _write(tmp_path, "missing.yml", DRILL_MISSING_CONTAINER_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == ExitCode.VALIDATION_ERROR
 
     def test_validate_nonexistent_compose_returns_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["validate", str(spec), "--compose", "/nonexistent/docker-compose.yml"])
+        rc = main(
+            ["prepare", "validate", str(spec), "--compose", "/nonexistent/docker-compose.yml"]
+        )
         assert rc == ExitCode.USAGE_ERROR
 
     def test_plan_with_compose_only(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, "mayhem.yaml", DRILL_YAML)
-        rc = main(["plan", str(spec), "--compose", str(COMPOSE_FILE)])
+        rc = main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)])
         assert rc == 0
 
     def test_config_show_with_profile(
@@ -1157,6 +1166,7 @@ class TestErrorHandling:
                 str(cfg),
                 "--profile",
                 "staging",
+                "prepare",
                 "config",
                 "show",
             ]

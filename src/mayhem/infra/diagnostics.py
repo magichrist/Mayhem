@@ -292,7 +292,9 @@ def check_database(db_path: str | Path) -> list[DiagnosticRecord]:
     try:
         conn = sqlite3.connect(str(p))
         try:
-            cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='_schema_migrations'")
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='_schema_migrations'"
+            )
             if cur.fetchone() is None:
                 records.append(
                     _record(
@@ -375,7 +377,11 @@ def check_engine() -> list[DiagnosticRecord]:
                 )
             )
         else:
-            sev = DiagnosticSeverity.warning if engine in ("docker", "podman", "kubectl") else DiagnosticSeverity.info
+            sev = (
+                DiagnosticSeverity.warning
+                if engine in ("docker", "podman", "kubectl")
+                else DiagnosticSeverity.info
+            )
             records.append(
                 _record(
                     f"engine.{engine}.missing",
@@ -397,7 +403,10 @@ def check_engine() -> list[DiagnosticRecord]:
                     DiagnosticCategory.engine,
                     DiagnosticSeverity.warning,
                     "kubernetes adapter is interface-only (ADR-M7-1); live execution unavailable; adapter presence does not prove a healthy cluster",
-                    remediation=str(status.get("remediation") or "attach kubeconfig for live mode; manifest mode remains usable"),
+                    remediation=str(
+                        status.get("remediation")
+                        or "attach kubeconfig for live mode; manifest mode remains usable"
+                    ),
                     evidence_ref="k8s_adapter",
                 )
             )
@@ -417,7 +426,9 @@ def check_engine() -> list[DiagnosticRecord]:
     return records
 
 
-def check_topology(compose_path: str | Path | None, config_path: str | Path | None) -> list[DiagnosticRecord]:
+def check_topology(
+    compose_path: str | Path | None, config_path: str | Path | None
+) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     if compose_path is not None:
         p = Path(compose_path)
@@ -529,7 +540,9 @@ def check_capabilities() -> list[DiagnosticRecord]:
     return records
 
 
-def check_permissions(db_path: str | Path, artifacts_dir: str | Path | None = None) -> list[DiagnosticRecord]:
+def check_permissions(
+    db_path: str | Path, artifacts_dir: str | Path | None = None
+) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     p = Path(db_path)
     parent = p.parent
@@ -615,7 +628,9 @@ def check_permissions(db_path: str | Path, artifacts_dir: str | Path | None = No
     return records
 
 
-def check_profile_identity(config_path: str | Path | None, profile: str | None) -> list[DiagnosticRecord]:
+def check_profile_identity(
+    config_path: str | Path | None, profile: str | None
+) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     try:
         from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
@@ -657,7 +672,9 @@ def check_profile_identity(config_path: str | Path | None, profile: str | None) 
     return records
 
 
-def check_policy_identity(config_path: str | Path | None, profile: str | None, policy: str | None = None) -> list[DiagnosticRecord]:
+def check_policy_identity(
+    config_path: str | Path | None, profile: str | None, policy: str | None = None
+) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     try:
         from mayhem.config import load_config as _load
@@ -687,7 +704,9 @@ def check_policy_identity(config_path: str | Path | None, profile: str | None, p
             )
         if profile is not None:
             try:
-                cfg, sources = _load(config_path=config_path, profile=profile, policy=policy, environ={})
+                cfg, sources = _load(
+                    config_path=config_path, profile=profile, policy=policy, environ={}
+                )
                 _ = cfg
                 _ = sources
             except Exception as exc:
@@ -716,7 +735,9 @@ def check_policy_identity(config_path: str | Path | None, profile: str | None, p
     return records
 
 
-def check_target_mismatch(config_path: str | Path | None, target: str | None) -> list[DiagnosticRecord]:
+def check_target_mismatch(
+    config_path: str | Path | None, target: str | None
+) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     try:
         from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml

@@ -161,9 +161,7 @@ def test_capability_explain():
                 raw_action=InjectFault(fault="net.partition", selectors=(selector,), duration=5.0),
                 fault=PlannedFault(
                     fault_id="net.partition",
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                     duration=5.0,
                 ),
             ),
@@ -207,9 +205,7 @@ def test_dry_run_returns_decisions():
                 raw_action=InjectFault(fault="net.latency", selectors=(selector,), duration=5.0),
                 fault=PlannedFault(
                     fault_id="net.latency",
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                     duration=5.0,
                 ),
             ),

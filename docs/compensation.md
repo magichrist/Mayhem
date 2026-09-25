@@ -1,5 +1,9 @@
 # Compensation: fault execution, undo, and lifecycle verification
 
+The active CLI exposes compensation through `mayhem run --execute`, `mayhem
+inspect run`, `mayhem inspect history`, and `mayhem recover`. Legacy root
+commands are not part of the active surface.
+
 Every fault in the catalog resolves to exactly one **compensation template**
 (`controller.compensation.template_for`). A template pairs:
 
@@ -14,8 +18,8 @@ path, and the verify probe are generated from the same plan-level parameters
 and address the same marker artifacts**, so what an operator plans is precisely
 what gets removed and what gets verified.
 This document records the lifecycle for the fault families wired in the
-controller, the marker conventions, and the planned (not yet integrated)
-database-level work.
+controller and the marker conventions. Compensation evidence is persisted in
+run evidence and exposed through the active inspect commands.
 
 Any new fault must ship all three legs (inject, undo, verify) or it cannot
 enter the catalog's compensatable set.

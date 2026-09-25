@@ -90,8 +90,7 @@ def build_queue(
         cells = tuple(coverage_cell_for_candidate(candidate) for candidate in all_candidates)
         enriched = coverage.resilience_cells(cells)
         by_key = {
-            coverage_cell_for_candidate(candidate).key: candidate
-            for candidate in all_candidates
+            coverage_cell_for_candidate(candidate).key: candidate for candidate in all_candidates
         }
         ranked = rank_resilience_cells(enriched)
         ranked_candidates = [by_key[item.cell.key] for item in ranked if item.cell.key in by_key]

@@ -160,7 +160,9 @@ class RunResult:
         if symptoms:
             lines.append(f"- **observed symptoms**: {'; '.join(symptoms[:5])}")
         if self.dirty_leases:
-            lines.append(f"- **recovery status**: dirty ({len(self.dirty_leases)} leases need manual remediation)")
+            lines.append(
+                f"- **recovery status**: dirty ({len(self.dirty_leases)} leases need manual remediation)"
+            )
         else:
             lines.append("- **recovery status**: recovered")
         if self.criteria_evaluation is not None and not self.criteria_evaluation.empty:
@@ -181,13 +183,19 @@ class RunResult:
             lines.append(self.resilience_report.summary_md())
         if self.status == "completed" and not self.dirty_leases:
             lines += ["", "## next"]
-            lines.append("- inspect with `mayhem inspect run <id>`; next recommended: `mayhem inspect next`")
+            lines.append(
+                "- inspect with `mayhem inspect run <id>`; next recommended: `mayhem inspect next`"
+            )
         elif self.dirty_leases:
             lines += ["", "## next"]
-            lines.append("- recover with `mayhem recover <run_id>` then `mayhem inspect run <run_id>`")
+            lines.append(
+                "- recover with `mayhem recover <run_id>` then `mayhem inspect run <run_id>`"
+            )
         else:
             lines += ["", "## next"]
-            lines.append("- review `mayhem prepare plan` dependency gaps and target fit before retry")
+            lines.append(
+                "- review `mayhem prepare plan` dependency gaps and target fit before retry"
+            )
         return "\n".join(lines)
 
 

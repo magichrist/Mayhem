@@ -101,9 +101,7 @@ def _operator_summary(enriched, ranked, suggestions) -> dict[str, object]:
         "coverage_delta": 0,
         "blocked_cells": sum(cell.state is CellState.BLOCKED for cell in enriched),
         "highest_risk_gaps": [
-            rc.cell.to_dict()
-            for rc in ranked
-            if rc.cell.risk in {"high", "critical"}
+            rc.cell.to_dict() for rc in ranked if rc.cell.risk in {"high", "critical"}
         ][:3],
         "next_action": suggestions[0].cell.key if suggestions else "no-action",
     }

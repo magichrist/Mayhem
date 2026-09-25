@@ -76,7 +76,7 @@ The following require explicit execution intent:
 
 | Surface | During migration | Breaking-change rule |
 |---------|------------------|-----------------------|
-| Exact command names | Preserved as aliases or wrappers | Remove only after a documented major release. |
+| Exact command names | Legacy root commands removed; workflow paths are canonical | New command names may be removed only in a major release. |
 | Unique command prefixes | Preserved where unambiguous | Ambiguity remains an error. |
 | Exit codes | Numeric values preserved | New major version for incompatible meanings. |
 | JSON keys | Additive changes only | Major version for removals or semantic changes. |
@@ -84,15 +84,12 @@ The following require explicit execution intent:
 | Fault ids | Existing ids preserved | New ids are additive; removed ids require migration guidance. |
 | Engine behavior | Built-ins remain available | Provider changes follow extension API versioning. |
 
-## Deprecation policy
+## Removed legacy commands
 
-A deprecated command:
-
-- Emits one warning to stderr when used.
-- Names its replacement command in the warning.
-- Appears in the migration report.
-- Retains its current exit behavior until its removal milestone.
-- Is removed only after usage data, documentation, and compatibility tests support removal.
+Legacy root commands and aliases have been removed from the active CLI. The
+canonical replacement paths are discover, prepare, experiment, inspect, and
+extend. The CLI no longer emits deprecation warnings or publishes deprecation
+metadata.
 
 ## Review gates
 

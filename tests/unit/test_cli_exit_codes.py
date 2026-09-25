@@ -40,9 +40,9 @@ class TestDocumentedExitCodes:
         assert main(["--db", str(tmp_path / "x.db"), "janitor"]) == int(ExitCode.SUCCESS)
 
     def test_ambiguous_command_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert main(["t"]) == int(ExitCode.AMBIGUOUS_COMMAND)
+        assert main(["c"]) == int(ExitCode.AMBIGUOUS_COMMAND)
         err = capsys.readouterr().err
-        assert "toolkit" in err and "topology" in err
+        assert "campaign" in err and "commands" in err
 
     def test_unknown_command_prefix(self) -> None:
         assert main(["zzz"]) == int(ExitCode.USAGE_ERROR)
@@ -50,24 +50,24 @@ class TestDocumentedExitCodes:
     def test_usage_error_bad_flag_value(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.yaml"
         spec.write_text(SPEC)
-        assert main(["plan", str(spec), "--process", "api"]) == int(ExitCode.USAGE_ERROR)
+        assert main(["prepare", "plan", str(spec), "--process", "api"]) == int(ExitCode.USAGE_ERROR)
 
     def test_missing_spec_file(self) -> None:
-        assert main(["plan", "/nonexistent/spec.yaml", "--compose", str(COMPOSE_FILE)]) == int(
-            ExitCode.VALIDATION_ERROR
-        )
+        assert main(
+            ["prepare", "plan", "/nonexistent/spec.yaml", "--compose", str(COMPOSE_FILE)]
+        ) == int(ExitCode.VALIDATION_ERROR)
 
     def test_invalid_spec_schema(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.yaml"
         bad.write_text("kind: nope\nname: x\n")
-        assert main(["plan", str(bad), "--compose", str(COMPOSE_FILE)]) == int(
+        assert main(["prepare", "plan", str(bad), "--compose", str(COMPOSE_FILE)]) == int(
             ExitCode.VALIDATION_ERROR
         )
 
     def test_invalid_config_layer(self, tmp_path: Path) -> None:
         cfg = tmp_path / "mayhem.yaml"
         cfg.write_text(BAD_CONFIG)
-        rc = main(["--config", str(cfg), "config", "show"])
+        rc = main(["--config", str(cfg), "prepare", "config", "show"])
         assert rc == int(ExitCode.CONFIG_ERROR)
 
     def test_safety_refusal_maps_to_five(
@@ -83,7 +83,7 @@ class TestDocumentedExitCodes:
             raise SafetyRefusedError("g1_blast_radius", "blast radius exceeded")
 
         monkeypatch.setattr(lifecycle, "prepare", _refuse)
-        assert main(["validate", str(spec), "--compose", str(COMPOSE_FILE)]) == int(
+        assert main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)]) == int(
             ExitCode.SAFETY_REFUSAL
         )
         assert "safety refused" in capsys.readouterr().err
@@ -93,7 +93,7 @@ class TestDocumentedExitCodes:
             raise ToolError("docker", "timeout after 30s")
 
         monkeypatch.setattr(services_mod, "probe_capabilities", _boom)
-        assert main(["toolkit", "list"]) == int(ExitCode.TOOLKIT_ERROR)
+        assert main(["discover", "capabilities"]) == int(ExitCode.TOOLKIT_ERROR)
 
     def test_debug_reraises_internal_errors(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.yaml"
@@ -106,7 +106,7 @@ class TestDocumentedExitCodes:
         try:
             lifecycle.prepare = _explode  # type: ignore[assignment]
             with pytest.raises(RuntimeError):
-                main(["--debug", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
+                main(["--debug", "prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)])
         finally:
             lifecycle.prepare = original
 

@@ -539,11 +539,7 @@ def expert_cmd(
         failures = _analyze_recent_failures(ctx_obj.db)
 
     if as_json:
-        click.echo(
-            _render_expert_json(
-                compose_probe, config_probe, docker_probe, failures, run_id
-            )
-        )
+        click.echo(_render_expert_json(compose_probe, config_probe, docker_probe, failures, run_id))
     elif not quiet:
         click.echo(_render_expert_human(compose_probe, config_probe, docker_probe, failures))
 

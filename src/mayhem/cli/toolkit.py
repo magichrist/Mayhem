@@ -21,8 +21,25 @@ toolkit = make_group("toolkit", "Inspect the fault catalog and local tool capabi
     help="Filter catalog by engine; kubernetes shows support labels per fault.",
 )
 @click.option("--coverage", is_flag=True, help="Emit the generated catalog coverage matrix.")
+@click.option(
+    "-e",
+    "--explain",
+    "explain_id",
+    metavar="FAULT",
+    help="Explain one fault instead of listing the catalog.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
-def faults(engine_opt: str | None, coverage: bool, as_json: bool) -> None:
+def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_json: bool) -> None:
+    if explain_id is not None:
+        from mayhem.infra.catalog_report import explain_catalog_fault
+
+        try:
+            report = explain_catalog_fault(explain_id, engine=(engine_opt or "docker").lower())
+        except LookupError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(report, indent=2, sort_keys=True))
+        return
+
     from mayhem.cli.app import _STATE
     from mayhem.controller.k8s_runtime import (
         K8S_ARGV_FAULTS,
@@ -99,29 +116,6 @@ def faults(engine_opt: str | None, coverage: bool, as_json: bool) -> None:
                 continue
             undoable = "yes" if definition.reversible else "no"
             click.echo(f"{definition.id:<24} risk={definition.risk.value:<6} undo={undoable}")
-
-
-@toolkit.group("fault")
-def fault_group() -> None:
-    """Explain one catalog fault without planning or executing it."""
-
-
-@fault_group.command("explain")
-@click.argument("fault_id")
-@click.option(
-    "--engine",
-    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
-    default="docker",
-    show_default=True,
-)
-def explain_fault(fault_id: str, engine: str) -> None:
-    from mayhem.infra.catalog_report import explain_catalog_fault
-
-    try:
-        report = explain_catalog_fault(fault_id, engine=engine.lower())
-    except LookupError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(json.dumps(report, indent=2, sort_keys=True))
 
 
 @toolkit.command("list")

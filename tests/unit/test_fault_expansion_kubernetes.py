@@ -134,6 +134,7 @@ def test_kubernetes_fake_mutations_restore_snapshots(monkeypatch: pytest.MonkeyP
     )
     monkeypatch.setattr(executor_module, "read_snapshot", lambda ref: snapshots.get(ref.kind))
     monkeypatch.setattr(executor_module, "clear_annotation", lambda _ref: snapshots.clear())
+
     def fake_apply_patch(ref: Any, payload: dict[str, Any]) -> bool:
         calls.append((ref.kind, payload))
         objects[ref.kind].update(payload)

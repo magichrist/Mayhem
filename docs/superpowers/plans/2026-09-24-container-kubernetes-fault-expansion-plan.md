@@ -51,15 +51,28 @@ Create tests that assert these exact IDs exist, are not `catalog_only`, have uni
 
 ```python
 CONTAINER_IDS = (
-    "cpu.burst", "mem.freeze", "mem.swap_pressure", "fs.quota", "fs.write_delay",
-    "net.corrupt", "net.congestion", "process.restart_delay",
-    "http.upstream_timeout", "app.response_5xx",
+    "cpu.burst",
+    "mem.freeze",
+    "mem.swap_pressure",
+    "fs.quota",
+    "fs.write_delay",
+    "net.corrupt",
+    "net.congestion",
+    "process.restart_delay",
+    "http.upstream_timeout",
+    "app.response_5xx",
 )
 K8S_IDS = (
-    "k8s.pod_restart_churn", "k8s.sidecar_termination", "k8s.workload_stall",
-    "k8s.service_5xx", "k8s.dns_timeout", "k8s.node_disk_pressure",
-    "k8s.node_memory_pressure", "k8s.node_pid_pressure",
-    "k8s.hpa_oscillation", "k8s.pdb_over_eviction",
+    "k8s.pod_restart_churn",
+    "k8s.sidecar_termination",
+    "k8s.workload_stall",
+    "k8s.service_5xx",
+    "k8s.dns_timeout",
+    "k8s.node_disk_pressure",
+    "k8s.node_memory_pressure",
+    "k8s.node_pid_pressure",
+    "k8s.hpa_oscillation",
+    "k8s.pdb_over_eviction",
 )
 ```
 

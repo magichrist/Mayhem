@@ -9,7 +9,7 @@ from mayhem.cli.config_cmd import config
 from mayhem.cli.dependency import dependency
 from mayhem.cli.extend import providers
 from mayhem.cli.inspect import inspect
-from mayhem.cli.lifecycle import plan
+from mayhem.cli.lifecycle import plan, validate
 from mayhem.cli.resolver import make_group
 from mayhem.cli.toolkit import toolkit
 from mayhem.cli.topology import topology
@@ -36,7 +36,13 @@ def engines() -> None:
     detected = detect_available_engines()
     engines_payload = []
     for desc in detected:
-        sel = "--podman" if desc.name == "podman" else "--podman=false" if desc.name == "docker" else "--kubernetes"  # noqa: E501
+        sel = (
+            "--podman"
+            if desc.name == "podman"
+            else "--podman=false"
+            if desc.name == "docker"
+            else "--kubernetes"
+        )  # noqa: E501
         engines_payload.append(
             {
                 "name": desc.name,
@@ -52,7 +58,13 @@ def engines() -> None:
         )
     for name in ("docker", "podman", "kubernetes"):
         if not any(e["name"] == name for e in engines_payload):
-            sel = "--kubernetes" if name == "kubernetes" else "--podman" if name == "podman" else "--podman=false"  # noqa: E501
+            sel = (
+                "--kubernetes"
+                if name == "kubernetes"
+                else "--podman"
+                if name == "podman"
+                else "--podman=false"
+            )  # noqa: E501
             engines_payload.append(
                 {
                     "name": name,
@@ -81,9 +93,13 @@ def engines() -> None:
 
 
 prepare = make_group("prepare", "Prepare configuration, dependencies, and executable plans.")
-prepare.add_command(_clone(config.commands["show"], "config"))
-prepare.add_command(_clone(config.commands["validate"], "validate"))
-prepare.add_command(_clone(dependency.commands["check"], "dependencies"))
+prepare_config = copy.copy(config)
+prepare_config.name = "config"
+prepare.add_command(prepare_config)
+prepare.add_command(validate, name="validate")
+prepare_dependencies = copy.copy(dependency)
+prepare_dependencies.name = "dependencies"
+prepare.add_command(prepare_dependencies)
 prepare.add_command(_clone(dependency.commands["check"], "check"))
 prepare.add_command(_clone(plan, "plan"))
 

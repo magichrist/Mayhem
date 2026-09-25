@@ -397,7 +397,8 @@ def engine_for(
 
 def recent_runs(store: Store, limit: int) -> list[dict[str, Any]]:
     rows = store.query(
-        "SELECT id, kind, status, started_at FROM runs ORDER BY started_at DESC LIMIT ?",
+        "SELECT id, kind, status, started_at, controller_pid "
+        "FROM runs ORDER BY started_at DESC LIMIT ?",
         (limit,),
     )
     return [dict(row) for row in rows]

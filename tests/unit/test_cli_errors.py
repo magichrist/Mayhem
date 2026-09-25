@@ -89,13 +89,21 @@ def test_map_target_resolution_is_missing_target():
 def test_debug_does_not_change_exit_code(capsys):
     code = main(["--debug", "run", "--help"])
     assert code == 0
-    code2 = main(["plan", "--help"])
+    code2 = main(["prepare", "plan", "--help"])
     assert code2 == 0
 
 
 def test_error_json_format_with_format_flag(capsys):
     code = main(
-        ["--format", "json", "plan", "nonexistent.yaml", "--compose", "nonexistent-compose.yml"]
+        [
+            "--format",
+            "json",
+            "prepare",
+            "plan",
+            "nonexistent.yaml",
+            "--compose",
+            "nonexistent-compose.yml",
+        ]
     )
     assert code == int(ExitCode.USAGE_ERROR)
     err_text = capsys.readouterr().err
@@ -120,5 +128,5 @@ def test_mayhem_cli_error_debug_traceback_still_same_code(capsys):
 
 
 def test_usage_error_shown():
-    code = main(["--podman", "--kubernetes", "plan", "--help"])
+    code = main(["--podman", "--kubernetes", "prepare", "plan", "--help"])
     assert code == int(ExitCode.USAGE_ERROR)

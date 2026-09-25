@@ -262,8 +262,7 @@ _PATH_PATTERN = re.compile(r"(?:/Users/|/home/)[^/\s]+(?:/[^\s]*)?|(?:[A-Za-z]:\
 
 def report_id_for_run(run_id: str) -> str:
     safe = "".join(
-        character if character.isalnum() or character in "-_" else "_"
-        for character in run_id
+        character if character.isalnum() or character in "-_" else "_" for character in run_id
     )
     return f"report-{safe}"
 
@@ -301,9 +300,9 @@ def _report_document(envelope: EvidenceEnvelope) -> dict[str, Any]:
     basis = envelope.verification_basis or "unknown"
     verdict = envelope.verdict or "unrecorded"
     recovery = envelope.recovery_state or "unknown"
-    timeline = [
-        {"kind": "step", **item} for item in evidence.get("step_reports", [])
-    ] + [{"kind": "lease", **item} for item in evidence.get("lease_timeline", [])]
+    timeline = [{"kind": "step", **item} for item in evidence.get("step_reports", [])] + [
+        {"kind": "lease", **item} for item in evidence.get("lease_timeline", [])
+    ]
     return {
         "report_id": report_id,
         "executive_summary": (
@@ -425,7 +424,7 @@ def render_report_html(envelope: EvidenceEnvelope) -> str:
         )
     )
     return (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        '<!doctype html><html><head><meta charset="utf-8">'
         f"<title>Mayhem {html.escape(document['report_id'])}</title></head>"
         f"<body><h1>Mayhem Report {html.escape(document['report_id'])}</h1>{sections}</body></html>"
     )

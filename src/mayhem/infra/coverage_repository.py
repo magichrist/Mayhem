@@ -291,13 +291,9 @@ class SQLiteCoverageRepository:
                     ),
                     fault=cell.fault_kind,
                     engine=str(extra.get("engine", "")),
-                    risk=str(
-                        extra.get("risk")
-                        or (definition.risk.value if definition else "")
-                    ),
+                    risk=str(extra.get("risk") or (definition.risk.value if definition else "")),
                     maturity=str(
-                        extra.get("maturity")
-                        or (definition.maturity.value if definition else "")
+                        extra.get("maturity") or (definition.maturity.value if definition else "")
                     ),
                     state=state,
                     last_run=str(row["run_id"] if row is not None else ""),
@@ -356,9 +352,7 @@ class SQLiteCoverageRepository:
         }
         if state is CellState.BLOCKED:
             return (
-                f"blocked: {block_reason}"
-                if block_reason
-                else "blocked by safety or feasibility"
+                f"blocked: {block_reason}" if block_reason else "blocked by safety or feasibility"
             )
         return rationales[state]
 

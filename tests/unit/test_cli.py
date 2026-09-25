@@ -196,14 +196,14 @@ class TestEngineScoping:
         assert set(landscape.fault_kinds) <= k8s_available_faults()
 
     def test_faults_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert main(["toolkit", "faults"]) == 0
+        assert main(["discover", "faults"]) == 0
         assert "proc.pause" in capsys.readouterr().out
 
     def test_faults_k8s_flag_filters_to_kubernetes_available(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # ``-k`` must narrow the toolkit: only faults the k8s driver executes.
-        assert main(["-k", "toolkit", "faults"]) == 0
+        assert main(["-k", "discover", "faults"]) == 0
         out = capsys.readouterr().out
         assert "cpu.saturate" in out and "lane=argv" in out
         assert "net.partition" in out and "lane=argv+netns" in out
@@ -215,7 +215,7 @@ class TestEngineScoping:
         assert "dns.nxdomain" not in out
 
     def test_faults_coverage_json(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert main(["toolkit", "faults", "--coverage", "--json"]) == 0
+        assert main(["discover", "faults", "--coverage", "--json"]) == 0
         report = json.loads(capsys.readouterr().out)
         assert report["total"] > 0
         assert "by_engine" in report
@@ -224,7 +224,7 @@ class TestEngineScoping:
         assert "by_reversibility" in report
 
     def test_fault_explain_emits_contract(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert main(["toolkit", "fault", "explain", "proc.pause"]) == 0
+        assert main(["discover", "faults", "-e", "proc.pause"]) == 0
         report = json.loads(capsys.readouterr().out)
         assert report["id"] == "proc.pause"
         assert report["status"] == "supported"
@@ -246,7 +246,7 @@ class TestPlanValidateRun:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
-        assert main(["plan", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
+        assert main(["prepare", "plan", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
         out = capsys.readouterr().out
         plan = json.loads(out)
         assert plan["run_id"].startswith("r-drill-pause")
@@ -256,14 +256,14 @@ class TestPlanValidateRun:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
-        assert main(["v", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
+        assert main(["prepare", "validate", str(spec), "--compose", str(COMPOSE_FILE)]) == 0
         assert "validated r-drill-pause-" in capsys.readouterr().out
 
     def test_missing_compose_is_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec = _write(tmp_path, DRILL_YAML)
-        assert main(["plan", str(spec)]) == 2
+        assert main(["prepare", "plan", str(spec)]) == 2
         err = capsys.readouterr().err
         assert "compose" in err
 
@@ -621,6 +621,7 @@ class TestManiacCommand:
                     str(tmp_path / "m.db"),
                     "--config",
                     str(spec),
+                    "prepare",
                     "plan",
                     "--compose",
                     str(COMPOSE_FILE),
@@ -801,11 +802,11 @@ class TestRecoveryCommands:
     def test_history_unknown_run_returns_empty(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["--db", str(tmp_path / "j.db"), "history", "r-ghost"])
+        rc = main(["--db", str(tmp_path / "j.db"), "inspect", "history", "r-ghost"])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data == {"steps": [], "events": [], "leases": []}
 
     def test_status_empty_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        assert main(["--db", str(tmp_path / "j.db"), "status"]) == 0
+        assert main(["--db", str(tmp_path / "j.db"), "inspect", "runs"]) == 0

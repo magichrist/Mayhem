@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli import style
-from mayhem.cli.command_registry import register_legacy_commands
+from mayhem.cli.command_registry import register_commands
 from mayhem.cli.context import CliContext
-from mayhem.cli.deprecation import warn_deprecated
 from mayhem.cli.errors import MayhemCliError, map_exception_to_error
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.resolver import PREFIX_HELP, CommandResolutionError, PrefixGroup
@@ -38,16 +37,6 @@ _STATE: dict[str, str] = {
     "format": "text",
     "no_color": "",
 }
-
-
-def _maybe_warn_deprecated(argv: list[str] | None) -> None:
-    if not argv:
-        return
-    for token in argv:
-        if token.startswith("-"):
-            continue
-        warn_deprecated(token)
-        break
 
 
 @click.group(
@@ -134,7 +123,7 @@ def app(
     )
 
 
-register_legacy_commands(app)
+register_commands(app)
 
 
 def _fail(message: str, code: int) -> int:
@@ -171,7 +160,6 @@ def _fail_error(err: MayhemCliError) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
-    _maybe_warn_deprecated(args)
     rv: int | None = None
     try:
         rv = app.main(

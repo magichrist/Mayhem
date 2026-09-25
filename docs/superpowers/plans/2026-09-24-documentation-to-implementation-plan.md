@@ -153,7 +153,7 @@ target: TargetRef | None = None
 Where the planner constructs a `PlannedStep` for a targeted fault, pass:
 
 ```python
-target=planned_fault.target
+target = planned_fault.target
 ```
 
 Use the already constructed `PlannedFault` instance so the step and fault cannot diverge. Do not perform a second topology lookup.

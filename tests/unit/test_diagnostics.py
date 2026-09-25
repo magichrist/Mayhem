@@ -266,7 +266,7 @@ def test_inspect_projections_are_data_only(tmp_path, capsys):
             "INSERT INTO fault_leases (id, state, owner_agent, undo_json, verify_json, "
             "ttl_seconds, expires_at, run_id, fault_id, targets_json, created_epoch_s) "
             "VALUES ('l-inspect', 'active', 'agent', '[{\"op\":\"noop\"}]', "
-            "'[{\"probe\":\"exec\"}]', 60, "
+            '\'[{"probe":"exec"}]\', 60, '
             "'2030-01-01T00:00:00+00:00', 'run-inspect', 'proc.pause', '[\"api\"]', 0)"
         )
     write_evidence(
@@ -283,19 +283,23 @@ def test_inspect_projections_are_data_only(tmp_path, capsys):
     assert main(["--db", str(tmp_path / "inspect.db"), "inspect", "leases", "--json"]) == 0
     lease_payload = json.loads(capsys.readouterr().out)
     assert lease_payload["leases"][0]["recovery"] == "pending"
-    assert main([
-        "--db",
-        str(tmp_path / "inspect.db"),
-        "inspect",
-        "run",
-        "run-inspect",
-        "--report",
-        "json",
-    ]) == 0
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "inspect.db"),
+                "inspect",
+                "run",
+                "run-inspect",
+                "--report",
+                "json",
+            ]
+        )
+        == 0
+    )
     report_payload = json.loads(capsys.readouterr().out)
     assert report_payload["report_id"] == "report-run-inspect"
     assert report_payload["evidence"]["run_id"] == "run-inspect"
-
 
 
 def test_diagnose_run_reports_dirty_and_related_run(tmp_path):

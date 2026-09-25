@@ -20,9 +20,7 @@ def metadata(provider_id: str = "test.provider") -> dict[str, Any]:
         "version": "1.0.0",
         "description": "A test provider.",
         "permissions": [],
-        "capabilities": [
-            {"id": "target.discovery", "summary": "Resolve test targets."}
-        ],
+        "capabilities": [{"id": "target.discovery", "summary": "Resolve test targets."}],
         "targetLocators": [
             {
                 "id": "test.target",
@@ -135,9 +133,7 @@ def test_provider_help_is_available() -> None:
     assert "load" in result.output
 
 
-def test_ordinary_builtin_command_does_not_load_plugins(
-    monkeypatch: Any, capsys: Any
-) -> None:
+def test_ordinary_builtin_command_does_not_load_plugins(monkeypatch: Any, capsys: Any) -> None:
     from mayhem.providers import loader
 
     def fail_import(_: str) -> object:

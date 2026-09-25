@@ -116,9 +116,7 @@ def doctor_cmd(
             "summary": {
                 "total": len(records),
                 "errors": sum(1 for r in records if r.severity == DiagnosticSeverity.error),
-                "warnings": sum(
-                    1 for r in records if r.severity == DiagnosticSeverity.warning
-                ),
+                "warnings": sum(1 for r in records if r.severity == DiagnosticSeverity.warning),
                 "infos": sum(1 for r in records if r.severity == DiagnosticSeverity.info),
             },
         }

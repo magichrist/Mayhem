@@ -16,10 +16,7 @@ from mayhem.domain.evidence import EvidenceEnvelope
 from mayhem.infra.evidence import build_evidence, verify_evidence
 
 TESTCASE = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "examples"
-    / "testCase"
-    / "docker-compose.yml"
+    pathlib.Path(__file__).resolve().parents[2] / "examples" / "testCase" / "docker-compose.yml"
 )
 DRILL_YAML = """\
 kind: drill
@@ -72,28 +69,28 @@ def test_reject_stale_target():
         assert "target changed" in str(exc)
 
 
-def test_plan_reuse_from_file(tmp_path):
+def test_plan_reuse_from_file(tmp_path, monkeypatch):
     runner = CliRunner()
-    spec = _write(tmp_path, DRILL_YAML)
-    with runner.isolated_filesystem():
-        import shutil
-
-        shutil.copy(str(spec), "spec.yaml")
-        result = runner.invoke(app, ["plan", "spec.yaml", "--compose", str(TESTCASE), "--json"])
+    _write(tmp_path, DRILL_YAML)
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
+        result = runner.invoke(
+            app,
+            ["prepare", "plan", "spec.yaml", "--compose", str(TESTCASE), "--json"],
+        )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert "plan_hash" in payload
         assert "engine" in payload
 
 
-def test_explicit_approval_required(tmp_path):
+def test_explicit_approval_required(tmp_path, monkeypatch):
     runner = CliRunner()
-    spec = _write(tmp_path, DRILL_YAML)
-    with runner.isolated_filesystem():
-        import shutil
+    _write(tmp_path, DRILL_YAML)
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         from unittest.mock import MagicMock, patch
 
-        shutil.copy(str(spec), "spec.yaml")
         with patch("mayhem.cli.services.RunEngine") as mock_cls:
             eng = mock_cls.return_value
             res = MagicMock()

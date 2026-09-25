@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import click
 
+from mayhem.cli.explore import explore
 from mayhem.cli.lifecycle import validate as _validate_handler
 from mayhem.cli.resolver import make_group
 
@@ -22,3 +23,4 @@ def show(experiment: str) -> None:
 
 # Same handler object, registered under the group: zero behavioral drift.
 experiment.add_command(_validate_handler, name="validate")
+experiment.add_command(explore, name="explore")

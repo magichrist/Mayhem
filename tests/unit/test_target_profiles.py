@@ -115,7 +115,7 @@ def test_profile_inheritance_prohibits_credentials(tmp_path):
         load_profiles_from_file(p)
 
 
-def test_profile_visible_in_preflight(tmp_path):
+def test_profile_visible_in_preflight(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
     from mayhem.cli.app import app
@@ -123,10 +123,8 @@ def test_profile_visible_in_preflight(tmp_path):
     mayhem_yaml = tmp_path / "mayhem.yaml"
     mayhem_yaml.write_text("apiVersion: mayhem/v1\ntargets:\n  dev:\n    engine: docker\n")
     runner = CliRunner()
-    with runner.isolated_filesystem():
-        import shutil
-
-        shutil.copy(str(mayhem_yaml), "mayhem.yaml")
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         result = runner.invoke(
             app,
             ["--config", "mayhem.yaml", "--target", "dev", "doctor", "--json"],

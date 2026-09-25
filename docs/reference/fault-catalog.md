@@ -1,6 +1,6 @@
 # Kubernetes fault catalog reference
 
-The executable source of truth is [`src/mayhem/domain/catalog.py`](../../src/mayhem/domain/catalog.py) together with the Kubernetes runtime registers in [`src/mayhem/controller/k8s_runtime.py`](../../src/mayhem/controller/k8s_runtime.py). The table below is the current checked-in status snapshot.
+The executable source of truth is [`src/mayhem/domain/catalog.py`](../../src/mayhem/domain/catalog.py) together with the Kubernetes runtime registers in [`src/mayhem/controller/k8s_runtime.py`](../../src/mayhem/controller/k8s_runtime.py). Use `mayhem discover faults` to list the active catalog, `--engine kubernetes` to filter Kubernetes support, and `mayhem discover faults -e FAULT_ID` to explain one fault. The table below is the current checked-in status snapshot.
 
 `executable` means the fault is in the Kubernetes executor dispatch register. It does not mean that a live cluster is reachable or that the required capability is present. `catalog-only` means the definition is schema-valid and plannable but has no executable dispatch.
 

@@ -48,7 +48,6 @@ class TestCampaignStatus:
             CampaignStatus.ARCHIVED,
         }.issubset(set(CampaignStatus))
 
-
     def test_lifecycle_states_and_transitions(self) -> None:
         assert {
             CampaignStatus.DRAFT,
@@ -87,6 +86,7 @@ class TestCampaignStatus:
         assert _transition_row(store, "c1", CampaignStatus.PAUSED)["status"] == "paused"
         assert _transition_row(store, "c1", CampaignStatus.RUNNING)["status"] == "running"
         store.close()
+
     def test_campaign_supports_operator_bounds(self) -> None:
         campaign = Campaign(
             id="c1",
@@ -259,7 +259,6 @@ class TestM5Campaign:
         assert c2.max_runs == 3
         assert c2.coverage_target == 5  # preserved
         assert c.max_runs == 100  # original untouched
-
 
     def test_pause_resume_persisted_transition_callback(self) -> None:
         transitions: list[tuple[str, str]] = []

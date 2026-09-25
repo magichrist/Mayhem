@@ -286,9 +286,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         category=FaultCategory.PROCESS,
         risk=RiskLevel.MEDIUM,
         required_caps=frozenset({Capability.PROCESS_CONTROL}),
-        applicable_node_kinds=frozenset(
-            {NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}
-        ),
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
         max_duration_s=300.0,
         params_schema=(ParamSpec(name="seconds", type=ParamType.DURATION, default="10s"),),
         observable_effect="target readiness is delayed after process startup",
@@ -1269,9 +1267,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.KUBERNETES_ENGINE}),
         applicable_node_kinds=frozenset({NodeKind.K8S_NODE}),
         max_duration_s=300.0,
-        params_schema=(
-            ParamSpec(name="direction", type=ParamType.STRING, default="both"),
-        ),
+        params_schema=(ParamSpec(name="direction", type=ParamType.STRING, default="both"),),
     ),
     _define(
         id="k8s.deployment_scale_failure",
@@ -1792,6 +1788,7 @@ CATALOG: tuple[FaultDefinition, ...] = (
     ),
 )
 
+
 def validate_catalog(definitions: tuple[FaultDefinition, ...]) -> None:
     seen: set[str] = set()
     for definition in definitions:
@@ -1818,9 +1815,7 @@ def validate_catalog(definitions: tuple[FaultDefinition, ...]) -> None:
                 "catalog", f"{definition.id}: verification_method is required"
             )
         if definition.reversibility is None:
-            raise SchemaValidationError(
-                "catalog", f"{definition.id}: reversibility is required"
-            )
+            raise SchemaValidationError("catalog", f"{definition.id}: reversibility is required")
         if definition.maturity is not MaturityLevel.EXPERIMENTAL and (
             definition.verification_date is None
         ):

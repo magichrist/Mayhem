@@ -51,9 +51,7 @@ ALL_FAULTS = tuple(d.id for d in CATALOG)
 # belongs in the non-k8s test set — it stays container-portable with an argv
 # compensation template.
 NON_K8S = tuple(
-    d.id
-    for d in CATALOG
-    if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
+    d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
 )
 
 # K8s-only: faults whose kinds are a subset of {pod, k8s_node} — pure

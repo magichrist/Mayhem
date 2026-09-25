@@ -166,24 +166,31 @@ def test_recover_group_status_and_plan_accept_explicit_run_ids(tmp_path, capsys)
     db = tmp_path / "recover.db"
     store = Store.open_migrated(db)
     sink = SQLiteLeaseSink(store)
-    sink.save(_lease("run-explicit", "l-explicit", LeaseState.ACTIVE, ttl=1).model_copy(
-        update={"created_at": utc_now() - timedelta(seconds=10)}
-    ))
+    sink.save(
+        _lease("run-explicit", "l-explicit", LeaseState.ACTIVE, ttl=1).model_copy(
+            update={"created_at": utc_now() - timedelta(seconds=10)}
+        )
+    )
     store.close()
     assert main(["--db", str(db), "recover", "status", "run-explicit", "--json"]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["state"] == "pending"
     assert status["run_ids"] == ["run-explicit"]
-    assert main([
-        "--db",
-        str(db),
-        "recover",
-        "plan",
-        "run-explicit",
-        "--target",
-        "production",
-        "--json",
-    ]) == 0
+    assert (
+        main(
+            [
+                "--db",
+                str(db),
+                "recover",
+                "plan",
+                "run-explicit",
+                "--target",
+                "production",
+                "--json",
+            ]
+        )
+        == 0
+    )
     plan = json.loads(capsys.readouterr().out)
     assert plan["target_profiles"] == ["production"]
     assert plan["leases"][0]["id"] == "l-explicit"

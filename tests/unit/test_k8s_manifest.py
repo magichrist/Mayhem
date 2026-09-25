@@ -399,9 +399,7 @@ class TestDrawManiacTargetRounds:
 
     def test_empty_targets_are_rejected_by_the_schema(self):
         with pytest.raises(ValidationError):
-            self._spec_with_targets(
-                targets={}, maniac={"level": 2, "run_level": 5, "seed": 1}
-            )
+            self._spec_with_targets(targets={}, maniac={"level": 2, "run_level": 5, "seed": 1})
 
 
 # ── tests: plan_maniac on k8s synthesized spec ──────────────────────────────

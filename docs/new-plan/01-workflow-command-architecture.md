@@ -18,7 +18,8 @@ mayhem init
 mayhem doctor
 ```
 
-Each group owns a small set of subcommands. Exact legacy commands such as `topology`, `plan`, `validate`, `status`, `history`, `campaign`, `toolkit`, `coverage`, `next`, and `explore` remain aliases during the compatibility window.
+Each group owns a small set of subcommands. The workflow tree is now the active
+CLI surface; legacy root commands and aliases have been removed.
 
 ## Phase 1 — Define command ownership and routing
 

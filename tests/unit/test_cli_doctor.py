@@ -8,23 +8,19 @@ from click.testing import CliRunner
 from mayhem.cli.app import app
 
 
-def _invoke(args):
+def test_doctor_human_output(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
-        return runner.invoke(app, args)
-
-
-def test_doctor_human_output():
-    runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code in {0, 4}
         assert "doctor" in result.output.lower() or "config" in result.output.lower()
 
 
-def test_doctor_json_output_stable():
+def test_doctor_json_output_stable(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code in (0, 4)
         payload = json.loads(result.output)
@@ -48,17 +44,19 @@ def test_doctor_json_output_stable():
             assert rec["severity"] in ("info", "warning", "error")
 
 
-def test_doctor_quiet_suppresses_human():
+def test_doctor_quiet_suppresses_human(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         result = runner.invoke(app, ["doctor", "--quiet"])
         assert result.output.strip() == "" or "doctor" not in result.output.lower()
         assert result.exit_code in (0, 4)
 
 
-def test_doctor_invalid_config_is_error():
+def test_doctor_invalid_config_is_error(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         Path("mayhem.yaml").write_text("apiVersion: mayhem/v1\nfrobnicate: true\n")
         result = runner.invoke(app, ["--config", "mayhem.yaml", "doctor", "--json"])
         payload = json.loads(result.output)
@@ -67,9 +65,10 @@ def test_doctor_invalid_config_is_error():
         assert result.exit_code == 4
 
 
-def test_doctor_missing_optional_runtimes_are_warnings():
+def test_doctor_missing_optional_runtimes_are_warnings(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         with patch("mayhem.infra.diagnostics.shutil.which", return_value=None):
             result = runner.invoke(app, ["doctor", "--json"])
             payload = json.loads(result.output)
@@ -87,9 +86,10 @@ def test_doctor_missing_optional_runtimes_are_warnings():
             assert len(engine_errors) == 0
 
 
-def test_doctor_database_migration_drift():
+def test_doctor_database_migration_drift(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         db = Path("mayhem.db")
         conn = sqlite3.connect(str(db))
         conn.execute(
@@ -112,17 +112,19 @@ def test_doctor_database_migration_drift():
         assert result.exit_code == 4
 
 
-def test_doctor_categories_filter():
+def test_doctor_categories_filter(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         result = runner.invoke(app, ["doctor", "--json", "--category", "config"])
         payload = json.loads(result.output)
         assert all(r["category"] == "config" for r in payload["diagnostics"])
 
 
-def test_doctor_target_profile_handling():
+def test_doctor_target_profile_handling(tmp_path, monkeypatch):
     runner = CliRunner()
-    with runner.isolated_filesystem():
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
         Path("mayhem.yaml").write_text(
             "apiVersion: mayhem/v1\n"
             "targets:\n"

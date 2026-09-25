@@ -7,7 +7,18 @@ import yaml
 
 COMPOSE_CANDIDATES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 MAYHEM_CANDIDATES = ("mayhem.yaml", "mayhem.yml")
-K8S_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "Service", "Pod", "Job", "CronJob", "ReplicaSet", "ConfigMap", "Ingress"}  # noqa: E501
+K8S_KINDS = {
+    "Deployment",
+    "StatefulSet",
+    "DaemonSet",
+    "Service",
+    "Pod",
+    "Job",
+    "CronJob",
+    "ReplicaSet",
+    "ConfigMap",
+    "Ingress",
+}  # noqa: E501
 
 
 @dataclass(frozen=True, slots=True)

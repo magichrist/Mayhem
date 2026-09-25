@@ -60,9 +60,7 @@ NON_K8S_KINDS = frozenset(
 # non-k8s node kind. A fault may also target pods (the k8s argv families) and
 # still belongs in the docker matrix — it stays container-portable.
 FAULTS = tuple(
-    d.id
-    for d in CATALOG
-    if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
+    d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
 )
 
 _RATE = {"net.bandwidth": {"rate": "10mbit"}, "dependency.rate_limit": {"rate": 100}}
@@ -217,9 +215,7 @@ class TestPlannerMatrix:
 
     def test_all_catalog_faults_appear_in_the_matrix(self) -> None:
         non_k8s = {
-            d.id
-            for d in CATALOG
-            if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
+            d.id for d in CATALOG if d.applicable_node_kinds & NON_K8S_KINDS and not d.catalog_only
         }
         assert set(FAULTS) == non_k8s
         assert "net.bandwidth" in FAULTS  # rate-seeded required param present

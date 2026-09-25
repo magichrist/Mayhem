@@ -109,6 +109,27 @@ def _run_liveness(store: Store, run_id: str) -> bool | None:
     return None
 
 
+def _project_run_liveness(row: dict[str, object]) -> dict[str, object]:
+    projected = dict(row)
+    status = str(row.get("status", ""))
+    if status != "running":
+        projected["liveness_status"] = status
+        projected["controller_alive"] = None
+        return projected
+    raw_pid = row.get("controller_pid")
+    if raw_pid is None:
+        projected["liveness_status"] = "stale"
+        projected["controller_alive"] = None
+        return projected
+    try:
+        alive = _pid_alive(int(raw_pid))
+    except (TypeError, ValueError):
+        alive = False
+    projected["liveness_status"] = "running" if alive else "stale"
+    projected["controller_alive"] = alive
+    return projected
+
+
 def _run_liveness_resolver(store: Store) -> Callable[[str], bool | None]:
     return lambda run_id: _run_liveness(store, run_id)
 
@@ -333,7 +354,9 @@ def _is_drill_spec_file(path: Path) -> bool:
     return isinstance(data, dict) and data.get("kind") == "drill"
 
 
-def _resolve_spec(explicit: str | None, config_path: str | None = None) -> str:
+def _resolve_spec(
+    explicit: str | None, config_path: str | None = None, compose_path: str | None = None
+) -> str:
     """Resolve the drill spec file from user input.
 
     Accepts three forms, in order of precedence:
@@ -360,6 +383,13 @@ def _resolve_spec(explicit: str | None, config_path: str | None = None) -> str:
         target = Path(config_path)
         if target.is_file() and _is_drill_spec_file(target):
             return str(target)
+    if compose_path:
+        compose = Path(compose_path)
+        directory = compose if compose.is_dir() else compose.parent
+        for name in _SPEC_CANDIDATES:
+            candidate = directory / name
+            if candidate.is_file():
+                return str(candidate)
     for name in _SPEC_CANDIDATES:
         candidate = Path.cwd() / name
         if candidate.is_file():
@@ -367,7 +397,9 @@ def _resolve_spec(explicit: str | None, config_path: str | None = None) -> str:
     raise click.UsageError(f"no spec file in cwd; expected one of: {', '.join(_SPEC_CANDIDATES)}")
 
 
-def _resolve_spec_pair(explicit: str | None, config_path: str | None) -> tuple[str, str | None]:
+def _resolve_spec_pair(
+    explicit: str | None, config_path: str | None, compose_path: str | None = None
+) -> tuple[str, str | None]:
     """Resolve ``(spec_path, config_path)`` for the layered config layering.
 
     When ``--config`` doubled as the drill spec file (case 2 of
@@ -376,7 +408,7 @@ def _resolve_spec_pair(explicit: str | None, config_path: str | None) -> tuple[s
     guard) instead of re-parsing the spec as a strictly-forbidden config
     document.
     """
-    spec = _resolve_spec(explicit, config_path=config_path)
+    spec = _resolve_spec(explicit, config_path=config_path, compose_path=compose_path)
     if (
         explicit is None
         and config_path is not None
@@ -726,7 +758,7 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
     """Compile a drill spec and run every safety gate without executing it."""
     graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
-    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
+    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config, resolved_compose)
     store = open_store(obj.db)
     try:
         prepared = prepare(
@@ -775,7 +807,7 @@ def plan(
 ) -> None:
     graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
-    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
+    experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config, resolved_compose)
     store = open_store(obj.db)
     try:
         prepared = prepare(
@@ -914,8 +946,7 @@ def run(
     effective_engine = run_engine or _resolve_engine_from_state()
     target_name = run_target or obj.target
     k8s_context = _k8s_context_for_target(obj.config, target_name)
-    graph, resolved_compose = _graph_from(
-ctx, compose, engine=effective_engine, target=target_name)
+    graph, resolved_compose = _graph_from(ctx, compose, engine=effective_engine, target=target_name)
     if ctr is not None:
         if effective_engine == "kubernetes":
             raise click.UsageError(
@@ -1077,9 +1108,11 @@ ctx, compose, engine=effective_engine, target=target_name)
                 click.echo(result.summary_md())
                 return
         if experiment is None:
-            experiment, config_for_layers = _resolve_spec_pair(None, obj.config)
+            experiment, config_for_layers = _resolve_spec_pair(None, obj.config, resolved_compose)
         else:
-            experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config)
+            experiment, config_for_layers = _resolve_spec_pair(
+                experiment, obj.config, resolved_compose
+            )
         prepared = prepare(
             config_path=config_for_layers,
             profile=obj.profile,
@@ -1423,6 +1456,7 @@ def status(
             row = run_detail(store, run_id)
             if row is None:
                 raise click.UsageError(f"no such run: {run_id}", ctx=ctx)
+            row = _project_run_liveness(row)
             try:
                 envelope = load_evidence(store, run_id)
                 if envelope is not None:
@@ -1431,13 +1465,13 @@ def status(
                 pass
             click.echo(json.dumps(row, indent=2))
             return
-        rows = recent_runs(store, limit)
+        rows = [_project_run_liveness(row) for row in recent_runs(store, limit)]
         if json_flag:
             click.echo(json.dumps(rows, indent=2))
         else:
             for row in rows:
                 started = row["started_at"] or "-"
-                sid = style.state(f"{row['status']:<10}")
+                sid = style.state(f"{row['liveness_status']:<16}")
                 click.echo(f"{row['id']:<28} {row['kind']:<13} {sid} {started}")
     finally:
         store.close()
@@ -1654,7 +1688,9 @@ def recover_execute(
 
 
 @click.command("janitor")
-@click.option("--execute", is_flag=True, default=False, help="Apply the planned lease transitions.")
+@click.option(
+    "-e", "--execute", is_flag=True, default=False, help="Apply the planned lease transitions."
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit a JSON projection.")
 @click.pass_context
 def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
@@ -1664,9 +1700,7 @@ def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
         janitor_service = Janitor(SQLiteLeaseSink(store))
         liveness = _run_liveness_resolver(store)
         if execute:
-            sweep: SweepResult = janitor_service.sweep(
-                run_liveness=liveness, execute=True
-            )
+            sweep: SweepResult = janitor_service.sweep(run_liveness=liveness, execute=True)
             payload = {
                 "execute": True,
                 "expired": list(sweep.expired),

@@ -36,8 +36,6 @@ def _ctx(ctx: Context):
     return obj
 
 
-
-
 def _db_status(status: CampaignStatus) -> str:
     if status is CampaignStatus.APPROVED:
         return "scheduled"

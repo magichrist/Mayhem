@@ -122,6 +122,8 @@ def synthesize_maniac_spec(graph: TopologyGraph, *, name: str = "maniac") -> Dri
         )
         faults: list[DrillFault] = []
         for definition in all_definitions():
+            if definition.catalog_only:
+                continue
             if not definition.applicable_node_kinds & kinds:
                 continue
             if not definition.required_caps.isdisjoint(_MANIAC_EXCLUDED_CAPS):

@@ -214,9 +214,7 @@ def _sanitize_value(key: str, value: Any) -> Any:
     return value
 
 
-def explain_config(
-    config: MayhemConfig, sources: dict[str, str]
-) -> list[dict[str, Any]]:
+def explain_config(config: MayhemConfig, sources: dict[str, str]) -> list[dict[str, Any]]:
     safe_mutable = {"log_level", "blast_radius", "storage"}
     rows: list[dict[str, Any]] = []
     dump = config.model_dump(mode="json", by_alias=True)

@@ -284,9 +284,7 @@ class CoverageSummary:
     @property
     def _noncovered_tested_count(self) -> int:
         return sum(
-            count
-            for state, count in self.state_counts.items()
-            if state is not CellState.PASSED
+            count for state, count in self.state_counts.items() if state is not CellState.PASSED
         )
 
     @property

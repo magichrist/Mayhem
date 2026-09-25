@@ -45,14 +45,13 @@ def test_engine_explicit_override_resolves(tmp_path) -> None:
                 "Names": "test",
                 "Image": "nginx",
                 "State": "running",
-                "Labels": (
-                    "com.docker.compose.project=test,com.docker.compose.service=api"
-                ),
+                "Labels": ("com.docker.compose.project=test,com.docker.compose.service=api"),
             }
         ]
     )
     with patch("shutil.which", side_effect=_fake_which_both):
         with patch("subprocess.run") as mock_run:
+
             def side_effect(cmd, **kwargs):
                 m = MagicMock()
                 if "--version" in cmd:
@@ -79,6 +78,7 @@ def test_engine_explicit_override_resolves(tmp_path) -> None:
                 m.stderr = ""
                 m.returncode = 0
                 return m
+
             mock_run.side_effect = side_effect
             result = runner.invoke(discover, ["--compose", str(compose), "--runtime", "docker"])
             assert result.exit_code == 0

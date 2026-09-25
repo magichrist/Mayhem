@@ -153,9 +153,7 @@ class M5CampaignEngine:
             engine_policy=self.campaign.engine_policy,
             target_profiles=self.campaign.target_profiles,
             budget=(
-                self.campaign.budget
-                if self.campaign.budget is not None
-                else self.campaign.max_runs
+                self.campaign.budget if self.campaign.budget is not None else self.campaign.max_runs
             ),
             deadline_epoch_s=self.campaign.deadline_epoch_s,
             stop_conditions=self.campaign.stop_conditions or (self.campaign.stop_condition,)

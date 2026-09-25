@@ -62,8 +62,8 @@ A complete, self-contained six-service stack lives in
 ```bash
 cd examples/testCase
 docker compose up -d                          # 0. bring the stack up
-mayhem topology discover --compose docker-compose.yml   # 1. blueprint → live graph
-mayhem validate mayhem.yaml --compose docker-compose.yml  # 2. compile + safety gates (injects nothing)
+mayhem discover topology --compose docker-compose.yml   # 1. blueprint → live graph
+mayhem prepare validate mayhem.yaml --compose docker-compose.yml  # 2. compile + safety gates (injects nothing)
 mayhem run mayhem.yaml --compose docker-compose.yml      # 3. inject → observe → recover → verdict
 ```
 
@@ -101,7 +101,7 @@ $ mayhem run mayhem.yaml --compose docker-compose.yml
 **decisions**: 5 governing decision revisions (snapshot in the run row)
 **wall**: 32.4s
 
-run r-process-drill-8f2a1c — inspect with `mayhem history r-process-drill-8f2a1c`
+run r-process-drill-8f2a1c — inspect with `mayhem inspect history r-process-drill-8f2a1c`
 ```
 
 Reading the transcript, top to bottom:
@@ -115,11 +115,11 @@ Reading the transcript, top to bottom:
 4. **Observations** — how many configured evidence sources actually delivered
    data (probes, logs, metrics …).
 5. **Decisions** — the governing decision revisions that shaped this run; the
-   decision trace is queryable afterward via `mayhem history`.
+   decision trace is queryable afterward via `mayhem inspect history`.
 6. **Copy-paste handle** — the run id for the follow-up commands below.
 
-From there: `mayhem status` lists recent runs, `mayhem status --run <run-id>`
-shows full recorded metadata, and `mayhem history <run-id>` replays the
+From there: `mayhem inspect runs` lists recent runs, `mayhem inspect runs --run <run-id>`
+shows full recorded metadata, and `mayhem inspect history <run-id>` replays the
 complete event journal (every step, probe sample, and lease for that run).
 Add `--debug` to `mayhem run` to stream each step live as it happens
 (`[ok] injected proc.pause 10s into testcase-api`,
@@ -161,7 +161,7 @@ execution:
           status: 200
 ```
 
-Validate with `mayhem validate mayhem.yaml`; unknown parameters, out-of-range
+Validate with `mayhem prepare validate mayhem.yaml`; unknown parameters, out-of-range
 durations, untargetable node kinds, and capability gaps are all compile-time
 errors — before anything is injected.
 
@@ -183,10 +183,10 @@ cross-runtime `targets:` block instead (exactly one of `containers:` /
 
 Runtime policies live in `mayhem.yaml` — the *configuration* file, distinct
 from a `kind: drill` spec — auto-detected in the cwd or given with `--config`.
-The effective view is one command away: `mayhem config show` (alias `cfg`)
-prints the resolved configuration and the provenance of every section;
-`mayhem config validate` refuses unknown keys, a missing or wrong
-`apiVersion`, and out-of-range sections before anything runs.
+The effective view is one command away: `mayhem prepare config show` prints the
+resolved configuration and provenance; `mayhem prepare config validate` refuses
+unknown keys, a missing or wrong `apiVersion`, and out-of-range sections before
+anything runs.
 
 ```yaml
 apiVersion: mayhem/v1        # required; anything else is rejected
@@ -238,34 +238,26 @@ The full configuration reference is in
 
 ---
 
-## CLI direction and migration
+## CLI surface
 
-The current command surface remains supported. The next CLI generation will move toward workflow groups (`discover`, `prepare`, `experiment`, `run`, `inspect`, `recover`, and `extend`), add guided `init`/`doctor` flows, make mutations plan-first, and provide stable machine output. Existing commands, exit codes, JSON keys, and database migrations remain compatibility contracts during the migration window.
+The active CLI is workflow-oriented: `discover`, `prepare`, `experiment`, `run`, `inspect`, `recover`, and `extend`. Guided `init` and `doctor` are active, and all legacy root commands and aliases have been removed. Exit codes, machine-readable fields, and database migrations remain stable.
 
 See [`docs/product/cli-product-direction.md`](docs/product/cli-product-direction.md), [`docs/product/command-architecture.md`](docs/product/command-architecture.md), and [`docs/new-plan/README.md`](docs/new-plan/README.md).
 
-Root options precede the command. The current surface includes `--db`,
-`--config`, `--profile`, `--allow-critical`, `--skip-gate`, `--podman`,
-`--kubernetes`, and `--debug`. Unique prefixes work at the root and in the
-`PrefixGroup` command trees; `dependency` currently uses a plain Click group,
-so use its subcommand names in full.
+Root options precede the command. Unique prefixes work at the root and in the workflow groups.
 
-| Command group | Current purpose |
-|---------------|-----------------|
-| `mayhem validate`, `plan`, `run`, `maniac` | Compile, validate, execute, and randomly exercise drill specs. |
-| `mayhem status`, `history RUN_ID`, `recover RUN_ID`, `janitor` | Inspect runs and perform recovery sweeps. `recover` requires a run id; `janitor` has no `sweep` subcommand. |
-| `mayhem topology discover` | Discover compose or live-cluster topology. Kubernetes live discovery uses `--context` and `--namespace`, not the removed `--kube-context` spelling. |
-| `mayhem explore`, `next`, `coverage` | Generate, rank, and report the experiment landscape. |
-| `mayhem dependency check`, `install`, `compile` | Inspect or prepare container tooling required by planned faults. |
-| `mayhem expert` | Run local diagnostic probes and analyze recent failures. |
-| `mayhem experiment show`, `validate` | Parse or validate authored drill specs. |
-| `mayhem config show`, `validate` (`cfg` alias) | Inspect or validate layered configuration. |
-| `mayhem toolkit faults`, `list` | Inspect the catalog and local tool capabilities. |
-| `mayhem campaign …` | Create, populate, run, and manage authored campaign experiments. |
+| Command group | Purpose |
+|---------------|---------|
+| `mayhem discover` | Discover topology, engines, faults, and capabilities. |
+| `mayhem prepare` | Validate configuration, prepare dependencies, and compile plans. |
+| `mayhem experiment` | Show, validate, and explore authored experiments. |
+| `mayhem run`, `mayhem maniac` | Execute authored or randomized drills. |
+| `mayhem inspect` | Inspect runs, history, coverage, next actions, leases, and diagnostics. |
+| `mayhem recover`, `mayhem janitor` | Recover runs and clean leases. |
+| `mayhem extend` | Inspect and extend faults, capabilities, dependencies, and providers. |
+| `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
 
-Use each command's current `--help` output for its accepted arguments. See the
-complete [`docs/reference/cli.md`](docs/reference/cli.md) for options, command
-specificity, and campaign subcommands.
+Use each command's current `--help` output for accepted arguments. See the complete [`docs/reference/cli.md`](docs/reference/cli.md) for options and workflow examples.
 
 ---
 
@@ -331,7 +323,7 @@ is as small as possible:
 1. **Discover** — compose discovery builds a Docker/Podman graph. Kubernetes
    has separate live-discovery and offline-manifest providers; the manifest
    provider creates logical placeholders, not live pod selections.
-2. **Prepare** — `mayhem config` layering (defaults → selected YAML → separate
+2. **Prepare** — `mayhem prepare config` layering (defaults → selected YAML → separate
    profile overlay → allowlisted environment values → programmatic overrides),
    plus topology, drift detection, and target revalidation.
 3. **Compile & plan** — the drill spec becomes a frozen `ExecutionPlan` with

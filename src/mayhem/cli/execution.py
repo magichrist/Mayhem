@@ -104,7 +104,7 @@ def build_execution_intent(
 
 
 def migration_warning() -> str:
-    return "warning: implicit execution without --execute is deprecated; use --execute --from-plan or --execute with explicit approval"
+    return "warning: implicit execution without --execute is unsafe; use --execute with explicit approval"
 
 
 def resolve_plan_source(
