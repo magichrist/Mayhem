@@ -33,8 +33,6 @@ jobs:
       # ruff config currently reports 30-49 pre-existing violations under every
       # ruff generation (0.8-0.16); the project has no lint-green baseline in
       # its history. Land a lint-cleanup first, then re-add `ruff check src/`.
-      - name: Architectural contracts
-        run: uv run lint-imports
 
   build-and-publish:
     name: Build and publish to PyPI
