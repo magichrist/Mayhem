@@ -65,6 +65,40 @@ Inspect authored experiments and run the active exploration loop.
 
 `run` compiles, gates, and executes a drill. `maniac` runs randomized fault-injection rounds. Use `run --execute` for explicit execution approval; use `--dry-run` where supported for previews.
 
+Execution is an approved act (v0.9.0). Without `--execute`, `run` previews the
+preflight and stops before any run row or lease exists; `maniac` refuses
+outright. `mayhem --dry-run run SPEC` previews without needing an approval.
+
+### Execution intent
+
+Every mutating command requires an explicit approval flag, and a run is
+authorized by an execution intent bound to the plan hash, engine, and target
+that were reviewed. Refusals use stable codes and exit with
+`ExitCode.SAFETY_REFUSAL` (5); no new exit code is introduced.
+
+| Code | Meaning |
+|------|---------|
+| `execution_intent_required` | No explicit approval was given. |
+| `approval_expired` | The approval existed but its deadline passed. |
+| `execution_intent_mismatch` | The approval is bound to a different plan hash, engine, or target. |
+
+| Command | Approval |
+|---------|----------|
+| `mayhem run SPEC` | `--execute` |
+| `mayhem maniac` | `--execute` |
+| `mayhem campaign run ID` | `--execute` |
+| `mayhem explore` (live) | `--execute` |
+| `mayhem recover execute RUN_ID` | the sub-command name |
+| `mayhem recover RUN_ID` (legacy shim) | `--execute` |
+| `mayhem janitor` | `-e` / `--execute` |
+| `mayhem prepare dependencies install` | `--execute` or `-y` |
+
+`MAYHEM_ALLOW_IMPLICIT_EXECUTION=1` restores the pre-v0.9.0 implicit behaviour
+for legacy automation. It is a compatibility escape hatch, not a second way to
+skip approval. When it is in play no intent is minted, so the run's evidence
+envelope records `execution_intent: null` and an auditor can still tell an
+implicit run from an approved one.
+
 ### `mayhem inspect`
 
 Inspect recorded execution and resilience data.
@@ -129,12 +163,13 @@ change a target.
 
 Sub-commands of the groups are documented in the group sections above. The
 `mayhem recover RUN_ID` spelling resolves to `recover execute RUN_ID` through a
-compatibility shim in `RecoverGroup`; new automation should use the explicit
-`recover status`, `recover plan`, or `recover execute` spelling.
+compatibility shim in `RecoverGroup`. Because that spelling hides a mutation
+behind a bare run id, it also requires `--execute`; new automation should use
+the explicit `recover status`, `recover plan`, or `recover execute` spelling.
 
 ## Output and errors
 
-Human output is the default. JSON and YAML are available through `--format` and compatible command-local flags. Errors use stable codes and map to the existing numeric exit codes. Machine errors are emitted on stderr; successful JSON output is not mixed with progress text.
+Human output is the default. JSON and YAML are available through `--format` and compatible command-local flags. Errors use stable codes and map to the existing numeric exit codes. Machine errors are emitted on stderr; successful JSON output is not mixed with progress text. Execution-intent refusals (`execution_intent_required`, `approval_expired`, `execution_intent_mismatch`) carry the offending action in `details` and the explicit approval to add in `remediation`.
 
 ## Exit codes
 

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from mayhem.cli.services import Prepared, engine_for
 from mayhem.controller.planner import plan_drill, synthesize_candidate_spec
 from mayhem.domain.coverage import CellState
+from mayhem.domain.execution_intent import intent_for_plan
 from mayhem.domain.run_outcome import RunVerdict
 from mayhem.infra.maniac import coverage_cell_for_candidate
 
@@ -109,6 +110,8 @@ class CellRunner:
         bypass: dict[tuple[str, str], str] | None = None,
         live_graph: Callable[[], TopologyGraph] | None = None,
         campaign_id: str = "",
+        require_intent: bool = False,
+        intent_target: str = "",
     ) -> None:
         self._store = store
         self._graph = graph
@@ -118,6 +121,11 @@ class CellRunner:
         self._bypass = bypass or {}
         self._live_graph = live_graph
         self._campaign_id = campaign_id
+        # v0.9.0: a live cell mutates the target, so it is gated by the same
+        # execution-intent contract as ``mayhem run``. The intent is minted
+        # per cell because each candidate compiles its own plan.
+        self._require_intent = require_intent
+        self._intent_target = intent_target
 
     def run(self, candidate: ExperimentCandidate) -> CellRunResult:
         """Execute the candidate through the canonical ``run`` path.
@@ -141,12 +149,23 @@ class CellRunner:
             engine=self._engine_name,
         )
 
+        intent = None
+        if self._require_intent:
+            intent = intent_for_plan(
+                plan,
+                engine=self._engine_name,
+                target_identity=self._intent_target or self._engine_name,
+                actor="cli:explore",
+            )
+
         engine = engine_for(
             self._store,
             self._engine_name,
             bypass=self._bypass,
             live_graph=self._live_graph,
             recovery_grace=self._prepared.recovery_grace,
+            intent=intent,
+            require_intent=self._require_intent,
         )
         result = engine.execute(plan)
 

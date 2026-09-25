@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from mayhem.domain.execution_intent import IMPLICIT_EXECUTION_ENV
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.topology import (
     ContainerNode,
@@ -64,3 +65,17 @@ def build_compose_runtime_graph() -> TopologyGraph:
 @pytest.fixture(scope="module")
 def compose_runtime_graph() -> TopologyGraph:
     return build_compose_runtime_graph()
+
+
+@pytest.fixture(autouse=True)
+def _implicit_execution_compat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the pre-v0.9.0 implicit-execution path available to the suite.
+
+    v0.9.0 made execution an approved act: a mutating command without an
+    explicit approval flag is refused. Most of this suite drives the CLI the
+    way a v0.8 script did, so the documented compatibility switch is on by
+    default here. Tests that assert a *refusal* delete the variable
+    themselves (``monkeypatch.delenv(IMPLICIT_EXECUTION_ENV, raising=False)``)
+    so they exercise the v0.9.0 default rather than the escape hatch.
+    """
+    monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")

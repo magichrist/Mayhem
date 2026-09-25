@@ -131,6 +131,21 @@ def _fail(message: str, code: int) -> int:
     return code
 
 
+def _is_refusal(code: str) -> bool:
+    """True for codes that read as a gate refusing an act, not a bad input.
+
+    ``safety_refusal`` and the three v0.9.0 execution-intent codes all mean
+    "mayhem understood the request and declined to act"; they are rendered
+    with the same framing so scripts grepping for one see the other.
+    """
+    return code in {
+        "safety_refusal",
+        "execution_intent_required",
+        "approval_expired",
+        "execution_intent_mismatch",
+    }
+
+
 def _fail_error(err: MayhemCliError) -> int:
     debug = bool(_STATE.get("debug"))
     fmt = _STATE.get("format", "text")
@@ -138,7 +153,7 @@ def _fail_error(err: MayhemCliError) -> int:
     if as_json:
         click.echo(err.to_json(), err=True)
     else:
-        if err.code == "safety_refusal":
+        if _is_refusal(err.code):
             click.echo(
                 f"{style.danger('error:')} safety refused: {err.message} [{err.code}]", err=True
             )

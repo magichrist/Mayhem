@@ -138,6 +138,13 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
 @_compose_option
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.option("-y", "--yes", is_flag=True, help="Install without confirmation.")
+@click.option(
+    "--execute",
+    "execute",
+    is_flag=True,
+    default=False,
+    help="Explicit approval to mutate containers by installing packages.",
+)
 @click.option("--dry-run", is_flag=True, help="Print commands without executing.")
 @click.pass_context
 def install(
@@ -145,11 +152,26 @@ def install(
     experiment: str | None,
     compose: str | None,
     yes: bool,
+    execute: bool,
     dry_run: bool,
 ) -> None:
-    """Detect each container's package manager and install the mapped packages."""
+    """Detect each container's package manager and install the mapped packages.
+
+    Installing packages rewrites the target, so it is a mutating command:
+    ``--execute`` (or the legacy ``-y``) is the explicit approval. A
+    ``--dry-run`` prints the commands and touches nothing.
+    """
     from mayhem.agents.impact import dependency_plan as _dep_plan
     from mayhem.agents.impact import host_tooling_gaps as _host_gaps
+    from mayhem.domain.execution_intent import require_explicit_approval
+
+    obj = _ctx(ctx)
+    # A global --dry-run means the same thing as the local one: preview only.
+    dry_run = bool(dry_run or obj.dry_run)
+    # `-y` predates the intent contract and *is* an explicit confirmation, so
+    # it still counts; without a flag the command is refused unless the
+    # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch is set.
+    require_explicit_approval("dependency install", approved=bool(execute or yes or dry_run))
 
     plan, graph, engine_name = _dependency_context(ctx, compose, experiment)
     deps = _dep_plan(plan, graph, engine_name)

@@ -82,7 +82,7 @@ plan:
 # Full run: inject faults, record events, compensate
 run: setup
     @echo "=== run ==="
-    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }} --execute
     @echo "✓ run"
 
 # Show run status (text + JSON) via `mayhem inspect runs`
@@ -144,7 +144,7 @@ full: setup
     @echo "=== full round-trip ==="
     mayhem --db {{ _db }} prepare validate {{ _spec }} --compose {{ _compose }}
     mayhem --db {{ _db }} prepare plan {{ _spec }} --compose {{ _compose }}
-    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }} --execute
     mayhem --db {{ _db }} inspect runs
     @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
     mayhem --db {{ _db }} inspect history "$$run_id"; \

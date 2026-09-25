@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mayhem.domain.events import Event
+    from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.toolkit.registry import CapabilityReport
 
 DEFAULT_DB = "mayhem.db"
@@ -532,6 +533,8 @@ def engine_for(
     recovery_grace: float = 300.0,
     k8s_context: str | None = None,
     runtime: RuntimeContext | None = None,
+    intent: ExecutionIntent | None = None,
+    require_intent: bool = False,
 ) -> RunEngine:
     """Build the :class:`RunEngine` for a run.
 
@@ -547,6 +550,12 @@ def engine_for(
     *both* is allowed only when they agree — a disagreement raises
     ``InvariantViolationError`` (``runtime_engine_mismatch``) here, before any
     plan is compiled or any lease acquired.
+
+    ``intent``/``require_intent`` carry the v0.9.0 execution-intent contract
+    through to :meth:`RunEngine.execute`. They are optional so a direct
+    programmatic construction keeps working; every CLI surface passes
+    ``require_intent=True`` so an unapproved plan is refused before a run row
+    is opened.
     """
     resolved_engine = reconcile_engine(engine, runtime) or "podman"
     return RunEngine(
@@ -559,6 +568,8 @@ def engine_for(
         recovery_grace=recovery_grace,
         k8s_context=runtime.context if runtime is not None else k8s_context,
         runtime=runtime,
+        intent=intent,
+        require_intent=require_intent,
     )
 
 

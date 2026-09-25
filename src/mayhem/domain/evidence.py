@@ -37,6 +37,10 @@ class EvidenceEnvelope(BaseModel):
     engine_version: str | None = None
     topology_fingerprint: str | None = None
     verification_basis: str = "unit_tested"
+    # v0.9.0: the execution intent that authorized this run (plan hash, engine,
+    # target, policy, actor, approval window). ``None`` for evidence recorded by
+    # a caller that did not mint an intent — e.g. a unit-level run.
+    execution_intent: dict[str, Any] | None = None
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

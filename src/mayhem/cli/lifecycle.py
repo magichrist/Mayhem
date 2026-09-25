@@ -55,6 +55,11 @@ from mayhem.controller.recovery import RecoveryService
 from mayhem.domain.common import utc_now
 from mayhem.domain.events import Event, EventKind
 from mayhem.domain.evidence import EvidenceEnvelope
+from mayhem.domain.execution_intent import (
+    implicit_execution_allowed,
+    intent_for_plan,
+    require_explicit_approval,
+)
 from mayhem.infra.evidence import (
     build_evidence,
     load_evidence,
@@ -69,6 +74,7 @@ if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
     from mayhem.domain.experiments import DrillSpec
+    from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.domain.runtime_context import RuntimeContext
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
@@ -587,6 +593,38 @@ def _emit_preflight(preflight: object, as_json: bool) -> None:
             click.echo(expected_evidence_display(expected))
 
 
+def _execution_intent(
+    plan: object,
+    *,
+    engine: str,
+    target: str | None = None,
+    preflight: object | None = None,
+    break_glass: bool = False,
+) -> ExecutionIntent:
+    """Mint the approval record that authorizes one concrete run (v0.9.0).
+
+    Built from the *preflight* that was just shown to the user, so the
+    approval names exactly the plan, policy, and blast radius that were
+    reviewed — and the engine re-checks the plan hash and engine before it
+    opens the run.
+    """
+    policy_id = ""
+    blast: dict[str, object] = {}
+    if preflight is not None:
+        decisions = tuple(str(d) for d in getattr(preflight, "safety_decisions", ()) or ())
+        policy_id = ";".join(decisions) or "default"
+        blast = dict(getattr(preflight, "blast_radius", {}) or {})
+    return intent_for_plan(
+        plan,
+        engine=engine,
+        target_identity=str(target or engine or "default"),
+        policy_id=policy_id,
+        blast_radius=blast,
+        actor="cli:--execute",
+        break_glass=break_glass,
+    )
+
+
 def _write_evidence_after_run(
     *,
     store: object,
@@ -595,6 +633,7 @@ def _write_evidence_after_run(
     engine: str,
     evidence_dir: str | None,
     skip_gate: bool = False,
+    intent: ExecutionIntent | None = None,
 ) -> EvidenceEnvelope | None:
     import contextlib
 
@@ -702,6 +741,7 @@ def _write_evidence_after_run(
             k8s_wait_strategy=str(getattr(preflight, "k8s_wait_strategy", "") or ""),
             k8s_recovery_guidance=str(getattr(preflight, "k8s_recovery_guidance", "") or ""),
             skip_gate=skip_gate,
+            execution_intent=intent.to_dict() if intent is not None else None,
         )
         with contextlib.suppress(Exception):
             write_evidence(store, envelope)
@@ -1039,6 +1079,13 @@ def run(
                     bypass: dict[tuple[str, str], str] = {}
                     if _gate_enabled():
                         bypass = _gate_bypasses(engine_name, compiled_plan, graph)
+                    plan_intent = _execution_intent(
+                        compiled_plan,
+                        engine=engine_name,
+                        target=target_name,
+                        preflight=preflight,
+                        break_glass=not _gate_enabled(),
+                    )
                     eng = engine_for(
                         store,
                         engine_name,
@@ -1052,6 +1099,8 @@ def run(
                         bypass=bypass,
                         recovery_grace=prepared_dummy.recovery_grace if prepared_dummy else 300.0,
                         runtime=runtime,
+                        intent=plan_intent,
+                        require_intent=True,
                     )
                     result = eng.execute(compiled_plan)
                     preflight2 = _preflight_for_run(
@@ -1070,6 +1119,7 @@ def run(
                         result=result,
                         engine=engine_name,
                         evidence_dir=evidence_dir,
+                        intent=plan_intent,
                     )
                     click.echo(result.summary_md())
                     return
@@ -1106,6 +1156,13 @@ def run(
                     click.echo("plan loaded; pass --execute to run", err=True)
                     return
                 engine_name = effective_engine
+                preflight = None  # not resolved on the execute path; see below
+                stored_intent = _execution_intent(
+                    loaded_plan,
+                    engine=engine_name,
+                    target=target_name,
+                    preflight=preflight,
+                )
                 eng = engine_for(
                     store,
                     engine_name,
@@ -1119,6 +1176,8 @@ def run(
                     bypass={},
                     recovery_grace=300.0,
                     runtime=runtime,
+                    intent=stored_intent,
+                    require_intent=True,
                 )
                 result = eng.execute(loaded_plan)
                 preflight_tmp = _preflight_for_run(
@@ -1137,6 +1196,7 @@ def run(
                     result=result,
                     engine=engine_name,
                     evidence_dir=evidence_dir,
+                    intent=stored_intent,
                 )
                 click.echo(result.summary_md())
                 return
@@ -1188,23 +1248,38 @@ def run(
             if not execute:
                 return
         _emit_preflight(preflight, as_json)
-        if not execute:
-            if experiment is not None and not from_plan and not plan_id:
-                click.echo(migration_warning(), err=True)
-                click.echo(
-                    "executing via compatibility adapter; use --execute --from-plan for plan-first flow",
-                    err=True,
-                )
-            else:
-                click.echo("plan ready; pass --execute to run", err=True)
-                return
-        if experiment is not None and not from_plan and not plan_id and not execute:
-            pass
-        should_execute = execute or (
-            experiment is not None and diff_path is None and from_plan is None and plan_id is None
+        # v0.9.0: the pre-v0.9.0 compatibility path — a bare
+        # ``mayhem run SPEC`` that executed anyway — now requires the
+        # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch. Without it the
+        # command previews, exactly like --dry-run, and never reaches a lease.
+        implicit = (
+            experiment is not None
+            and diff_path is None
+            and from_plan is None
+            and plan_id is None
+            and implicit_execution_allowed()
         )
-        if not should_execute:
+        if not execute and not implicit and not obj.dry_run:
+            click.echo("plan ready; pass --execute to run", err=True)
             return
+        if not execute and not obj.dry_run:
+            click.echo(migration_warning(), err=True)
+            click.echo(
+                "executing via compatibility adapter; use --execute --from-plan for plan-first flow",
+                err=True,
+            )
+        engine_name = effective_engine
+        run_intent = (
+            _execution_intent(
+                compiled.plan,
+                engine=engine_name,
+                target=target_name,
+                preflight=preflight,
+                break_glass=not _gate_enabled(),
+            )
+            if execute
+            else None
+        )
         if obj.dry_run:
             from mayhem.controller.safety import dry_run_policy_evaluation
 
@@ -1216,7 +1291,6 @@ def run(
         override = (
             os.getenv("MAYHEM_ALLOW_SKIP_GATE") == "1" or os.getenv("MAYHEM_BREAK_GLASS") == "1"
         )
-        engine_name = effective_engine
         bypass2: dict[tuple[str, str], str] = {}
         if _gate_enabled():
             bypass2 = _gate_bypasses(engine_name, compiled.plan, graph)
@@ -1244,6 +1318,8 @@ def run(
             bypass=bypass2,
             recovery_grace=prepared.recovery_grace,
             runtime=runtime,
+            intent=run_intent,
+            require_intent=True,
         )
         result = engine_obj.execute(compiled.plan)
         _write_evidence_after_run(
@@ -1253,6 +1329,7 @@ def run(
             engine=engine_name,
             evidence_dir=evidence_dir,
             skip_gate=skip_gate_used,
+            intent=run_intent,
         )
         if obj.debug:
             trailer = [
@@ -1315,6 +1392,13 @@ def run(
     default=False,
     help="After execution, suggest the most valuable untested cell to run next.",
 )
+@click.option(
+    "--execute",
+    "execute",
+    is_flag=True,
+    default=False,
+    help="Explicit approval to inject the drawn fault rounds.",
+)
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
 def maniac(
@@ -1324,6 +1408,7 @@ def maniac(
     steps: int | None,
     ctr: str | None,
     show_next: bool,
+    execute: bool,
 ) -> None:
     """Run a drill spec as random fault injection (ADR-M5-1).
 
@@ -1343,8 +1428,14 @@ def maniac(
     ``--ctr`` narrows the draw pool to a single container (and, for authored
     specs, drops every other container's rounds), so the run can only ever
     perturbs the requested container.
+
+    ``--execute`` is the explicit approval that lets a round mutate the
+    target; without it (and without the documented
+    ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1`` compatibility switch) the command
+    refuses with ``execution_intent_required`` before any round is drawn.
     """
     obj = _ctx(ctx)
+    require_explicit_approval("maniac", approved=execute or obj.dry_run)
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
     )
@@ -1427,9 +1518,20 @@ def maniac(
                 style.warn("warning:") + " impact gate skipped (--skip-gate); inert faults may run",
                 err=True,
             )
+        if obj.dry_run:
+            # A preview is not a mutation: report the draw and stop before the
+            # engine (and therefore before any lease) is ever built.
+            click.echo(
+                f"dry-run: {draws} random fault round(s) drawn for "
+                f"{style.cyan(compiled.run_id)}; nothing injected"
+            )
+            return
         # NB: the RunEngine is a local named ``run_engine`` — the resolved
         # context owns the engine *name*, and rebinding it here used to leak a
         # RunEngine object into the preflight/evidence ``engine: str`` fields.
+        maniac_intent = _execution_intent(
+            compiled.plan, engine=engine, target=obj.target, break_glass=not _gate_enabled()
+        )
         run_engine = engine_for(
             store,
             engine,
@@ -1438,6 +1540,8 @@ def maniac(
             bypass=bypass,
             recovery_grace=prepared.recovery_grace,
             runtime=runtime,
+            intent=maniac_intent,
+            require_intent=True,
         )
         result = run_engine.execute(compiled.plan)
         try:
@@ -1452,7 +1556,12 @@ def maniac(
                 runtime=runtime,
             )
             _write_evidence_after_run(
-                store=store, preflight=pf, result=result, engine=engine, evidence_dir=None
+                store=store,
+                preflight=pf,
+                result=result,
+                engine=engine,
+                evidence_dir=None,
+                intent=maniac_intent,
             )
         except Exception:
             pass
@@ -1607,14 +1716,26 @@ class RecoverGroup(click.Group):
         if args and args[0] not in self.commands:
             legacy = click.Command(
                 "legacy",
-                params=[click.Argument(["run_id"])],
+                params=[
+                    click.Argument(["run_id"]),
+                    click.Option(
+                        ["--execute"],
+                        is_flag=True,
+                        default=False,
+                        help="Explicit approval to apply the recovery plan.",
+                    ),
+                ],
                 callback=self._legacy_execute,
-                help="Recover one run id.",
+                help="Recover one run id (pass --execute to apply).",
             )
             return legacy.name, legacy, args
         return super().resolve_command(ctx, args)
 
-    def _legacy_execute(self, run_id: str) -> None:
+    def _legacy_execute(self, run_id: str, execute: bool) -> None:
+        # v0.9.0: this shim is an *implicit* spelling of a mutating command, so
+        # it needs its own approval. The explicit `recover execute RUN_ID`
+        # spelling never needed one — naming the sub-command is the approval.
+        require_explicit_approval("recover execute", approved=execute)
         store = open_store(_ctx(click.get_current_context()).db)
         try:
             service = _recovery_service(store)
@@ -1702,6 +1823,11 @@ def recover_execute(
     artifact_dir: str | None,
     as_json: bool,
 ) -> None:
+    """Apply a recovery plan: compensating leases is a mutation."""
+    # Naming the sub-command is the approval; the global --dry-run is a
+    # promise that nothing mutates, so it is refused here rather than honoured
+    # by accident.
+    require_explicit_approval("recover execute", approved=not _ctx(ctx).dry_run)
     store = open_store(_ctx(ctx).db)
     try:
         service = _recovery_service(store)
@@ -1736,7 +1862,12 @@ def recover_execute(
 @click.pass_context
 def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
     """Preview lease cleanup by default; pass --execute to apply it."""
-    store = open_store(_ctx(ctx).db)
+    obj = _ctx(ctx)
+    # The default (no --execute) is a pure preview: it plans, never writes.
+    # Applying transitions is a mutation and needs the explicit flag; a global
+    # --dry-run promises nothing mutates, so it is refused even with --execute.
+    require_explicit_approval("janitor --execute", approved=execute and not obj.dry_run)
+    store = open_store(obj.db)
     try:
         janitor_service = Janitor(SQLiteLeaseSink(store))
         liveness = _run_liveness_resolver(store)

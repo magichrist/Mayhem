@@ -21,9 +21,13 @@ The spec is consumed by the lifecycle commands:
 ```bash
 mayhem prepare validate examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
 mayhem prepare plan     examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
-mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
-mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml
+mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml --execute
+mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml --execute
 ```
+
+`run` and `maniac` inject faults, so both need the explicit `--execute`
+approval; without it they stop at a preview and no lease is ever created. See
+[CLI reference](reference/cli.md#execution-intent).
 
 The positional spec path may be omitted when the global ``--config`` flag
 names the drill spec itself — useful from a directory without a spec file:
@@ -51,8 +55,8 @@ filtered exactly like `run`, so the run can only ever perturb the requested
 container.
 
 ```bash
-mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml --ctr testcase-api
-mayhem maniac   --compose examples/testCase/docker-compose.yml --ctr testcase-api
+mayhem run      examples/testCase/mayhem.yaml --compose examples/testCase/docker-compose.yml --ctr testcase-api --execute
+mayhem maniac   --compose examples/testCase/docker-compose.yml --ctr testcase-api --execute
 ```
 
 `validate` compiles the spec and runs every safety gate without injecting

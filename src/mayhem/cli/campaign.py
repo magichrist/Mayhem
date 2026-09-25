@@ -536,6 +536,13 @@ def _record_campaign_resume(store, campaign_id: str, status: str) -> None:
 @click.argument("campaign_id")
 @click.option("--compose", "-c", type=str, default=None, help="Compose file path.")
 @click.option("--no-gate", is_flag=True, help="Skip the impact gate for this run.")
+@click.option(
+    "--execute",
+    "execute",
+    is_flag=True,
+    default=False,
+    help="Explicit approval to run the campaign's experiments.",
+)
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.pass_context
@@ -544,6 +551,7 @@ def run_campaign(
     campaign_id: str,
     compose: str | None,
     no_gate: bool,
+    execute: bool,
     db_opt: str | None,
     as_json: bool,
 ) -> None:
@@ -552,13 +560,23 @@ def run_campaign(
     Each experiment spec is compiled and executed against the compose
     topology. The campaign's policy_json failure policy and window_json
     deadline/cooldown are honored; per-experiment results are recorded in the
-    observations table.
+    observations table. ``--execute`` is the explicit approval: without it
+    (and without the documented ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1``
+    compatibility switch) the command refuses before any experiment runs.
     """
     from datetime import datetime
 
-    from mayhem.cli.lifecycle import _gate_bypasses, _gate_enabled, _graph_from
+    from mayhem.cli.lifecycle import (
+        _debug_progress,
+        _execution_intent,
+        _gate_bypasses,
+        _gate_enabled,
+        _graph_from,
+    )
+    from mayhem.domain.execution_intent import require_explicit_approval
 
     obj = _ctx(ctx)
+    require_explicit_approval("campaign run", approved=execute or obj.dry_run)
     db = db_opt or obj.db
     store = open_store(db)
     try:
@@ -596,8 +614,6 @@ def run_campaign(
             )
 
         def _run_one(spec_path: str) -> RunResult:
-            from mayhem.cli.lifecycle import _debug_progress
-
             prepared = prepare(
                 config_path=obj.config,
                 profile=obj.profile,
@@ -618,6 +634,14 @@ def run_campaign(
                 on_event=_debug_progress() if obj.debug else None,
                 bypass=bypass,
                 recovery_grace=prepared.recovery_grace,
+                # One approval covers the campaign, but every experiment is
+                # still bound to its own plan hash.
+                intent=(
+                    _execution_intent(compiled.plan, engine=engine_name, target=obj.target)
+                    if execute
+                    else None
+                ),
+                require_intent=True,
             )
             return eng.execute(compiled.plan)
 

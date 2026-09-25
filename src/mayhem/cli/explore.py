@@ -309,14 +309,15 @@ def explore(
 
     Generates a ranked queue of candidates from the compose topology, gates
     them for safety/feasibility, and executes up to --budget cells. Use
-    --dry-run to preview the queue without executing anything.
+    --dry-run to preview the queue without executing anything; --execute is
+    the explicit approval that lets a cell mutate the target.
 
     \b
     Examples:
-      mayhem explore --compose docker-compose.yml
+      mayhem explore --compose docker-compose.yml --execute
       mayhem explore --dry-run --budget 5
-      mayhem explore --supervised --deadline 30m
-      mayhem explore --json --quiet
+      mayhem explore --supervised --deadline 30m --execute
+      mayhem explore --json --quiet --execute
     """
     if plan_only and execute:
         raise click.UsageError("--plan-only and --execute are mutually exclusive")
@@ -325,8 +326,16 @@ def explore(
 
         os.environ["NO_COLOR"] = "1"
 
-    graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
+    # v0.9.0: a live explore run injects faults. The ranked queue is still a
+    # preview (--dry-run/--plan-only), but executing a cell needs the explicit
+    # --execute approval (or the documented compatibility switch).
+    from mayhem.domain.execution_intent import require_explicit_approval
+
+    if not dry_run and not plan_only:
+        require_explicit_approval("explore", approved=execute or obj.dry_run)
+
+    graph, resolved_compose = _graph_from(ctx, compose)
     db_path = db or obj.db
     store = open_store(db_path)
     coverage = SQLiteCoverageRepository(store)
@@ -385,6 +394,9 @@ def explore(
         coverage=coverage,
         engine_name=selected_engine() or "podman",
         live_graph=lambda: build_graph(resolved_compose),
+        # Each cell is its own plan, so it gets its own approval binding.
+        require_intent=execute,
+        intent_target=obj.target or "",
     )
 
     from mayhem.controller.explore_flow import run_explore

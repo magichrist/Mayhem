@@ -26,6 +26,12 @@ CODE_EXIT_MAP: dict[str, ExitCode] = {
     "stale_plan": ExitCode.VALIDATION_ERROR,
     "blocked_topology": ExitCode.VALIDATION_ERROR,
     "unavailable_engine": ExitCode.TOOLKIT_ERROR,
+    # v0.9.0 execution-intent refusals. No new exit code is introduced: an
+    # unapproved mutation is a safety refusal, and the enum is a frozen public
+    # contract.
+    "execution_intent_required": ExitCode.SAFETY_REFUSAL,
+    "approval_expired": ExitCode.SAFETY_REFUSAL,
+    "execution_intent_mismatch": ExitCode.SAFETY_REFUSAL,
 }
 
 
@@ -112,11 +118,19 @@ def map_exception_to_error(exc: BaseException) -> MayhemCliError:
         TargetDriftError,
         TargetResolutionError,
     )
+    from mayhem.domain.execution_intent import ExecutionIntentRefused
     from mayhem.domain.maniac import ManiacError
     from mayhem.toolkit.tool_runner import ToolError
 
     if isinstance(exc, MayhemCliError):
         return exc
+    if isinstance(exc, ExecutionIntentRefused):
+        return MayhemCliError(
+            code=exc.code,
+            message=str(exc),
+            details=exc.details,
+            remediation=exc.remediation,
+        )
     if isinstance(exc, CommandResolutionError):
         code = "ambiguous_command" if exc.candidates else "usage_error"
         return MayhemCliError(

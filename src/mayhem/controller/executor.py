@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.checks import SteadyStateCheck
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
+    from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.domain.identity import ProcessRuntimeIdentity
     from mayhem.domain.resolution import ResolvedPodTarget
     from mayhem.domain.runtime_context import RuntimeContext
@@ -428,6 +429,8 @@ class RunEngine:
         k8s_context: str | None = None,
         recovery_grace: float = 300.0,
         runtime: RuntimeContext | None = None,
+        intent: ExecutionIntent | None = None,
+        require_intent: bool = False,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -448,6 +451,14 @@ class RunEngine:
         # acquired.
         self._runtime = runtime
         self._engine = reconcile_engine(engine, runtime)
+        # v0.9.0: execution is an approved act. When ``require_intent`` is set
+        # the engine refuses to open a run — and therefore refuses to acquire
+        # any lease — until ``intent`` is a current, matching approval. Both
+        # default to off/None so a direct programmatic construction (unit
+        # tests, in-process callers) keeps working exactly as before; every
+        # CLI surface opts in explicitly.
+        self._intent = intent
+        self._require_intent = require_intent
         self._on_event = on_event  # in-process observer; invoked for every journaled event
         # Verified-inert injections: {(fault_id, container): reason}. The engine
         # skips those steps as "bypass due to <reason>" instead of failing the
@@ -472,6 +483,10 @@ class RunEngine:
     # -- public -----------------------------------------------------------------------
 
     def execute(self, plan: ExecutionPlan) -> RunResult:
+        if self._require_intent:
+            # The gate sits *before* _open_run so an unapproved plan can never
+            # reach the store, and therefore can never reach a lease.
+            self._require_execution_intent(plan)
         if self._safety is not None:
             graph = self._live_graph() if self._live_graph else None
             if graph is not None:
@@ -596,6 +611,23 @@ class RunEngine:
         return tuple(recovered)
 
     # -- internals --------------------------------------------------------------------
+
+    def _require_execution_intent(self, plan: ExecutionPlan) -> ExecutionIntent | None:
+        """Validate the approval that authorizes this run (v0.9.0).
+
+        Delegates to the shared domain gate so every mutating surface refuses
+        for the same reason with the same code. ``None`` means the run went
+        ahead through the documented compatibility switch.
+        """
+        from mayhem.domain.execution_intent import require_execution_intent
+        from mayhem.domain.preflight import plan_hash_for
+
+        return require_execution_intent(
+            self._intent,
+            plan_hash=plan_hash_for(plan),
+            engine=self._engine or "",
+            action="run",
+        )
 
     def _abort_requested(self) -> bool:
         """True when cancellation has been requested at any ladder level.

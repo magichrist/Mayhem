@@ -66,7 +66,7 @@ cd examples/testCase
 docker compose up -d                          # 0. bring the stack up
 mayhem discover topology --compose docker-compose.yml   # 1. blueprint → live graph
 mayhem prepare validate mayhem.yaml --compose docker-compose.yml  # 2. compile + safety gates (injects nothing)
-mayhem run mayhem.yaml --compose docker-compose.yml      # 3. inject → observe → recover → verdict
+mayhem run mayhem.yaml --compose docker-compose.yml --execute  # 3. inject → observe → recover → verdict
 ```
 
 Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or
@@ -91,7 +91,7 @@ for the authored target syntax.
 A clean run needs no interpretation — the verdict is one line away.
 
 ```
-$ mayhem run mayhem.yaml --compose docker-compose.yml
+$ mayhem run mayhem.yaml --compose docker-compose.yml --execute
 
 # Run r-process-drill-8f2a1c
 **status**: completed
