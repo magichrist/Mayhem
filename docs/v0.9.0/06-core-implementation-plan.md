@@ -22,6 +22,8 @@
 
 ## Task 1: Establish v0.9.0 truth baseline
 
+**Status:** DONE — commits `45e5c93`, `916d378`; review approved.
+
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/reference/cli.md`
@@ -34,13 +36,13 @@
 **Interfaces:**
 - Produces: a checked command registry, version metadata, and documented install dependency contract.
 
-- [ ] Write a test that imports the active command registry and compares root/group names against the CLI reference command inventory.
-- [ ] Add a test that asserts the default runtime dependency list includes `kubernetes` and that docs contain no `mayhem[k8s]` install instruction.
-- [ ] Run `python -m pytest tests/unit/test_release_contract.py -q`; expect the new tests to fail against stale references.
-- [ ] Reconcile the command reference, README, Justfile recipes, provider version, fallback version, and changelog with `src/mayhem/cli/command_registry.py` and `pyproject.toml`.
-- [ ] Run `python -m pytest tests/unit/test_release_contract.py -q`; expect PASS.
-- [ ] Run `python -m build --sdist --wheel`; expect both artifacts.
-- [ ] Commit with `docs: establish v0.9.0 release truth baseline`.
+- [x] Write a test that imports the active command registry and compares root/group names against the CLI reference command inventory.
+- [x] Add a test that asserts the default runtime dependency list includes `kubernetes` and that docs contain no `mayhem[k8s]` install instruction.
+- [x] Run `python -m pytest tests/unit/test_release_contract.py -q`; expect the new tests to fail against stale references.
+- [x] Reconcile the command reference, README, Justfile recipes, provider version, fallback version, and changelog with `src/mayhem/cli/command_registry.py` and `pyproject.toml`.
+- [x] Run `python -m pytest tests/unit/test_release_contract.py -q`; expect PASS.
+- [x] Run `python -m build --sdist --wheel`; expect both artifacts.
+- [x] Commit with `docs: establish v0.9.0 release truth baseline`.
 
 ## Task 2: Add resolved runtime context
 
