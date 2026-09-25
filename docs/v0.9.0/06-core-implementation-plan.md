@@ -46,6 +46,8 @@
 
 ## Task 2: Add resolved runtime context
 
+**Status:** DONE — commits `5afd916`, `d370798`, `88aec04`, `a238ab4`; review approved.
+
 **Files:**
 - Create: `src/mayhem/domain/runtime_context.py`
 - Modify: `src/mayhem/cli/lifecycle.py`
@@ -59,13 +61,13 @@
 - Produces: `RuntimeContext(engine, target_profile, namespace, context, runtime_version, provider_version, topology_fingerprint)`.
 - Consumes: explicit target selection and engine selection once during application preflight.
 
-- [ ] Write tests proving an ambiguous engine is refused before planning and an explicit engine remains unchanged through preflight and execution.
-- [ ] Write tests proving namespace/context and topology fingerprint are preserved in the execution handoff.
-- [ ] Run the focused tests and expect missing context behavior to fail.
-- [ ] Implement the immutable context and replace raw engine re-resolution in lifecycle/services/topology paths.
-- [ ] Update executor and preflight signatures to accept the context without breaking existing simple command callers.
-- [ ] Run `python -m pytest tests/unit/test_runtime_context.py tests/unit/test_cli_lifecycle.py -q`; expect PASS.
-- [ ] Commit with `feat: resolve one runtime context per plan`.
+- [x] Write tests proving an ambiguous engine is refused before planning and an explicit engine remains unchanged through preflight and execution.
+- [x] Write tests proving namespace/context and topology fingerprint are preserved in the execution handoff.
+- [x] Run the focused tests and expect missing context behavior to fail.
+- [x] Implement the immutable context and replace raw engine re-resolution in lifecycle/services/topology paths.
+- [x] Update executor and preflight signatures to accept the context without breaking existing simple command callers.
+- [x] Run `python -m pytest tests/unit/test_runtime_context.py tests/unit/test_cli_lifecycle.py -q`; expect PASS.
+- [x] Commit with `feat: resolve one runtime context per plan`.
 
 ## Task 3: Require explicit execution intent
 
