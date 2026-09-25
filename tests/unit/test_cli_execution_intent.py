@@ -38,6 +38,22 @@ from mayhem.infra.store import Store
 TESTCASE = Path(__file__).resolve().parents[2] / "examples" / "testCase"
 COMPOSE_FILE = TESTCASE / "docker-compose.yml"
 
+
+def _minimal_plan() -> ExecutionPlan:
+    from mayhem.domain.experiments import ExperimentKind, PlannedStep, Wait
+
+    return ExecutionPlan(
+        run_id="r-intent-pipe",
+        kind=ExperimentKind.DRILL,
+        steps=(PlannedStep(id="s1", seq=1, raw_action=Wait(timeout=1.0)),),
+        config_snapshot_id="c1",
+        topology_snapshot_id="t1",
+        environment_fingerprint="fp-1",
+    )
+
+
+_MINIMAL_PLAN = _minimal_plan()
+
 SPEC = """\
 kind: drill
 name: pause-drill
@@ -57,6 +73,42 @@ def _spec(tmp_path: Path) -> Path:
     path = tmp_path / "spec.yaml"
     path.write_text(SPEC)
     return path
+
+
+def _module_source(name: str) -> str:
+    import importlib
+    import inspect
+
+    return inspect.getsource(importlib.import_module(name))
+
+
+def _cli_imports(name: str) -> set[str]:
+    """Every ``mayhem.cli.*`` module ``name`` imports, at any level."""
+    import ast
+
+    modules: set[str] = set()
+    for node in ast.walk(ast.parse(_module_source(name))):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+    return {module for module in modules if module.startswith("mayhem.cli")}
+
+
+def _env_reads(name: str) -> set[str]:
+    """Attribute accesses on ``os.environ`` / ``os.getenv`` inside ``name``."""
+    import ast
+
+    reads: set[str] = set()
+    for node in ast.walk(ast.parse(_module_source(name))):
+        if not isinstance(node, ast.Attribute) or node.attr not in {"environ", "getenv"}:
+            continue
+        base = node.value
+        if isinstance(base, ast.Name) and base.id == "os":
+            reads.add(f"os.{node.attr}")
+        elif isinstance(base, ast.Attribute) and base.attr == "os":
+            reads.add(f"os.{node.attr}")
+    return reads
 
 
 def _no_implicit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -573,6 +625,114 @@ class TestCompatibilitySwitch:
                 ]
             )
         assert write_evidence.call_args.kwargs["intent"] is None
+
+    def test_the_implicit_maniac_mints_no_intent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An implicit run has no approval to record, so it records none.
+
+        ``maniac`` minted an intent unconditionally, which made an implicit
+        (compatibility-switch) maniac look approved in its evidence envelope —
+        contradicting the documented ``execution_intent: null`` and the
+        behaviour of ``run`` and ``campaign run``.
+        """
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        engine = _stub_engine()
+        with (
+            patch("mayhem.cli.services.RunEngine", return_value=engine),
+            patch("mayhem.cli.lifecycle._write_evidence_after_run") as write_evidence,
+            patch("mayhem.cli.lifecycle.engine_for", return_value=engine) as engine_for,
+        ):
+            rc = main(
+                [
+                    "--db",
+                    str(tmp_path / "maniac.db"),
+                    "--skip-gate",
+                    "maniac",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                ]
+            )
+        assert rc == int(ExitCode.SUCCESS)
+        assert engine_for.call_args.kwargs["intent"] is None
+        assert write_evidence.call_args.kwargs["intent"] is None
+
+    def test_approved_maniac_still_mints_an_intent(self, tmp_path: Path) -> None:
+        engine = _stub_engine()
+        with (
+            patch("mayhem.cli.services.RunEngine", return_value=engine),
+            patch("mayhem.cli.lifecycle._write_evidence_after_run") as write_evidence,
+            patch("mayhem.cli.lifecycle.engine_for", return_value=engine) as engine_for,
+        ):
+            main(
+                [
+                    "--db",
+                    str(tmp_path / "maniac.db"),
+                    "--skip-gate",
+                    "maniac",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                    "--execute",
+                ]
+            )
+        intent = engine_for.call_args.kwargs["intent"]
+        assert intent is not None
+        assert intent.plan_hash
+        assert write_evidence.call_args.kwargs["intent"] is intent
+
+
+class TestTheControllerDoesNotResolveTheSwitch:
+    """``allow_implicit`` is resolved at the CLI edge and passed in (M2).
+
+    The controller must not import the CLI layer or read ``os.environ``; if it
+    did, the answer to "is the legacy switch on?" could differ between the
+    command and the engine that enforces it.
+    """
+
+    def test_executor_imports_no_cli_module(self) -> None:
+        assert _cli_imports("mayhem.controller.executor") == set()
+
+    def test_executor_reads_no_environment(self) -> None:
+        assert _env_reads("mayhem.controller.executor") == set()
+
+    def test_cell_runner_does_not_import_the_cli_app_layer(self) -> None:
+        # mayhem.cli.services is pre-existing coupling (the runner deliberately
+        # reuses the canonical run path); mayhem.cli.app is the forbidden one.
+        assert "mayhem.cli.app" not in _cli_imports("mayhem.controller.cell_runner")
+
+    def test_gate_refuses_by_default_even_with_the_switch_in_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        from mayhem.cli.services import engine_for
+        from mayhem.domain.execution_intent import ExecutionIntentRefused
+
+        store = Store.open_migrated(tmp_path / "engine.db")
+        try:
+            engine = engine_for(store, "podman", require_intent=True)
+            with pytest.raises(ExecutionIntentRefused) as excinfo:
+                engine._require_execution_intent(_MINIMAL_PLAN)
+            assert excinfo.value.code == INTENT_REQUIRED
+        finally:
+            store.close()
+
+    def test_the_passed_in_answer_is_what_the_gate_uses(self, tmp_path: Path) -> None:
+        from mayhem.cli.services import engine_for
+        from mayhem.domain.execution_intent import ExecutionIntentRefused
+
+        store = Store.open_migrated(tmp_path / "engine.db")
+        try:
+            strict = engine_for(store, "podman", require_intent=True)
+            lenient = engine_for(store, "podman", require_intent=True, allow_implicit=True)
+            # The switch is not in the environment here at all: only the
+            # argument decides, and the default (nobody said) still refuses.
+            assert lenient._require_execution_intent(_MINIMAL_PLAN) is None
+            with pytest.raises(ExecutionIntentRefused):
+                strict._require_execution_intent(_MINIMAL_PLAN)
+        finally:
+            store.close()
 
 
 class TestRefusalCodesAreStable:

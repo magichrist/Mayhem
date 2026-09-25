@@ -431,6 +431,7 @@ class RunEngine:
         runtime: RuntimeContext | None = None,
         intent: ExecutionIntent | None = None,
         require_intent: bool = False,
+        allow_implicit: bool = False,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -453,12 +454,15 @@ class RunEngine:
         self._engine = reconcile_engine(engine, runtime)
         # v0.9.0: execution is an approved act. When ``require_intent`` is set
         # the engine refuses to open a run — and therefore refuses to acquire
-        # any lease — until ``intent`` is a current, matching approval. Both
-        # default to off/None so a direct programmatic construction (unit
-        # tests, in-process callers) keeps working exactly as before; every
-        # CLI surface opts in explicitly.
+        # any lease — until ``intent`` is a current, matching approval. All
+        # three default to off/None/False so a direct programmatic
+        # construction (unit tests, in-process callers) keeps working exactly
+        # as before; every CLI surface opts in explicitly and passes the
+        # already-resolved ``allow_implicit`` from the application layer —
+        # this class reads no environment and imports no CLI module.
         self._intent = intent
         self._require_intent = require_intent
+        self._allow_implicit = allow_implicit
         self._on_event = on_event  # in-process observer; invoked for every journaled event
         # Verified-inert injections: {(fault_id, container): reason}. The engine
         # skips those steps as "bypass due to <reason>" instead of failing the
@@ -616,12 +620,13 @@ class RunEngine:
         """Validate the approval that authorizes this run (v0.9.0).
 
         Delegates to the shared domain gate so every mutating surface refuses
-        for the same reason with the same code. The environment lookup for the
-        documented compatibility switch belongs to the application layer, so
-        it is asked here and passed in — the domain stays pure.
-        ``None`` means the run went ahead through that switch.
+        for the same reason with the same code. ``allow_implicit`` is *passed
+        in* by the application layer: the controller neither reads the
+        environment nor imports the CLI, so the answer to "is the legacy
+        compatibility switch on?" is resolved once, at the edge, and cannot
+        drift between layers. ``None`` means the run went ahead through that
+        switch.
         """
-        from mayhem.cli.app import implicit_execution_allowed
         from mayhem.domain.execution_intent import require_execution_intent
         from mayhem.domain.preflight import plan_hash_for
 
@@ -630,7 +635,7 @@ class RunEngine:
             plan_hash=plan_hash_for(plan),
             engine=self._engine or "",
             action="run",
-            allow_implicit=implicit_execution_allowed(),
+            allow_implicit=self._allow_implicit,
         )
 
     def _abort_requested(self) -> bool:

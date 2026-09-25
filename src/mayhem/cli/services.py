@@ -535,6 +535,7 @@ def engine_for(
     runtime: RuntimeContext | None = None,
     intent: ExecutionIntent | None = None,
     require_intent: bool = False,
+    allow_implicit: bool = False,
 ) -> RunEngine:
     """Build the :class:`RunEngine` for a run.
 
@@ -556,6 +557,13 @@ def engine_for(
     programmatic construction keeps working; every CLI surface passes
     ``require_intent=True`` so an unapproved plan is refused before a run row
     is opened.
+
+    ``allow_implicit`` is the *already resolved* answer to "is the documented
+    ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1`` compatibility switch on?". It is a
+    parameter rather than a lookup so the environment is read once, at the CLI
+    edge (:func:`mayhem.cli.app.implicit_execution_allowed`), and the controller
+    never touches ``os.environ``. The default ``False`` is the safe answer: a
+    caller that says nothing requires an approval.
     """
     resolved_engine = reconcile_engine(engine, runtime) or "podman"
     return RunEngine(
@@ -570,6 +578,7 @@ def engine_for(
         runtime=runtime,
         intent=intent,
         require_intent=require_intent,
+        allow_implicit=allow_implicit,
     )
 
 

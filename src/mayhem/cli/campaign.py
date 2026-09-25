@@ -580,6 +580,9 @@ def run_campaign(
     from mayhem.domain.execution_intent import require_explicit_approval
 
     obj = _ctx(ctx)
+    # Resolved once here, at the CLI edge, and threaded down: the controller
+    # reads no environment and imports no CLI module.
+    allow_implicit = implicit_execution_allowed()
     # A --dry-run invocation is a preview, so it needs no approval; the
     # structural return before the status UPDATE and the experiment loop is
     # what guarantees it cannot mutate the campaign or the target. Only a
@@ -588,7 +591,7 @@ def run_campaign(
         require_explicit_approval(
             "campaign run",
             approved=execute,
-            allow_implicit=implicit_execution_allowed(),
+            allow_implicit=allow_implicit,
         )
     db = db_opt or obj.db
     store = open_store(db)
@@ -683,6 +686,7 @@ def run_campaign(
                     else None
                 ),
                 require_intent=True,
+                allow_implicit=allow_implicit,
             )
             return eng.execute(compiled.plan)
 

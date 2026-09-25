@@ -1007,6 +1007,13 @@ def run(
     as_json: bool,
 ) -> None:
     obj = _ctx(ctx)
+    # The documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch is resolved
+    # exactly once, here at the CLI edge. Everything below — the implicit-path
+    # decision and every engine built for this invocation — takes that one
+    # answer; nothing downstream re-reads the environment.
+    from mayhem.cli.app import implicit_execution_allowed
+
+    allow_implicit = implicit_execution_allowed()
     target_name = run_target or obj.target
     runtime = _runtime_context(
         engine=run_engine or _resolve_engine_from_state(),
@@ -1113,6 +1120,7 @@ def run(
                         runtime=runtime,
                         intent=plan_intent,
                         require_intent=True,
+                        allow_implicit=allow_implicit,
                     )
                     result = eng.execute(compiled_plan)
                     preflight2 = _preflight_for_run(
@@ -1212,6 +1220,7 @@ def run(
                     runtime=runtime,
                     intent=stored_intent,
                     require_intent=True,
+                    allow_implicit=allow_implicit,
                 )
                 result = eng.execute(loaded_plan)
                 _write_evidence_after_run(
@@ -1279,16 +1288,15 @@ def run(
         _emit_preflight(preflight, as_json)
         # v0.9.0: the pre-v0.9.0 compatibility path — a bare
         # ``mayhem run SPEC`` that executed anyway — now requires the
-        # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch. Without it the
-        # command previews, exactly like --dry-run, and never reaches a lease.
-        from mayhem.cli.app import implicit_execution_allowed
-
+        # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch (resolved once
+        # at the top of this command). Without it the command previews,
+        # exactly like --dry-run, and never reaches a lease.
         implicit = (
             experiment is not None
             and diff_path is None
             and from_plan is None
             and plan_id is None
-            and implicit_execution_allowed()
+            and allow_implicit
         )
         if not execute and not implicit and not obj.dry_run:
             click.echo("plan ready; pass --execute to run", err=True)
@@ -1351,6 +1359,7 @@ def run(
             runtime=runtime,
             intent=run_intent,
             require_intent=True,
+            allow_implicit=allow_implicit,
         )
         result = engine_obj.execute(compiled.plan)
         _write_evidence_after_run(
@@ -1467,10 +1476,18 @@ def maniac(
     global ``--dry-run`` is a preview: it needs no approval, reports how many
     rounds were drawn, and returns before the engine — so it can never inject,
     whatever else was passed.
+
+    An intent is minted for ``--execute`` runs only. A run that proceeded
+    through the compatibility switch records ``execution_intent: null`` on its
+    evidence envelope, so an implicit maniac is never mistaken for an approved
+    one.
     """
     obj = _ctx(ctx)
     from mayhem.cli.app import implicit_execution_allowed
 
+    # Resolved once here, at the CLI edge, and reused for the gate below and
+    # for the engine; nothing downstream re-reads the environment.
+    allow_implicit = implicit_execution_allowed()
     # A --dry-run invocation is a preview, so it needs no approval; the
     # structural return before the engine below is what guarantees it cannot
     # inject. Only a reachable mutation is gated, and --dry-run is not one.
@@ -1478,7 +1495,7 @@ def maniac(
         require_explicit_approval(
             "maniac",
             approved=execute,
-            allow_implicit=implicit_execution_allowed(),
+            allow_implicit=allow_implicit,
         )
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
@@ -1573,8 +1590,17 @@ def maniac(
         # NB: the RunEngine is a local named ``run_engine`` — the resolved
         # context owns the engine *name*, and rebinding it here used to leak a
         # RunEngine object into the preflight/evidence ``engine: str`` fields.
-        maniac_intent = _execution_intent(
-            compiled.plan, engine=engine, target=obj.target, break_glass=not _gate_enabled()
+        # An intent is minted only for an *approved* run. Reaching this line
+        # without --execute means the compatibility switch allowed an implicit
+        # run, and an implicit run has no approval to record — so the evidence
+        # carries ``execution_intent: null``, exactly like an implicit
+        # `mayhem run` or `campaign run`.
+        maniac_intent = (
+            _execution_intent(
+                compiled.plan, engine=engine, target=obj.target, break_glass=not _gate_enabled()
+            )
+            if execute
+            else None
         )
         run_engine = engine_for(
             store,
@@ -1586,6 +1612,7 @@ def maniac(
             runtime=runtime,
             intent=maniac_intent,
             require_intent=True,
+            allow_implicit=allow_implicit,
         )
         result = run_engine.execute(compiled.plan)
         try:

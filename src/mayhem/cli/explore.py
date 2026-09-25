@@ -407,6 +407,9 @@ def explore(
         # Each cell is its own plan, so it gets its own approval binding.
         require_intent=execute,
         intent_target=obj.target or "",
+        # Resolved here, at the CLI edge, and passed in: the controller neither
+        # reads the environment nor imports this layer.
+        allow_implicit=implicit_execution_allowed(),
     )
 
     from mayhem.controller.explore_flow import run_explore

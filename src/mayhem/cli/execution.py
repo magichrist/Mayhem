@@ -91,6 +91,20 @@ def build_execution_intent(
     fingerprint: str = "",
     engine: str = "",
 ) -> dict[str, Any]:
+    """Legacy evidence-shaped intent record.
+
+    .. deprecated:: 0.9.0
+        This is the *record* of an approval as it appeared in an evidence
+        envelope, not the contract that gates execution. It has no call site in
+        mayhem and nothing validates against it, so it cannot refuse anything.
+        The gate is :func:`mayhem.domain.execution_intent.require_execution_intent`
+        over :class:`mayhem.domain.execution_intent.ExecutionIntent`; the
+        run's real intent now travels on the evidence envelope as its
+        ``execution_intent`` field, produced by
+        :func:`mayhem.infra.evidence.build_evidence`.
+
+        Kept importable for external callers; do not add new ones.
+    """
     return {
         "action": action,
         "target_profile": target_profile,

@@ -112,6 +112,7 @@ class CellRunner:
         campaign_id: str = "",
         require_intent: bool = False,
         intent_target: str = "",
+        allow_implicit: bool = False,
     ) -> None:
         self._store = store
         self._graph = graph
@@ -124,8 +125,11 @@ class CellRunner:
         # v0.9.0: a live cell mutates the target, so it is gated by the same
         # execution-intent contract as ``mayhem run``. The intent is minted
         # per cell because each candidate compiles its own plan.
+        # ``allow_implicit`` is resolved by the application layer and passed in;
+        # this class reads no environment and imports no CLI module.
         self._require_intent = require_intent
         self._intent_target = intent_target
+        self._allow_implicit = allow_implicit
 
     def run(self, candidate: ExperimentCandidate) -> CellRunResult:
         """Execute the candidate through the canonical ``run`` path.
@@ -166,6 +170,7 @@ class CellRunner:
             recovery_grace=self._prepared.recovery_grace,
             intent=intent,
             require_intent=self._require_intent,
+            allow_implicit=self._allow_implicit,
         )
         result = engine.execute(plan)
 
