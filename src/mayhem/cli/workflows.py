@@ -42,7 +42,7 @@ def engines() -> None:
             else "--podman=false"
             if desc.name == "docker"
             else "--kubernetes"
-        )  # noqa: E501
+        )
         engines_payload.append(
             {
                 "name": desc.name,
@@ -64,7 +64,7 @@ def engines() -> None:
                 else "--podman"
                 if name == "podman"
                 else "--podman=false"
-            )  # noqa: E501
+            )
             engines_payload.append(
                 {
                     "name": name,

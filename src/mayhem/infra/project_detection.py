@@ -18,7 +18,7 @@ K8S_KINDS = {
     "ReplicaSet",
     "ConfigMap",
     "Ingress",
-}  # noqa: E501
+}
 
 
 @dataclass(frozen=True, slots=True)
