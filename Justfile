@@ -12,6 +12,7 @@ _compose   := _testcase / "docker-compose.yml"
 _config    := _testcase / "mayhem.yaml"
 _spec      := _testcase / "mayhem.yaml"
 _db        := ".mayhem/e2e.db"
+_workers   := "5"
 
 # ── setup ────────────────────────────────────────────────────────────────────
 
@@ -169,7 +170,7 @@ stack-down:
 # Run unit tests
 test-unit:
     @echo "=== unit tests ==="
-    python3 -m pytest tests/unit/ -v --tb=short
+    python3 -m pytest tests/unit/ -n {{ _workers }} --dist loadfile -v --tb=short
     @echo "✓ unit tests"
 
 # Run e2e tests (in-process, no containers needed)
