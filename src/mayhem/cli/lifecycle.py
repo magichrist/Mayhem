@@ -524,15 +524,15 @@ def _runtime_context(
     engine: str | None,
     target: str | None,
     config_path: str | None,
-    graph: TopologyGraph | None = None,
 ) -> RuntimeContext:
-    """Resolve the runtime once for a command and stamp the topology fingerprint.
+    """Resolve the runtime once for a command.
 
-    Every downstream step (planning, preflight, execution) takes this object
-    instead of re-deriving an engine from a flag.
+    Every downstream step (discovery, planning, preflight, execution) takes
+    this object instead of re-deriving an engine from a flag. The topology
+    fingerprint is attached afterwards by
+    :func:`with_topology_fingerprint`, once the graph exists.
     """
-    runtime = resolve_runtime_context(engine=engine, target=target, config_path=config_path)
-    return with_topology_fingerprint(runtime, graph)
+    return resolve_runtime_context(engine=engine, target=target, config_path=config_path)
 
 
 def _preflight_for_run(
@@ -850,6 +850,7 @@ def plan(
             prepared=prepared,
             plan=compiled.plan,
             target=obj.target,
+            config_path=obj.config,
             engine=runtime.engine,
             runtime=runtime,
         )
@@ -1446,6 +1447,7 @@ def maniac(
                 prepared=prepared,
                 plan=compiled.plan,
                 target=obj.target,
+                config_path=obj.config,
                 engine=engine,
                 runtime=runtime,
             )

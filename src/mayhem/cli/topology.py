@@ -76,23 +76,34 @@ def discover(  # noqa: PLR0912, PLR0915
 ) -> None:
     """Run the topology provider pipeline and print graph + drift JSON."""
     from mayhem.cli.app import _STATE
-    from mayhem.cli.services import resolve_runtime_context, with_topology_fingerprint
+    from mayhem.cli.services import (
+        resolve_runtime_context,
+        with_runtime_version,
+        with_topology_fingerprint,
+    )
     from mayhem.domain.errors import InvariantViolationError
     from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
     from mayhem.topology.providers.compose import ComposeFileProvider
     from mayhem.topology.service import TopologyService
 
     resolved = _resolve_compose(compose_path)
-    # One resolution for the whole command: engine, versions, and the topology
-    # fingerprint all come from this context (v0.9.0). ``discover`` refuses an
-    # unavailable engine rather than falling back, so it passes
-    # ``unavailable_fallback=None``.
+    # The target and config document are resolved *first* so the runtime
+    # context and the Kubernetes profile lookup below read exactly the same
+    # inputs (v0.9.0 — one resolution, not two).
+    selected_target = kube_target
+    if selected_target is None and ctx.obj is not None:
+        selected_target = getattr(ctx.obj, "target", None)
+    config_path = getattr(ctx.obj, "config", None) if ctx.obj is not None else None
     explicit_engine = (
         runtime if runtime is not None else _resolve_engine(str(_STATE.get("engine", "")))
     )
+    # ``discover`` refuses an unavailable engine rather than falling back, so
+    # it passes ``unavailable_fallback=None``.
     try:
         selection = resolve_runtime_context(
             engine=explicit_engine,
+            target=selected_target,
+            config_path=config_path,
             unavailable_fallback=None,
         )
     except InvariantViolationError as exc:
@@ -110,12 +121,10 @@ def discover(  # noqa: PLR0912, PLR0915
         from mayhem.agents.k8s_resolve import K8sEngineMode, resolve_k8s_target_context
         from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
 
-        selected_target = kube_target
-        if selected_target is None and ctx.obj is not None:
-            selected_target = getattr(ctx.obj, "target", None)
-        profiles = load_profiles_from_mayhem_yaml(
-            getattr(ctx.obj, "config", None) if ctx.obj is not None else None
-        )
+        # The profile is re-read only to validate the selection the runtime
+        # context already made (ambiguity / engine mismatch), never to
+        # re-derive its context or namespace.
+        profiles = load_profiles_from_mayhem_yaml(config_path)
         profile = profiles.get(selected_target) if selected_target is not None else None
         if selected_target is None and len(profiles) > 1:
             raise click.ClickException(
@@ -126,9 +135,9 @@ def discover(  # noqa: PLR0912, PLR0915
                 f"target profile {selected_target!r} uses engine {profile.engine!r}, not kubernetes"
             )
         resolved_ctx = resolve_k8s_target_context(
-            profile_context=profile.context if profile is not None else None,
+            profile_context=selection.context,
             explicit_context=kube_context,
-            profile_namespace=profile.namespace if profile is not None else None,
+            profile_namespace=selection.namespace,
             explicit_namespace=kube_namespace,
             profile_workload_selector=profile.workload_selector if profile is not None else None,
             profile_capability_policy=profile.capability_policy if profile is not None else None,
@@ -258,7 +267,9 @@ def discover(  # noqa: PLR0912, PLR0915
         )
 
     result = TopologyService().discover(providers)
-    selection = with_topology_fingerprint(selection, result.graph)
+    # The engine version is only probed here, where it is rendered — the
+    # subprocess cost is not paid by commands that never display it.
+    selection = with_runtime_version(with_topology_fingerprint(selection, result.graph))
     payload: dict[str, object] = {
         "graph": result.graph.model_dump(mode="json"),
         "drift": result.drift_report,

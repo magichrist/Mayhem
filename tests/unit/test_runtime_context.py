@@ -68,16 +68,22 @@ def _graph() -> TopologyGraph:
     )
 
 
-def _preflight(*, engine: str, runtime: RuntimeContext | None) -> Any:
+def _preflight(
+    *,
+    engine: str,
+    runtime: RuntimeContext | None,
+    config_path: str | None = None,
+    target: str | None = None,
+) -> Any:
     return build_preflight(
         spec_path=None,
         compose=None,
         graph=None,
         store=None,
-        config_path=None,
+        config_path=config_path,
         profile=None,
         allow_critical=False,
-        target=runtime.target_profile if runtime is not None else None,
+        target=target if target is not None else (runtime.target_profile if runtime else None),
         engine=engine,
         plan=_plan(),
         safety=None,
@@ -465,3 +471,650 @@ def test_maniac_never_rebinds_the_engine_name_to_a_runengine(
     assert evidence, "maniac never wrote evidence"
     assert all(isinstance(engine, str) for engine in evidence), evidence
     assert set(evidence) == {"podman"}
+
+
+# ---------------------------------------------------------------------------
+# The preflight cross-check is a check, not a second resolution (M3/M4)
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_prefers_the_resolved_context_over_a_reread_profile(
+    tmp_path: Path,
+) -> None:
+    """The ``runtime`` branch in ``build_preflight`` is live and authoritative.
+
+    The same config document is handed to *both* the resolver and the
+    preflight cross-check, and they deliberately disagree: the context wins, so
+    a re-read can never re-derive context/namespace.
+    """
+    config = tmp_path / "mayhem.yaml"
+    config.write_text(K8S_CONFIG)
+    runtime = RuntimeContext(
+        engine="kubernetes",
+        target_profile="dev",
+        context="resolved-ctx",
+        namespace="resolved-ns",
+    )
+    preflight = _preflight(
+        engine="kubernetes", runtime=runtime, config_path=str(config), target="dev"
+    )
+    assert preflight.k8s_context == "resolved-ctx"
+    assert preflight.k8s_namespace == "resolved-ns"
+    assert preflight.k8s_target_scope == "dev"
+    # The cross-check still validates the selected profile.
+    assert preflight.blocked_items == ()
+    assert not any("ambiguous" in w for w in preflight.warnings)
+
+
+def test_preflight_cross_check_still_reports_ambiguity_with_a_context(
+    tmp_path: Path,
+) -> None:
+    """Two profiles and no ``--target`` still warns even when a context exists."""
+    config = tmp_path / "mayhem.yaml"
+    config.write_text(K8S_CONFIG)
+    runtime = RuntimeContext(engine="kubernetes", context="c", namespace="n")
+    preflight = _preflight(engine="kubernetes", runtime=runtime, config_path=str(config))
+    assert any("ambiguous" in w for w in preflight.warnings)
+
+
+def test_preflight_cross_check_still_blocks_a_non_kubernetes_profile(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "mayhem.yaml"
+    config.write_text("targets:\n  local:\n    engine: docker\n")
+    runtime = RuntimeContext(engine="kubernetes", target_profile="local")
+    preflight = _preflight(
+        engine="kubernetes", runtime=runtime, config_path=str(config), target="local"
+    )
+    assert any("is not a Kubernetes profile" in item for item in preflight.blocked_items)
+
+
+# ---------------------------------------------------------------------------
+# I4: engine/runtime disagreement is refused, not silently resolved
+# ---------------------------------------------------------------------------
+
+
+def test_engine_for_refuses_an_engine_runtime_mismatch() -> None:
+    from mayhem.cli.services import engine_for
+    from mayhem.infra.store import Store
+
+    runtime = RuntimeContext(engine="docker")
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        with pytest.raises(InvariantViolationError) as excinfo:
+            engine_for(store, "podman", runtime=runtime)
+    finally:
+        store.close()
+    assert excinfo.value.rule == "runtime_engine_mismatch"
+    assert "podman" in str(excinfo.value)
+    assert "docker" in str(excinfo.value)
+
+
+def test_engine_for_accepts_a_matching_engine_and_an_omitted_one() -> None:
+    from mayhem.cli.services import engine_for
+    from mayhem.infra.store import Store
+
+    runtime = RuntimeContext(engine="kubernetes", context="prod-eu")
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        matching = engine_for(store, "kubernetes", runtime=runtime)
+        assert matching._engine == "kubernetes"
+        # Omitted engine: the context is the only source of truth.
+        inferred = engine_for(store, runtime=runtime)
+        assert inferred._engine == "kubernetes"
+        assert inferred._k8s_context == "prod-eu"
+        # Legacy: no context at all keeps the historical podman default.
+        legacy = engine_for(store)
+        assert legacy._engine == "podman"
+    finally:
+        store.close()
+
+
+def test_runengine_refuses_an_engine_runtime_mismatch() -> None:
+    from mayhem.controller.executor import RunEngine
+    from mayhem.infra.lease_repository import SQLiteLeaseSink
+    from mayhem.infra.store import Store
+
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        with pytest.raises(InvariantViolationError) as excinfo:
+            RunEngine(
+                store,
+                SQLiteLeaseSink(store),
+                engine="docker",
+                runtime=RuntimeContext(engine="podman"),
+            )
+    finally:
+        store.close()
+    assert excinfo.value.rule == "runtime_engine_mismatch"
+
+
+def test_runengine_accepts_engine_only_and_runtime_only() -> None:
+    from mayhem.controller.executor import RunEngine
+    from mayhem.infra.lease_repository import SQLiteLeaseSink
+    from mayhem.infra.store import Store
+
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        sink = SQLiteLeaseSink(store)
+        assert RunEngine(store, sink, engine="podman")._engine == "podman"
+        assert RunEngine(store, sink)._engine is None
+        ctx = RunEngine(store, sink, runtime=RuntimeContext(engine="podman"))
+        assert ctx._engine == "podman"
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# I5: version probing is lazy, never a per-command tax
+# ---------------------------------------------------------------------------
+
+
+def test_resolution_does_not_probe_engine_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mayhem.cli.services import resolve_runtime_context
+    from mayhem.domain import runtime_adapter as ra
+
+    seen: list[str] = []
+
+    def _fake_detect() -> list[Any]:
+        seen.append("probed")
+        return [ra.describe_engine("podman").model_copy(update={"version": "podman 6.0.0"})]
+
+    monkeypatch.setattr(ra, "detect_available_engines", _fake_detect)
+    ctx = resolve_runtime_context(engine="podman")
+    assert seen == [], "resolve_runtime_context must not probe engine versions"
+    assert ctx.runtime_version is None
+
+
+def test_with_runtime_version_probes_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mayhem.cli.services import resolve_runtime_context, with_runtime_version
+    from mayhem.domain import runtime_adapter as ra
+
+    seen: list[str] = []
+
+    def _fake_detect() -> list[Any]:
+        seen.append("probed")
+        return [ra.describe_engine("podman").model_copy(update={"version": "podman 6.0.0"})]
+
+    monkeypatch.setattr(ra, "detect_available_engines", _fake_detect)
+    ctx = resolve_runtime_context(engine="podman")
+    assert seen == []
+    versioned = with_runtime_version(ctx)
+    assert seen == ["probed"]
+    assert versioned.runtime_version == "podman 6.0.0"
+    # The original context is untouched: the context is immutable.
+    assert ctx.runtime_version is None
+    # Kubernetes never probes container engines.
+    assert with_runtime_version(RuntimeContext(engine="kubernetes")).runtime_version is None
+    assert seen == ["probed"]
+
+
+# ---------------------------------------------------------------------------
+# I1: the ambiguity refusal is reachable from the CLI, and the unflagged
+#     compatibility default is pinned on purpose
+# ---------------------------------------------------------------------------
+
+
+def test_cli_discover_refuses_an_ambiguous_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``mayhem discover topology`` with two engines on PATH reaches the refusal."""
+    from click.testing import CliRunner
+
+    from mayhem.cli.topology import discover
+    from mayhem.domain import runtime_adapter as ra
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    monkeypatch.setattr(ra.shutil, "which", _both_engines)
+
+    result = CliRunner().invoke(discover, ["--compose", str(compose)])
+    assert result.exit_code != 0
+    assert "multiple engines available" in result.output
+    assert "--runtime" in result.output
+
+
+def test_cli_run_without_an_engine_flag_keeps_the_podman_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compatibility pin: an unflagged run does *not* refuse for ambiguity.
+
+    ``_resolve_engine_from_state()`` turns "no flag" into the explicit
+    selection ``podman``, so the automatic (ambiguity-refusing) path is never
+    reached by ``mayhem run``. This is a deliberate, pinned behaviour — change
+    it only with a product decision, and update this test with it.
+    """
+    from click.testing import CliRunner
+
+    from mayhem.cli import lifecycle
+    from mayhem.cli.app import app
+    from mayhem.domain import runtime_adapter as ra
+
+    spec = tmp_path / "spec.yaml"
+    spec.write_text(DRILL)
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    _install_compile_fakes(monkeypatch, _plan())
+    monkeypatch.setattr(ra.shutil, "which", _both_engines)
+    monkeypatch.setattr(lifecycle, "_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        lifecycle, "engine_for", lambda *a, **k: SimpleNamespace(execute=_run_result)
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--db",
+            str(tmp_path / "m.db"),
+            "run",
+            str(spec),
+            "--compose",
+            str(compose),
+            "--execute",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert "multiple engines available" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# I3: plan and run cross-check the *same* config document
+# ---------------------------------------------------------------------------
+
+AMBIGUOUS_K8S_CONFIG = """\
+targets:
+  prod:
+    engine: kubernetes
+    context: prod-eu
+    namespace: checkout
+  dev:
+    engine: kubernetes
+    context: dev-us
+    namespace: sandbox
+"""
+
+
+def _target_profile_signals(preflight: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The target-profile warnings/blocks a preflight reports."""
+    warnings = tuple(w for w in preflight.warnings if "target profile" in w)
+    blocks = tuple(b for b in preflight.blocked_items if "target profile" in b)
+    return warnings, blocks
+
+
+def _run_preflight_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Path, *args: str
+) -> Any:
+    """Drive a CLI command and return the last preflight it built."""
+    from click.testing import CliRunner
+
+    from mayhem.cli import lifecycle
+    from mayhem.cli.app import app
+
+    _install_compile_fakes(monkeypatch, _plan())
+    monkeypatch.setattr(lifecycle, "_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        lifecycle, "engine_for", lambda *a, **k: SimpleNamespace(execute=_run_result)
+    )
+    captured: list[Any] = []
+    real_build = build_preflight
+
+    def _record(**kwargs: Any) -> Any:
+        preflight = real_build(**kwargs)
+        captured.append(preflight)
+        return preflight
+
+    monkeypatch.setattr(lifecycle, "build_preflight", _record)
+    result = CliRunner().invoke(
+        app,
+        ["--db", str(tmp_path / f"{args[1]}.db"), "--config", str(config), *args],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert captured, f"{args[0]} never built a preflight"
+    return captured[-1]
+
+
+def test_plan_and_run_apply_the_same_target_profile_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--config <path>`` must reach the preflight cross-check in both commands.
+
+    Without ``config_path`` threading the preflight would fall back to the
+    default config document and the two commands would disagree about whether
+    the Kubernetes target profile is ambiguous.
+    """
+    config = tmp_path / "mayhem.yaml"
+    config.write_text(AMBIGUOUS_K8S_CONFIG)
+    spec = tmp_path / "spec.yaml"
+    spec.write_text(DRILL)
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+
+    plan_pf = _run_preflight_command(
+        tmp_path, monkeypatch, config, "-k", "prepare", "plan", str(spec), "-c", str(compose)
+    )
+    run_pf = _run_preflight_command(
+        tmp_path, monkeypatch, config, "-k", "run", str(spec), "-c", str(compose)
+    )
+
+    assert _target_profile_signals(plan_pf) == _target_profile_signals(run_pf)
+    # Sanity: the ambiguity warning is actually present, so the comparison above
+    # is not vacuously true.
+    assert any("ambiguous" in w for w in plan_pf.warnings)
+    assert plan_pf.engine == run_pf.engine == "kubernetes"
+
+
+def test_maniac_threads_the_config_into_its_preflight_cross_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "mayhem.yaml"
+    config.write_text(AMBIGUOUS_K8S_CONFIG)
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    _install_compile_fakes(monkeypatch, _plan())
+    monkeypatch.setattr(lifecycle_module(), "_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        lifecycle_module(), "engine_for", lambda *a, **k: SimpleNamespace(execute=_run_result)
+    )
+    monkeypatch.setattr(
+        lifecycle_module(),
+        "plan_maniac_from_spec",
+        lambda *a, **k: SimpleNamespace(run_id="r-ctx", plan=_plan()),
+    )
+    monkeypatch.setattr(
+        lifecycle_module(),
+        "_resolve_maniac_sources",
+        lambda *a, **k: (str(tmp_path / "spec.yaml"), None, None),
+    )
+    captured: list[Any] = []
+    real_build = build_preflight
+
+    def _record(**kwargs: Any) -> Any:
+        preflight = real_build(**kwargs)
+        captured.append(preflight)
+        return preflight
+
+    monkeypatch.setattr(lifecycle_module(), "build_preflight", _record)
+
+    from click.testing import CliRunner
+
+    from mayhem.cli.app import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--db",
+            str(tmp_path / "m.db"),
+            "--config",
+            str(config),
+            "-k",
+            "maniac",
+            str(tmp_path / "spec.yaml"),
+            "-c",
+            str(compose),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert captured, "maniac never built a preflight"
+    assert any("ambiguous" in w for w in captured[-1].warnings)
+
+
+def lifecycle_module() -> Any:
+    from mayhem.cli import lifecycle
+
+    return lifecycle
+
+
+# ---------------------------------------------------------------------------
+# I6: every lifecycle command threads the one context
+# ---------------------------------------------------------------------------
+
+
+def test_cli_plan_propagates_the_context_to_preflight_and_planning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from mayhem.cli import lifecycle
+    from mayhem.cli.app import app
+
+    spec = tmp_path / "spec.yaml"
+    spec.write_text(DRILL)
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    _install_compile_fakes(monkeypatch, _plan())
+
+    graph_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        lifecycle, "_graph_from", lambda *a, **k: (graph_calls.append(k) or _graph(), "fake")
+    )
+    planned: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        lifecycle,
+        "plan_from_spec",
+        lambda *a, **k: (
+            planned.append(k),
+            SimpleNamespace(run_id="r-ctx", plan=_plan()),
+        )[1],
+    )
+    preflights: list[RuntimeContext | None] = []
+    real_build = build_preflight
+
+    def _record(**kwargs: Any) -> Any:
+        preflights.append(kwargs.get("runtime"))
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "build_preflight", _record)
+
+    result = CliRunner().invoke(
+        app,
+        ["--db", str(tmp_path / "p.db"), "prepare", "plan", str(spec), "-c", str(compose)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    # Discovery and planning agree on the resolved engine.
+    assert graph_calls[-1]["engine"] == planned[-1]["engine"] == "podman"
+    assert preflights and preflights[-1] is not None
+    assert preflights[-1].engine == "podman"
+    assert preflights[-1].topology_fingerprint is not None
+
+
+def test_cli_validate_propagates_the_context_to_discovery_and_planning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from mayhem.cli import lifecycle
+    from mayhem.cli.app import app
+
+    spec = tmp_path / "spec.yaml"
+    spec.write_text(DRILL)
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    _install_compile_fakes(monkeypatch, _plan())
+
+    graph_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        lifecycle, "_graph_from", lambda *a, **k: (graph_calls.append(k) or _graph(), "fake")
+    )
+    planned: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        lifecycle,
+        "plan_from_spec",
+        lambda *a, **k: (
+            planned.append(k),
+            SimpleNamespace(run_id="r-ctx", plan=_plan()),
+        )[1],
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["--db", str(tmp_path / "v.db"), "prepare", "validate", str(spec), "-c", str(compose)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert graph_calls[-1]["engine"] == planned[-1]["engine"] == "podman"
+
+
+def test_cli_maniac_propagates_the_context_to_preflight_and_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from mayhem.cli import lifecycle
+    from mayhem.cli.app import app
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: nginx\n")
+    _install_compile_fakes(monkeypatch, _plan())
+    monkeypatch.setattr(lifecycle, "_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        lifecycle,
+        "plan_maniac_from_spec",
+        lambda *a, **k: SimpleNamespace(run_id="r-ctx", plan=_plan()),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_resolve_maniac_sources",
+        lambda *a, **k: (str(tmp_path / "spec.yaml"), None, None),
+    )
+    preflights: list[RuntimeContext | None] = []
+    real_build = build_preflight
+
+    def _record(**kwargs: Any) -> Any:
+        preflights.append(kwargs.get("runtime"))
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "build_preflight", _record)
+    engines: list[RuntimeContext | None] = []
+    monkeypatch.setattr(
+        lifecycle,
+        "engine_for",
+        lambda *a, **k: (engines.append(k.get("runtime")), SimpleNamespace(execute=_run_result))[1],
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--db",
+            str(tmp_path / "m.db"),
+            "maniac",
+            str(tmp_path / "spec.yaml"),
+            "-c",
+            str(compose),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert preflights and preflights[-1] is not None
+    assert engines and engines[-1] is preflights[-1], "maniac used two different contexts"
+    assert preflights[-1].engine == "podman"
+    assert preflights[-1].topology_fingerprint is not None
+
+
+# ---------------------------------------------------------------------------
+# I2: `discover topology` resolves its context from the same inputs it
+#     validates the Kubernetes target profile with
+# ---------------------------------------------------------------------------
+
+K8S_MANIFEST = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: mayhem
+  labels:
+    app: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: docker.io/library/python:3.13-alpine
+          command: ["python", "-m", "http.server", "8080"]
+"""
+
+
+def test_cli_discover_resolves_the_context_from_the_selected_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--target``/``--config`` must feed the runtime context, not just the
+    validation lookup, so discovery and the emitted context cannot disagree.
+    """
+    import json as _json
+
+    from click.testing import CliRunner
+
+    from mayhem.agents import k8s_resolve
+    from mayhem.cli.app import app
+
+    config = tmp_path / "mayhem.yaml"
+    config.write_text(K8S_CONFIG)
+    manifest = tmp_path / "deployment.yaml"
+    manifest.write_text(K8S_MANIFEST)
+
+    seen: list[dict[str, Any]] = []
+    real_resolve = k8s_resolve.resolve_k8s_target_context
+
+    def _record(**kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return real_resolve(**kwargs)
+
+    monkeypatch.setattr(k8s_resolve, "resolve_k8s_target_context", _record)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "discover",
+            "topology",
+            "--runtime",
+            "kubernetes",
+            "--target",
+            "dev",
+            "--mode",
+            "dry-run",
+            "--manifest",
+            str(manifest),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen, "kubernetes discovery never resolved its target context"
+    assert seen[-1]["profile_context"] == "dev-us"
+    assert seen[-1]["profile_namespace"] == "sandbox"
+    payload = _json.loads(result.output)
+    assert payload["kubernetes"]["context"] == "dev-us"
+    assert payload["kubernetes"]["namespace"] == "sandbox"
+    assert payload["engine"] == "kubernetes"
+
+
+def test_engine_mismatch_is_rendered_as_a_cli_error_not_a_traceback() -> None:
+    """The refusal survives the CLI boundary as a structured error."""
+    from mayhem.cli.errors import map_exception_to_error
+    from mayhem.cli.services import engine_for
+    from mayhem.infra.store import Store
+
+    store = Store.open_migrated(Path(":memory:"))
+    try:
+        with pytest.raises(InvariantViolationError) as excinfo:
+            engine_for(store, "docker", runtime=RuntimeContext(engine="podman"))
+    finally:
+        store.close()
+    err = map_exception_to_error(excinfo.value)
+    assert err.code == "validation_error"
+    assert "disagrees with the resolved runtime" in err.message
+    assert err.remediation

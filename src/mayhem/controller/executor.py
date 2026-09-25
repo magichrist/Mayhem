@@ -442,7 +442,16 @@ class RunEngine:
         # The runtime resolved once by the application (v0.9.0). When present it
         # is authoritative for the engine name and the kubeconfig context, so
         # execution cannot drift onto a different runtime than the one the plan
-        # was compiled and preflighted against.
+        # was compiled and preflighted against. Passing both with a
+        # disagreement is refused here — before any lease is acquired.
+        if runtime is not None and engine is not None and engine != runtime.engine:
+            from mayhem.domain.errors import InvariantViolationError
+
+            raise InvariantViolationError(
+                "runtime_engine_mismatch",
+                f"engine {engine!r} disagrees with the resolved runtime "
+                f"{runtime.engine!r}; resolve one runtime context per plan",
+            )
         self._runtime = runtime
         self._engine = runtime.engine if runtime is not None else engine
         self._on_event = on_event  # in-process observer; invoked for every journaled event
