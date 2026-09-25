@@ -51,7 +51,7 @@ class MayhemCliError(Exception):
     evidence_ref: str = ""
 
     def __post_init__(self) -> None:
-        super().__init__(self.message)
+        Exception.__init__(self, self.message)
         self.details = _sanitize_details(self.details)
 
     @property
