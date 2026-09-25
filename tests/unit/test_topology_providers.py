@@ -669,7 +669,12 @@ class TestTopologyCLI:
         runner = CliRunner()
         result = runner.invoke(
             discover,
-            ["--compose", "examples/testCase/docker-compose.yml"],
+            [
+                "--compose",
+                "examples/testCase/docker-compose.yml",
+                "--runtime",
+                "docker",
+            ],
             standalone_mode=False,
         )
         output = json.loads(result.output)
