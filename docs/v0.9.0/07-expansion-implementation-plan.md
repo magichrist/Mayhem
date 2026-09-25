@@ -1,0 +1,235 @@
+# v0.9.0 Expansion Implementation Plan
+
+> **For agentic workers:** Execute after the core safety/truth plan passes its checkpoint. Each task produces a tested vertical slice.
+
+**Goal:** Add operator workflows that turn Mayhem from a safe executor into a resilience operating system for local rehearsals, campaigns, and evidence review.
+
+**Architecture:** Build on `RuntimeContext`, `ExecutionIntent`, `CapabilityStatus`, replay capsules, and evidence bundles. New integrations are provider-neutral and read-only by default; any mutation remains inside the existing safety and lease boundaries.
+
+**Tech Stack:** Existing Python/Click/SQLite stack; provider-neutral observation contracts; optional OpenTelemetry, Prometheus, and Loki adapters; no required hosted service.
+
+## Global constraints
+
+- Do not weaken explicit intent, typed admission, redaction, or compensation requirements.
+- Recommendations and scenario generation produce plans only; they never mutate automatically.
+- Live Kubernetes and remote-agent features remain opt-in and separately authorized.
+- New output fields are additive and schema-versioned.
+- Every new action has text, JSON, and YAML-compatible machine output where it is observable.
+
+---
+
+## Task 11: Build the capability truth dashboard
+
+**Files:**
+- Create: `src/mayhem/cli/capabilities.py`
+- Modify: `src/mayhem/infra/catalog_report.py`
+- Modify: `src/mayhem/cli/command_registry.py`
+- Modify: `docs/reference/cli.md`
+- Test: `tests/unit/test_capability_dashboard.py`
+
+**Interfaces:**
+- Produces: `CapabilityDashboard(engine, rows, generated_at, schema_version)`.
+- Consumes: `CapabilityStatus` records from the core plan.
+
+- [ ] Write tests for Docker, Podman, Kubernetes, catalog-only, blocked, and unit-verified rows.
+- [ ] Write text/JSON/YAML output tests and filter tests by engine, fault family, maturity, and blocked reason.
+- [ ] Implement `discover capabilities` and `discover capabilities --explain`.
+- [ ] Include remediation text and source of truth for every blocked row.
+- [ ] Run dashboard, CLI, output-schema, and catalog tests.
+- [ ] Commit with `feat: add capability truth dashboard`.
+
+## Task 12: Add the resilience coverage graph
+
+**Files:**
+- Create: `src/mayhem/domain/coverage_graph.py`
+- Modify: `src/mayhem/infra/coverage_repository.py`
+- Modify: `src/mayhem/cli/explore.py`
+- Modify: `src/mayhem/cli/inspect.py`
+- Test: `tests/unit/test_coverage_graph.py`
+- Test: `tests/integration/test_coverage_delta.py`
+
+**Interfaces:**
+- Produces: `CoverageNode`, `CoverageEdge`, `CoverageDelta(before, after, added, removed, changed)`.
+- Consumes: catalog definitions, target profiles, run evidence, and maturity status.
+
+- [ ] Write tests proving coverage is keyed by service, failure domain, target type, engine, maturity, and evidence status.
+- [ ] Write tests for baseline creation, successful run updates, blocked-run exclusion, and campaign-level delta aggregation.
+- [ ] Implement graph persistence and a read-only JSON/table view.
+- [ ] Add `inspect coverage` and `experiment coverage-diff` without changing existing coverage table semantics.
+- [ ] Run graph, campaign, inspect, and integration tests.
+- [ ] Commit with `feat: add resilience coverage graph`.
+
+## Task 13: Add provider-neutral observation contracts
+
+**Files:**
+- Create: `src/mayhem/domain/observations.py`
+- Create: `src/mayhem/providers/observation.py`
+- Modify: `src/mayhem/domain/evidence.py`
+- Modify: `src/mayhem/cli/lifecycle.py`
+- Test: `tests/unit/test_observation_contract.py`
+- Test: `tests/integration/test_slo_success_criteria.py`
+
+**Interfaces:**
+- Produces: `ObservationProvider`, `ObservationQuery`, `ObservationResult`, `SloCriterion`.
+- Supports HTTP/process checks first; Prometheus/Loki adapters consume the same contract later.
+
+- [ ] Write tests for latency threshold, error-budget threshold, recovery-time, saturation, and missing-observation behavior.
+- [ ] Write a fake provider that returns deterministic observations and a redacted result.
+- [ ] Add criterion types to the drill schema with explicit units, windows, and failure semantics.
+- [ ] Implement provider-neutral collection and persist observation provenance in evidence.
+- [ ] Run observation, evidence, lifecycle, and fake integration tests.
+- [ ] Commit with `feat: add provider-neutral SLO observations`.
+
+## Task 14: Add scenario variables and conditional steps
+
+**Files:**
+- Create: `src/mayhem/domain/scenarios.py`
+- Modify: `src/mayhem/domain/drill_spec.py`
+- Modify: `src/mayhem/controller/planner.py`
+- Modify: `src/mayhem/cli/experiment.py`
+- Test: `tests/unit/test_scenario_compiler.py`
+- Test: `tests/integration/test_scenario_plan_replay.py`
+
+**Interfaces:**
+- Produces: `ScenarioVariable`, `Condition`, `ConditionalStep`, `CompiledScenario`.
+- Compiled plans contain resolved values and preserve the original scenario source for evidence.
+
+- [ ] Write tests for variables, typed constraints, time windows, conditional branches, missing variables, and deterministic compilation.
+- [ ] Write a replay test proving the same variables and seed produce the same compiled plan.
+- [ ] Implement scenario parsing, validation, and compile-time resolution.
+- [ ] Add `experiment compose`/`experiment validate` plan-only flows; no direct execution from generated output.
+- [ ] Run scenario, planner, CLI, and integration tests.
+- [ ] Commit with `feat: compile variable-driven scenarios`.
+
+## Task 15: Add campaign checkpoints and safe resume
+
+**Files:**
+- Create: `src/mayhem/domain/campaign_checkpoint.py`
+- Modify: `src/mayhem/infra/campaign_engine.py`
+- Modify: `src/mayhem/infra/store.py`
+- Modify: `src/mayhem/cli/campaign.py`
+- Test: `tests/unit/test_campaign_checkpoint.py`
+- Test: `tests/integration/test_campaign_resume.py`
+
+**Interfaces:**
+- Produces: `CampaignCheckpoint(campaign_id, experiment_id, state, lease_id, attempt, fingerprint, resume_safe, updated_at)`.
+- States: `pending`, `running`, `verified`, `compensating`, `compensated`, `retryable`, `blocked`, `completed`, `aborted`.
+
+- [ ] Write tests for normal progression, controller loss, compensation in progress, retry budget exhaustion, and stale fingerprint.
+- [ ] Write a test proving resume never repeats a verified experiment without an explicit retry intent.
+- [ ] Implement checkpoint persistence and a deterministic resume planner.
+- [ ] Add `campaign resume --dry-run` and explicit `campaign resume --execute` behavior.
+- [ ] Run campaign, lease, recovery, and integration tests.
+- [ ] Commit with `feat: add resumable campaign checkpoints`.
+
+## Task 16: Add before/after residual impact
+
+**Files:**
+- Create: `src/mayhem/domain/residual_impact.py`
+- Modify: `src/mayhem/infra/evidence.py`
+- Modify: `src/mayhem/cli/inspect.py`
+- Modify: `src/mayhem/cli/recover.py`
+- Test: `tests/unit/test_residual_impact.py`
+- Test: `tests/integration/test_recovery_proof.py`
+
+**Interfaces:**
+- Produces: `ImpactSnapshot`, `ResidualImpactAssessment(expected, observed, tolerated, violations)`.
+
+- [ ] Write tests for clean recovery, partial recovery, unexpected persistent change, unavailable observation source, and explicitly accepted residual impact.
+- [ ] Implement before/after snapshot comparison using existing topology and observation contracts.
+- [ ] Add residual impact to evidence, inspect, and recovery reports.
+- [ ] Require explicit acceptance metadata for any tolerated violation.
+- [ ] Run evidence, recovery, inspect, and integration tests.
+- [ ] Commit with `feat: verify residual impact after compensation`.
+
+## Task 17: Add game-day mode
+
+**Files:**
+- Create: `src/mayhem/domain/game_day.py`
+- Create: `src/mayhem/cli/game_day.py`
+- Modify: `src/mayhem/cli/command_registry.py`
+- Modify: `src/mayhem/cli/campaign.py`
+- Modify: `docs/reference/cli.md`
+- Test: `tests/unit/test_game_day.py`
+- Test: `tests/integration/test_game_day_approval_flow.py`
+
+**Interfaces:**
+- Produces: `GameDaySession`, `ApprovalGate`, `FreezeWindow`, `OperatorAcknowledgement`.
+
+- [ ] Write tests for missing approval, expired freeze window, critical-fault dual control, operator pause, and final evidence bundle creation.
+- [ ] Implement session state persisted separately from campaign state.
+- [ ] Add plan-only session creation and explicit execution start.
+- [ ] Ensure all session operations reuse `ExecutionIntent`; do not create a second approval model.
+- [ ] Run game-day, campaign, CLI, and integration tests.
+- [ ] Commit with `feat: add controlled game-day sessions`.
+
+## Task 18: Add provider sandbox and signed fault packs
+
+**Files:**
+- Create: `src/mayhem/providers/permissions.py`
+- Create: `src/mayhem/providers/pack.py`
+- Modify: `src/mayhem/providers/loader.py`
+- Modify: `docs/provider-sdk.md`
+- Test: `tests/unit/test_provider_permissions.py`
+- Test: `tests/unit/test_fault_pack_validation.py`
+
+**Interfaces:**
+- Produces: `ProviderPermissionSet`, `ProviderManifest`, `FaultPack`, `pack_digest`.
+- Default permission set: no target mutation, no subprocess, no network, no environment read.
+
+- [ ] Write malicious-provider tests for filesystem access, network access, subprocess execution, environment capture, and implicit mutation requests.
+- [ ] Write pack validation tests for schema version, signature/digest, compatibility, duplicate IDs, unsafe targets, and incomplete compensation.
+- [ ] Implement opt-in loading with explicit permission grants and deterministic refusal messages.
+- [ ] Add a signed/digest workflow that treats an unsigned pack as local development-only.
+- [ ] Run provider, security, catalog, and CLI tests.
+- [ ] Commit with `feat: sandbox providers and fault packs`.
+
+## Task 19: Add observability connectors
+
+**Files:**
+- Create: `src/mayhem/observability/otel.py`
+- Create: `src/mayhem/observability/prometheus.py`
+- Create: `src/mayhem/observability/loki.py`
+- Modify: `src/mayhem/domain/evidence.py`
+- Modify: `docs/observability.md`
+- Test: `tests/unit/test_observability_connectors.py`
+- Test: `tests/integration/test_observability_run.py`
+
+**Interfaces:**
+- Produces: `SpanSink`, `MetricQuery`, `LogQuery`; all connectors are read-only except the local OpenTelemetry span sink.
+
+- [ ] Write tests with fake HTTP servers for Prometheus query responses and Loki query responses.
+- [ ] Write tests proving connector credentials are redacted and connector errors produce degraded evidence.
+- [ ] Implement bounded timeouts, response-size limits, and redaction.
+- [ ] Add OpenTelemetry spans for plan, approval, lease, mutation, verification, compensation, and evidence persistence.
+- [ ] Run connector, evidence, redaction, and integration tests.
+- [ ] Commit with `feat: add observability connectors`.
+
+## Task 20: Add signed evidence bundle verifier
+
+**Files:**
+- Create: `src/mayhem/domain/evidence_bundle.py`
+- Create: `src/mayhem/cli/verify_bundle.py`
+- Modify: `src/mayhem/infra/evidence.py`
+- Modify: `docs/reference/output-schema.md`
+- Test: `tests/unit/test_evidence_bundle.py`
+- Test: `tests/integration/test_bundle_verifier.py`
+
+**Interfaces:**
+- Produces: `EvidenceBundle`, `BundleManifest`, `verify_bundle(path) -> BundleVerification`.
+- Verification checks schema, hashes, signature metadata, replay digest, and redaction marker.
+
+- [ ] Write tests for valid bundles, changed payloads, changed order, missing artifacts, invalid signature metadata, and secret-bearing extras.
+- [ ] Implement deterministic bundle serialization and hash chaining.
+- [ ] Add a standalone verifier command that does not require a live runtime.
+- [ ] Run bundle, evidence, redaction, packaging, and integration tests.
+- [ ] Commit with `feat: add portable evidence bundle verification`.
+
+## Expansion checkpoint
+
+- [ ] All new commands are plan-only until explicitly executed.
+- [ ] Every new output is schema-validated and covered in human/JSON/YAML modes.
+- [ ] All new integrations have timeout, redaction, and degraded-state tests.
+- [ ] Campaign resume and game-day flows pass controller-loss simulations.
+- [ ] Provider sandbox tests reject undeclared mutation authority.
+- [ ] No live Kubernetes or remote-agent code is enabled by default.
