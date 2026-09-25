@@ -522,25 +522,9 @@ def plan_maniac_from_spec(
     return CompiledPlan(run_id=run_id, plan=plan)
 
 
-class _EngineUnset:
-    """Sentinel type: the caller passed no engine name to :func:`engine_for`.
-
-    Distinguishes ``engine_for(store)`` from ``engine_for(store, None)`` only
-    for documentation purposes — both mean "unspecified" to
-    :func:`~mayhem.domain.runtime_context.reconcile_engine`. The sentinel keeps
-    the historical ``"podman"`` default without making a legitimate explicit
-    ``None`` look like an engine named ``None``.
-    """
-
-    __slots__ = ()
-
-
-_ENGINE_UNSET = _EngineUnset()
-
-
 def engine_for(
     store: Store,
-    engine: str | _EngineUnset = _ENGINE_UNSET,
+    engine: str | None = None,
     *,
     live_graph: Callable[[], TopologyGraph] | None = None,
     on_event: Callable[[Event], None] | None = None,
@@ -556,15 +540,15 @@ def engine_for(
     from it, so the executor cannot re-resolve a *different* runtime than the
     one the plan was compiled against.
 
-    Legacy callers that only pass ``engine`` keep working (the historical
-    default is still ``podman``). Passing *both* is allowed only when they
-    agree — a disagreement raises ``InvariantViolationError``
-    (``runtime_engine_mismatch``) here, before any plan is compiled or any
-    lease acquired. An omitted *or* ``None`` engine means "unspecified", not a
-    disagreement, so ``engine_for(store, runtime=ctx)`` is legal.
+    ``engine`` is optional: an omitted, ``None``, or blank value means
+    *unspecified* and is never treated as a disagreement with ``runtime``. With
+    neither supplied, the historical default applies and the engine is
+    ``"podman"``. Legacy callers that pass an engine keep working; passing
+    *both* is allowed only when they agree — a disagreement raises
+    ``InvariantViolationError`` (``runtime_engine_mismatch``) here, before any
+    plan is compiled or any lease acquired.
     """
-    requested: str | None = None if isinstance(engine, _EngineUnset) else engine
-    resolved_engine = reconcile_engine(requested, runtime) or "podman"
+    resolved_engine = reconcile_engine(engine, runtime) or "podman"
     return RunEngine(
         store,
         SQLiteLeaseSink(store),

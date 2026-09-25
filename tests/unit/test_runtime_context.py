@@ -70,7 +70,7 @@ def _graph() -> TopologyGraph:
 
 def _preflight(
     *,
-    engine: str,
+    engine: str | None,
     runtime: RuntimeContext | None,
     config_path: str | None = None,
     target: str | None = None,
@@ -114,7 +114,7 @@ def test_runtime_context_is_frozen_and_carries_the_documented_fields() -> None:
     assert (ctx.runtime_version, ctx.provider_version) == ("v1.29.0", "31.1.0")
     assert ctx.topology_fingerprint == "abc123"
     with pytest.raises(ValidationError):
-        ctx.engine = "docker"  # type: ignore[misc]
+        ctx.engine = "docker"
 
 
 def test_runtime_context_defaults_are_optional() -> None:
@@ -1202,7 +1202,7 @@ def test_preflight_from_services_refuses_a_mismatch_before_building_anything() -
     import mayhem.cli.services as services_module
 
     original_build_graph = services_module.build_graph
-    services_module.build_graph = _boom  # type: ignore[assignment]
+    services_module.build_graph = _boom
     try:
         with pytest.raises(InvariantViolationError) as excinfo:
             preflight_from_services(
@@ -1218,7 +1218,7 @@ def test_preflight_from_services_refuses_a_mismatch_before_building_anything() -
             )
         assert excinfo.value.rule == "runtime_engine_mismatch"
     finally:
-        services_module.build_graph = original_build_graph  # type: ignore[assignment]
+        services_module.build_graph = original_build_graph
 
 
 def test_build_preflight_accepts_engine_only_runtime_only_and_agreement() -> None:
