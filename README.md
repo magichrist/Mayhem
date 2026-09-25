@@ -51,7 +51,7 @@ requirements. The checked-in documentation does not certify any live cluster.
 **Install**
 
 ```bash
-pip install mayhem-cli        # console command is `mayhem`
+pip install mayhem-cli        # one bundle; console command is `mayhem`
 ```
 
 **Run the bundled example**
