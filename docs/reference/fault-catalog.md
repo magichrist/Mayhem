@@ -4,6 +4,16 @@ The executable source of truth is [`src/mayhem/domain/catalog.py`](../../src/may
 
 `executable` means the fault is in the Kubernetes executor dispatch register. It does not mean that a live cluster is reachable or that the required capability is present. `catalog-only` means the definition is schema-valid and plannable but has no executable dispatch.
 
+The `Status` column is a checked snapshot, not a hand-maintained claim: the
+`k8s.*` fault ids and their executable/catalog-only split are compared against
+`src/mayhem/domain/catalog.py` and the dispatch register in
+`src/mayhem/controller/k8s_runtime.py` by
+`tests/unit/test_release_contract.py`. The Kubernetes client itself is a
+default runtime dependency of the `mayhem-cli` distribution — there is no `k8s`
+install extra — so a missing fault here is a dispatch gap, not an uninstalled
+package. A reachable cluster, a kubeconfig context, and the capabilities below
+are still runtime requirements.
+
 | Fault | Risk | Status |
 |-------|------|--------|
 | `k8s.node_pressure` | high | executable |

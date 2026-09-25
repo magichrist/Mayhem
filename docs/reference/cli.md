@@ -101,6 +101,37 @@ Inspect and extend provider, fault, and capability coverage.
 - `mayhem doctor` — check configuration, database, engines, topology, capabilities, and permissions.
 - `mayhem verify RUN_ID` — verify a recorded evidence envelope without mutation.
 
+## Command inventory
+
+This table is the checked inventory of the active root commands. It is compared
+against `COMMAND_SPECS` in `src/mayhem/cli/command_registry.py` by
+`tests/unit/test_release_contract.py`, so a registry change that is not
+documented here fails the suite. `Workflow` is the owning workflow,
+`Help group` is the `--help` grouping, and `Mutating` marks commands that can
+change a target.
+
+| Command | Workflow | Help group | Mutating |
+|---------|----------|------------|----------|
+| `campaign` | `run` | experiments | yes |
+| `commands` | `inspect` | inspect | no |
+| `discover` | `discover` | discovery | no |
+| `doctor` | `inspect` | inspect | no |
+| `experiment` | `experiment` | experiments | no |
+| `extend` | `extend` | extension | no |
+| `init` | `prepare` | preparation | no |
+| `inspect` | `inspect` | inspect | no |
+| `janitor` | `recover` | recover | yes |
+| `maniac` | `run` | experiments | yes |
+| `prepare` | `prepare` | preparation | no |
+| `recover` | `recover` | recover | yes |
+| `run` | `run` | run | yes |
+| `verify` | `inspect` | inspect | no |
+
+Sub-commands of the groups are documented in the group sections above. The
+`mayhem recover RUN_ID` spelling resolves to `recover execute RUN_ID` through a
+compatibility shim in `RecoverGroup`; new automation should use the explicit
+`recover status`, `recover plan`, or `recover execute` spelling.
+
 ## Output and errors
 
 Human output is the default. JSON and YAML are available through `--format` and compatible command-local flags. Errors use stable codes and map to the existing numeric exit codes. Machine errors are emitted on stderr; successful JSON output is not mixed with progress text.

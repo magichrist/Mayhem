@@ -45,8 +45,10 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 - Python 3.12+
 - Docker with Compose v2, or Podman selected with `--podman`
 
-The Kubernetes paths have additional SDK, client, cluster, and capability
-requirements. The checked-in documentation does not certify any live cluster.
+The Kubernetes client ships as a default dependency of the distribution, so
+there is no separate install extra. The Kubernetes paths still need a reachable
+cluster, a valid kubeconfig context, and the capabilities a fault family
+declares. The checked-in documentation does not certify any live cluster.
 
 **Install**
 
@@ -257,7 +259,12 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem extend` | Inspect and extend faults, capabilities, dependencies, and providers. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
 
-Use each command's current `--help` output for accepted arguments. See the complete [`docs/reference/cli.md`](docs/reference/cli.md) for options and workflow examples.
+Use each command's current `--help` output for accepted arguments. The full
+sub-command inventory, root options, and stable exit codes are in
+[`docs/reference/cli.md`](docs/reference/cli.md); that inventory is compared
+against `src/mayhem/cli/command_registry.py` by
+`tests/unit/test_release_contract.py`, so a command that is not documented
+here fails the suite.
 
 ---
 
@@ -274,11 +281,13 @@ mayhem campaign start black-friday
 mayhem campaign run black-friday --compose docker-compose.yml
 ```
 
-The current CLI creates campaigns in `draft`, `start` moves a draft to
-`running`, `run` executes the stored spec paths, and `archive` or `abort` sets
-the corresponding terminal status. The current command surface does not expose
-campaign scheduling, pause, resume, priority-order, or policy/window editing
-options. See the [campaign reference](docs/reference/cli.md#campaign-commands).
+The current CLI creates campaigns in `draft`, `approve` moves a draft to
+`approved`, `start` begins a draft or approved campaign, `run` executes the
+stored spec paths, `pause` and `resume` stop and continue a running campaign,
+and `archive` or `abort` sets the corresponding terminal status. The current
+command surface does not expose campaign scheduling, priority ordering, or
+policy/window editing. See the
+[command inventory](docs/reference/cli.md#command-inventory).
 
 ---
 
@@ -333,8 +342,9 @@ is as small as possible:
 4. **Execute** — supported runtimes execute inject → hold → compensate rounds
    and record evidence. Kubernetes planner/executor presence does not by itself
    establish a reachable cluster or an available capability.
-5. **Recover & report** — the janitor sweeps orphaned leases; `status`,
-   `history`, and run summaries replay recorded evidence.
+5. **Recover & report** — `mayhem janitor` sweeps orphaned leases; `mayhem
+   recover status|plan|execute`, `mayhem inspect runs`, and `mayhem inspect
+   history` replay recorded evidence.
 
 **Documentation**
 
@@ -344,6 +354,8 @@ is as small as possible:
 | [`docs/drill-spec.md`](docs/drill-spec.md) | Drill DSL reference. |
 | [`docs/config.md`](docs/config.md) | Current layered configuration contract. |
 | [`docs/reference/cli.md`](docs/reference/cli.md) | Current commands, options, and stable exit codes. |
+| [`docs/reference/output-schema.md`](docs/reference/output-schema.md) | Versioned machine-output envelope and the v0.9.0 compatibility boundary. |
+| [`docs/reference/fault-catalog.md`](docs/reference/fault-catalog.md) | Checked Kubernetes fault catalog status snapshot and capability gates. |
 | [`docs/compensation.md`](docs/compensation.md) | Compensation lifecycle and verification contracts. |
 
 ---
@@ -380,6 +392,12 @@ uv sync --group dev
 
 # Run all tests
 uv run pytest
+
+# Check the release truth baseline (docs, Justfile, packaging vs. source)
+uv run pytest tests/unit/test_release_contract.py
+
+# Build the sdist and wheel
+uv build
 
 # Lint
 uv run ruff check src/

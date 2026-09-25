@@ -17,6 +17,9 @@ dependencies = [
     "click>=8.1",
     "pyyaml>=6.0",
     "structlog>=24.1",
+    # The Kubernetes client is a default dependency: there is no `k8s` extra.
+    # A reachable cluster and its capabilities are still runtime requirements,
+    # but installing the distribution is enough to import the Kubernetes lanes.
     "kubernetes>=31",
 ]
 
@@ -38,11 +41,12 @@ dev = [
 ]
 
 [tool.hatch.version]
-# Version flows from the nearest git tag (`v0.5.0` → 0.5.0), so a
-# tag-push release always ships a clean PEP 440 version. Untagged
-# local builds fall back to the dev version below.
+# Version flows from the nearest git tag (this repository tags releases as
+# `0.8.0`, without a `v` prefix, so the tag maps to the PEP 440 version
+# 0.8.0). A tag-push release always ships a clean version. Untagged local
+# builds fall back to the in-development release line below.
 source = "vcs"
-fallback-version = "0.5.0.dev0"
+fallback-version = "0.9.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mayhem"]

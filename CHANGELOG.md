@@ -7,6 +7,256 @@ This changelog is generated from the project's git history by
 **drill phase** that produced them (Explore / Expert / Coverage / Next) and
 by conventional-commit type — see the phase map below.
 
+## [unreleased]
+
+
+
+### 📚 Documentation
+
+- Add v0.9.0 roadmap and implementation plans
+
+- Establish the v0.9.0 release truth baseline: checked command inventory, install
+  dependency contract, version metadata, and Justfile recipe paths
+
+
+## 0.8.0 - 2026-09-25
+
+
+
+### 🚀 Features
+
+- Kubernetes targeting system
+
+- Refined target.py
+
+- Kube topology structure
+
+- Kube topology for cli
+
+- **k8s**: K-plan-3 container-level signal execution
+
+- Update executors.py
+
+- Update k8s_resolve.py
+
+- Update lease_client.py
+
+- Update campaign.py
+
+- Update lifecycle.py
+
+- Update services.py
+
+- Update config.py
+
+- Update cell_runner.py
+
+- Update executor.py
+
+- Update k8s_runtime.py
+
+- Update safety.py
+
+- Update leases.py
+
+- Update resolution.py
+
+- Update lease_repository.py
+
+- Extend executor agents with K8s runtime support
+
+- Add K8s control plane agent
+
+- Update CLI app for K8s executor integration
+
+- Update coverage command for K8s runtime
+
+- Update explore command for K8s runtime
+
+- Update next command for K8s runtime
+
+- Update services command for K8s runtime
+
+- Update toolkit for K8s runtime
+
+- Update topology for K8s runtime
+
+- Update controller executor for K8s runtime
+
+- Extend K8s runtime with execution support
+
+- Extend fault catalog with K8s faults
+
+- Update K8s example spec
+
+- Update executor agents
+
+- Update dependencies for K8s runtime
+
+- Update K8s control agent
+
+- Update lifecycle CLI for K8s
+
+- Update services CLI for K8s
+
+- Update K8s runtime controller
+
+- Update planner for K8s runtime
+
+- Extend fault catalog
+
+- Update common domain for K8s
+
+- Add K8s adapter domain
+
+- Update maniac domain for K8s
+
+- Add runtime adapter for K8s
+
+- Update target selector for K8s
+
+- Add K8s manifest topology provider
+
+- Add policy, evidence, provider, and schema foundations
+
+- Expand agent and controller execution flows
+
+- Expand CLI commands and output handling
+
+- Finalize active CLI workflow surface
+
+
+
+### 🐛 Bug Fixes
+
+- Release.yml
+
+- Initialize slotted CLI exceptions safely
+
+
+
+### 💼 Other
+
+- Update docs/adr-adr-m7-1-k8s-executor-flip.md
+
+- Delete docs/features.md
+
+- Delete docs/k-plan-1.md
+
+
+
+### 🚜 Refactor
+
+- Format and ruff-fix
+
+
+
+### 📚 Documentation
+
+- Enhance readme file, removed dev version stuff
+
+- Kubernetes plans/spec/adrs
+
+- Update README.md
+
+- Update adr-m7-1-k8s-executor.md
+
+- Update config.md
+
+- Update drill-spec.md
+
+- Remove k-plan-2.md
+
+- Remove k-plan-3-implementation-subplans.md
+
+- Remove k-plan-3-sub-plans-k8s-executor-flip.md
+
+- Remove k-plan-3-sub-plans.md
+
+- Remove k-plan-3.md
+
+- Remove k-plan-4-sub-plans.md
+
+- Remove k-plan-4.md
+
+- Remove k-plan-5.md
+
+- Add k8s-plan-1.md
+
+- Add k8s-plan-2.md
+
+- Update architecture and reference documentation
+
+- Clarify the default installation bundle
+
+
+
+### 🎨 Styling
+
+- Remove obsolete noqa suppressions
+
+
+
+### 🧪 Testing
+
+- Add tests for kube
+
+- Update test_kplan3_runtime.py
+
+- Update test_m7_k8s.py
+
+- Update test_safety.py
+
+- Add test_kplan5_runtime.py
+
+- Update CLI tests for K8s runtime
+
+- Update container fault matrix tests for K8s
+
+- Update example specs YAML tests for K8s
+
+- Update fault catalog tests for K8s faults
+
+- Update K8s plan-3 runtime tests
+
+- Update K8s plan-5 runtime tests
+
+- Add K8s plan-6 runtime tests
+
+- Update CLI tests for K8s runtime
+
+- Update K8s plan-6 runtime tests
+
+- Add K8s manifest topology tests
+
+- Expand runtime, CLI, provider, and policy coverage
+
+- Add exhaustive CLI and runtime coverage
+
+- Pin compose topology discovery runtime
+
+
+
+### ⚙️ Miscellaneous Tasks
+
+- Update development tooling and package metadata
+
+- Add provider and container examples
+
+- **release**: Bundle Kubernetes and parallelize unit tests
+
+- Remove broken architecture gate from release
+
+
+## 0.6.2 - 2026-09-11
+
+
+
+### 🐛 Bug Fixes
+
+- ApiVersion was not added to tests
+
+
 ## 0.6.0 - 2026-09-11
 
 

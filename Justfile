@@ -27,33 +27,33 @@ setup:
 # Discover topology from compose + live runtime (containers, processes, services)
 topology:
     @echo "=== topology discover ==="
-    mayhem topology discover --compose {{ _compose }} | python3 -m json.tool > /dev/null
+    mayhem discover topology --compose {{ _compose }} | python3 -m json.tool > /dev/null
     @echo "✓ topology discover"
 
 # Topology with prefix shorthand
 topology-prefix:
     @echo "=== topology prefix ==="
-    mayhem top d --compose {{ _compose }} | python3 -m json.tool > /dev/null
+    mayhem disc topo --compose {{ _compose }} | python3 -m json.tool > /dev/null
     @echo "✓ topology prefix"
 
 # ── toolkit ──────────────────────────────────────────────────────────────────
 
-# List available faults and capabilities
+# List available faults and capabilities (`mayhem discover`)
 toolkit:
     @echo "=== toolkit ==="
-    mayhem toolkit faults
-    mayhem toolkit list --json | python3 -m json.tool > /dev/null
+    mayhem discover faults
+    mayhem discover capabilities --json | python3 -m json.tool > /dev/null
     @echo "✓ toolkit"
 
 # ── config ───────────────────────────────────────────────────────────────────
 
-# Show and validate effective config (default + testCase)
+# Show and validate effective config (default + testCase) via `mayhem prepare config`
 config:
     @echo "=== config ==="
-    mayhem config show --json | python3 -m json.tool > /dev/null
-    mayhem --config {{ _config }} config show --json | python3 -m json.tool > /dev/null
-    mayhem config validate
-    mayhem --config {{ _config }} config validate
+    mayhem prepare config show --json | python3 -m json.tool > /dev/null
+    mayhem --config {{ _config }} prepare config show --json | python3 -m json.tool > /dev/null
+    mayhem prepare config validate
+    mayhem --config {{ _config }} prepare config validate
     @echo "✓ config"
 
 # ── experiment ───────────────────────────────────────────────────────────────
@@ -67,16 +67,16 @@ experiment:
 
 # ── lifecycle: validate → plan → run → status → history → recover ────────────
 
-# Validate spec against live topology
+# Validate spec against live topology (`mayhem prepare validate`)
 validate: setup
     @echo "=== validate ==="
-    mayhem --db {{ _db }} validate {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} prepare validate {{ _spec }} --compose {{ _compose }}
     @echo "✓ validate"
 
-# Plan the experiment
+# Plan the experiment (`mayhem prepare plan`)
 plan:
     @echo "=== plan ==="
-    mayhem plan {{ _spec }} --compose {{ _compose }}
+    mayhem prepare plan {{ _spec }} --compose {{ _compose }}
     @echo "✓ plan"
 
 # Full run: inject faults, record events, compensate
@@ -85,20 +85,21 @@ run: setup
     mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
     @echo "✓ run"
 
-# Show run status (JSON + text)
+# Show run status (text + JSON) via `mayhem inspect runs`
 status: setup
     @echo "=== status ==="
-    mayhem --db {{ _db }} status
+    mayhem --db {{ _db }} inspect runs
+    mayhem --db {{ _db }} inspect runs --json | python3 -m json.tool > /dev/null
     @echo "✓ status"
 
-# Show detailed run history (JSON + text)
+# Show detailed run history (text + JSON) via `mayhem inspect history`
 history:
     @echo "=== history ==="
     @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1" 2>/dev/null || echo ""); \
     if [ -z "$$run_id" ]; then \
         echo "⚠ no runs in DB — skipping history"; \
     else \
-        mayhem --db {{ _db }} history "$$run_id"; \
+        mayhem --db {{ _db }} inspect history "$$run_id"; \
         echo "✓ history"; \
     fi
 
@@ -109,7 +110,7 @@ recover:
     if [ -z "$$run_id" ]; then \
         echo "⚠ no runs in DB — skipping recover"; \
     else \
-        mayhem --db {{ _db }} recover "$$run_id"; \
+        mayhem --db {{ _db }} recover execute "$$run_id"; \
     fi
     @echo "✓ recover"
 
@@ -141,13 +142,13 @@ campaign: setup
 # Full lifecycle: validate → plan → run → status → history → recover
 full: setup
     @echo "=== full round-trip ==="
-    mayhem --db {{ _db }} validate {{ _spec }} --compose {{ _compose }}
-    mayhem --db {{ _db }} plan {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} prepare validate {{ _spec }} --compose {{ _compose }}
+    mayhem --db {{ _db }} prepare plan {{ _spec }} --compose {{ _compose }}
     mayhem --db {{ _db }} run {{ _spec }} --compose {{ _compose }}
-    mayhem --db {{ _db }} status
+    mayhem --db {{ _db }} inspect runs
     @run_id=$$(sqlite3 {{ _db }} "SELECT id FROM runs ORDER BY rowid DESC LIMIT 1"); \
-    mayhem --db {{ _db }} history "$$run_id"; \
-    mayhem --db {{ _db }} recover "$$run_id"
+    mayhem --db {{ _db }} inspect history "$$run_id"; \
+    mayhem --db {{ _db }} recover execute "$$run_id"
     @echo "✓ full round-trip"
 
 # ── stack management ─────────────────────────────────────────────────────────
@@ -190,6 +191,18 @@ lint:
     @echo "=== lint ==="
     ruff check src/ tests/
     @echo "✓ lint"
+
+# Check the release truth baseline (docs/Justfile/packaging vs. the source)
+contract:
+    @echo "=== release contract ==="
+    python3 -m pytest tests/unit/test_release_contract.py -v --tb=short
+    @echo "✓ release contract"
+
+# Build the sdist and wheel
+build:
+    @echo "=== build ==="
+    python3 -m build --sdist --wheel
+    @echo "✓ build"
 
 # ── aggregate targets ────────────────────────────────────────────────────────
 

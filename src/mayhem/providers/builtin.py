@@ -12,6 +12,11 @@ from mayhem.domain.provider import (
 )
 from mayhem.providers.registry import ProviderRegistry
 
+# The built-in runtime providers ship with the distribution, so their declared
+# version tracks the release line in pyproject.toml ([tool.hatch.version]
+# fallback-version and the built-in provider metadata stay in lockstep).
+PROVIDER_VERSION = "0.9.0"
+
 
 def _metadata(
     provider_id: str,
@@ -24,7 +29,7 @@ def _metadata(
         api_version=PROVIDER_API_VERSION,
         provider_id=provider_id,
         name=name,
-        version="0.5.0",
+        version=PROVIDER_VERSION,
         description=f"Built-in {name} runtime provider.",
         permissions=permissions,
         capabilities=capabilities,

@@ -34,9 +34,31 @@ Every machine-readable command emits a versioned envelope:
 ## Changelog policy
 
 - Schema version bumps only on breaking change; additive fields do not bump major.
-- Changelog lives at `docs/reference/cli.md` and this file.
+- The release changelog lives at `CHANGELOG.md`; this file records the schema
+  contract, not release notes.
 - Consumers should pin to `schema_version` and ignore unknown keys.
-- Deprecations advance: warn since `0.6.0`, removal target `0.8.0`.
+- Legacy root commands and aliases were removed from the active surface after
+  `0.8.0`; `docs/reference/cli.md` carries the checked command inventory, and the
+  v0.9.0 line opens no new deprecation window.
+
+## v0.9.0 compatibility boundary
+
+`schema_version` stays `1.0` for the whole v0.9.0 line. The frozen surfaces are:
+
+| Surface | v0.9.0 boundary | Authority |
+|---------|-----------------|-----------|
+| Output envelope | additive fields only, `schema_version` pinned to `1.0` | `src/mayhem/schemas/output_v1.json` |
+| Exit codes | unchanged identifiers and numeric values | `src/mayhem/cli/exit_codes.py` |
+| Root commands | exactly the `Command inventory` table | `src/mayhem/cli/command_registry.py` |
+| Fault IDs | unchanged; no fault is added or removed | `src/mayhem/domain/catalog.py` |
+| Provider contract | `mayhem.provider-catalog/v1` | `src/mayhem/domain/provider.py` |
+| SQLite migrations | additive; no destructive migration | `src/mayhem/infra/store.py` |
+
+The output-envelope row and the command-inventory row are machine-checked by
+`tests/unit/test_release_contract.py`; the exit-code identifiers and Markdown
+links are checked by `tests/unit/test_documentation_consistency.py`. The fault
+ID, provider-contract, and SQLite-migration rows are declared boundaries for
+this release line, not yet machine-checked invariants.
 
 ## Rendering rules
 
