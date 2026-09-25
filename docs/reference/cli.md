@@ -35,7 +35,7 @@ Unique command prefixes remain available for active commands. Ambiguous prefixes
 Discover the execution surface and catalog before mutating anything.
 
 - `mayhem discover engines`
-- `mayhem discover topology -c COMPOSE`
+- `mayhem discover topology --compose COMPOSE`
 - `mayhem discover faults`
 - `mayhem discover capabilities`
 
@@ -51,7 +51,7 @@ Prepare configuration, dependencies, and executable plans.
 - `mayhem prepare validate [SPEC] -c COMPOSE`
 - `mayhem prepare plan [SPEC] -c COMPOSE`
 
-`validate` and `plan` resolve a missing spec from the directory containing the selected `-c/--compose` file before falling back to the current directory.
+`validate` and `plan` resolve a missing spec from the directory containing the selected `--compose` file before falling back to the current directory. `discover topology` has no `-c` shorthand; use `--compose`.
 
 ### `mayhem experiment`
 

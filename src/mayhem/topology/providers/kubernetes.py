@@ -6,10 +6,13 @@ intentionally NOT gated behind the executor capability: ``KubernetesAdapter``
 provider reads its own availability from a live reachability probe
 (k-plan-2 §2.6).
 
-Guarded import — the ``kubernetes`` SDK ships behind the optional ``k8s``
-extra; installing it is a one-liner:
-
-    pip install "mayhem[k8s]"
+Guarded import — the ``kubernetes`` SDK is a **default dependency** of the
+``mayhem-cli`` distribution, so there is no extra to install; the import is
+still guarded so that a stripped or partially-installed environment fails with
+a stable, actionable message instead of a bare ``ImportError``. Installing the
+distribution is not enough on its own: live discovery additionally needs a
+reachable cluster, a valid kubeconfig context, and the capabilities listed
+below.
 
 Node kinds are a closed union (k-plan-2 §2.3), so discovery emits only
 :class:`PodNode`, :class:`K8sNode`, and :class:`ServiceNode`:
@@ -55,14 +58,20 @@ from mayhem.domain.topology import (
 )
 from mayhem.topology.providers.base import PartialGraph
 
-#: One-line install hint surfaced whenever the k8s SDK is missing.
-KUBERNETES_INSTALL_HINT = 'pip install "mayhem[k8s]"  # kubernetes topology discovery'
+#: Message surfaced whenever the kubernetes SDK cannot be imported. The SDK is a
+#: default dependency, so this is a broken-install signal, not an install prompt.
+KUBERNETES_SDK_MISSING_HINT = (
+    "the `kubernetes` client is a default dependency of mayhem-cli and ships with "
+    "the distribution; reinstall mayhem-cli if it is missing (there is no k8s "
+    "install extra). Live discovery still requires a reachable cluster, a valid "
+    "kubeconfig context, and the capabilities the provider needs."
+)
 
 KUBERNETES_IMPORT_ERROR: ImportError | None = None
 
 
 def _load_optional(name: str) -> Any | None:
-    """Import an optional-extra module, returning None when it is absent."""
+    """Import a kubernetes SDK module, returning None when it is absent."""
 
     try:
         return import_module(name)
@@ -70,11 +79,12 @@ def _load_optional(name: str) -> Any | None:
         return None
 
 
-#: Optional-extra modules (the ``k8s`` extra) — mypy-neutral via string import.
+#: SDK modules — mypy-neutral via string import. They are default dependencies,
+#: but a partial or stripped environment must still fail with a stable message.
 _client: Any | None = _load_optional("kubernetes.client")
 _kube_config: Any | None = _load_optional("kubernetes.config")
 if _client is None or _kube_config is None:  # pragma: no cover
-    KUBERNETES_IMPORT_ERROR = ImportError(KUBERNETES_INSTALL_HINT)
+    KUBERNETES_IMPORT_ERROR = ImportError(KUBERNETES_SDK_MISSING_HINT)
 
 
 @dataclass(frozen=True)
@@ -130,7 +140,7 @@ class KubernetesProvider:
         if self._api is not None:
             return self._api
         if _client is None or _kube_config is None:
-            raise ImportError(KUBERNETES_INSTALL_HINT)
+            raise ImportError(KUBERNETES_SDK_MISSING_HINT)
         if self.context is None:
             try:
                 _kube_config.load_kube_config()

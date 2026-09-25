@@ -703,7 +703,7 @@ def _suggest_next_cell(
 ) -> None:
     """After a successful run, suggest the most valuable untested cell.
 
-    This reuses the same ranking logic as ``mayhem next`` but operates on
+    This reuses the same ranking logic as ``mayhem inspect next`` but operates on
     the live topology graph and store already open in the run command.
     """
     from mayhem.cli.next_cmd import _landscape_cells
@@ -1235,7 +1235,7 @@ def run(
             click.echo(result.summary_md())
         click.echo(
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
-            f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
+            f"inspect with {style.yellow(f'mayhem inspect history {compiled.run_id}')}"
         )
         try:
             envelope = load_evidence(store, compiled.run_id)
@@ -1430,7 +1430,7 @@ def maniac(
             click.echo(result.summary_md())
         click.echo(
             f"\n{style.ok('run')} {style.cyan(compiled.run_id)} — "
-            f"inspect with {style.yellow(f'mayhem history {compiled.run_id}')}"
+            f"inspect with {style.yellow(f'mayhem inspect history {compiled.run_id}')}"
         )
         if show_next and result.status == "completed":
             _suggest_next_cell(ctx, obj.db, graph, resolved_compose)

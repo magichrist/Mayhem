@@ -36,6 +36,13 @@ Every machine-readable command emits a versioned envelope:
 - Schema version bumps only on breaking change; additive fields do not bump major.
 - The release changelog lives at `CHANGELOG.md`; this file records the schema
   contract, not release notes.
+- `CHANGELOG.md` is raw `git-cliff` output and is kept verbatim, low-signal
+  entries included: it is an audit record of what was committed, not a curated
+  announcement. Regenerate it with `just changelog`; read the curated per-release
+  view with `just changelog-release`. Do not hand-edit the generated file — a
+  hand-edit is lost on the next regeneration, and
+  `tests/unit/test_release_contract.py` checks the git-cliff footer so that a
+  hand-edited file fails the suite instead of passing unnoticed.
 - Consumers should pin to `schema_version` and ignore unknown keys.
 - Legacy root commands and aliases were removed from the active surface after
   `0.8.0`; `docs/reference/cli.md` carries the checked command inventory, and the

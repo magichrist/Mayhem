@@ -80,9 +80,14 @@ def test_discover_k8s_no_context_defaults(monkeypatch) -> None:
 
 
 def test_discover_k8s_missing_sdk_hint(monkeypatch) -> None:
+    # `kubernetes` is a default dependency, so the surfaced message must not
+    # advertise a non-existent install extra; it must state the real runtime
+    # requirements instead.
+    from mayhem.topology.providers.kubernetes import KUBERNETES_SDK_MISSING_HINT
+
     monkeypatch.setattr(
         "mayhem.topology.providers.kubernetes.KUBERNETES_IMPORT_ERROR",
-        ImportError("pip install mayhem[k8s]"),
+        ImportError(KUBERNETES_SDK_MISSING_HINT),
     )
     runner = CliRunner()
     result = runner.invoke(
@@ -90,7 +95,8 @@ def test_discover_k8s_missing_sdk_hint(monkeypatch) -> None:
         ["discover", "--runtime", "kubernetes"],
     )
     assert result.exit_code != 0
-    assert "mayhem[k8s]" in result.output
+    assert "mayhem-cli" in result.output
+    assert "mayhem[k8s]" not in result.output
 
 
 def test_discover_k8s_unreachable_cluster(monkeypatch) -> None:
@@ -125,7 +131,7 @@ def test_default_runtime_never_constructs_k8s_provider(monkeypatch) -> None:
     # Whatever the ambient docker/podman result is, kubernetes must be untouched.
     assert k8s_called == []
     assert "mayhem[k8s]" not in result.output
-    assert original_inst.KUBERNETES_INSTALL_HINT
+    assert original_inst.KUBERNETES_SDK_MISSING_HINT
 
 
 def test_target_context_uses_profile_values_and_refuses_conflicts() -> None:

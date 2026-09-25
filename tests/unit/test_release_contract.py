@@ -6,24 +6,52 @@ checked-in document or automation file against the executable source of truth:
 
 * the CLI reference inventory against
   :data:`mayhem.cli.command_registry.COMMAND_SPECS`;
-* the Justfile recipes against the live Click command tree;
 * the README command table against the same registry;
+* every ``mayhem …`` command reference in the current documents against the live
+  Click command tree, so a retired root command cannot survive in prose;
+* the Justfile recipes against the same Click tree, options included;
 * the Kubernetes fault-catalog snapshot against
   :data:`mayhem.domain.catalog.CATALOG` and the runtime dispatch register;
 * the output-schema reference against the emitted envelope version;
+* the changelog's structural integrity and release-history floor;
 * packaging metadata in ``pyproject.toml`` (distribution name, console command,
   default runtime dependencies, version fallback) and the release line.
 
 Nothing here reaches a runtime: the CLI tree is walked in-process and the
 catalog is a pure domain module.
+
+Supported validation boundary
+-----------------------------
+``_resolve_invocation`` walks argv down the Click tree using the option
+definitions the command itself declares, so option arity is never duplicated
+here. It validates:
+
+* every command token, by exact name or by the unique prefix the CLI supports;
+* every option token, against the options declared on the node that consumes it
+  (a parent group cannot take an option that belongs to a sub-command, and a
+  sub-command cannot take a global option that was declared on the root);
+* the *minimum* number of positional arguments a leaf command requires.
+
+It deliberately does **not** validate:
+
+* anything after a shell operator (``|``, ``&&``, ``;``, ``>``, …) — that is the
+  shell's argv, not the CLI's;
+* option *values* (a value that happens to look like a flag is not diagnosed);
+* the exact number of positional arguments supplied to a command, because
+  variadic arguments (``recover execute RUN_IDS…``) make an upper bound
+  ambiguous;
+* ``--help``/eager-option behaviour, or whether an option is legal in the
+  position it appears in.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import tomllib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -34,12 +62,56 @@ from mayhem.controller.k8s_runtime import k8s_available_faults
 from mayhem.domain.catalog import CATALOG
 from mayhem.providers.builtin import create_builtin_registry
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 ROOT = Path(__file__).parents[2]
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 RELEASE_LINE = "0.9.0"
 
+#: Oldest released version the checked-in changelog must still describe. Bump
+#: this floor when a release is tagged so a regeneration that silently drops
+#: published history fails the suite.
+CHANGELOG_HISTORY_FLOOR = (0, 8, 0)
+
 K8S_CATALOG = {d.id: d for d in CATALOG if d.id.startswith("k8s.")}
 K8S_EXECUTABLE = k8s_available_faults()
+
+#: Documents that make current-surface claims, and therefore must not invoke a
+#: command that no longer exists. The classification comes from
+#: ``docs/README.md``: user guide, current references, current product/architecture
+#: contracts, and the executable design rules. Dated audits and discovery
+#: reports (``grounding-log.md``, ``k8s-*.md``, ``m7-*.md``), ADRs, and forward
+#: plans (``new-plan/``, ``v0.9.0/``, ``superpowers/``) are excluded on purpose:
+#: they record what was true when written, and rewriting them would falsify that
+#: record.
+CURRENT_DOCS: tuple[str, ...] = (
+    "README.md",
+    "docs/architecture/*.md",
+    "docs/compensation.md",
+    "docs/config.md",
+    "docs/drill-spec.md",
+    "docs/fault-catalog/*.md",
+    "docs/grounding-rules.md",
+    "docs/policy-and-break-glass.md",
+    "docs/product/*.md",
+    "docs/provider-sdk.md",
+    "docs/reference/*.md",
+    "examples/*/README.md",
+)
+
+#: Tokens that end a `mayhem …` invocation: the rest of the line is shell.
+SHELL_OPERATORS = frozenset({"|", "||", "&&", ";", ">", ">>", "<", "2>", "&"})
+SHELL_OPERATOR_PREFIXES = ("|", ">", "<", "&", ";")
+
+#: A fenced block or an inline code span. Fenced blocks are matched too, because
+#: a ``` fence is itself a run of backticks.
+CODE_SPAN_RE = re.compile(r"`+[^`]+`+", re.DOTALL)
+#: Leading fence language, e.g. the `bash` of ```bash.
+FENCE_LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_+-]+$")
+CHANGELOG_SECTION_RE = re.compile(
+    r"^## \[?(?P<label>[^\]\s]+)\]?(?: - (?P<date>\d{4}-\d{2}-\d{2}))?\s*$", re.MULTILINE
+)
 
 
 # --- helpers ---------------------------------------------------------------
@@ -71,6 +143,119 @@ def _resolve(token: str, names: set[str]) -> str | None:
         return token
     matches = sorted(name for name in names if name.startswith(token))
     return matches[0] if len(matches) == 1 else None
+
+
+def _option_arity(command: click.Command, token: str) -> int | None:
+    """Return how many argv entries the option consumes, or None if unknown.
+
+    The arity is read from the Click parameter itself, so the CLI's option
+    definitions stay the single source of truth.
+    """
+    for param in command.params:
+        if not isinstance(param, click.Option):
+            continue
+        if token in param.opts or token in param.secondary_opts:
+            return 0 if param.is_flag else max(int(param.nargs), 1)
+    return None
+
+
+def _is_shell_operator(token: str) -> bool:
+    return token in SHELL_OPERATORS or token.startswith(SHELL_OPERATOR_PREFIXES)
+
+
+def _required_argument_count(command: click.Command) -> int:
+    """Minimum positional arguments the command needs (variadic counts as one)."""
+    arguments = [p for p in command.params if isinstance(p, click.Argument)]
+    return sum(1 for p in arguments if p.required)
+
+
+def _validate_leaf(command: click.Command, tokens: list[str]) -> list[str]:
+    """Validate the options and minimum arity of a resolved leaf command."""
+    problems: list[str] = []
+    positional = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_operator(token):
+            break
+        if token.startswith("-") and token != "-":
+            arity = _option_arity(command, token)
+            if arity is None:
+                problems.append(f"unknown option `{token}` for `mayhem {command.name}`")
+                index += 1
+                continue
+            index += 1 + arity
+            continue
+        positional += 1
+        index += 1
+    required = _required_argument_count(command)
+    if positional < required:
+        problems.append(f"`mayhem {command.name}` needs {required} argument(s), {positional} given")
+    return problems
+
+
+def _resolve_invocation(tokens: list[str]) -> list[str]:
+    """Walk argv down the live Click tree, returning any contract violations.
+
+    ``tokens`` is the argv that follows the word ``mayhem``. The walk stops at
+    the first shell operator, because the remainder of the line is the shell's
+    argv rather than the CLI's.
+    """
+    problems: list[str] = []
+    node: click.Command = app
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_operator(token):
+            return problems
+        arity = _option_arity(node, token)
+        if arity is not None:
+            index += 1 + arity
+            continue
+        if isinstance(node, click.Group):
+            resolved = _resolve(token, set(node.commands))
+            if resolved is None:
+                kind = "option" if token.startswith("-") else "command"
+                return [f"no {kind} `{token}` under `mayhem {node.name}`"]
+            node = node.commands[resolved]
+            index += 1
+            continue
+        return _validate_leaf(node, tokens[index:])
+    return problems
+
+
+def _current_doc_paths() -> list[Path]:
+    """Expand :data:`CURRENT_DOCS`; the globs are part of the checked contract."""
+    paths: list[Path] = []
+    for pattern in CURRENT_DOCS:
+        matches = sorted(ROOT.glob(pattern))
+        assert matches, f"current-doc pattern matches nothing: {pattern}"
+        paths.extend(matches)
+    return paths
+
+
+def _iter_doc_invocations(text: str) -> Iterator[tuple[int, list[str]]]:
+    """Yield ``(line, argv)`` for every `mayhem …` reference in a document.
+
+    Only fenced code blocks and inline/fenced code spans are considered, and
+    inside them only segments that *begin* with the word ``mayhem``. Prose such
+    as "mayhem resolves live pods" is therefore never read as a command.
+    """
+    for match in CODE_SPAN_RE.finditer(text):
+        lineno = text.count("\n", 0, match.start()) + 1
+        body = match.group(0).strip("`~")
+        lines = body.splitlines()
+        # Drop a leading fence language such as `bash`.
+        if lines and FENCE_LANGUAGE_RE.match(lines[0].strip()) and len(lines) > 1:
+            lines = lines[1:]
+        for line in lines:
+            for segment in re.split(r"\|\||&&|\||;", line):
+                try:
+                    words = shlex.split(segment.strip(), comments=True)
+                except ValueError:  # pragma: no cover - unbalanced quoting
+                    continue
+                if words and words[0] == "mayhem":
+                    yield lineno, words[1:]
 
 
 # --- command inventory -----------------------------------------------------
@@ -116,25 +301,16 @@ def test_readme_command_table_matches_command_registry() -> None:
 
 
 def test_justfile_recipes_resolve_against_the_cli_tree() -> None:
-    """Every `mayhem` invocation in the Justfile must resolve on the active surface."""
-    global_value_options = {"--db", "--config", "--profile", "--policy", "--target", "--format"}
-    global_flags = {
-        "--dry-run",
-        "--allow-critical",
-        "--skip-gate",
-        "--podman",
-        "-p",
-        "--kubernetes",
-        "-k",
-        "--debug",
-        "-d",
-        "--no-color",
-    }
+    """Every `mayhem` invocation in the Justfile must resolve on the active surface.
+
+    Command paths, option names, and required argument counts are all checked;
+    see the module docstring for the exact validation boundary.
+    """
     text = (ROOT / "Justfile").read_text(encoding="utf-8")
     # Collapse `{{ _var }}` substitutions so they tokenize as a single word.
     text = re.sub(r"\{\{[^}]*\}\}", "_TEMPLATE_", text)
 
-    unresolved: list[str] = []
+    problems: list[str] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         if "mayhem" not in line:
             continue
@@ -145,32 +321,82 @@ def test_justfile_recipes_resolve_against_the_cli_tree() -> None:
         if "mayhem" not in tokens:
             continue
         args = tokens[tokens.index("mayhem") + 1 :]
-        index = 0
-        while index < len(args):
-            token = args[index]
-            if token in global_value_options:
-                index += 2
+        problems.extend(
+            f"Justfile:{lineno}: mayhem {' '.join(args)}\n    {problem}"
+            for problem in _resolve_invocation(args)
+        )
+    assert not problems, "Justfile recipes drifted from the active CLI surface:\n" + "\n".join(
+        problems
+    )
+
+
+def _first_command_token(tokens: list[str]) -> str | None:
+    """Return the first argv entry that was meant to be a command, or None.
+
+    Options and their values are skipped, sub-commands are descended into, and
+    the walk stops at a leaf command — its remaining tokens are arguments, not
+    command names. A token is only reported when it was offered to a group and
+    that group had no such command.
+    """
+    node: click.Command = app
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_operator(token):
+            return None
+        arity = _option_arity(node, token)
+        if arity is not None:
+            index += 1 + arity
+            continue
+        if not isinstance(node, click.Group):
+            return None
+        resolved = _resolve(token, set(node.commands))
+        if resolved is None:
+            return token
+        node = node.commands[resolved]
+        index += 1
+    return None
+
+
+#: A command name in a document is a bare lowercase word. Anything else — a
+#: metavariable (`RUN_ID`, `<id>`), a synopsis placeholder (`[ROOT OPTION]...`),
+#: or an ellipsis — is a usage sketch, not an invocable command, so the
+#: retired-root-command contract does not apply to it.
+COMMAND_NAME_RE = re.compile(r"^[a-z][a-z-]*$")
+
+#: Liveness floor for the document extractor, so that a broken extractor cannot
+#: make the retired-root-command contract vacuously true.
+MIN_SCANNED_INVOCATIONS = 20
+
+
+def test_current_docs_invoke_only_active_commands() -> None:
+    """No current document may reference a retired root command.
+
+    Historical audits, ADRs, and forward plans are excluded on purpose (see
+    :data:`CURRENT_DOCS`): they record the surface as it was, and editing them
+    would falsify that record.
+    """
+    active = {spec.name for spec in COMMAND_SPECS}
+    scanned = 0
+    problems: list[str] = []
+    for document in _current_doc_paths():
+        text = document.read_text(encoding="utf-8")
+        rel = document.relative_to(ROOT)
+        for lineno, args in _iter_doc_invocations(text):
+            scanned += 1
+            token = _first_command_token(args)
+            if token is None or not COMMAND_NAME_RE.match(token):
                 continue
-            if token in global_flags:
-                index += 1
-                continue
-            break
-        invocation = "mayhem " + " ".join(args[index:])
-        # Walk the live Click tree, allowing the unique prefixes the CLI supports.
-        node: click.Command | None = app
-        for token in args[index:]:
-            assert node is not None
-            if not isinstance(node, click.Group):
-                break
-            resolved = _resolve(token, set(node.commands))
-            if resolved is None:
-                unresolved.append(f"Justfile:{lineno}: {invocation} (at `{token}`)")
-                break
-            node = node.commands[resolved]
-        else:
-            assert node is not None
-    assert not unresolved, "Justfile recipes reference the removed CLI surface:\n" + "\n".join(
-        unresolved
+            if _resolve(token, active) is None:
+                problems.append(f"{rel}:{lineno}: `mayhem {token}` is not an active command")
+    # Liveness floor: a silently broken extractor would make this vacuous.
+    assert scanned >= MIN_SCANNED_INVOCATIONS, (
+        f"only {scanned} command references scanned across the current documents — "
+        "the extractor is probably broken"
+    )
+    assert not problems, (
+        "current documents reference a retired root command; "
+        "historical and forward-plan documents are excluded on purpose:\n" + "\n".join(problems)
     )
 
 
@@ -238,11 +464,59 @@ def test_builtin_provider_version_matches_the_release_line() -> None:
     assert not stale, f"built-in provider versions behind the release line: {stale}"
 
 
-def test_changelog_tracks_the_unreleased_release_line() -> None:
+def _changelog_sections(text: str) -> list[tuple[str, str | None, str]]:
+    """Parse ``(label, date, body)`` for every ``## `` section of the changelog."""
+    sections: list[tuple[str, str | None, str]] = []
+    matches = list(CHANGELOG_SECTION_RE.finditer(text))
+    for position, match in enumerate(matches):
+        end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
+        sections.append((match.group(1), match.group(2), text[match.end() : end]))
+    return sections
+
+
+def test_changelog_is_structurally_valid_and_keeps_release_history() -> None:
+    """Validate the changelog without depending on the unreleased/tagged state.
+
+    A tag-time release run legitimately has no ``[unreleased]`` bullets (or no
+    ``[unreleased]`` section at all), so the contract is structural: the
+    generated header is intact, every section is well formed, released versions
+    descend, published history is never lost, and no published release is empty.
+    """
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert text.startswith("# Changelog")
-    body = _section(text, "[unreleased]")
-    assert re.search(r"^- \S", body, re.MULTILINE), "unreleased changelog section is empty"
+    assert text.startswith("# Changelog"), "the generated changelog header is missing"
+    assert text.rstrip().endswith("<!-- generated by git-cliff -->"), (
+        "CHANGELOG.md is no longer the git-cliff output; regenerate it with `just changelog`"
+    )
+
+    sections = _changelog_sections(text)
+    assert sections, "CHANGELOG.md has no version sections"
+
+    released: list[tuple[int, ...]] = []
+    for label, date, body in sections:
+        if label == "unreleased":
+            # The unreleased section is the only one allowed to be empty: a
+            # release run with no commits since the last tag renders it blank.
+            continue
+        assert date is not None, f"released section `{label}` has no release date"
+        version = tuple(int(part) for part in label.split("."))
+        assert len(version) == 3, f"unexpected version heading: {label}"
+        assert re.search(r"^- \S", body, re.MULTILINE), (
+            f"published release {label} has no entries — history was truncated"
+        )
+        released.append(version)
+
+    assert released, "CHANGELOG.md describes no released version"
+    descending = sorted(released, reverse=True)
+    assert released == descending, (
+        "released sections are not in descending order: "
+        f"{['.'.join(map(str, v)) for v in released]}"
+    )
+    assert released[0] >= CHANGELOG_HISTORY_FLOOR, (
+        f"newest documented release {'.'.join(map(str, released[0]))} is behind the "
+        f"history floor {'.'.join(map(str, CHANGELOG_HISTORY_FLOOR))}; "
+        "regenerating the changelog dropped published history"
+    )
+    assert len(set(released)) == len(released), "a released version appears twice"
 
 
 # --- reference snapshots ---------------------------------------------------
@@ -277,8 +551,6 @@ def test_output_schema_version_is_documented() -> None:
     assert match.group(1) == OUTPUT_SCHEMA_VERSION
     schema_path = ROOT / "src/mayhem/schemas/output_v1.json"
     assert f"`{schema_path.relative_to(ROOT)}`" in text
-    import json
-
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert schema["properties"]["schema_version"]["const"] == OUTPUT_SCHEMA_VERSION
     assert schema["version"] == OUTPUT_SCHEMA_VERSION

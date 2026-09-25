@@ -140,7 +140,7 @@ references such as a profile's `toolkit.binaries` values are data; the loader
 does not discover additional files from them.
 
 ```bash
-mayhem --config ./ops/base.yaml --profile ci config show
+mayhem --config ./ops/base.yaml --profile ci prepare config show
 ```
 
 With an explicit base path, this loads:
@@ -165,11 +165,11 @@ Only these names are read by `load_config`:
 No `MAYHEM_CONFIG`, `MAYHEM_PROFILE`, risk, recovery, runtime, target, or
 Kubernetes environment variable is supported by the loader.
 
-`mayhem config show` and `mayhem config validate` call the loader with an empty
-environment mapping, so their output is deterministic and does not absorb the
-caller's ambient `MAYHEM_*` values. Commands that prepare a run also currently
-pin the environment layer's `log_level` to `INFO`; the other allowlisted values
-are not supplied by the current CLI path.
+`mayhem prepare config show` and `mayhem prepare config validate` call the loader
+with an empty environment mapping, so their output is deterministic and does not
+absorb the caller's ambient `MAYHEM_*` values. Commands that prepare a run also
+currently pin the environment layer's `log_level` to `INFO`; the other
+allowlisted values are not supplied by the current CLI path.
 
 ## Drill-spec projection
 

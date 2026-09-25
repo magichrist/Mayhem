@@ -134,5 +134,5 @@ def init_cmd(
     if detection.has_k8s_manifest:
         click.echo(f"detected k8s manifests: {', '.join(str(p) for p in detection.k8s_manifests)}")
     click.echo("next: mayhem doctor")
-    click.echo("validate: mayhem validate --help")
-    click.echo(f"run: mayhem validate {drill_out}")
+    click.echo("validate: mayhem prepare validate --help")
+    click.echo(f"run: mayhem run {drill_out}")

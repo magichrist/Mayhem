@@ -17,7 +17,7 @@ from mayhem.domain.topology import EdgeKind, NodeKind, TopologyGraph
 from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
 from mayhem.topology.providers.kubernetes import (
     KUBERNETES_IMPORT_ERROR,
-    KUBERNETES_INSTALL_HINT,
+    KUBERNETES_SDK_MISSING_HINT,
     KubeApis,
     KubernetesProvider,
     pod_id,
@@ -330,13 +330,23 @@ def test_discover_refuses_when_unavailable() -> None:
         provider.discover()
 
 
-def test_install_hint_present_when_sdk_missing() -> None:
+def test_sdk_missing_hint_is_accurate_when_sdk_missing() -> None:
     # Guarded import flags a stable message whether or not the SDK is installed
     # in this environment; the marker constant is always importable.
-    assert "pip install" in KUBERNETES_INSTALL_HINT
+    #
+    # `kubernetes` is a default dependency of mayhem-cli, so the hint must not
+    # tell a user to install a non-existent extra. It must instead name the real
+    # runtime requirements: a reachable cluster, a kubeconfig context, and the
+    # provider capabilities.
+    assert "mayhem-cli" in KUBERNETES_SDK_MISSING_HINT
+    assert "no k8s install extra" in KUBERNETES_SDK_MISSING_HINT
+    assert "kubeconfig" in KUBERNETES_SDK_MISSING_HINT
+    assert "mayhem[k8s]" not in KUBERNETES_SDK_MISSING_HINT
     if KUBERNETES_IMPORT_ERROR is None:
         pytest.skip("kubernetes SDK is installed here")
-    assert "mayhem[k8s]" in str(KUBERNETES_IMPORT_ERROR)
+    message = str(KUBERNETES_IMPORT_ERROR)
+    assert "mayhem-cli" in message
+    assert "mayhem[k8s]" not in message
 
 
 def test_manifest_inspection_is_separate_from_live_readiness(tmp_path) -> None:

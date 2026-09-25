@@ -286,7 +286,7 @@ class TestPlanValidateRun:
         assert rc == 0
         out = capsys.readouterr().out
         assert "completed" in out
-        assert "mayhem history r-drill-pause-" in out
+        assert "mayhem inspect history r-drill-pause-" in out
 
     def test_run_bypasses_inert_fault_at_gate(
         self,
@@ -439,7 +439,7 @@ class TestManiacCommand:
         captured = capsys.readouterr()
         out, err = captured.out, captured.err
         assert "maniac mode — 4 random fault round(s)" in err
-        assert "mayhem history r-drill-maniac-" in out
+        assert "mayhem inspect history r-drill-maniac-" in out
         plan = engine.execute.call_args.args[0]
         faults = [s for s in plan.steps if s.fault is not None]
         assert len(faults) == 4  # run_level rounds, one fault each

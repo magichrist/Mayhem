@@ -382,7 +382,7 @@ class TestTopologyGroup:
 
 
 class TestValidateCommand:
-    """``mayhem validate`` compiles a drill spec via --compose (drill-native).
+    """``mayhem prepare validate`` compiles a drill spec via --compose (drill-native).
 
     The manual ``--process``/``--service``/``--host`` overrides were removed in
     Phase 6 — drill targets are compose container names, so the only topology
@@ -734,7 +734,7 @@ class TestStatusCommand:
 
 
 class TestHistoryCommand:
-    """``mayhem history <run-id>`` — shows detailed run information."""
+    """``mayhem inspect history <run-id>`` — shows detailed run information."""
 
     def test_history_nonexistent_run(self, tmp_path: Path) -> None:
         rc = main(["--db", str(tmp_path / "empty.db"), "inspect", "history", "run-nonexistent"])

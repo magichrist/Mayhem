@@ -5,6 +5,12 @@ Source: `docs/feat-1.md` §2 (personas) — solo operator (primary), CI pipeline
 `docs/plan-feat-1.md` Phase C. These rules bind every 0.6 feature that adds a
 command or workflow.
 
+> **Command spellings below are reconciled with the active surface.** The rules
+> themselves are still binding, but every `mayhem …` example names a command
+> that exists in `src/mayhem/cli/command_registry.py`. The command inventory is
+> in [`reference/cli.md`](reference/cli.md#command-inventory) and is checked by
+> `tests/unit/test_release_contract.py`.
+
 ## Rule 1 — Stable, re-learnable commands
 
 Never add a command that requires re-learning between sessions.
@@ -14,7 +20,8 @@ Never add a command that requires re-learning between sessions.
 - Every new command ships `--help` with at least one runnable example
   (the solo operator does not read docs before a drill).
 - No command changes meaning based on cwd state; if a positional arg is
-  required it stays required (e.g. `mayhem recover RUN_ID` — never optional).
+  required it stays required (e.g. `mayhem recover execute RUN_ID` — never
+  optional).
 
 ## Rule 2 — ASCII default + `--json`
 
@@ -44,8 +51,8 @@ Safety gates are never bypassable by new commands except through the existing
 Failures must name the next command to run.
 
 - A drill failure prints the at-fault steps and the repair command:
-  `mayhem history <id>` to replay, `mayhem recover <id>` when a lease is
-  orphaned, `mayhem next` (0.6) to pick the next best cell.
+  `mayhem inspect history <id>` to replay, `mayhem recover plan <id>` when a
+  lease is orphaned, `mayhem inspect next` to pick the next best cell.
 - CI exit codes stay typed (`src/mayhem/cli/exit_codes.py`); the human-facing
   message and the machine code must describe the same failure.
 - "Unknown failure" is not a valid message: a command either names a next step

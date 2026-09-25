@@ -173,7 +173,8 @@ disables that auto-recovery:
   exhausted, partitioned, …) when the step completes.
 - The step's lease is still released cleanly and terminally with mechanism
   `kept_faulted`, and a recovery record is written with `verified=false` so a
-  later `mayhem audit` shows the container was intentionally left faulted.
+  later `mayhem inspect run <run-id>` shows the container was intentionally left
+  faulted.
 - It is **never** marked dirty: withholding recovery is the requested behavior,
   not a compensation failure, so the watchdog/janitor will not re-enqueue it.
 - Downstream `check` / `check_spec` steps (and the `success:` criteria) then

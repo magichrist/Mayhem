@@ -165,13 +165,13 @@ def _kubernetes_discovery_graph(
     """
     from mayhem.topology.providers.kubernetes import (
         KUBERNETES_IMPORT_ERROR,
-        KUBERNETES_INSTALL_HINT,
+        KUBERNETES_SDK_MISSING_HINT,
         KubernetesProvider,
     )
     from mayhem.topology.service import TopologyService
 
     if KUBERNETES_IMPORT_ERROR is not None:
-        raise ValueError("Kubernetes discovery needs the k8s SDK. " + KUBERNETES_INSTALL_HINT)
+        raise ValueError("Kubernetes discovery SDK unavailable. " + KUBERNETES_SDK_MISSING_HINT)
     context = None
     namespace = None
     workload_selector = None

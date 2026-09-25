@@ -163,14 +163,14 @@ def discover(  # noqa: PLR0912, PLR0915
         else:
             from mayhem.topology.providers.kubernetes import (
                 KUBERNETES_IMPORT_ERROR,
-                KUBERNETES_INSTALL_HINT,
+                KUBERNETES_SDK_MISSING_HINT,
                 KubernetesProvider,
             )
 
             if KUBERNETES_IMPORT_ERROR is not None:
                 raise click.ClickException(
                     "Kubernetes live discovery is unavailable: missing SDK. "
-                    + KUBERNETES_INSTALL_HINT
+                    + KUBERNETES_SDK_MISSING_HINT
                 )
             provider_kwargs: dict[str, object] = {
                 "context": resolved_ctx.context,

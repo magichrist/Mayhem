@@ -466,7 +466,7 @@ def _render_expert_human(
         lines.append(f"  - {style.warn('Review warnings — some checks did not pass')}")
     if failures.get("failures"):
         lines.append(
-            f"  - {style.info('Consider running `mayhem next` to find the best next cell')}"
+            f"  - {style.info('Consider running `mayhem inspect next` to find the best next cell')}"
         )
     if not has_errors and not has_warnings and not failures.get("failures"):
         lines.append(f"  - {style.ok('All checks passed — ready to run experiments')}")
