@@ -76,31 +76,32 @@ def discover(  # noqa: PLR0912, PLR0915
 ) -> None:
     """Run the topology provider pipeline and print graph + drift JSON."""
     from mayhem.cli.app import _STATE
+    from mayhem.cli.services import resolve_runtime_context, with_topology_fingerprint
+    from mayhem.domain.errors import InvariantViolationError
     from mayhem.topology.providers.adapter_registry import best_effort as runtime_best_effort
     from mayhem.topology.providers.compose import ComposeFileProvider
     from mayhem.topology.service import TopologyService
 
     resolved = _resolve_compose(compose_path)
-    if runtime is None:
-        runtime = _resolve_engine(str(_STATE.get("engine", "")))
-    if runtime is None:
-        try:
-            from mayhem.domain.runtime_adapter import resolve_engine_selection
-
-            sel = resolve_engine_selection(None)
-            runtime = sel.name
-        except Exception as exc:
-            from mayhem.domain.errors import InvariantViolationError
-
-            if isinstance(exc, InvariantViolationError) and getattr(exc, "rule", "") in (
-                "engine_ambiguous",
-                "engine_unavailable",
-            ):
-                raise click.ClickException(
-                    f"{exc} — remediation: pass --runtime docker or --runtime podman"
-                ) from None
-            runtime = None
-    engine = runtime
+    # One resolution for the whole command: engine, versions, and the topology
+    # fingerprint all come from this context (v0.9.0). ``discover`` refuses an
+    # unavailable engine rather than falling back, so it passes
+    # ``unavailable_fallback=None``.
+    explicit_engine = (
+        runtime if runtime is not None else _resolve_engine(str(_STATE.get("engine", "")))
+    )
+    try:
+        selection = resolve_runtime_context(
+            engine=explicit_engine,
+            unavailable_fallback=None,
+        )
+    except InvariantViolationError as exc:
+        if getattr(exc, "rule", "") in ("engine_ambiguous", "engine_unavailable"):
+            raise click.ClickException(
+                f"{exc} — remediation: pass --runtime docker or --runtime podman"
+            ) from None
+        raise
+    engine = selection.engine
 
     providers: list[Any] = []
     k8s_discovery: dict[str, object] | None = None
@@ -257,33 +258,7 @@ def discover(  # noqa: PLR0912, PLR0915
         )
 
     result = TopologyService().discover(providers)
-    engine_version = None
-    topology_fingerprint = None
-    try:
-        from mayhem.domain.runtime_adapter import describe_engine, topology_fingerprint_for_engine
-
-        if engine:
-            try:
-                desc = describe_engine(engine)
-                engine_version = desc.version
-            except Exception:
-                pass
-            if engine_version is None:
-                try:
-                    from mayhem.domain.runtime_adapter import detect_available_engines
-
-                    for cand in detect_available_engines():
-                        if cand.name == engine:
-                            engine_version = cand.version
-                            break
-                except Exception:
-                    pass
-            try:
-                topology_fingerprint = topology_fingerprint_for_engine(engine, result.graph)
-            except Exception:
-                topology_fingerprint = None
-    except Exception:
-        pass
+    selection = with_topology_fingerprint(selection, result.graph)
     payload: dict[str, object] = {
         "graph": result.graph.model_dump(mode="json"),
         "drift": result.drift_report,
@@ -292,10 +267,12 @@ def discover(  # noqa: PLR0912, PLR0915
         payload["engine"] = engine
     if k8s_discovery is not None:
         payload["kubernetes"] = k8s_discovery
-    if engine_version:
-        payload["engine_version"] = engine_version
-    if topology_fingerprint:
-        payload["topology_fingerprint"] = topology_fingerprint
+    if selection.runtime_version:
+        payload["engine_version"] = selection.runtime_version
+    if selection.provider_version:
+        payload["provider_version"] = selection.provider_version
+    if selection.topology_fingerprint:
+        payload["topology_fingerprint"] = selection.topology_fingerprint
     click.echo(json.dumps(payload, indent=2))
 
 

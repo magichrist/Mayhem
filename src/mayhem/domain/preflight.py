@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from mayhem.toolkit.hashing import canonical_json
+
+if TYPE_CHECKING:
+    from mayhem.domain.runtime_context import RuntimeContext
 
 
 class PreflightPlanHash(BaseModel):
@@ -55,6 +59,9 @@ class Preflight:
     k8s_wait_strategy: str | None = None
     k8s_recovery_guidance: str | None = None
     k8s_drift_status: str | None = None
+    # The runtime resolved once by the application (v0.9.0); None for callers
+    # that have not resolved one yet.
+    runtime_context: RuntimeContext | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -86,6 +93,9 @@ class Preflight:
             "k8s_wait_strategy": self.k8s_wait_strategy,
             "k8s_recovery_guidance": self.k8s_recovery_guidance,
             "k8s_drift_status": self.k8s_drift_status,
+            "runtime_context": self.runtime_context.model_dump(mode="json")
+            if self.runtime_context is not None
+            else None,
         }
 
 

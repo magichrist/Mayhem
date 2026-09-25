@@ -38,8 +38,10 @@ from mayhem.cli.services import (
     plan_maniac_from_spec,
     prepare,
     recent_runs,
+    resolve_runtime_context,
     run_detail,
     run_journal,
+    with_topology_fingerprint,
 )
 from mayhem.controller.janitor import Janitor
 from mayhem.controller.plan_diff import diff_plans
@@ -67,6 +69,7 @@ if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
     from mayhem.domain.experiments import DrillSpec
+    from mayhem.domain.runtime_context import RuntimeContext
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
 
@@ -473,20 +476,17 @@ def _resolve_maniac_sources(
 
 
 def _resolve_engine_from_state() -> str:
-    """Resolve the CLI engine flag (``--podman``) to a concrete engine name."""
+    """Resolve the CLI engine flag (``--podman``) to a concrete engine name.
+
+    This is the *explicit* selection that seeds
+    :func:`_runtime_context`; the podman default is the CLI's long-standing
+    behaviour, so the automatic path never reaches engine auto-detection (and
+    therefore never refuses an unflagged run for ambiguity).
+    """
     from mayhem.cli.app import _STATE
     from mayhem.cli.topology import _resolve_engine
 
     return _resolve_engine(str(_STATE.get("engine", ""))) or "podman"
-
-
-def _k8s_context_for_target(config_path: str | None, target: str | None) -> str | None:
-    if target is None:
-        return None
-    from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
-
-    profile = load_profiles_from_mayhem_yaml(config_path).get(target)
-    return profile.context if profile is not None else None
 
 
 def _graph_from(
@@ -519,6 +519,22 @@ def _require_container(ctr: str, graph: TopologyGraph, ctx: click.Context) -> No
         )
 
 
+def _runtime_context(
+    *,
+    engine: str | None,
+    target: str | None,
+    config_path: str | None,
+    graph: TopologyGraph | None = None,
+) -> RuntimeContext:
+    """Resolve the runtime once for a command and stamp the topology fingerprint.
+
+    Every downstream step (planning, preflight, execution) takes this object
+    instead of re-deriving an engine from a flag.
+    """
+    runtime = resolve_runtime_context(engine=engine, target=target, config_path=config_path)
+    return with_topology_fingerprint(runtime, graph)
+
+
 def _preflight_for_run(
     *,
     graph: object,
@@ -528,6 +544,7 @@ def _preflight_for_run(
     target: str | None,
     engine: str,
     config_path: str | None = None,
+    runtime: RuntimeContext | None = None,
 ) -> object:
     fingerprint = getattr(prepared, "fingerprint", "") if prepared is not None else ""
     cfg_id = getattr(prepared, "config_snapshot_id", "") if prepared is not None else ""
@@ -550,6 +567,7 @@ def _preflight_for_run(
         fingerprint=fingerprint,
         config_snapshot_id=cfg_id,
         topology_snapshot_id=topo_id,
+        runtime=runtime,
     )
 
 
@@ -756,8 +774,12 @@ def _suggest_next_cell(
 @click.pass_context
 def validate(ctx: click.Context, experiment: str | None, compose: str | None) -> None:
     """Compile a drill spec and run every safety gate without executing it."""
-    graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
+    runtime = _runtime_context(
+        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+    )
+    graph, resolved_compose = _graph_from(ctx, compose, engine=runtime.engine, target=obj.target)
+    runtime = with_topology_fingerprint(runtime, graph)
     experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config, resolved_compose)
     store = open_store(obj.db)
     try:
@@ -770,9 +792,7 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
             compose=resolved_compose,
             spec_path=experiment,
         )
-        compiled = plan_from_spec(
-            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
-        )
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, engine=runtime.engine)
     finally:
         store.close()
     click.echo(
@@ -805,8 +825,12 @@ def plan(
     diff_path: str | None,
     evidence_dir: str | None,
 ) -> None:
-    graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
+    runtime = _runtime_context(
+        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+    )
+    graph, resolved_compose = _graph_from(ctx, compose, engine=runtime.engine, target=obj.target)
+    runtime = with_topology_fingerprint(runtime, graph)
     experiment, config_for_layers = _resolve_spec_pair(experiment, obj.config, resolved_compose)
     store = open_store(obj.db)
     try:
@@ -819,16 +843,15 @@ def plan(
             compose=resolved_compose,
             spec_path=experiment,
         )
-        compiled = plan_from_spec(
-            experiment, graph, prepared=prepared, engine=_resolve_engine_from_state()
-        )
+        compiled = plan_from_spec(experiment, graph, prepared=prepared, engine=runtime.engine)
         preflight = _preflight_for_run(
             graph=graph,
             store=store,
             prepared=prepared,
             plan=compiled.plan,
             target=obj.target,
-            engine=_resolve_engine_from_state(),
+            engine=runtime.engine,
+            runtime=runtime,
         )
         if diff_path is not None:
             try:
@@ -852,7 +875,7 @@ def plan(
                 run_id=compiled.run_id,
                 plan=compiled.plan,
                 target_profile=obj.target,
-                engine=_resolve_engine_from_state(),
+                engine=runtime.engine,
                 safety_decisions=tuple(preflight.safety_decisions),
                 step_reports=(),
                 lease_timeline=(),
@@ -943,10 +966,15 @@ def run(
     as_json: bool,
 ) -> None:
     obj = _ctx(ctx)
-    effective_engine = run_engine or _resolve_engine_from_state()
     target_name = run_target or obj.target
-    k8s_context = _k8s_context_for_target(obj.config, target_name)
+    runtime = _runtime_context(
+        engine=run_engine or _resolve_engine_from_state(),
+        target=target_name,
+        config_path=obj.config,
+    )
+    effective_engine = runtime.engine
     graph, resolved_compose = _graph_from(ctx, compose, engine=effective_engine, target=target_name)
+    runtime = with_topology_fingerprint(runtime, graph)
     if ctr is not None:
         if effective_engine == "kubernetes":
             raise click.UsageError(
@@ -977,6 +1005,7 @@ def run(
                         target=target_name,
                         config_path=obj.config,
                         engine=effective_engine,
+                        runtime=runtime,
                     )
                     _emit_preflight(preflight, as_json)
                     if not execute:
@@ -1021,7 +1050,7 @@ def run(
                         on_event=_debug_progress() if obj.debug else None,
                         bypass=bypass,
                         recovery_grace=prepared_dummy.recovery_grace if prepared_dummy else 300.0,
-                        k8s_context=k8s_context,
+                        runtime=runtime,
                     )
                     result = eng.execute(compiled_plan)
                     preflight2 = _preflight_for_run(
@@ -1032,6 +1061,7 @@ def run(
                         target=target_name,
                         config_path=obj.config,
                         engine=engine_name,
+                        runtime=runtime,
                     )
                     _write_evidence_after_run(
                         store=store,
@@ -1069,6 +1099,7 @@ def run(
                         target=target_name,
                         config_path=obj.config,
                         engine=effective_engine,
+                        runtime=runtime,
                     )
                     _emit_preflight(preflight, as_json)
                     click.echo("plan loaded; pass --execute to run", err=True)
@@ -1086,7 +1117,7 @@ def run(
                     on_event=_debug_progress() if obj.debug else None,
                     bypass={},
                     recovery_grace=300.0,
-                    k8s_context=k8s_context,
+                    runtime=runtime,
                 )
                 result = eng.execute(loaded_plan)
                 preflight_tmp = _preflight_for_run(
@@ -1097,6 +1128,7 @@ def run(
                     target=target_name,
                     config_path=obj.config,
                     engine=engine_name,
+                    runtime=runtime,
                 )
                 _write_evidence_after_run(
                     store=store,
@@ -1140,6 +1172,7 @@ def run(
             target=target_name,
             config_path=obj.config,
             engine=effective_engine,
+            runtime=runtime,
         )
         if diff_path is not None:
             try:
@@ -1209,7 +1242,7 @@ def run(
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass2,
             recovery_grace=prepared.recovery_grace,
-            k8s_context=k8s_context,
+            runtime=runtime,
         )
         result = engine_obj.execute(compiled.plan)
         _write_evidence_after_run(
@@ -1310,9 +1343,13 @@ def maniac(
     specs, drops every other container's rounds), so the run can only ever
     perturbs the requested container.
     """
-    graph, resolved_compose = _graph_from(ctx, compose)
     obj = _ctx(ctx)
-    engine = _resolve_engine_from_state()
+    runtime = _runtime_context(
+        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+    )
+    engine = runtime.engine
+    graph, resolved_compose = _graph_from(ctx, compose, engine=engine, target=obj.target)
+    runtime = with_topology_fingerprint(runtime, graph)
     if ctr is not None:
         if engine == "kubernetes":
             raise click.UsageError(
@@ -1381,26 +1418,27 @@ def maniac(
                 style.info("info:") + f" maniac mode — {draws} random fault round(s) drawn",
                 err=True,
             )
-        engine_name = _resolve_engine_from_state()
         bypass: dict[tuple[str, str], str] = {}
         if _gate_enabled():
-            bypass = _gate_bypasses(engine_name, compiled.plan, graph)
+            bypass = _gate_bypasses(engine, compiled.plan, graph)
         else:
             click.echo(
                 style.warn("warning:") + " impact gate skipped (--skip-gate); inert faults may run",
                 err=True,
             )
-        engine = engine_for(
+        # NB: the RunEngine is a local named ``run_engine`` — the resolved
+        # context owns the engine *name*, and rebinding it here used to leak a
+        # RunEngine object into the preflight/evidence ``engine: str`` fields.
+        run_engine = engine_for(
             store,
-            engine_name,
-            live_graph=lambda: build_graph(
-                resolved_compose, engine_name=engine_name, target=obj.target
-            ),
+            engine,
+            live_graph=lambda: build_graph(resolved_compose, engine_name=engine, target=obj.target),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass,
             recovery_grace=prepared.recovery_grace,
+            runtime=runtime,
         )
-        result = engine.execute(compiled.plan)
+        result = run_engine.execute(compiled.plan)
         try:
             pf = _preflight_for_run(
                 graph=graph,
@@ -1409,6 +1447,7 @@ def maniac(
                 plan=compiled.plan,
                 target=obj.target,
                 engine=engine,
+                runtime=runtime,
             )
             _write_evidence_after_run(
                 store=store, preflight=pf, result=result, engine=engine, evidence_dir=None

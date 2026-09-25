@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.identity import ProcessRuntimeIdentity
     from mayhem.domain.resolution import ResolvedPodTarget
+    from mayhem.domain.runtime_context import RuntimeContext
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
     from mayhem.toolkit.tool_runner import ToolResult
@@ -425,6 +426,7 @@ class RunEngine:
         k8s_resolver: KubernetesRuntimeResolver | None = None,
         k8s_context: str | None = None,
         recovery_grace: float = 300.0,
+        runtime: RuntimeContext | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -437,7 +439,12 @@ class RunEngine:
         self._abort_file = abort_file
         self._abort_mode: str | None = None  # "graceful" | "immediate"
         self._resource_manager = resource_manager
-        self._engine = engine  # podman/docker; pid/ip resolved at execution (ADR-0020)
+        # The runtime resolved once by the application (v0.9.0). When present it
+        # is authoritative for the engine name and the kubeconfig context, so
+        # execution cannot drift onto a different runtime than the one the plan
+        # was compiled and preflighted against.
+        self._runtime = runtime
+        self._engine = runtime.engine if runtime is not None else engine
         self._on_event = on_event  # in-process observer; invoked for every journaled event
         # Verified-inert injections: {(fault_id, container): reason}. The engine
         # skips those steps as "bypass due to <reason>" instead of failing the
@@ -454,7 +461,7 @@ class RunEngine:
         # Execution-time Kubernetes resolver (k-plan-3 SP-3.4): None means
         # "build lazily on demand from the kubectl/SDK gate."
         self._k8s_resolver = k8s_resolver
-        self._k8s_context = k8s_context
+        self._k8s_context = runtime.context if runtime is not None else k8s_context
         # k-plan-4 §4.5: how long pod-lifecycle compensation waits for a
         # replacement pod to reach Ready before declaring a timeout.
         self._recovery_grace_s = max(float(recovery_grace), 10.0)

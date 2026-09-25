@@ -20,6 +20,7 @@ from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, DrillSpec, ExecutionPlan
+from mayhem.domain.runtime_context import RuntimeContext
 from mayhem.domain.topology import (
     Edge,
     EdgeKind,
@@ -56,6 +57,131 @@ def selected_engine() -> str:
     from mayhem.cli.topology import _resolve_engine
 
     return _resolve_engine(str(_STATE.get("engine", ""))) or ""
+
+
+def _engine_version(name: str) -> str | None:
+    """Best-effort version string for a container engine, or ``None``.
+
+    Never raises: an unknown engine (``kubernetes`` has no container-engine
+    descriptor) or an unreadable binary yields ``None`` rather than a guess.
+    """
+    try:
+        from mayhem.domain.runtime_adapter import detect_available_engines
+
+        for candidate in detect_available_engines():
+            if candidate.name == name:
+                version = candidate.version
+                return version if isinstance(version, str) and version else None
+    except Exception:
+        return None
+    return None
+
+
+def _kubernetes_provider_version() -> str | None:
+    """Version of the Kubernetes SDK backing discovery, or ``None``."""
+    try:
+        from importlib.metadata import version
+
+        return version("kubernetes")
+    except Exception:
+        return None
+
+
+def resolve_runtime_context(
+    *,
+    engine: str | None = None,
+    target: str | None = None,
+    config_path: str | None = None,
+    unavailable_fallback: str | None = "podman",
+) -> RuntimeContext:
+    """Resolve the runtime **once** for a plan (v0.9.0).
+
+    Selection rules, in order:
+
+    1. An explicit ``engine`` (``--engine docker``, the root ``-k/--kubernetes``
+       or ``-p/--podman`` flag) always wins and is never re-probed for
+       availability — that is the user's decision.
+    2. Otherwise the engine is auto-detected. Two engines on ``PATH`` is
+       ambiguous and is refused (``InvariantViolationError`` rule
+       ``engine_ambiguous``) rather than guessed.
+    3. No engine on ``PATH`` keeps the CLI's long-standing ``podman`` default
+       (``unavailable_fallback``). Pass ``unavailable_fallback=None`` to
+       surface the ``engine_unavailable`` refusal instead — what
+       ``topology discover`` does.
+
+    For ``kubernetes`` the kubeconfig context and namespace are read from the
+    selected target profile; container engines never touch the docker/podman
+    descriptors when the engine is ``kubernetes``.
+    """
+    from mayhem.domain.errors import InvariantViolationError
+
+    selected = (engine or "").strip().lower()
+    if selected:
+        resolved_engine = selected
+    else:
+        from mayhem.domain.runtime_adapter import resolve_engine_selection
+
+        try:
+            resolved_engine = resolve_engine_selection(None).name
+        except InvariantViolationError as exc:
+            if getattr(exc, "rule", "") == "engine_unavailable" and unavailable_fallback:
+                resolved_engine = unavailable_fallback
+            else:
+                raise
+
+    namespace: str | None = None
+    kube_context: str | None = None
+    runtime_version: str | None = None
+    provider_version: str | None = None
+    profile: Any = None
+    if resolved_engine == "kubernetes":
+        provider_version = _kubernetes_provider_version()
+        try:
+            from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+
+            profiles = load_profiles_from_mayhem_yaml(config_path)
+        except Exception:
+            profiles = {}
+        if target is not None:
+            profile = profiles.get(target)
+        elif len(profiles) == 1:
+            # Same single-profile inference the preflight uses, so the context
+            # and namespace reach the executor exactly as they used to.
+            profile = next(iter(profiles.values()))
+        if profile is not None and getattr(profile, "engine", "kubernetes") == "kubernetes":
+            kube_context = profile.context
+            namespace = profile.namespace
+    else:
+        runtime_version = _engine_version(resolved_engine)
+
+    return RuntimeContext(
+        engine=resolved_engine,
+        target_profile=target,
+        namespace=namespace,
+        context=kube_context,
+        runtime_version=runtime_version,
+        provider_version=provider_version,
+    )
+
+
+def with_topology_fingerprint(
+    runtime: RuntimeContext, graph: TopologyGraph | None
+) -> RuntimeContext:
+    """Return *runtime* with the fingerprint of *graph* attached.
+
+    The engine has to be known before the topology can be built, so the
+    fingerprint is attached in a second, purely local step — the engine, target,
+    namespace, and context are never re-resolved.
+    """
+    if graph is None:
+        return runtime
+    try:
+        from mayhem.domain.runtime_adapter import topology_fingerprint_for_engine
+
+        fingerprint = topology_fingerprint_for_engine(runtime.engine, graph)
+    except Exception:
+        return runtime
+    return runtime.model_copy(update={"topology_fingerprint": fingerprint})
 
 
 def engine_fault_kinds() -> tuple[str, ...]:
@@ -382,7 +508,19 @@ def engine_for(
     bypass: dict[tuple[str, str], str] | None = None,
     recovery_grace: float = 300.0,
     k8s_context: str | None = None,
+    runtime: RuntimeContext | None = None,
 ) -> RunEngine:
+    """Build the :class:`RunEngine` for a run.
+
+    ``runtime`` is the context resolved once during application preflight. When
+    given it is authoritative: the engine name and the kubeconfig context come
+    from it, so the executor cannot re-resolve a *different* runtime than the
+    one the plan was compiled against. The positional ``engine`` argument (and
+    ``k8s_context``) remain supported for callers that have no context yet.
+    """
+    if runtime is not None:
+        engine = runtime.engine
+        k8s_context = runtime.context
     return RunEngine(
         store,
         SQLiteLeaseSink(store),
@@ -392,6 +530,7 @@ def engine_for(
         bypass=bypass,
         recovery_grace=recovery_grace,
         k8s_context=k8s_context,
+        runtime=runtime,
     )
 
 

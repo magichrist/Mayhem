@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mayhem.controller.safety import SafetyContext, environment_fingerprint, validate_plan
 from mayhem.domain.preflight import Preflight, plan_hash_for
+
+if TYPE_CHECKING:
+    from mayhem.domain.runtime_context import RuntimeContext
 
 
 def _compose_digest(compose: str | None) -> str:
@@ -85,9 +88,14 @@ def build_preflight(
     fingerprint: str | None = None,
     config_snapshot_id: str | None = None,
     topology_snapshot_id: str | None = None,
+    runtime: RuntimeContext | None = None,
 ) -> Preflight:
-    resolved_target: str | None = target
-    effective_engine = engine or ""
+    resolved_target: str | None = (
+        target if target is not None else (runtime.target_profile if runtime else None)
+    )
+    # A resolved runtime context is authoritative: the engine is never
+    # re-derived from a raw flag once it has been resolved (v0.9.0).
+    effective_engine = (runtime.engine if runtime is not None else engine) or ""
     plan_hash = plan_hash_for(plan)
     plan_id = getattr(plan, "run_id", "") or plan_hash[:12]
 
@@ -235,8 +243,15 @@ def build_preflight(
                 "target profile is ambiguous; pass --target NAME or use explicit context/namespace"
             )
         k8s_target_scope = str(target or getattr(profile, "name", "") or "unspecified")
-        k8s_context = getattr(profile, "context", None) or ""
-        k8s_namespace = getattr(profile, "namespace", None) or ""
+        if runtime is not None:
+            # The context and namespace come from the runtime resolved once; the
+            # profile lookup above is a validation cross-check, not a second
+            # resolution.
+            k8s_context = runtime.context or ""
+            k8s_namespace = runtime.namespace or ""
+        else:
+            k8s_context = getattr(profile, "context", None) or ""
+            k8s_namespace = getattr(profile, "namespace", None) or ""
         if profile is not None and profile.engine != "kubernetes":
             blocked.append(f"target profile {profile.name!r} is not a Kubernetes profile")
         if not k8s_context:
@@ -283,6 +298,7 @@ def build_preflight(
         k8s_wait_strategy=k8s_wait_strategy,
         k8s_recovery_guidance=k8s_recovery_guidance,
         k8s_drift_status=k8s_drift_status,
+        runtime_context=runtime,
     )
 
 
@@ -298,7 +314,12 @@ def preflight_from_services(
     engine: str,
     graph: Any = None,
     plan: Any = None,
+    runtime: RuntimeContext | None = None,
 ) -> Preflight:
+    if runtime is not None:
+        engine = runtime.engine
+        if target is None:
+            target = runtime.target_profile
     if graph is None:
         from mayhem.cli.services import build_graph as _build_graph
 
@@ -378,4 +399,5 @@ def preflight_from_services(
         fingerprint=fp,
         config_snapshot_id=cfg_snapshot,
         topology_snapshot_id=topo_snapshot,
+        runtime=runtime,
     )
