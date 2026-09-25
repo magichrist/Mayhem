@@ -563,8 +563,9 @@ def run_campaign(
     observations table. ``--execute`` is the explicit approval: without it
     (and without the documented ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1``
     compatibility switch) the command refuses before any experiment runs. A
-    global ``--dry-run`` previews and never authorizes a mutation, so it is
-    refused here rather than treated as approval.
+    global ``--dry-run`` is a preview: it needs no approval, reports the
+    campaign status and experiment count, and returns before the campaign row
+    is touched — it can never run an experiment, whatever else was passed.
     """
     from datetime import datetime
 
@@ -579,11 +580,16 @@ def run_campaign(
     from mayhem.domain.execution_intent import require_explicit_approval
 
     obj = _ctx(ctx)
-    require_explicit_approval(
-        "campaign run",
-        approved=execute and not obj.dry_run,
-        allow_implicit=implicit_execution_allowed(),
-    )
+    # A --dry-run invocation is a preview, so it needs no approval; the
+    # structural return before the status UPDATE and the experiment loop is
+    # what guarantees it cannot mutate the campaign or the target. Only a
+    # reachable mutation is gated, and --dry-run is not one.
+    if not obj.dry_run:
+        require_explicit_approval(
+            "campaign run",
+            approved=execute,
+            allow_implicit=implicit_execution_allowed(),
+        )
     db = db_opt or obj.db
     store = open_store(db)
     try:
@@ -607,6 +613,18 @@ def run_campaign(
                 err=True,
             )
             raise click.UsageError(f"cannot run campaign in '{row['status']}' status")
+
+        if obj.dry_run:
+            # Structural: return before the status UPDATE and before any
+            # experiment is compiled, so a dry run mutates neither the campaign
+            # row nor the target — whatever --execute or the compatibility
+            # switch say.
+            click.echo(
+                f"dry-run: campaign {style.cyan(campaign_id)} "
+                f"({len(experiments)} experiment(s), status {row['status']}) "
+                "not executed; nothing mutated"
+            )
+            return
 
         graph, resolved_compose = _graph_from(ctx, compose)
         engine_name = _resolve_engine_from_state()

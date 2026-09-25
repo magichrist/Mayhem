@@ -82,8 +82,9 @@ Each spec still compiles and gates exactly as `mayhem run` would; the campaign
 only layers execution policy on top (failure action, deadlines, cooldowns) and
 records per-experiment observations under the campaign id. `campaign run`
 mutates the target, so it needs the same explicit `--execute` approval as
-`mayhem run` — a global `--dry-run` is refused rather than treated as approval.
-See [`campaign`](../README.md#campaigns) in the README for the current
+`mayhem run` — a global `--dry-run` is honoured structurally (the campaign row
+and the target are left untouched), never treated as approval. See
+[`campaign`](../README.md#campaigns) in the README for the current
 lifecycle commands.
 
 ---

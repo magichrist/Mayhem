@@ -159,7 +159,8 @@ def install(
 
     Installing packages rewrites the target, so it is a mutating command:
     ``--execute`` (or the legacy ``-y``) is the explicit approval. A
-    ``--dry-run`` prints the commands and touches nothing.
+    ``--dry-run`` — the global flag or this command's own — prints the plan and
+    touches nothing: it needs no approval, and it never counts as one.
     """
     from mayhem.agents.impact import dependency_plan as _dep_plan
     from mayhem.agents.impact import host_tooling_gaps as _host_gaps
@@ -168,16 +169,18 @@ def install(
 
     obj = _ctx(ctx)
     # A global --dry-run means the same thing as the local one: preview only.
-    # It never authorizes a mutation.
+    # It is normalized here, before the approval, and it is never counted as an
+    # approval — the install loop below skips every package when it is set.
     dry_run = bool(dry_run or obj.dry_run)
-    # `-y` predates the intent contract and *is* an explicit confirmation, so
-    # it still counts; without a flag the command is refused unless the
-    # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch is set.
-    require_explicit_approval(
-        "dependency install",
-        approved=bool(execute or yes or dry_run),
-        allow_implicit=implicit_execution_allowed(),
-    )
+    if not dry_run:
+        # `-y` predates the intent contract and *is* an explicit confirmation,
+        # so it still counts; without a flag the command is refused unless the
+        # documented MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 switch is set.
+        require_explicit_approval(
+            "dependency install",
+            approved=bool(execute or yes),
+            allow_implicit=implicit_execution_allowed(),
+        )
 
     plan, graph, engine_name = _dependency_context(ctx, compose, experiment)
     deps = _dep_plan(plan, graph, engine_name)

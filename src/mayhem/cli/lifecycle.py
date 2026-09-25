@@ -1038,11 +1038,14 @@ def run(
                 except Exception:
                     loaded_plan = None
                 if loaded_plan is not None:
+                    # Named before the guards so every branch below talks about
+                    # the same plan object.
+                    compiled_plan = loaded_plan
                     preflight = _preflight_for_run(
                         graph=graph,
                         store=store,
                         prepared=None,
-                        plan=loaded_plan,
+                        plan=compiled_plan,
                         target=target_name,
                         config_path=obj.config,
                         engine=effective_engine,
@@ -1062,7 +1065,6 @@ def run(
                     if not execute:
                         click.echo("plan loaded; pass --execute to run", err=True)
                         return
-                    compiled_plan = loaded_plan
                     prepared_dummy = None
                     try:
                         from mayhem.cli.services import prepare as _prep
@@ -1461,17 +1463,23 @@ def maniac(
     ``--execute`` is the explicit approval that lets a round mutate the
     target; without it (and without the documented
     ``MAYHEM_ALLOW_IMPLICIT_EXECUTION=1`` compatibility switch) the command
-    refuses with ``execution_intent_required`` before any round is drawn.
+    refuses with ``execution_intent_required`` before any round is drawn. A
+    global ``--dry-run`` is a preview: it needs no approval, reports how many
+    rounds were drawn, and returns before the engine — so it can never inject,
+    whatever else was passed.
     """
     obj = _ctx(ctx)
     from mayhem.cli.app import implicit_execution_allowed
 
-    # --dry-run previews; it never authorizes a mutation.
-    require_explicit_approval(
-        "maniac",
-        approved=execute and not obj.dry_run,
-        allow_implicit=implicit_execution_allowed(),
-    )
+    # A --dry-run invocation is a preview, so it needs no approval; the
+    # structural return before the engine below is what guarantees it cannot
+    # inject. Only a reachable mutation is gated, and --dry-run is not one.
+    if not obj.dry_run:
+        require_explicit_approval(
+            "maniac",
+            approved=execute,
+            allow_implicit=implicit_execution_allowed(),
+        )
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
     )
@@ -1773,13 +1781,24 @@ class RecoverGroup(click.Group):
         # spelling never needed one — naming the sub-command is the approval.
         from mayhem.cli.app import implicit_execution_allowed
 
-        require_explicit_approval(
-            "recover execute", approved=execute, allow_implicit=implicit_execution_allowed()
-        )
-        store = open_store(_ctx(click.get_current_context()).db)
+        ctx = click.get_current_context()
+        # Structural: a global --dry-run skips the approval question and
+        # returns before service.execute, so no compensation is attempted
+        # whatever --execute or the compatibility switch say. Only the plan is
+        # read.
+        dry_run = bool(getattr(ctx.obj, "dry_run", False))
+        if not dry_run:
+            require_explicit_approval(
+                "recover execute", approved=execute, allow_implicit=implicit_execution_allowed()
+            )
+        store = open_store(_ctx(ctx).db)
         try:
             service = _recovery_service(store)
-            result = service.execute(service.plan((run_id,)))
+            plan = service.plan((run_id,))
+            if dry_run:
+                _render_recovery_plan(plan, dry_run=True)
+                return
+            result = service.execute(plan)
         finally:
             store.close()
         if not result.recovered:
@@ -1822,6 +1841,26 @@ def recover_status(
         )
 
 
+def _render_recovery_plan(plan: object, *, dry_run: bool = False) -> None:
+    """Print a recovery *plan* — never apply it.
+
+    Shared by ``recover plan`` and by the two mutating recovery paths when a
+    global ``--dry-run`` turns them into previews, so the preview says the same
+    thing on every spelling.
+    """
+    state = getattr(plan, "state", None)
+    state_value = getattr(state, "value", state)
+    click.echo(f"recovery plan {state_value}")
+    for lease in getattr(plan, "leases", ()) or ():
+        click.echo(
+            f"  {lease.id}: compensate={json.dumps(list(lease.compensation))} "
+            f"probe={json.dumps(list(lease.verification_probes))} "
+            f"escalation={'; '.join(lease.escalation) or 'none'}"
+        )
+    if dry_run:
+        click.echo("dry-run: recovery not executed; nothing compensated", err=True)
+
+
 @recover.command("plan")
 @click.argument("run_ids", nargs=-1, required=True)
 @click.option("--target", "target_profiles", multiple=True)
@@ -1841,13 +1880,7 @@ def recover_plan(
     if as_json:
         click.echo(json.dumps(result.model_dump(mode="json"), default=str))
         return
-    click.echo(f"recovery plan {result.state.value}")
-    for lease in result.leases:
-        click.echo(
-            f"  {lease.id}: compensate={json.dumps(list(lease.compensation))} "
-            f"probe={json.dumps(list(lease.verification_probes))} "
-            f"escalation={'; '.join(lease.escalation) or 'none'}"
-        )
+    _render_recovery_plan(result)
 
 
 @recover.command("execute")
@@ -1863,24 +1896,32 @@ def recover_execute(
     artifact_dir: str | None,
     as_json: bool,
 ) -> None:
-    """Apply a recovery plan: compensating leases is a mutation."""
-    # Naming the sub-command is the approval; the global --dry-run is a
-    # promise that nothing mutates, so it is refused here rather than honoured
-    # by accident.
+    """Apply a recovery plan: compensating leases is a mutation.
+
+    Under a global ``--dry-run`` this prints the plan instead and compensates
+    nothing — the preview never needs an approval and is never one.
+    """
+
+    # Naming the sub-command is the approval. A global --dry-run is a promise
+    # that nothing mutates, so it is honoured *structurally* below — the
+    # execute call is unreachable — rather than by an approval expression that
+    # the compatibility switch could wave through.
     from mayhem.cli.app import implicit_execution_allowed
 
-    require_explicit_approval(
-        "recover execute",
-        approved=not _ctx(ctx).dry_run,
-        allow_implicit=implicit_execution_allowed(),
-    )
-    store = open_store(_ctx(ctx).db)
+    obj = _ctx(ctx)
+    store = open_store(obj.db)
     try:
         service = _recovery_service(store)
-        result = service.execute(
-            service.plan(run_ids, target_profiles=target_profiles),
-            artifact_dir=artifact_dir,
+        plan = service.plan(run_ids, target_profiles=target_profiles)
+        if obj.dry_run:
+            _render_recovery_plan(plan, dry_run=True)
+            if as_json:
+                click.echo(json.dumps(plan.model_dump(mode="json"), default=str))
+            return
+        require_explicit_approval(
+            "recover execute", approved=True, allow_implicit=implicit_execution_allowed()
         )
+        result = service.execute(plan, artifact_dir=artifact_dir)
     finally:
         store.close()
     if as_json:
@@ -1907,18 +1948,23 @@ def recover_execute(
 @click.option("--json", "as_json", is_flag=True, help="Emit a JSON projection.")
 @click.pass_context
 def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
-    """Preview lease cleanup by default; pass --execute to apply it."""
+    """Preview lease cleanup by default; pass --execute to apply it.
+
+    A global ``--dry-run`` keeps it a preview even with ``--execute``: the
+    planned transitions are reported, never applied.
+    """
     obj = _ctx(ctx)
-    # The default (no --execute) is a pure preview: it plans, never writes.
-    # Applying transitions is a mutation and needs the explicit flag; a global
-    # --dry-run promises nothing mutates, so it is refused even with --execute.
+    # Structural first: a global --dry-run downgrades the command to the
+    # preview branch, so sweep(execute=True) is unreachable whatever --execute
+    # or the compatibility switch say. The approval then only guards the
+    # mutation that is actually reachable.
     from mayhem.cli.app import implicit_execution_allowed
 
-    require_explicit_approval(
-        "janitor --execute",
-        approved=execute and not obj.dry_run,
-        allow_implicit=implicit_execution_allowed(),
-    )
+    execute = bool(execute) and not obj.dry_run
+    if execute:
+        require_explicit_approval(
+            "janitor --execute", approved=True, allow_implicit=implicit_execution_allowed()
+        )
     store = open_store(obj.db)
     try:
         janitor_service = Janitor(SQLiteLeaseSink(store))
@@ -1948,7 +1994,12 @@ def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
             ctx.exit(int(ExitCode.RECOVERY_FAILURE))
         return
     if not execute:
-        click.echo(style.cyan("janitor dry-run: pass --execute to apply changes"))
+        if obj.dry_run:
+            click.echo(
+                style.cyan("janitor dry-run: --dry-run never applies changes (--execute ignored)")
+            )
+        else:
+            click.echo(style.cyan("janitor dry-run: pass --execute to apply changes"))
         for lease_id in payload["would_expire"]:
             click.echo(f"would expire lease {style.cyan(lease_id)}")
         for lease_id in payload["would_recover"]:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,6 +122,102 @@ def _compiled_plan(tmp_path: Path, db: Path) -> ExecutionPlan:
             ]
         )
     return engine.execute.call_args.args[0]
+
+
+def _make_campaign(db: Path, spec: Path) -> str:
+    """Create a draft campaign holding one experiment; return its id."""
+    assert (
+        main(["--db", str(db), "campaign", "create", "dry-run-campaign"])
+        == int(ExitCode.SUCCESS)
+    )
+    store = Store.open_migrated(db)
+    try:
+        rows = store.query("SELECT id FROM campaigns ORDER BY created_at DESC LIMIT 1")
+        campaign_id = str(rows[0][0])
+    finally:
+        store.close()
+    assert (
+        main(
+            ["--db", str(db), "campaign", "add-experiment", campaign_id, str(spec)]
+        )
+        == int(ExitCode.SUCCESS)
+    )
+    return campaign_id
+
+
+def _campaign_status(db: Path, campaign_id: str) -> str:
+    store = Store.open_migrated(db)
+    try:
+        rows = store.query("SELECT status FROM campaigns WHERE id = ?", (campaign_id,))
+    finally:
+        store.close()
+    return str(rows[0][0])
+
+
+def _seed_stale_lease(db: Path, run_id: str, lease_id: str) -> None:
+    """A live, expired-by-age lease a janitor/recovery pass would reclaim."""
+    from datetime import timedelta
+
+    from mayhem.domain.common import utc_now
+    from mayhem.domain.leases import FaultLease, LeaseState
+    from mayhem.infra.lease_repository import SQLiteLeaseSink
+
+    store = Store.open_migrated(db)
+    try:
+        lease = FaultLease.model_validate(
+            {
+                "id": lease_id,
+                "run_id": run_id,
+                "fault_id": "proc.pause",
+                "owner_agent": "ag-1",
+                "targets": ["n1"],
+                "undo_ops": ({"op": "noop", "args": {}},),
+                "verify_probes": (
+                    {"probe": "exec", "args": {"cmd": ["true"]}, "expect_present": True},
+                ),
+                "ttl_seconds": 1.0,
+                "state": LeaseState.ACTIVE,
+                "created_at": utc_now() - timedelta(seconds=10),
+            }
+        )
+        SQLiteLeaseSink(store).save(lease)
+    finally:
+        store.close()
+
+
+def _lease_state(db: Path, lease_id: str) -> str:
+    from mayhem.infra.lease_repository import SQLiteLeaseSink
+
+    store = Store.open_migrated(db)
+    try:
+        lease = SQLiteLeaseSink(store).load(lease_id)
+    finally:
+        store.close()
+    return "" if lease is None else str(lease.state.value)
+
+
+def _exploding_service(on_execute):
+    """A RecoveryService stand-in whose ``execute`` fails the test loudly."""
+
+    class _Plan:
+        state = SimpleNamespace(value="not_needed")
+        leases: tuple[object, ...] = ()
+
+        def model_dump(self, **kwargs: object) -> dict[str, object]:
+            return {"state": "not_needed", "leases": []}
+
+    class _Service:
+        def __init__(self, store: object) -> None:
+            self._store = store
+
+        def plan(self, run_ids: object, **kwargs: object) -> _Plan:
+            return _Plan()
+
+        def execute(self, value: object, **kwargs: object) -> object:
+            on_execute(**kwargs)
+            raise AssertionError("unreachable")
+
+    return _Service
 
 
 class TestRunRequiresAnApproval:
@@ -372,14 +469,15 @@ class TestOtherMutatingCommandsRefuse:
         assert payload["execute"] is False
         assert _counts(db) == (0, 0)
 
-    def test_global_dry_run_refuses_janitor_apply(
+    def test_global_dry_run_downgrades_janitor_apply_to_a_preview(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         _no_implicit(monkeypatch)
         db = tmp_path / "janitor.db"
-        rc = main(["--db", str(db), "--dry-run", "janitor", "--execute"])
-        assert rc == int(ExitCode.SAFETY_REFUSAL)
-        assert INTENT_REQUIRED in capsys.readouterr().err
+        rc = main(["--db", str(db), "--dry-run", "janitor", "--json", "--execute"])
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == int(ExitCode.SUCCESS)
+        assert payload["execute"] is False
 
     def test_dependency_install_without_approval_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -665,43 +763,67 @@ class TestDryRunNeverAuthorizes:
         assert engine.execute.called is False
         assert _counts(db) == (0, 0)
 
-    def test_campaign_run_dry_run_with_execute_is_refused(
+    def test_maniac_dry_run_alone_previews_without_an_approval(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # A dry run is a preview, so it never needs the approval flag.
         _no_implicit(monkeypatch)
-        rc = main(
-            [
-                "--db",
-                str(tmp_path / "campaign.db"),
-                "--dry-run",
-                "campaign",
-                "run",
-                "c-1",
-                "--execute",
-            ]
-        )
-        err = capsys.readouterr().err
-        assert rc == int(ExitCode.SAFETY_REFUSAL)
-        assert INTENT_REQUIRED in err
+        db = tmp_path / "maniac.db"
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                [
+                    "--db",
+                    str(db),
+                    "--dry-run",
+                    "--skip-gate",
+                    "maniac",
+                    str(_spec(tmp_path)),
+                    "-c",
+                    str(COMPOSE_FILE),
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing injected" in captured.out
+        assert engine.execute.called is False
+        assert _counts(db) == (0, 0)
 
-    def test_campaign_run_dry_run_alone_is_refused(
+    def test_campaign_run_dry_run_with_execute_leaves_the_campaign_untouched(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # A preview of a campaign run is not implemented, so --dry-run does not
-        # stand in for the approval: it is refused rather than half-honoured.
+        # The compatibility switch is deliberately ON here: it must not be able
+        # to wave --dry-run through.
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        db = tmp_path / "campaign.db"
+        campaign_id = _make_campaign(db, _spec(tmp_path))
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(
+                ["--db", str(db), "--dry-run", "campaign", "run", campaign_id, "--execute"]
+            )
+        out = capsys.readouterr().out
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing mutated" in out
+        assert engine.execute.called is False
+        # The status UPDATE never ran, so the campaign is still a draft.
+        assert _campaign_status(db, campaign_id) == "draft"
+        assert _counts(db) == (0, 0)
+
+    def test_campaign_run_dry_run_alone_previews_the_campaign(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         _no_implicit(monkeypatch)
-        rc = main(
-            [
-                "--db",
-                str(tmp_path / "campaign.db"),
-                "--dry-run",
-                "campaign",
-                "run",
-                "c-1",
-            ]
-        )
-        assert rc == int(ExitCode.SAFETY_REFUSAL)
-        assert INTENT_REQUIRED in capsys.readouterr().err
+        db = tmp_path / "campaign.db"
+        campaign_id = _make_campaign(db, _spec(tmp_path))
+        engine = _stub_engine()
+        with patch("mayhem.cli.services.RunEngine", return_value=engine):
+            rc = main(["--db", str(db), "--dry-run", "campaign", "run", campaign_id])
+        out = capsys.readouterr().out
+        assert rc == int(ExitCode.SUCCESS)
+        assert "nothing mutated" in out
+        assert engine.execute.called is False
+        assert _campaign_status(db, campaign_id) == "draft"
 
     def test_explore_global_dry_run_with_execute_executes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -731,7 +853,7 @@ class TestDryRunNeverAuthorizes:
         assert rc == int(ExitCode.SUCCESS)
         assert _counts(db) == (0, 0)
 
-    def test_recover_execute_dry_run_still_refuses(
+    def test_recover_execute_dry_run_previews_the_plan(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         _no_implicit(monkeypatch)
@@ -745,8 +867,92 @@ class TestDryRunNeverAuthorizes:
                 "r-unknown",
             ]
         )
-        assert rc == int(ExitCode.SAFETY_REFUSAL)
-        assert INTENT_REQUIRED in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert rc == int(ExitCode.SUCCESS)
+        assert "recovery plan" in captured.out
+        assert "nothing compensated" in captured.err
+
+    def test_recover_execute_dry_run_never_calls_the_service(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structural proof: ``RecoveryService.execute`` is unreachable."""
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+
+        def _boom(**_kwargs: object) -> None:
+            raise AssertionError("RecoveryService.execute must not run under --dry-run")
+
+        import mayhem.cli.lifecycle as lifecycle
+
+        monkeypatch.setattr(lifecycle, "_recovery_service", _exploding_service(_boom))
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "recover.db"),
+                "--dry-run",
+                "recover",
+                "execute",
+                "r-unknown",
+            ]
+        )
+        assert rc == int(ExitCode.SUCCESS)
+
+    def test_legacy_recover_shim_dry_run_never_compensates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The shim is an implicit spelling of a mutating command, so --dry-run
+        # has to be honoured there too — with and without --execute, and with
+        # the compatibility switch on.
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        for extra in ([], ["--execute"]):
+            db = tmp_path / f"recover-{len(extra)}.db"
+            _seed_stale_lease(db, "r-dry", "l-dry")
+            rc = main(["--db", str(db), "--dry-run", "recover", "r-dry", *extra])
+            captured = capsys.readouterr()
+            assert rc == int(ExitCode.SUCCESS), (extra, captured.err)
+            assert "nothing compensated" in captured.err, (extra, captured.err)
+            assert "recovered lease" not in captured.out
+            assert _lease_state(db, "l-dry") == "active"
+
+    def test_janitor_dry_run_never_applies_transitions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Even with the compatibility switch on and --execute passed, a stale
+        # lease is planned, never reclaimed.
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        db = tmp_path / "janitor.db"
+        _seed_stale_lease(db, "r-stale", "l-stale")
+        rc = main(["--db", str(db), "--dry-run", "janitor", "--json", "--execute"])
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == int(ExitCode.SUCCESS)
+        assert payload["execute"] is False
+        assert payload["would_recover"] == ["l-stale"]
+        assert _lease_state(db, "l-stale") == "active"
+
+    def test_dependency_install_dry_run_installs_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --dry-run is never an approval for an install, even with the switch on.
+        monkeypatch.setenv(IMPLICIT_EXECUTION_ENV, "1")
+        from mayhem.cli import dependency as dependency_mod
+
+        monkeypatch.setattr(
+            dependency_mod, "run_tool", lambda *a, **k: pytest.fail("no package may be installed")
+        )
+        rc = main(
+            [
+                "--db",
+                str(tmp_path / "dep.db"),
+                "--dry-run",
+                "prepare",
+                "dependencies",
+                "install",
+                str(_spec(tmp_path)),
+                "-c",
+                str(COMPOSE_FILE),
+            ]
+        )
+        assert rc == int(ExitCode.SUCCESS)
+        assert _counts(tmp_path / "dep.db") == (0, 0)
 
 
 class TestImplicitExecutionSwitchLivesInTheAppLayer:
