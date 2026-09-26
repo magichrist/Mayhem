@@ -71,6 +71,8 @@
 
 ## Task 3: Require explicit execution intent
 
+**Status:** DONE — commits `261518d`, `cd4bd1b`, `2285352`, `26ac4c0`; static review approved; tests deferred to final verification.
+
 **Files:**
 - Create: `src/mayhem/domain/execution_intent.py`
 - Modify: `src/mayhem/cli/lifecycle.py`
@@ -85,14 +87,14 @@
 - Produces: `ExecutionIntent(plan_hash, engine, target_identity, policy_id, blast_radius, actor, approved_at, expires_at, break_glass)`.
 - Produces: stable refusal code `execution_intent_required` and `approval_expired`.
 
-- [ ] Write tests proving every mutating command refuses without an explicit intent and that preview commands never create a lease.
-- [ ] Write tests proving an intent bound to a different plan hash, target, engine, or expired timestamp is refused.
+- [x] Write tests proving every mutating command refuses without an explicit intent and that preview commands never create a lease.
+- [x] Write tests proving an intent bound to a different plan hash, target, engine, or expired timestamp is refused.
 - [ ] Run the tests and expect existing implicit paths to fail.
-- [ ] Implement intent validation before lease acquisition and pass the intent into evidence.
-- [ ] Update campaign and dependency mutations to use the shared contract.
-- [ ] Update CLI help and JSON error envelopes.
+- [x] Implement intent validation before lease acquisition and pass the intent into evidence.
+- [x] Update campaign and dependency mutations to use the shared contract.
+- [x] Update CLI help and JSON error envelopes.
 - [ ] Run the focused tests and the full unit suite.
-- [ ] Commit with `feat: require explicit execution intent`.
+- [x] Commit with `feat: require explicit execution intent`.
 
 ## Task 4: Make target profiles first-class configuration
 
