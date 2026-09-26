@@ -19,7 +19,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
@@ -169,6 +176,28 @@ class MayhemConfigBase(BaseModel):
         default_factory=dict,
         validation_alias=AliasChoices("targets", "profiles"),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _inject_target_profile_names(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        for key in ("targets", "profiles"):
+            profiles = data.get(key)
+            if not isinstance(profiles, dict):
+                continue
+            normalized = {
+                str(name): (
+                    {**profile, "name": str(name)}
+                    if isinstance(profile, dict) and "name" not in profile
+                    else profile
+                )
+                for name, profile in profiles.items()
+            }
+            data = dict(data)
+            data[key] = normalized
+        return data
+
     kubernetes: KubernetesCfg = Field(default_factory=KubernetesCfg)
     # k-plan-4 §4.5: how long pod-lifecycle compensation waits for the
     # controller's replacement pod to reach Ready before timing out.

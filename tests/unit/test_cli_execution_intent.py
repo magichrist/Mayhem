@@ -467,6 +467,7 @@ class TestOtherMutatingCommandsRefuse:
             [
                 "--db",
                 str(tmp_path / "explore.db"),
+                "experiment",
                 "explore",
                 "-c",
                 str(COMPOSE_FILE),
@@ -481,7 +482,7 @@ class TestOtherMutatingCommandsRefuse:
     ) -> None:
         _no_implicit(monkeypatch)
         db = tmp_path / "explore.db"
-        rc = main(["--db", str(db), "explore", "-c", str(COMPOSE_FILE), "--dry-run"])
+        rc = main(["--db", str(db), "experiment", "explore", "-c", str(COMPOSE_FILE), "--dry-run"])
         assert rc == int(ExitCode.SUCCESS)
         assert _counts(db) == (0, 0)
 
@@ -509,7 +510,9 @@ class TestOtherMutatingCommandsRefuse:
         _no_implicit(monkeypatch)
         rc = main(["--db", str(tmp_path / "recover.db"), "recover", "execute", "r-unknown"])
         assert rc == int(ExitCode.SUCCESS)
-        assert "nothing to recover" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "recovered lease" not in captured.out
+        assert "recovered lease" not in captured.err
 
     def test_janitor_dry_run_never_writes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -995,6 +998,7 @@ class TestDryRunNeverAuthorizes:
                 "--db",
                 str(db),
                 "--dry-run",
+                "experiment",
                 "explore",
                 "-c",
                 str(COMPOSE_FILE),
@@ -1009,7 +1013,7 @@ class TestDryRunNeverAuthorizes:
     ) -> None:
         _no_implicit(monkeypatch)
         db = tmp_path / "explore.db"
-        rc = main(["--db", str(db), "explore", "-c", str(COMPOSE_FILE), "--dry-run", "--execute"])
+        rc = main(["--db", str(db), "experiment", "explore", "-c", str(COMPOSE_FILE), "--dry-run", "--execute"])
         assert rc == int(ExitCode.SUCCESS)
         assert _counts(db) == (0, 0)
 
