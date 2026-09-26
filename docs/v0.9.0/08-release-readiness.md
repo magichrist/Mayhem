@@ -64,7 +64,7 @@ A v0.9.0 feature is complete only when:
 
 | Gate | Result |
 | --- | --- |
-| `pytest tests/unit tests/integration` | PASS (full run, after tasks 1-10 and again after tasks 11-20) |
+| `pytest tests/unit tests/integration tests/e2e` | PASS (full run, after tasks 1-10 and again after tasks 11-20) |
 | `uv build --sdist --wheel` | PASS |
 | `python scripts/verify_release_artifacts.py dist` | PASS (9 checks) |
 | Wheel install + import + console scripts + `mayhem --version` + `python -m mayhem` | PASS (offline: `pip install --no-deps --target`, then run) |

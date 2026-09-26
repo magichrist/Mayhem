@@ -361,7 +361,7 @@ class TestTopologyGroup:
         assert "depends_on" in edge_kinds
 
     def test_discover_compose_with_directory(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE.parent)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE.parent), "--runtime", "docker"])
         assert rc == 0
 
     def test_discover_compose_has_drift_report(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -371,11 +371,20 @@ class TestTopologyGroup:
         assert "drift" in data
 
     def test_discover_no_compose_returns_graph(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Without compose and without runtime, graph should be empty."""
-        rc = main(["discover", "topology"])
-        assert rc == 0
-        data = json.loads(capsys.readouterr().out)
-        assert "graph" in data
+        """Without a compose file the answer is a graph or an actionable refusal.
+
+        Which one depends on whether the host has a container engine, so this
+        asserts the contract rather than the host: a graph when an engine can be
+        reached, and otherwise the stable, remediable error.
+        """
+        rc = main(["discover", "topology", "--runtime", "docker"])
+        captured = capsys.readouterr()
+        if rc == 0:
+            assert "graph" in json.loads(captured.out)
+        else:
+            assert rc == int(ExitCode.GENERAL_FAILURE)
+            assert "No docker-compose file found" in captured.err
+            assert "--compose" in captured.err  # the message says how to fix it
 
     def test_discover_compose_service_names(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
@@ -1065,7 +1074,7 @@ class TestPrefixResolution:
         assert rc == 0
 
     def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "t", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "t", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
 
     def test_config_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
