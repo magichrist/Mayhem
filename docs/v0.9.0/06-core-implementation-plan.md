@@ -196,6 +196,8 @@
 
 ## Task 8: Centralize redaction and recovery evidence
 
+**Status:** DONE — commit `05f7593`; redaction, tool-runner, CLI error, config, and evidence-degradation tests pass.
+
 **Files:**
 - Create: `src/mayhem/domain/redaction.py`
 - Modify: `src/mayhem/cli/errors.py`
@@ -210,13 +212,13 @@
 - Produces: `redact(value) -> RedactionResult(value, removed_paths, rule_versions)`.
 - Covers structured values, mappings, argv, URLs, environment, stdout, stderr, and traceback text.
 
-- [ ] Write adversarial fixtures for password, token, secret, kubeconfig, registry credentials, URL credentials, and command-line secrets.
-- [ ] Write a test proving redaction occurs before SQLite and artifact writes.
-- [ ] Write a test proving evidence write failure yields `degraded` and preserves recovery data.
-- [ ] Implement the typed policy and route existing error/config/tool/report paths through it.
+- [x] Write adversarial fixtures for password, token, secret, kubeconfig, registry credentials, URL credentials, and command-line secrets.
+- [x] Write a test proving redaction occurs before SQLite and artifact writes.
+- [x] Write a test proving evidence write failure yields `degraded` and preserves recovery data.
+- [x] Implement the typed policy and route existing error/config/tool/report paths through it.
 - [ ] Add redaction metrics to the run evidence without recording raw secret values.
-- [ ] Run redaction, evidence, CLI error, and integration tests.
-- [ ] Commit with `feat: enforce one evidence redaction boundary`.
+- [x] Run redaction, evidence, CLI error, and integration tests.
+- [x] Commit with `feat: enforce one evidence redaction boundary`.
 
 ## Task 9: Repair release quality gates
 
