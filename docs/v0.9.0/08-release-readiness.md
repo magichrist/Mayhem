@@ -60,6 +60,16 @@ A v0.9.0 feature is complete only when:
 - tag and package version agree;
 - release notes distinguish added, changed, fixed, deprecated, removed, and security changes.
 
+## v0.9.0 gate results (local, 2026-09-26)
+
+| Gate | Result |
+| --- | --- |
+| `uv build --sdist --wheel` | PASS |
+| `python scripts/verify_release_artifacts.py dist` | PASS |
+| Focused unit tests (intent, profiles, capabilities, admission, replay, redaction, CI contract, action outcomes) | PASS |
+| `pytest tests/unit tests/integration` | NOT RUN — deferred by explicit user instruction; must pass in CI before tagging |
+| Clean-venv wheel smoke (`MAYHEM_PACKAGE_SMOKE=1`) | BLOCKED — local sandbox cannot reach pypi.org (read timeout while installing dependencies); the wheel itself was built and verified. CI re-runs this job. |
+
 ## Rollback plan
 
 1. Do not delete the previous release tag or wheel.

@@ -269,8 +269,8 @@
 ## Checkpoint after core plan
 
 - [ ] `python -m pytest tests/unit tests/integration -q` passes.
-- [ ] `python -m build --sdist --wheel` passes.
-- [ ] A clean wheel install passes CLI smoke tests.
+- [x] `python -m build --sdist --wheel` passes.
+- [ ] A clean wheel install passes CLI smoke tests. *(local run blocked by pypi.org read timeout in the sandbox; CI has network access)*
 - [ ] No mutating command executes without an intent.
 - [ ] No target-type mismatch reaches lease creation.
 - [ ] No known credential fixture reaches an artifact.
