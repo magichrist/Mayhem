@@ -102,6 +102,7 @@ lifecycle commands.
 | `execution`     | list<[ExecutionStep](#execution)>  | yes      | —               | Ordering of fault rounds. At least one step required. |
 | `success`       | [SuccessCriteria](#success)        | no       | —               | Machine verdict criteria. |
 | `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record. |
+| `slo`          | list<[SloCriterion](#slo-criteria-v090)> | no | —          | Provider-neutral SLO thresholds with explicit units, windows, and failure semantics (v0.9.0). |
 
 `apiVersion: mayhem/v1` is tolerated and ignored — the drill spec is versioned by
 its own schema freeze, not by `apiVersion`.
@@ -440,6 +441,130 @@ success:
       source_id: api-up.latency_ms
       lt_ms: 500
 ```
+
+## SLO criteria (v0.9.0)
+
+An optional `slo:` block states thresholds a provider-neutral observation is
+judged against. Every criterion carries an explicit **unit**, **window**, and
+**operator**, so nothing is compared across an implicit default.
+
+| Field      | Type   | Default | Description |
+|------------|--------|---------|-------------|
+| `metric`   | string | —       | Metric name a provider returns. Required. |
+| `kind`     | `latency` / `error_budget` / `recovery_time` / `saturation` / `absence` | `latency` | What the criterion means. |
+| `operator` | `lt` / `lte` / `gt` / `gte` / `eq` | `lte` | How the observation is compared to `threshold`. |
+| `threshold`| number | `0`     | The value compared against. |
+| `unit`     | string | `ms`    | Unit of both the observation and the threshold. |
+| `window_s` | number | `60`    | Window the observation must cover. |
+| `name`     | string | derived | Stable criterion id recorded in evidence. |
+| `target`   | string | `""`    | Optional locator passed to the provider (e.g. an HTTP URL). |
+
+**A missing observation fails the criterion.** If no provider returns the metric,
+or a provider errors, the criterion evaluates to `false` with the reason
+`observation unavailable (missing|error)` — an unreachable metrics endpoint is
+never mistaken for a healthy system.
+
+```yaml
+kind: drill
+name: checkout-latency-slo
+containers:
+  checkout:
+    faults:
+      - fault: cpu.saturate
+        duration: 2m
+execution:
+  - sequential: [checkout]
+slo:
+  - metric: http.latency
+    kind: latency
+    operator: lte
+    threshold: 250
+    unit: ms
+    window_s: 30
+    target: "http://checkout/healthz"
+  - metric: cpu.saturation
+    kind: saturation
+    operator: lte
+    threshold: 0.8
+    unit: ratio
+    window_s: 60
+```
+
+The run records, in the evidence envelope, `observation_provenance` (counts and
+source names only — never a raw payload) and `slo_outcomes` (one entry per
+criterion, with `passed`, `observed`, and `reason`).
+
+## Scenarios (v0.9.0)
+
+A **scenario is its own document, not a drill-spec field.** It describes a
+variable-driven rehearsal and is compiled — never executed in place — by
+`mayhem experiment compose SCENARIO.yaml`. (If you want SLO thresholds inside a
+drill, use the [`slo:` block](#slo-criteria-v090) above.) Compilation is
+deterministic: the same variables and seed always produce the same plan digest.
+
+| Field      | Type | Required | Description |
+|------------|------|----------|-------------|
+| `name`     | string | yes | Scenario name recorded with the plan. |
+| `variables`| list of [ScenarioVariable](#scenario-variables) | no | Typed inputs, with defaults or `required: true`. |
+| `steps`    | list of [ConditionalStep](#conditional-steps) | no | Steps that compile only when their conditions hold. |
+
+### Scenario variables
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | — | Referenced by conditions and by `--set NAME=VALUE`. |
+| `type` | `string` / `integer` / `number` / `boolean` / `duration` / `enum` | `string` | Coercion is explicit; a bad value is a compile error naming the variable. |
+| `default` | any | `None` | Used when the value is not supplied. |
+| `required` | bool | `false` | A missing value then fails compilation. |
+| `choices` | list | `()` | Required for `enum`. |
+| `minimum` / `maximum` | number | `None` | Range check for numeric, integer, and duration variables. |
+| `pattern` | regex | `""` | Applies to string variables. |
+| `description` | string | `""` | Operator-facing help. |
+
+Durations normalise to seconds (`500ms` → `0.5`, `2m` → `120.0`).
+
+### Conditional steps
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Step id; duplicates are a validation error. |
+| `when` | list of conditions | Every condition must hold for the step to compile. |
+| `action` | map | The action compiled into the plan when `when` holds. |
+| `else_action` | map | Compiled as `<id>:else` when `when` does not hold. |
+| `window` | `{start: "HH:MM", end: "HH:MM"}` | Wall-clock window; outside it the step is skipped. A window may wrap midnight (`22:00`–`02:00`). |
+
+Conditions compare one variable with `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
+or `contains`. A condition on an undeclared variable fails validation.
+
+```yaml
+# scenario.yaml — a standalone document
+name: checkout-degradation
+variables:
+  - name: mode
+    type: enum
+    choices: [smoke, full]
+    default: smoke
+  - name: concurrency
+    type: integer
+    default: 5
+    minimum: 1
+    maximum: 50
+steps:
+  - id: baseline
+    action: { type: check_http, url: "http://checkout/healthz" }
+  - id: degrade
+    when: [{ variable: mode, operator: eq, value: full }]
+    action: { type: start_load, concurrency: 50 }
+    else_action: { type: start_load, concurrency: 1 }
+```
+
+```console
+$ mayhem experiment compose scenario.yaml --set mode=full --seed 7 --json
+```
+
+`compose` is plan-only: it prints the resolved variables, the compiled steps, the
+skipped steps, and the plan digest, and it never builds a run engine. The
+compiled plan keeps its own scenario source, so a replay needs no extra inputs.
 
 ## Observability
 

@@ -380,6 +380,10 @@ class DrillSpec(BaseModel):
     execution: tuple[ExecutionStep, ...]
     success: SuccessCriteria | None = None  # optional machine verdict (ADR-M4-3)
     observability: ObservabilityConfig | None = None  # optional evidence sources (ADR-M4-4)
+    # v0.9.0: provider-neutral SLO criteria with explicit units and windows.
+    # Typed as plain dicts so the criterion vocabulary owns the values while
+    # the domain model owns the shape (see mayhem.domain.observations).
+    slo: tuple[dict[str, Any], ...] = ()
 
     @field_validator("containers")
     @classmethod

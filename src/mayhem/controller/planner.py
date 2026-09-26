@@ -492,6 +492,7 @@ def plan_drill(
         policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
+        slo=tuple(spec.slo),
         decision_refs=_governing_decisions(spec),
     )
 
@@ -604,6 +605,7 @@ def _plan_targeted_drill(
         policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
+        slo=tuple(spec.slo),
         decision_refs=_governing_decisions(spec),
     )
 
@@ -885,6 +887,7 @@ def plan_maniac(
         policy_id=eff_policy,
         success=spec.success,
         observability=spec.observability,
+        slo=tuple(spec.slo),
         decision_refs=(*_governing_decisions(spec), DECISION_M5_1_MANIAC),
     )
 

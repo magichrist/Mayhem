@@ -30,6 +30,7 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
 - [Campaigns](#campaigns)
+- [What's new in v0.9.0](#whats-new-in-v090)
 - [Safety Model](#safety-model)
 - [Exit Codes](#exit-codes)
 - [Architecture](#architecture)
@@ -293,6 +294,58 @@ policy/window editing. See the
 
 ---
 
+## What's new in v0.9.0
+
+v0.9.0 is a truth-and-evidence release. It adds no new fault-injection power; it
+makes what Mayhem already does **verifiable**. Every new surface below is
+plan-only until explicitly executed, and every claim is recorded in evidence.
+
+| Area | What it gives you | Where |
+|------|-------------------|-------|
+| Explicit intent | Every mutating command needs an approval; `--dry-run` previews and returns before any engine exists. | `mayhem run --execute`, [`docs/reference/cli.md`](docs/reference/cli.md) |
+| Runtime context | Engine, target, and namespace resolved once and propagated; a target-type mismatch is refused **before** any lease or subprocess. | `mayhem doctor`, evidence `k8s_context` |
+| Capability truth | What each fault can actually do per engine, with a reason and a source of truth for every blocked row. | `mayhem discover capabilities [--explain] [--blocked]` |
+| Replay capsules | A versioned, digest-checked capsule per run; export and validate offline. | `mayhem inspect replay export\|validate RUN_ID` |
+| Redaction | Redaction enforced at the write boundary, so a directly-built envelope cannot leak; counts-only metrics in evidence. | evidence `redaction_metrics` |
+| SLO criteria | Provider-neutral thresholds with explicit units and windows; a missing observation **fails** rather than passes. | `slo:` in the [drill spec](docs/drill-spec.md#slo-criteria-v090) |
+| Scenarios | Typed variables, time windows, and conditional steps compiled to a deterministic plan. | `mayhem experiment compose` |
+| Coverage graph | Service × fault × engine coverage with blocked runs excluded, plus baseline diffs. | `mayhem inspect graph`, `mayhem inspect coverage-diff` |
+| Campaign resume | Durable checkpoints; a verified experiment is never repeated without `--retry-verified`. | `mayhem campaign resume-plan` |
+| Residual impact | Before/after comparison proving the system came back; an unavailable source reads `unavailable`, never `clean`. | `mayhem inspect residual` |
+| Game days | Sessions with a freeze window, named approvers, and dual control for critical faults. | `mayhem game-day` |
+| Provider sandbox | Default grant is read-only; signed fault packs; unsigned is development-only. | [`docs/provider-sdk.md`](docs/provider-sdk.md) |
+| Observability | Read-only Prometheus/Loki connectors and local OpenTelemetry spans. | [`docs/observability.md`](docs/observability.md) |
+| Evidence bundles | Hash-chained, offline-verifiable bundles of a run's evidence. | `mayhem bundle verify PATH` |
+
+Two honesty rules are worth stating plainly, because they change what output
+means:
+
+- **No backend means no effect.** `start_load`, `stop_load`, and `notify` have
+  no executor yet. They report `acknowledged_no_backend` and the run is *not*
+  clean — they never look like success.
+- **No live verification is claimed without a live run.** The capability
+  dashboard reports `live=false` for every row in this repository; `live=true`
+  can only come from a recorded live run.
+
+```bash
+mayhem --version                     # installed version, or 0.0.0+source in a checkout
+mayhem discover capabilities --explain k8s.pod_kill
+mayhem inspect replay export RUN_ID --out bundle/
+mayhem bundle verify bundle/
+```
+
+### v0.9.0 documentation
+
+| Document | Contents |
+|----------|----------|
+| [`docs/v0.9.0/01-vision-and-positioning.md`](docs/v0.9.0/01-vision-and-positioning.md) | What v0.9.0 is for |
+| [`docs/v0.9.0/04-architecture-and-decisions.md`](docs/v0.9.0/04-architecture-and-decisions.md) | ADRs and the decisions behind them |
+| [`docs/v0.9.0/06-core-implementation-plan.md`](docs/v0.9.0/06-core-implementation-plan.md) | Core tasks 1-10 and the core checkpoint |
+| [`docs/v0.9.0/07-expansion-implementation-plan.md`](docs/v0.9.0/07-expansion-implementation-plan.md) | Expansion tasks 11-20 and the expansion checkpoint |
+| [`docs/v0.9.0/08-release-readiness.md`](docs/v0.9.0/08-release-readiness.md) | Gate results and what is still excluded |
+
+---
+
 ## Safety Model
 
 - **Risk ceilings.** Every catalog fault carries a risk level; injection is
@@ -374,6 +427,8 @@ is as small as possible:
 | Legacy `KubernetesAdapter` | Compatibility seam only; reports unavailable |
 | Live Kubernetes cluster acceptance | Not claimed by repository documentation |
 | Catalog-only Kubernetes faults | `k8s.image_pull_slow`; excluded from the available-fault register and refused before mutation |
+| v0.9.0 core truth work (intent, admission, capability truth, replay, redaction) | Implemented; unit + integration tested |
+| v0.9.0 expansion work (coverage graph, SLOs, scenarios, resume, residual, game day, sandbox, connectors, bundles) | Implemented; plan-only until executed |
 | Web UI / REST API | Planned |
 
 ### Kubernetes status

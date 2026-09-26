@@ -64,7 +64,9 @@ A v0.9.0 feature is complete only when:
 
 | Gate | Result |
 | --- | --- |
-| `pytest tests/unit tests/integration tests/e2e` | PASS (full run, after tasks 1-10 and again after tasks 11-20) |
+| `pytest tests/unit tests/integration tests/e2e` | PASS (full run, after tasks 1-10, again after tasks 11-20, and again after the v0.9.0 edge-case and docs-contract test pass) |
+| Coverage of the v0.9.0 modules | 100% on 14 of 15 new modules; `domain/scenarios.py` 99% (3 defensive lines: an unreachable type fallback and a re-raise that pydantic pre-empts) |
+| Documented examples | PASS — `tests/unit/test_v090_docs_contract.py` loads the README and `docs/drill-spec.md` examples and compiles them against the real schema |
 | `uv build --sdist --wheel` | PASS |
 | `python scripts/verify_release_artifacts.py dist` | PASS (9 checks) |
 | Wheel install + import + console scripts + `mayhem --version` + `python -m mayhem` | PASS (offline: `pip install --no-deps --target`, then run) |
