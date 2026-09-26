@@ -147,6 +147,8 @@
 
 ## Task 6: Enforce typed executor admission
 
+**Status:** IMPLEMENTED — commit `a3a647e`; targeted admission and Kubernetes runtime tests pass; full matrix/integration verification deferred.
+
 **Files:**
 - Create: `src/mayhem/domain/admission.py`
 - Modify: `src/mayhem/controller/executor.py`
@@ -159,13 +161,13 @@
 - Produces: `AdmissionDecision(allowed, code, reason, required_target_types, required_capabilities)`.
 - Refusal codes: `target.type_mismatch`, `target.unresolved`, `capability.missing`, `compensation.incomplete`.
 
-- [ ] Write a matrix test for pod, node, container, service, workload, and unresolved target types.
+- [x] Write a matrix test for pod, node, container, service, workload, and unresolved target types.
 - [ ] Write tests proving refusal occurs before lease creation and before subprocess/Kubernetes calls.
 - [ ] Run the matrix and expect current late failures.
-- [ ] Implement admission before lease acquisition and pass typed target information into executors.
-- [ ] Replace late `AttributeError` paths with stable typed refusals.
+- [x] Implement admission before lease acquisition and pass typed target information into executors.
+- [x] Replace late `AttributeError` paths with stable typed refusals.
 - [ ] Run the matrix, lease lifecycle tests, and fake runtime integration tests.
-- [ ] Commit with `fix: admit typed targets before mutation`.
+- [x] Commit with `fix: admit typed targets before mutation`.
 
 ## Task 7: Add replay capsules and approval artifacts
 
