@@ -20,7 +20,6 @@ from mayhem.domain.provider import (
     ensure_api_compatible,
     ensure_permissions,
 )
-from mayhem.domain.provider import ProviderPermission
 from mayhem.providers.builtin import create_builtin_registry
 from mayhem.providers.pack import (
     FaultPack,

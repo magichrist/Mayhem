@@ -166,7 +166,11 @@ def capabilities(
         payload: object = {"capabilities": [row.to_dict() for row in rows]}
     else:
         payload = dashboard.to_dict()
-    fmt = output_format.lower() if output_format else ("json" if as_json else "text")
+    from mayhem.cli.output import current_format
+
+    # The command's own --format wins; otherwise honour the root group's
+    # resolved --format so every command supports text/json/yaml.
+    fmt = output_format.lower() if output_format else ("json" if as_json else current_format())
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return

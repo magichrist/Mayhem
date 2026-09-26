@@ -178,15 +178,21 @@ class TestToolkitGroup:
         assert "ok" in out or "MISSING" in out
 
     def test_list_json_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """v0.9.0: `discover capabilities` reports fault capability truth."""
         rc = main(["discover", "capabilities", "--json"])
         assert rc == 0
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "tools" in data
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema_version"]
+        assert data["capabilities"]
+        assert {"total", "supported", "blocked"} <= set(data["summary"])
 
-    def test_list_custom_host(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "capabilities", "--host", "local"])
+    def test_capabilities_accepts_a_yaml_format(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = main(["--format", "yaml", "discover", "capabilities"])
         assert rc == 0
+        payload = yaml.safe_load(capsys.readouterr().out)
+        assert payload["capabilities"]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -323,7 +329,7 @@ class TestTopologyGroup:
     """``mayhem topology discover`` with compose and without."""
 
     def test_discover_with_compose_file(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -332,14 +338,14 @@ class TestTopologyGroup:
         assert "edges" in data["graph"]
 
     def test_discover_compose_has_service_nodes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         kinds = [n["kind"] for n in data["graph"]["nodes"]]
         assert "service" in kinds
 
     def test_discover_compose_no_self_edges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         for edge in data["graph"]["edges"]:
@@ -348,7 +354,7 @@ class TestTopologyGroup:
     def test_discover_compose_has_depends_on_edges(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         edge_kinds = [e["kind"] for e in data["graph"]["edges"]]
@@ -359,7 +365,7 @@ class TestTopologyGroup:
         assert rc == 0
 
     def test_discover_compose_has_drift_report(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert "drift" in data
@@ -372,14 +378,14 @@ class TestTopologyGroup:
         assert "graph" in data
 
     def test_discover_compose_service_names(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
         assert svc_names == {"api", "web", "download-1", "download-2", "lb", "db"}
 
     def test_topology_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
 
 
@@ -965,7 +971,7 @@ class TestCaseTopology:
     """Topology discovery against the testCase compose stack."""
 
     def test_discover_all_services_present(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         svc_names = {n["name"] for n in data["graph"]["nodes"] if n["kind"] == "service"}
@@ -974,7 +980,7 @@ class TestCaseTopology:
     def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
         with patch("mayhem.topology.providers.adapter_registry.best_effort", return_value=None):
-            rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+            rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         drift = data.get("drift", {})
@@ -982,7 +988,7 @@ class TestCaseTopology:
         assert len(missing) == 6
 
     def test_discover_produces_edges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE)])
+        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert len(data["graph"]["edges"]) > 0
@@ -1081,7 +1087,9 @@ class TestPrefixResolution:
         assert rc == 0
 
     def test_campaign_prefix_create(self, tmp_path: Path) -> None:
-        rc = main(["--db", str(tmp_path / "c.db"), "cam", "c", "pref-test"])
+        # v0.9.0 added `checkpoint`/`checkpoints`, so the one-letter `c` prefix
+        # is now ambiguous; `cr` still reaches `create` uniquely.
+        rc = main(["--db", str(tmp_path / "c.db"), "cam", "cr", "pref-test"])
         assert rc == 0
 
 
