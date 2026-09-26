@@ -13,6 +13,7 @@ ACTIVE_COMMANDS = {
     "doctor",
     "experiment",
     "extend",
+    "game-day",
     "init",
     "inspect",
     "janitor",

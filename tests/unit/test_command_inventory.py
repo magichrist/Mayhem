@@ -11,6 +11,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "doctor",
         "experiment",
         "extend",
+        "game-day",
         "init",
         "inspect",
         "janitor",

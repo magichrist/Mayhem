@@ -19,6 +19,7 @@ COMMAND_HELP: dict[str, str] = {
     "doctor": "Check configuration, database, engines, and permissions.",
     "experiment": "Inspect and validate authored experiment specs.",
     "extend": "Extend fault and capability coverage safely.",
+    "game-day": "Plan and run controlled game-day sessions.",
     "init": "Detect the project and create a safe starting configuration.",
     "inspect": "Inspect runs, coverage, leases, reports, and diagnostics.",
     "janitor": "Preview or execute stale lease cleanup.",
@@ -37,6 +38,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("doctor", "inspect", help_group="inspect"),
     CommandSpec("experiment", "experiment", help_group="experiments"),
     CommandSpec("extend", "extend", help_group="extension"),
+    CommandSpec("game-day", "run", help_group="experiments", mutating=True),
     CommandSpec("init", "prepare", help_group="preparation"),
     CommandSpec("inspect", "inspect", help_group="inspect"),
     CommandSpec("janitor", "recover", help_group="recover", mutating=True),
@@ -53,6 +55,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.commands import commands
     from mayhem.cli.doctor import doctor_cmd
     from mayhem.cli.experiment import experiment
+    from mayhem.cli.game_day import game_day
     from mayhem.cli.init import init_cmd
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
     from mayhem.cli.workflows import discover, extend, inspect, prepare
@@ -63,6 +66,7 @@ def register_commands(app: Any) -> None:
         "discover": discover,
         "doctor": doctor_cmd,
         "experiment": experiment,
+        "game-day": game_day,
         "extend": extend,
         "init": init_cmd,
         "inspect": inspect,

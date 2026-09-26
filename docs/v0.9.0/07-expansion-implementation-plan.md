@@ -178,12 +178,14 @@
 **Interfaces:**
 - Produces: `GameDaySession`, `ApprovalGate`, `FreezeWindow`, `OperatorAcknowledgement`.
 
-- [ ] Write tests for missing approval, expired freeze window, critical-fault dual control, operator pause, and final evidence bundle creation.
-- [ ] Implement session state persisted separately from campaign state.
-- [ ] Add plan-only session creation and explicit execution start.
-- [ ] Ensure all session operations reuse `ExecutionIntent`; do not create a second approval model.
-- [ ] Run game-day, campaign, CLI, and integration tests.
-- [ ] Commit with `feat: add controlled game-day sessions`.
+**Status:** DONE — `src/mayhem/domain/game_day.py`, migration 21 (`game_day_sessions`), `GameDayRepository`, and the `mayhem game-day` group (`create`, `approve`, `show`, `list`, `start`, `pause`, `complete`). Sessions live in their own table, never in `campaigns`. `start` is plan-only without `--execute`; the approval gate sits between that preview return and the state change, and it calls the same `require_explicit_approval` used by `run`/`maniac` — there is no second approval model. A critical fault in scope requires two *distinct* approvers (a repeated actor does not count twice).
+
+- [x] Write tests for missing approval, expired freeze window, critical-fault dual control, operator pause, and final evidence bundle creation.
+- [x] Implement session state persisted separately from campaign state.
+- [x] Add plan-only session creation and explicit execution start.
+- [x] Ensure all session operations reuse `ExecutionIntent`; do not create a second approval model.
+- [x] Run game-day, campaign, CLI, and integration tests.
+- [x] Commit with `feat: add controlled game-day sessions`.
 
 ## Task 18: Add provider sandbox and signed fault packs
 

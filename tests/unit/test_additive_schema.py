@@ -137,4 +137,5 @@ def test_name_snapshot_is_stable() -> None:
         "replay_capsules",
         "coverage_graph",
         "campaign_checkpoints",
+        "game_day_sessions",
     ), "migration name sequence drifted from the snapshot — append-only."

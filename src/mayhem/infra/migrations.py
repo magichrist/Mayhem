@@ -703,6 +703,26 @@ M0020_CAMPAIGN_CHECKPOINTS = Migration(
 )
 
 
+M0021_GAME_DAY_SESSIONS = Migration(
+    version=21,
+    name="game_day_sessions",
+    statements=(
+        """
+        CREATE TABLE game_day_sessions (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL,
+            session_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_game_day_state ON game_day_sessions(state)",
+    ),
+    down_statements=("DROP INDEX idx_game_day_state", "DROP TABLE game_day_sessions"),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -724,4 +744,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0018_REPLAY_CAPSULES,
     M0019_COVERAGE_GRAPH,
     M0020_CAMPAIGN_CHECKPOINTS,
+    M0021_GAME_DAY_SESSIONS,
 )

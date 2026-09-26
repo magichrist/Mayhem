@@ -31,6 +31,7 @@ ACTIVE_ROOTS = {
     "doctor",
     "experiment",
     "extend",
+    "game-day",
     "init",
     "inspect",
     "janitor",
@@ -42,6 +43,15 @@ ACTIVE_ROOTS = {
 }
 
 ACTIVE_GROUP_PATHS = {
+    "game-day": (
+        "create",
+        "approve",
+        "show",
+        "list",
+        "start",
+        "pause",
+        "complete",
+    ),
     "campaign": (
         "list",
         "create",

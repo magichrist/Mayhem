@@ -257,6 +257,7 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem inspect` | Inspect runs, history, coverage, next actions, leases, and diagnostics. |
 | `mayhem recover`, `mayhem janitor` | Recover runs and clean leases. |
 | `mayhem extend` | Inspect and extend faults, capabilities, dependencies, and providers. |
+| `mayhem game-day` | Plan and run controlled game-day sessions with named approvals. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
 
 Use each command's current `--help` output for accepted arguments. The full

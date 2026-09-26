@@ -173,6 +173,20 @@ Inspect recorded execution and resilience data.
 
 Use `recover status`, `recover plan`, and `recover execute` for explicit run recovery. `janitor` previews lease cleanup by default; pass `-e` or `--execute` to apply it.
 
+### `mayhem game-day`
+
+Plan and run controlled game-day sessions with named approvals.
+
+- `mayhem game-day create`
+- `mayhem game-day approve SESSION --actor WHO`
+- `mayhem game-day show|list`
+- `mayhem game-day start SESSION [--execute]`
+- `mayhem game-day pause SESSION --operator WHO`
+- `mayhem game-day complete SESSION --evidence-bundle PATH`
+
+`start` is plan-only without `--execute`. A critical fault in scope requires two
+distinct approvers, and a session cannot start outside its freeze window.
+
 ### `mayhem extend`
 
 Inspect and extend provider, fault, and capability coverage.
@@ -237,6 +251,7 @@ change a target.
 | `doctor` | `inspect` | inspect | no |
 | `experiment` | `experiment` | experiments | no |
 | `extend` | `extend` | extension | no |
+| `game-day` | `run` | experiments | yes |
 | `init` | `prepare` | preparation | no |
 | `inspect` | `inspect` | inspect | no |
 | `janitor` | `recover` | recover | yes |
