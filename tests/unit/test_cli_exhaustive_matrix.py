@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ACTIVE_ROOTS = {
+    "bundle",
     "campaign",
     "commands",
     "discover",
@@ -43,6 +44,7 @@ ACTIVE_ROOTS = {
 }
 
 ACTIVE_GROUP_PATHS = {
+    "bundle": ("verify", "show"),
     "game-day": (
         "create",
         "approve",

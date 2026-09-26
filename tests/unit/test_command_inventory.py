@@ -5,7 +5,8 @@ from mayhem.cli.exit_codes import ExitCode
 
 ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
     {
-        "campaign",
+        "bundle",
+    "campaign",
         "commands",
         "discover",
         "doctor",

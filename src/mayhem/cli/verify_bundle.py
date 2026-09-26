@@ -1,4 +1,4 @@
-"""``mayhem verify bundle PATH`` — offline evidence bundle verification.
+"""``mayhem bundle verify PATH`` — offline evidence bundle verification.
 
 This command deliberately touches no database, no cluster, and no runtime: it
 reads a bundle directory and re-derives every hash from the bytes on disk.
@@ -12,15 +12,13 @@ import click
 
 from mayhem.cli.resolver import make_group
 
-verify_bundle_cmd = make_group(
-    "verify-bundle", "Verify a portable evidence bundle offline."
-)
+bundle_cmd = make_group("bundle", "Build and verify portable evidence bundles.")
 
 
-@verify_bundle_cmd.command("check")
+@bundle_cmd.command("verify")
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def check(path: str, as_json: bool) -> None:
+def verify(path: str, as_json: bool) -> None:
     """Verify a bundle's schema, hashes, chain order, signature, and redaction."""
     from mayhem.domain.evidence_bundle import BundleVerificationError, load_bundle, verify_bundle
 
@@ -51,7 +49,7 @@ def check(path: str, as_json: bool) -> None:
         raise SystemExit(1)
 
 
-@verify_bundle_cmd.command("show")
+@bundle_cmd.command("show")
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 def show(path: str, as_json: bool) -> None:

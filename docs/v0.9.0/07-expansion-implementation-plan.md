@@ -251,11 +251,15 @@
 - Produces: `EvidenceBundle`, `BundleManifest`, `verify_bundle(path) -> BundleVerification`.
 - Verification checks schema, hashes, signature metadata, replay digest, and redaction marker.
 
-- [ ] Write tests for valid bundles, changed payloads, changed order, missing artifacts, invalid signature metadata, and secret-bearing extras.
-- [ ] Implement deterministic bundle serialization and hash chaining.
-- [ ] Add a standalone verifier command that does not require a live runtime.
-- [ ] Run bundle, evidence, redaction, packaging, and integration tests.
-- [ ] Commit with `feat: add portable evidence bundle verification`.
+**Status:** DONE — `src/mayhem/domain/evidence_bundle.py` (`EvidenceBundle`, `BundleManifest`, `build_bundle`, `verify_bundle`, `load_bundle`) and the offline `mayhem bundle verify|show` command. Artifacts are hashed individually *and* chained, so neither a changed payload nor a reordered set can pass; an unsigned bundle warns (integrity yes, authorship no) instead of failing; a secret-shaped artifact name is refused; and the redaction marker must agree with the manifest, so a bundle that skipped redaction fails. The verifier is proved offline in the integration suite by making `Store.open_migrated` explode.
+
+- [x] Write tests for valid bundles, changed payloads, changed order, missing artifacts, invalid signature metadata, and secret-bearing extras.
+- [x] Implement deterministic bundle serialization and hash chaining.
+- [x] Add a standalone verifier command that does not require a live runtime.
+- [x] Run bundle, evidence, redaction, packaging, and integration tests.
+- [x] Commit with `feat: add portable evidence bundle verification`.
+
+**Note:** the command is `mayhem bundle verify PATH`, not `mayhem verify-bundle`, because a second root starting with `v` made the documented `mayhem ve` prefix ambiguous — prefix resolution is itself a tested contract (`tests/unit/test_cli_resolver.py`).
 
 ## Expansion checkpoint
 

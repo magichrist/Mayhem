@@ -7,6 +7,7 @@ from click.testing import CliRunner
 from mayhem.cli.app import app
 
 ACTIVE_COMMANDS = {
+    "bundle",
     "campaign",
     "commands",
     "discover",

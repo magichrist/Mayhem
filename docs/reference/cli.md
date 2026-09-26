@@ -173,6 +173,18 @@ Inspect recorded execution and resilience data.
 
 Use `recover status`, `recover plan`, and `recover execute` for explicit run recovery. `janitor` previews lease cleanup by default; pass `-e` or `--execute` to apply it.
 
+### `mayhem bundle`
+
+Verify a portable evidence bundle offline — no database, cluster, or runtime.
+
+- `mayhem bundle verify PATH`
+- `mayhem bundle show PATH`
+
+`check` re-derives every artifact hash and the hash chain from the bytes on disk,
+verifies the schema, signature metadata, and the redaction marker, and exits
+non-zero on any mismatch. An unsigned bundle verifies its integrity and warns
+that authorship is unproven.
+
 ### `mayhem game-day`
 
 Plan and run controlled game-day sessions with named approvals.
@@ -260,6 +272,7 @@ change a target.
 | `recover` | `recover` | recover | yes |
 | `run` | `run` | run | yes |
 | `verify` | `inspect` | inspect | no |
+| `bundle` | `inspect` | inspect | no |
 
 Sub-commands of the groups are documented in the group sections above. The
 `mayhem recover RUN_ID` spelling resolves to `recover execute RUN_ID` through a
