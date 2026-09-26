@@ -1,7 +1,22 @@
 from __future__ import annotations
 
 from mayhem.controller.executor import StepReport
-from mayhem.domain.evidence import ActionOutcome
+from mayhem.domain.evidence import ActionOutcome, EvidenceEnvelope
+
+
+def test_action_outcomes_visible_in_text_and_json() -> None:
+    from mayhem.cli.render import render_evidence_human
+
+    envelope = EvidenceEnvelope(
+        run_id="r1",
+        plan_hash="hash",
+        engine="kubernetes",
+        verdict="error",
+        action_outcomes=("acknowledged_no_backend",),
+    )
+    text = render_evidence_human(envelope)
+    assert "action outcomes: acknowledged_no_backend" in text
+    assert envelope.model_dump(mode="json")["action_outcomes"] == ["acknowledged_no_backend"]
 
 
 def test_no_backend_action_is_not_unqualified_success() -> None:

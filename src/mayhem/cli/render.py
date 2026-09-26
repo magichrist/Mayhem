@@ -148,4 +148,6 @@ def render_evidence_human(envelope: Any) -> str:
         lines.append(f"observations: {len(data['observations'])}")
     if data.get("remediation"):
         lines.append(f"remediation: {'; '.join(data['remediation'])}")
+    if data.get("action_outcomes"):
+        lines.append(f"action outcomes: {'; '.join(data['action_outcomes'])}")
     return "\n".join(lines)
