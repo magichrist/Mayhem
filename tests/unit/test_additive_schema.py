@@ -135,4 +135,5 @@ def test_name_snapshot_is_stable() -> None:
         "five_state_coverage",
         "resolved_target",
         "replay_capsules",
+        "coverage_graph",
     ), "migration name sequence drifted from the snapshot — append-only."

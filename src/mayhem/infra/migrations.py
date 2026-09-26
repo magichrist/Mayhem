@@ -636,6 +636,46 @@ M0018_REPLAY_CAPSULES = Migration(
 )
 
 
+M0019_COVERAGE_GRAPH = Migration(
+    version=19,
+    name="coverage_graph",
+    statements=(
+        """
+        CREATE TABLE coverage_graph_nodes (
+            node_id TEXT PRIMARY KEY,
+            service TEXT NOT NULL,
+            fault_family TEXT NOT NULL,
+            fault_kind TEXT NOT NULL DEFAULT '',
+            failure_domain TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            engine TEXT NOT NULL,
+            maturity TEXT NOT NULL,
+            evidence_status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            verified INTEGER NOT NULL DEFAULT 0,
+            blocked_reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_coverage_graph_service ON coverage_graph_nodes(service)",
+        "CREATE INDEX idx_coverage_graph_family ON coverage_graph_nodes(fault_family)",
+        """
+        CREATE TABLE coverage_graph_baselines (
+            name TEXT PRIMARY KEY,
+            graph_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+    ),
+    down_statements=(
+        "DROP TABLE coverage_graph_baselines",
+        "DROP INDEX idx_coverage_graph_family",
+        "DROP INDEX idx_coverage_graph_service",
+        "DROP TABLE coverage_graph_nodes",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -655,4 +695,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0016_FIVE_STATE_COVERAGE,
     M0017_RESOLVED_TARGET,
     M0018_REPLAY_CAPSULES,
+    M0019_COVERAGE_GRAPH,
 )

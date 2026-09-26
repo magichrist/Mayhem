@@ -301,6 +301,102 @@ def replay_validate(
 
 
 inspect.add_command(replay_group)
+
+@inspect.command("graph")
+@click.option("--service", default=None, help="Only nodes for this service.")
+@click.option("--engine", default=None, help="Only nodes for this engine.")
+@click.option(
+    "--evidence-status",
+    default=None,
+    type=click.Choice(["verified", "attempted", "blocked", "none"]),
+    help="Only nodes with this evidence status.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.option(
+    "--record",
+    is_flag=True,
+    help="Record the current coverage table into the graph before reporting.",
+)
+@click.pass_context
+def inspect_graph(
+    ctx: click.Context,
+    service: str | None,
+    engine: str | None,
+    evidence_status: str | None,
+    as_json: bool,
+    record: bool,
+) -> None:
+    """Read-only resilience coverage graph."""
+    from mayhem.domain.coverage_graph import build_graph
+    from mayhem.infra.coverage_repository import CoverageGraphRepository
+
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    store = open_store(obj.db)
+    try:
+        repo = CoverageGraphRepository(store)
+        if record:
+            graph = build_graph(repo.records_from_coverage())
+            repo.record_nodes(graph.nodes)
+        graph = repo.graph(service=service, engine=engine, evidence_status=evidence_status)
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(graph.to_dict(), indent=2, sort_keys=True))
+        return
+    summary = graph.summary()
+    click.echo(
+        f"coverage graph: {summary['nodes']} nodes, {summary['services']} services, "
+        f"{summary['verified']} verified, {summary['blocked']} blocked"
+    )
+    for node in graph.nodes:
+        click.echo(
+            f"  {node.service:<24} {node.fault_family:<16} {node.engine:<12} "
+            f"{node.evidence_status:<10} maturity={node.maturity}"
+        )
+        for edge in graph.edges:
+            if edge.source == node.service and edge.target == node.fault_family:
+                click.echo(f"    -> {edge.target} ({edge.evidence_status}, {edge.weight} attempt(s))")
+
+
+@inspect.command("coverage-diff")
+@click.argument("baseline")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.option(
+    "--save",
+    is_flag=True,
+    help="Save the current graph as this baseline instead of diffing against it.",
+)
+@click.pass_context
+def inspect_coverage_diff(ctx: click.Context, baseline: str, as_json: bool, save: bool) -> None:
+    """Diff the recorded coverage graph against a named baseline."""
+    from mayhem.infra.coverage_repository import CoverageGraphRepository
+
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    store = open_store(obj.db)
+    try:
+        repo = CoverageGraphRepository(store)
+        if save:
+            graph = repo.graph()
+            repo.save_baseline(baseline, graph)
+            payload = {"baseline": baseline, "saved": graph.summary()}
+        else:
+            delta = repo.delta(baseline)
+            if delta is None:
+                click.echo(f"unknown baseline: {baseline}", err=True)
+                click.echo(f"known baselines: {', '.join(repo.baseline_names()) or '-'}", err=True)
+                raise SystemExit(1)
+            payload = {"baseline": baseline, **delta.to_dict()}
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    for key, value in payload.items():
+        click.echo(f"{key}: {value}")
+
+
 inspect.add_command(_clone(status, "runs"))
 inspect.add_command(_clone(history, "history"))
 inspect.add_command(_clone(coverage_cmd, "coverage"))

@@ -54,12 +54,16 @@
 - Produces: `CoverageNode`, `CoverageEdge`, `CoverageDelta(before, after, added, removed, changed)`.
 - Consumes: catalog definitions, target profiles, run evidence, and maturity status.
 
-- [ ] Write tests proving coverage is keyed by service, failure domain, target type, engine, maturity, and evidence status.
-- [ ] Write tests for baseline creation, successful run updates, blocked-run exclusion, and campaign-level delta aggregation.
-- [ ] Implement graph persistence and a read-only JSON/table view.
-- [ ] Add `inspect coverage` and `experiment coverage-diff` without changing existing coverage table semantics.
-- [ ] Run graph, campaign, inspect, and integration tests.
-- [ ] Commit with `feat: add resilience coverage graph`.
+**Status:** DONE — `src/mayhem/domain/coverage_graph.py`, migration 19 (`coverage_graph`), `CoverageGraphRepository`, and the read-only `mayhem inspect graph` / `mayhem inspect coverage-diff` commands. The graph is an additive projection: `m5_coverage` is read, never written, so the existing five-state table keeps its semantics.
+
+- [x] Write tests proving coverage is keyed by service, failure domain, target type, engine, maturity, and evidence status.
+- [x] Write tests for baseline creation, successful run updates, blocked-run exclusion, and campaign-level delta aggregation.
+- [x] Implement graph persistence and a read-only JSON/table view.
+- [x] Add `inspect coverage` and `experiment coverage-diff` without changing existing coverage table semantics.
+- [x] Run graph, campaign, inspect, and integration tests.
+- [x] Commit with `feat: add resilience coverage graph`.
+
+**Note:** the two read surfaces are `mayhem inspect graph` and `mayhem inspect coverage-diff BASELINE [--save]` rather than `inspect coverage` / `experiment coverage-diff`, because `inspect coverage` already exists as the five-state coverage table view and reusing the name would have changed its meaning.
 
 ## Task 13: Add provider-neutral observation contracts
 

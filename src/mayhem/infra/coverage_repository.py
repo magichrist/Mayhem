@@ -21,6 +21,14 @@ from typing import TYPE_CHECKING
 
 from mayhem.domain.catalog import all_definitions
 from mayhem.domain.common import utc_now
+from mayhem.domain.coverage_graph import (
+    GRAPH_SCHEMA_VERSION,
+    CoverageDelta,
+    CoverageEdge,
+    CoverageGraph,
+    CoverageNode,
+    build_edges,
+)
 from mayhem.domain.coverage import (
     CellFilters,
     CellState,
@@ -395,3 +403,161 @@ class SQLiteCoverageRepository:
             updated_at=row["updated_at"],
             extra=json.loads(row["extra_json"]),
         )
+
+
+class CoverageGraphRepository:
+    """Read/write persistence for the resilience coverage graph.
+
+    Deliberately separate from :class:`SQLiteCoverageRepository` so the
+    existing five-state coverage table keeps its semantics untouched: the graph
+    is an additive projection keyed by
+    ``service|fault_family|failure_domain|target_type|engine``.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self._store = store
+
+    def record_node(self, node: CoverageNode) -> None:
+        from datetime import UTC, datetime
+
+        with self._store.write() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO coverage_graph_nodes (node_id, service, fault_family, "
+                "fault_kind, failure_domain, target_type, engine, maturity, evidence_status, "
+                "attempts, verified, blocked_reason, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    node.node_id,
+                    node.service,
+                    node.fault_family,
+                    node.fault_kind or node.fault_family,
+                    node.failure_domain,
+                    node.target_type,
+                    node.engine,
+                    node.maturity,
+                    node.evidence_status,
+                    node.attempts,
+                    int(node.verified),
+                    node.blocked_reason,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def record_nodes(self, nodes: Iterable[CoverageNode]) -> int:
+        written = 0
+        for node in nodes:
+            self.record_node(node)
+            written += 1
+        return written
+
+    def records_from_coverage(self) -> list[dict]:
+        """Project the existing ``m5_coverage`` rows into graph records.
+
+        Read-only: the five-state coverage table is never written here, so its
+        semantics stay exactly as they were.
+        """
+        rows = self._store.query(
+            "SELECT target, fault_kind, execution_context, parameter_band, covered, "
+            "state, block_reason FROM m5_coverage"
+        )
+        records: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            state = str(item.get("state") or "")
+            records.append(
+                {
+                    "service": str(item.get("target") or "unknown"),
+                    "fault_family": str(item.get("fault_kind") or "unknown").split(".", 1)[0],
+                    "fault_kind": str(item.get("fault_kind") or "unknown"),
+                    "failure_domain": str(item.get("parameter_band") or "unknown"),
+                    "target_type": str(item.get("execution_context") or "unknown"),
+                    "engine": "unknown",
+                    "maturity": "unknown",
+                    "covered": bool(item.get("covered")) or state == "covered",
+                    "block_reason": str(item.get("block_reason") or ""),
+                }
+            )
+        return records
+
+    def nodes(self) -> tuple[CoverageNode, ...]:
+        rows = self._store.query(
+            "SELECT node_id, service, fault_family, fault_kind, failure_domain, target_type, "
+            "engine, maturity, evidence_status, attempts, verified, blocked_reason "
+            "FROM coverage_graph_nodes ORDER BY node_id"
+        )
+        return tuple(
+            CoverageNode(
+                service=str(dict(row)["service"]),
+                fault_family=str(dict(row)["fault_family"]),
+                fault_kind=str(dict(row)["fault_kind"]),
+                failure_domain=str(dict(row)["failure_domain"]),
+                target_type=str(dict(row)["target_type"]),
+                engine=str(dict(row)["engine"]),
+                maturity=str(dict(row)["maturity"]),
+                evidence_status=str(dict(row)["evidence_status"]),
+                attempts=int(dict(row)["attempts"]),
+                verified=bool(dict(row)["verified"]),
+                blocked_reason=str(dict(row)["blocked_reason"]),
+            )
+            for row in rows
+        )
+
+    def graph(
+        self,
+        *,
+        service: str | None = None,
+        engine: str | None = None,
+        evidence_status: str | None = None,
+    ) -> CoverageGraph:
+        nodes = self.nodes()
+        return CoverageGraph(nodes=nodes, edges=build_edges(nodes)).filtered(
+            service=service, engine=engine, evidence_status=evidence_status
+        )
+
+    def save_baseline(self, name: str, graph: CoverageGraph) -> None:
+        with self._store.write() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO coverage_graph_baselines (name, graph_json, created_at) "
+                "VALUES (?,?,datetime('now'))",
+                (name, json.dumps(graph.to_dict(), sort_keys=True)),
+            )
+
+    def baseline(self, name: str) -> CoverageGraph | None:
+        rows = self._store.query(
+            "SELECT graph_json FROM coverage_graph_baselines WHERE name = ?", (name,)
+        )
+        if not rows:
+            return None
+        payload = json.loads(str(dict(rows[0])["graph_json"]))
+        return CoverageGraph(
+            nodes=tuple(CoverageNode(**_node_kwargs(node)) for node in payload.get("nodes", [])),
+            edges=(),
+            schema_version=str(payload.get("schema_version", GRAPH_SCHEMA_VERSION)),
+        )
+
+    def baseline_names(self) -> tuple[str, ...]:
+        rows = self._store.query("SELECT name FROM coverage_graph_baselines ORDER BY name")
+        return tuple(str(dict(row)["name"]) for row in rows)
+
+    def delta(self, name: str) -> CoverageDelta | None:
+        before = self.baseline(name)
+        if before is None:
+            return None
+        return CoverageDelta.between(before, self.graph())
+
+
+def _node_kwargs(payload: dict) -> dict:
+    allowed = {
+        "service",
+        "fault_family",
+        "fault_kind",
+        "failure_domain",
+        "target_type",
+        "engine",
+        "maturity",
+        "evidence_status",
+        "attempts",
+        "verified",
+        "blocked_reason",
+    }
+    return {key: value for key, value in payload.items() if key in allowed}
