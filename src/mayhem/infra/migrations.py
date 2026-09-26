@@ -615,6 +615,27 @@ M0017_RESOLVED_TARGET = Migration(
 )
 
 
+M0018_REPLAY_CAPSULES = Migration(
+    version=18,
+    name="replay_capsules",
+    statements=(
+        """
+        CREATE TABLE replay_capsules (
+            run_id TEXT PRIMARY KEY,
+            capsule_json TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_replay_capsules_created ON replay_capsules(created_at DESC)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_replay_capsules_created",
+        "DROP TABLE replay_capsules",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -633,4 +654,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0015_RUN_CONTROLLER_PID,
     M0016_FIVE_STATE_COVERAGE,
     M0017_RESOLVED_TARGET,
+    M0018_REPLAY_CAPSULES,
 )

@@ -45,6 +45,7 @@ def build_evidence(
     engine_version: str | None = None,
     topology_fingerprint: str | None = None,
     execution_intent: dict[str, Any] | None = None,
+    replay_digest: str = "",
 ) -> EvidenceEnvelope:
     phash = plan_hash_for(plan) if plan is not None else ""
     pid = getattr(plan, "run_id", run_id) if plan is not None else run_id
@@ -109,6 +110,7 @@ def build_evidence(
         execution_intent=(
             None if execution_intent is None else _sanitize_evidence_dict(dict(execution_intent))
         ),
+        replay_digest=replay_digest,
         verification_basis="live" if engine and verdict not in ("", "planned") else "unit_tested",
     )
 

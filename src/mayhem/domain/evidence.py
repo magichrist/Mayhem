@@ -41,6 +41,7 @@ class EvidenceEnvelope(BaseModel):
     # target, policy, actor, approval window). ``None`` for evidence recorded by
     # a caller that did not mint an intent — e.g. a unit-level run.
     execution_intent: dict[str, Any] | None = None
+    replay_digest: str = ""
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []
