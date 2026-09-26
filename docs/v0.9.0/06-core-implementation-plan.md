@@ -98,6 +98,8 @@
 
 ## Task 4: Make target profiles first-class configuration
 
+**Status:** DONE — commits `2accb0d`, `1b6e209`; targeted config/profile/diagnostic tests pass.
+
 **Files:**
 - Modify: `src/mayhem/config.py`
 - Modify: `src/mayhem/domain/target_profiles.py`
@@ -111,12 +113,12 @@
 - Consumes: top-level `targets` or `profiles` in `mayhem.yaml`.
 - Produces: validated target profiles available to topology, preflight, policy, and machine-readable output.
 
-- [ ] Write tests for valid profiles, inheritance, duplicate names, invalid engines, credential keys, and multiple-profile selection.
-- [ ] Write a test proving a `mayhem.yaml` containing targets loads through `MayhemConfigBase` instead of being rejected as an unknown field.
-- [ ] Add the target-profile field/reference to config parsing while preserving profile selection semantics.
-- [ ] Make diagnostics and doctor report the selected profile and available engine explicitly.
-- [ ] Run the focused tests and existing config tests.
-- [ ] Commit with `feat: integrate target profiles into configuration`.
+- [x] Write tests for valid profiles, inheritance, duplicate names, invalid engines, credential keys, and multiple-profile selection.
+- [x] Write a test proving a `mayhem.yaml` containing targets loads through `MayhemConfigBase` instead of being rejected as an unknown field.
+- [x] Add the target-profile field/reference to config parsing while preserving profile selection semantics.
+- [x] Make diagnostics and doctor report the selected profile and available engine explicitly.
+- [x] Run the focused tests and existing config tests.
+- [x] Commit with `feat: integrate target profiles into configuration`.
 
 ## Task 5: Add capability truth records
 
