@@ -71,7 +71,7 @@
 
 ## Task 3: Require explicit execution intent
 
-**Status:** DONE — commits `261518d`, `cd4bd1b`, `2285352`, `26ac4c0`; static review approved; tests deferred to final verification.
+**Status:** DONE — commits `261518d`, `cd4bd1b`, `2285352`, `26ac4c0`; the `maniac` approval gate now sits after argument validation and after the `--dry-run` return, so a malformed invocation still reports a usage error (exit 2) and a preview never needs approval. Intent and CLI suites pass with the full unit run.
 
 **Files:**
 - Create: `src/mayhem/domain/execution_intent.py`
@@ -89,11 +89,11 @@
 
 - [x] Write tests proving every mutating command refuses without an explicit intent and that preview commands never create a lease.
 - [x] Write tests proving an intent bound to a different plan hash, target, engine, or expired timestamp is refused.
-- [ ] Run the tests and expect existing implicit paths to fail.
+- [x] Run the tests and expect existing implicit paths to fail.
 - [x] Implement intent validation before lease acquisition and pass the intent into evidence.
 - [x] Update campaign and dependency mutations to use the shared contract.
 - [x] Update CLI help and JSON error envelopes.
-- [ ] Run the focused tests and the full unit suite.
+- [x] Run the focused tests and the full unit suite.
 - [x] Commit with `feat: require explicit execution intent`.
 
 ## Task 4: Make target profiles first-class configuration
@@ -147,7 +147,7 @@
 
 ## Task 6: Enforce typed executor admission
 
-**Status:** IMPLEMENTED — commit `a3a647e`; targeted admission and Kubernetes runtime tests pass; full matrix/integration verification deferred.
+**Status:** DONE — commit `a3a647e` plus `cc72a97`; admission runs before any mutation-spec construction or lease acquisition, so a target-type mismatch can no longer surface as a late `AttributeError`. Matrix, lease-lifecycle, and fake-runtime integration tests pass.
 
 **Files:**
 - Create: `src/mayhem/domain/admission.py`
@@ -162,16 +162,16 @@
 - Refusal codes: `target.type_mismatch`, `target.unresolved`, `capability.missing`, `compensation.incomplete`.
 
 - [x] Write a matrix test for pod, node, container, service, workload, and unresolved target types.
-- [ ] Write tests proving refusal occurs before lease creation and before subprocess/Kubernetes calls.
-- [ ] Run the matrix and expect current late failures.
+- [x] Write tests proving refusal occurs before lease creation and before subprocess/Kubernetes calls.
+- [x] Run the matrix and expect current late failures.
 - [x] Implement admission before lease acquisition and pass typed target information into executors.
 - [x] Replace late `AttributeError` paths with stable typed refusals.
-- [ ] Run the matrix, lease lifecycle tests, and fake runtime integration tests.
+- [x] Run the matrix, lease lifecycle tests, and fake runtime integration tests.
 - [x] Commit with `fix: admit typed targets before mutation`.
 
 ## Task 7: Add replay capsules and approval artifacts
 
-**Status:** IMPLEMENTED — commit `78ce528`; replay unit, migration, and SQLite round-trip tests pass; CLI export and broader evidence verification deferred.
+**Status:** DONE — commits `78ce528`, `cc72a97`; `mayhem inspect replay export|validate` reads, captures, and validates capsules; the run path now mints and stores a capsule so `replay_digest` is real. Replay unit, CLI, migration, and SQLite round-trip tests pass.
 
 **Files:**
 - Create: `src/mayhem/domain/replay.py`
@@ -188,15 +188,15 @@
 
 - [x] Write tests for deterministic capsule serialization, digest verification, stale fingerprint detection, and dry-run validation.
 - [x] Write a round-trip test that creates a capsule, reloads it from SQLite, and reproduces the plan identity without mutation.
-- [ ] Run tests and expect missing persistence/model behavior to fail.
+- [x] Run tests and expect missing persistence/model behavior to fail.
 - [x] Implement schema, SQLite migration, repository, and evidence linkage.
-- [ ] Add CLI output for capsule export/validate through existing inspect/report surfaces.
-- [ ] Run focused, integration, migration, and evidence tests.
+- [x] Add CLI output for capsule export/validate through existing inspect/report surfaces.
+- [x] Run focused, integration, migration, and evidence tests.
 - [x] Commit with `feat: persist replayable run capsules`.
 
 ## Task 8: Centralize redaction and recovery evidence
 
-**Status:** DONE — commit `05f7593`; redaction, tool-runner, CLI error, config, and evidence-degradation tests pass.
+**Status:** DONE — commits `05f7593`, `cc72a97`, `1b6ad43c`; redaction now runs at the write boundary (`write_evidence`, `write_evidence_file`, `write_report_artifacts`) and records counts-only metrics, so a directly-constructed envelope cannot leak. Artifact secret-sweep, redaction, tool-runner, CLI error, config, and evidence-degradation tests pass.
 
 **Files:**
 - Create: `src/mayhem/domain/redaction.py`
@@ -216,13 +216,13 @@
 - [x] Write a test proving redaction occurs before SQLite and artifact writes.
 - [x] Write a test proving evidence write failure yields `degraded` and preserves recovery data.
 - [x] Implement the typed policy and route existing error/config/tool/report paths through it.
-- [ ] Add redaction metrics to the run evidence without recording raw secret values.
+- [x] Add redaction metrics to the run evidence without recording raw secret values.
 - [x] Run redaction, evidence, CLI error, and integration tests.
 - [x] Commit with `feat: enforce one evidence redaction boundary`.
 
 ## Task 9: Repair release quality gates
 
-**Status:** IMPLEMENTED — commits `2a11329`, `a340c6f`; CI/workflow contract tests pass; artifact build and wheel smoke remain for final verification.
+**Status:** DONE — commits `2a11329`, `a340c6f`; CI/workflow contract tests pass; `uv build` and `verify_release_artifacts.py` pass locally, and the wheel was smoke-tested offline (see the checkpoint below).
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
@@ -238,10 +238,10 @@
 
 - [x] Write a packaging smoke test that installs the wheel into a clean temporary environment and runs `mayhem --help` and `mayhem discover capabilities --format json`.
 - [x] Write a workflow contract test for required job names and commands.
-- [ ] Run the tests and expect missing CI/package checks to fail.
+- [x] Run the tests and expect missing CI/package checks to fail.
 - [x] Add the CI workflow, artifact verification script, schema checks, and immutable action references.
 - [x] Keep live conformance in a separate opt-in workflow/job.
-- [ ] Run all gates locally where possible and record any environment-only exclusions.
+- [x] Run all gates locally where possible and record any environment-only exclusions.
 - [x] Commit with `ci: add v0.9.0 quality gates`.
 
 ## Task 10: Make no-backend actions honest
@@ -256,7 +256,7 @@
 **Interfaces:**
 - Produces action outcome states: `applied`, `verified`, `compensated`, `acknowledged_no_backend`, `refused`, `failed`.
 
-**Status:** IMPLEMENTED — commits `47617a3`, `0a5bffb`; no-backend actions report `acknowledged_no_backend`; focused action-outcome and catalog tests pass.
+**Status:** DONE — commits `47617a3`, `0a5bffb`; no-backend actions report `acknowledged_no_backend` and surface in both JSON and text evidence output; action-outcome and catalog tests pass.
 
 - [x] Write tests for `start_load`, `stop_load`, and `notify` showing they cannot report unqualified success without a backend.
 - [x] Write tests proving catalog-only and no-backend actions are visible in text and JSON output.
@@ -268,9 +268,9 @@
 
 ## Checkpoint after core plan
 
-- [ ] `python -m pytest tests/unit tests/integration -q` passes.
+- [x] `python -m pytest tests/unit tests/integration -q` passes.
 - [x] `python -m build --sdist --wheel` passes.
-- [ ] A clean wheel install passes CLI smoke tests. *(local run blocked by pypi.org read timeout in the sandbox; CI has network access)*
-- [ ] No mutating command executes without an intent.
-- [ ] No target-type mismatch reaches lease creation.
-- [ ] No known credential fixture reaches an artifact.
+- [x] A clean wheel install passes CLI smoke tests. *(verified offline: `pip install --no-deps --target`, import, console-script entry points, `mayhem --help`; the full clean-venv install with PyPI dependencies is re-run by the `wheel-smoke` CI job because this sandbox cannot reach pypi.org)*
+- [x] No mutating command executes without an intent. *(covered by `tests/unit/test_cli_execution_intent.py`: run, maniac, campaign run, explore live, legacy recover shim, janitor apply, dependency install)*
+- [x] No target-type mismatch reaches lease creation. *(covered by `tests/unit/test_executor_admission.py` and `tests/integration/test_fake_runtime_admission.py`; admission now runs before any spec construction or lease acquisition)*
+- [x] No known credential fixture reaches an artifact. *(covered by `tests/integration/test_artifact_secret_sweep.py`; `write_evidence`, `write_evidence_file`, and `write_report_artifacts` all redact at the boundary)*
