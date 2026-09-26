@@ -60,7 +60,7 @@ ACTIVE_GROUP_PATHS = {
     ),
     "commands": ("show",),
     "discover": ("topology", "faults", "capabilities", "engines"),
-    "experiment": ("show", "validate", "explore"),
+    "experiment": ("show", "validate", "explore", "compose", "check-scenario"),
     "extend": ("faults", "capabilities", "dependencies", "providers"),
     "prepare": (
         "config",

@@ -104,12 +104,16 @@
 - Produces: `ScenarioVariable`, `Condition`, `ConditionalStep`, `CompiledScenario`.
 - Compiled plans contain resolved values and preserve the original scenario source for evidence.
 
-- [ ] Write tests for variables, typed constraints, time windows, conditional branches, missing variables, and deterministic compilation.
-- [ ] Write a replay test proving the same variables and seed produce the same compiled plan.
-- [ ] Implement scenario parsing, validation, and compile-time resolution.
-- [ ] Add `experiment compose`/`experiment validate` plan-only flows; no direct execution from generated output.
-- [ ] Run scenario, planner, CLI, and integration tests.
-- [ ] Commit with `feat: compile variable-driven scenarios`.
+**Status:** DONE — `src/mayhem/domain/scenarios.py` plus the plan-only `mayhem experiment compose` and `mayhem experiment check-scenario` commands. Compilation is pure: same variables and seed ⇒ same `digest`, and the compiled plan carries its own scenario source so a replay needs no extra inputs. Neither command can execute: `compose` never constructs a `RunEngine`, which the integration suite asserts structurally.
+
+- [x] Write tests for variables, typed constraints, time windows, conditional branches, missing variables, and deterministic compilation.
+- [x] Write a replay test proving the same variables and seed produce the same compiled plan.
+- [x] Implement scenario parsing, validation, and compile-time resolution.
+- [x] Add `experiment compose`/`experiment validate` plan-only flows; no direct execution from generated output.
+- [x] Run scenario, planner, CLI, and integration tests.
+- [x] Commit with `feat: compile variable-driven scenarios`.
+
+**Note:** the scenario validator is `experiment check-scenario`, not `experiment validate`, because `experiment v` is a documented two-letter prefix for the existing drill `validate` command and a second `v…` child would make that prefix ambiguous.
 
 ## Task 15: Add campaign checkpoints and safe resume
 
