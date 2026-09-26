@@ -161,6 +161,7 @@ addopts = "-q --strict-markers"
 markers = [
     "nightly: chaos-of-the-chaos tier (deselect with '-m \"not nightly\"')",
     "implicit_execution: opt in to the MAYHEM_ALLOW_IMPLICIT_EXECUTION=1 compat switch (v0.9.0 execution intent)",
+    "package: builds and installs the distribution; requires MAYHEM_PACKAGE_SMOKE=1",
 ]
 
 # --- import-linter -------------------------------------------------------------

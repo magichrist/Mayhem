@@ -23,13 +23,14 @@ A v0.9.0 feature is complete only when:
 - `ruff check` on changed source and test files.
 - `mypy` on the newly created typed boundaries, with existing baseline violations tracked separately.
 - `lint-imports` only after the architecture migration has reduced the current contract debt; until then it must not be presented as a passing release gate.
+- `.github/workflows/ci.yml` runs unit, integration, in-process E2E, fatal-Ruff, package build, wheel smoke, and artifact verification jobs; the advisory job reports the current lint, type, and architecture debt without blocking unrelated pull requests.
 
 ### Package
 
 - `python -m build --sdist --wheel`
 - install the wheel in a clean virtual environment;
 - run `mayhem --help`;
-- run `mayhem discover capabilities --format json`;
+- run `mayhem discover capabilities --format json` (the capability dashboard now accepts `--format` directly);
 - validate the sdist and wheel metadata;
 - verify distribution name is `mayhem-cli` and console command is `mayhem`;
 - verify `kubernetes` is installed as a default dependency.
