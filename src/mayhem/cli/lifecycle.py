@@ -763,11 +763,31 @@ def _write_evidence_after_run(
             skip_gate=skip_gate,
             execution_intent=intent.to_dict() if intent is not None else None,
         )
-        with contextlib.suppress(Exception):
+        try:
             write_evidence(store, envelope)
+        except Exception as exc:
+            envelope = envelope.model_copy(
+                update={
+                    "evidence_status": "degraded",
+                    "remediation": (
+                        *envelope.remediation,
+                        f"evidence persistence failed: {type(exc).__name__}",
+                    ),
+                }
+            )
         if evidence_dir:
-            with contextlib.suppress(Exception):
+            try:
                 write_evidence_file(envelope, evidence_dir)
+            except Exception as exc:
+                envelope = envelope.model_copy(
+                    update={
+                        "evidence_status": "degraded",
+                        "remediation": (
+                            *envelope.remediation,
+                            f"evidence artifact write failed: {type(exc).__name__}",
+                        ),
+                    }
+                )
         return envelope
     except Exception:
         return None

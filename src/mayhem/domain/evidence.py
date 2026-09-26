@@ -42,6 +42,7 @@ class EvidenceEnvelope(BaseModel):
     # a caller that did not mint an intent — e.g. a unit-level run.
     execution_intent: dict[str, Any] | None = None
     replay_digest: str = ""
+    evidence_status: str = "complete"
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

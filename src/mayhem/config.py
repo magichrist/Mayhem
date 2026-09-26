@@ -31,7 +31,8 @@ from pydantic import (
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
-from mayhem.domain.policy import BUILTIN_PROFILES, sanitize_for_logging
+from mayhem.domain.policy import BUILTIN_PROFILES
+from mayhem.domain.redaction import redact
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.target_profiles import (
     TargetProfile,
@@ -272,7 +273,7 @@ def _sanitize_value(key: str, value: Any) -> Any:
     if key.lower() in _SECRET_FIELD_NAMES:
         return "***REDACTED***"
     if isinstance(value, dict):
-        return sanitize_for_logging(value)
+        return redact(value).value
     return value
 
 

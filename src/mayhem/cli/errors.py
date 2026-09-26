@@ -8,8 +8,7 @@ from typing import Any
 import click
 
 from mayhem.cli.exit_codes import ExitCode
-
-SECRET_KEYS = frozenset({"password", "token", "secret", "api_key", "apikey", "credential"})
+from mayhem.domain.redaction import redact
 
 CODE_EXIT_MAP: dict[str, ExitCode] = {
     "usage_error": ExitCode.USAGE_ERROR,
@@ -38,14 +37,17 @@ CODE_EXIT_MAP: dict[str, ExitCode] = {
 def _sanitize_details(details: dict[str, Any] | None) -> dict[str, Any]:
     if not details:
         return {}
-    sanitized: dict[str, Any] = {}
-    for key, value in details.items():
-        lowered = key.lower()
-        if any(secret in lowered for secret in SECRET_KEYS):
-            sanitized[key] = "***redacted***"
-        else:
-            sanitized[key] = value
-    return sanitized
+
+    def _legacy_marker(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: _legacy_marker(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_legacy_marker(item) for item in value]
+        if isinstance(value, str):
+            return value.replace("***REDACTED***", "***redacted***")
+        return value
+
+    return dict(_legacy_marker(redact(details).value))
 
 
 @dataclass(slots=True)

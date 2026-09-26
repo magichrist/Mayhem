@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.errors import DomainError
+from mayhem.domain.redaction import redact, redact_text
 from mayhem.toolkit.hashing import digest_mapping
 
 if TYPE_CHECKING:
@@ -114,16 +115,19 @@ def run_tool(
 
     stdout_text, stdout_truncated = _truncate(completed.stdout or b"", max_output_bytes)
     stderr_text, stderr_truncated = _truncate(completed.stderr or b"", max_output_bytes)
+    redacted_argv = tuple(redact(list(argv_tuple)).value)
+    redacted_stdout, _ = redact_text(stdout_text)
+    redacted_stderr, _ = redact_text(stderr_text)
 
     return ToolResult(
-        argv=argv_tuple,
+        argv=redacted_argv,
         argv_digest=digest_mapping({"argv": list(argv_tuple)}),
         env_digest=digest_mapping(effective_env),
         host=platform.node(),
         cwd=str(cwd) if cwd else None,
         exit_code=completed.returncode,
         duration_ms=duration_ms,
-        stdout=stdout_text,
-        stderr=stderr_text,
+        stdout=redacted_stdout,
+        stderr=redacted_stderr,
         truncated=stdout_truncated or stderr_truncated,
     )
