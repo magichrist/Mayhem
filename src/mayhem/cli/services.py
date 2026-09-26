@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -171,16 +172,39 @@ def resolve_runtime_context(
 def _select_target_profile(target: str | None, config_path: str | None) -> Any:
     """The target profile a selection resolves to, or ``None``.
 
-    Mirrors ``mayhem.controller.preflight._k8s_profile``: an explicit
-    ``--target`` wins, a single configured profile is inferred, and anything
-    ambiguous resolves to nothing rather than guessing.
-    """
-    try:
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+    Resolution comes from the effective layered configuration when that
+    configuration loads: target profiles are first-class configuration
+    (v0.9.0 task 4), so a ``targets:``/``profiles:`` block in ``mayhem.yaml``
+    is validated and carried by ``MayhemConfig`` rather than re-parsed here. A
+    profile-only document (no ``apiVersion``) is not a loadable configuration,
+    so the file reader stays as the fallback for it; both share one validator.
 
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-    except Exception:
-        return None
+    Selection semantics are unchanged, and mirror
+    ``mayhem.controller.preflight._k8s_profile``: an explicit ``--target``
+    wins, a single configured profile is inferred, and anything ambiguous
+    resolves to nothing rather than guessing.
+    """
+    from mayhem.config import SpecFileUsedAsConfig
+    from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+
+    profiles: dict[str, Any] = {}
+    with warnings.catch_warnings():
+        # A drill spec declares `kind: drill`; it owns its own `targets:`
+        # block (logical targets, not profiles) and its embedded `config:`
+        # section is not a configuration layer for us. Treating it as "no
+        # profiles here" is the caller's fallback path, not a hidden error.
+        warnings.simplefilter("ignore", SpecFileUsedAsConfig)
+        try:
+            cfg, _sources = load_config(config_path=config_path, environ={})
+        except Exception:
+            profiles = {}
+        else:
+            profiles = dict(cfg.targets)
+    if not profiles:
+        try:
+            profiles = load_profiles_from_mayhem_yaml(config_path)
+        except Exception:
+            return None
     if target is not None:
         return profiles.get(target)
     if len(profiles) == 1:

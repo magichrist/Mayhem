@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
 from mayhem.domain.policy import BUILTIN_PROFILES
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.target_profiles import TargetProfile, parse_profiles_mapping, select_profile
 
 
 class SpecFileUsedAsConfig(Warning):
@@ -144,7 +145,9 @@ class KubernetesCfg(BaseModel):
 
 
 class MayhemConfigBase(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # ``populate_by_name`` keeps ``targets=`` usable programmatically while the
+    # field also answers to the ``profiles:`` alias authored in YAML.
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     api_version: Literal["mayhem/v1"] = Field(default=API_VERSION, serialization_alias="apiVersion")
     policy: PolicyCfg = Field(default_factory=PolicyCfg)
@@ -153,6 +156,14 @@ class MayhemConfigBase(BaseModel):
     toolkit: ToolkitOverrides = Field(default_factory=ToolkitOverrides)
     runtime: Literal["docker", "podman", "kubernetes"] = "docker"
     target: TargetCfg = Field(default_factory=TargetCfg)
+    # v0.9.0 task 4: target profiles are first-class configuration. The
+    # singular ``target:`` above is a different concept (explicit container
+    # names for no-compose discovery) and is unchanged. ``profiles:`` is an
+    # accepted alias for ``targets:`` in YAML and normalizes into this field.
+    targets: dict[str, TargetProfile] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("targets", "profiles"),
+    )
     kubernetes: KubernetesCfg = Field(default_factory=KubernetesCfg)
     # k-plan-4 §4.5: how long pod-lifecycle compensation waits for the
     # controller's replacement pod to reach Ready before timing out.
@@ -165,6 +176,30 @@ class MayhemConfigBase(BaseModel):
 
 # Alias kept for readability at call sites.
 MayhemConfig = MayhemConfigBase
+
+#: The YAML keys that carry target profiles, in precedence order. ``targets``
+#: is canonical; ``profiles`` is the accepted alias.
+_PROFILE_LAYER_KEYS = ("targets", "profiles")
+
+
+def target_profiles(config: MayhemConfig) -> dict[str, TargetProfile]:
+    """The validated target profiles carried by an effective configuration."""
+    return dict(config.targets)
+
+
+def select_target_profile(
+    config: MayhemConfig, name: str | None = None
+) -> TargetProfile | None:
+    """The target profile a selection resolves to, or ``None``.
+
+    The configuration-level seam onto :func:`mayhem.domain.target_profiles.select_profile`,
+    so topology, preflight, policy, and machine-readable output all resolve
+    the *same* profile from the *same* loaded configuration. An explicit
+    ``name`` wins; a single configured profile is inferred; anything ambiguous
+    resolves to nothing rather than guessing, and an unknown ``name`` is
+    refused.
+    """
+    return select_profile(target_profiles(config), name)
 
 
 def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
@@ -225,6 +260,7 @@ def explain_config(config: MayhemConfig, sources: dict[str, str]) -> list[dict[s
         "toolkit",
         "runtime",
         "target",
+        "targets",
         "kubernetes",
         "log_level",
         "recovery_grace",
@@ -308,10 +344,19 @@ def load_config(
     ``mayhem.yaml`` is the single-file home for everything: when the config
     document turns out to be a drill spec (``kind: drill``), the overlapping
     keys of its embedded ``config:`` section are absorbed as the config layer
-    (ADR-M4: the spec's ``config:`` section replaces the separate mayhem.yml)
+    (ADR-M4: the spec's ``config:` section replaces the separate mayhem.yml)
     instead of failing on ``extra="forbid"``. ``skip_default_file_if_spec`` is
     kept for backward compatibility and has no effect — the spec doubling case
     is handled by :func:`_config_layer_from_spec` directly.
+
+    Target profiles (``targets:``, or the ``profiles:`` alias) merge per
+    profile *name*: a later layer replaces a same-named profile whole rather
+    than deep-merging into it, and a name declared in neither key of the same
+    layer is a duplicate and is refused. Every layer's accumulated profile
+    block is re-validated, so a profile that inherits (``extends:``) from one
+    declared in an earlier layer resolves, and a profile a later layer
+    replaced with a bad one is still refused. Provenance for the section is
+    recorded under ``sources["targets"]``.
     """
     env = dict(os.environ if environ is None else environ)
     env_policy = env.get(_POLICY_ENV_VAR)
@@ -322,14 +367,45 @@ def load_config(
             f"conflicting policy sources: --policy {policy!r} and {_POLICY_ENV_VAR}={env_policy!r}",
         )
     sources: dict[str, str] = dict.fromkeys(
-        ("policy", "blast_radius", "storage", "toolkit", "log_level"),
+        ("policy", "blast_radius", "storage", "toolkit", "log_level", "targets"),
         "defaults",
     )
     merged: dict[str, Any] = {"api_version": API_VERSION}
+    # name -> raw profile mapping, accumulated across layers (later wins).
+    raw_profiles: dict[str, Any] = {}
+
+    def absorb_profiles(layer_data: dict[str, Any], layer_name: str) -> None:
+        declared: set[str] = set()
+        for key in _PROFILE_LAYER_KEYS:
+            if key not in layer_data:
+                continue
+            block = layer_data[key]
+            if block is None:
+                block = {}
+            if not isinstance(block, dict):
+                raise SchemaValidationError(
+                    "config", f"{layer_name}: {key} must be a mapping of name to profile"
+                )
+            for raw_name in block:
+                name = str(raw_name)
+                if name in declared:
+                    raise SchemaValidationError(
+                        "target_profile",
+                        f"{layer_name}: duplicate target name {name!r} declared in both "
+                        f"'targets' and 'profiles'",
+                    )
+                declared.add(name)
+                raw_profiles[name] = block[raw_name]
+        if not declared:
+            return
+        merged["targets"] = parse_profiles_mapping(raw_profiles, source=f"{layer_name} targets:")
+        sources["targets"] = layer_name
 
     def absorb(layer_data: dict[str, Any], layer_name: str) -> None:
         for key, value in layer_data.items():
             if key == "apiVersion":
+                continue
+            if key in _PROFILE_LAYER_KEYS:
                 continue
             field_name = "api_version" if key == "apiVersion" else key
             existing = merged.get(field_name)
@@ -338,11 +414,15 @@ def load_config(
             else:
                 merged[field_name] = value
             sources[field_name] = layer_name
+        absorb_profiles(layer_data, layer_name)
 
     base_path = Path(config_path) if config_path else Path("mayhem.yaml")
     if config_path or base_path.exists():
         document = _read_document(base_path)
         if is_spec_file(document):
+            # Only the projected `config:` section reaches `absorb`: a drill
+            # spec's own top-level `targets:` block is its logical targets
+            # (k-plan-1 §1.2), never target profiles.
             layer = _config_layer_from_spec(document)
             if layer:
                 absorb(layer, "file(spec)")

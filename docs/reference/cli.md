@@ -16,7 +16,7 @@ Unique command prefixes remain available for active commands. Ambiguous prefixes
 |--------|--------|
 | `--db PATH` | SQLite database path. |
 | `--config PATH` | Configuration or drill-spec path. |
-| `--profile NAME` | Configuration profile overlay. |
+| `--profile NAME` | Configuration profile overlay (`mayhem.{profile}.yaml`). Not a target profile. |
 | `--policy NAME` | Named safety policy. |
 | `--dry-run` | Evaluate policy without mutation. |
 | `--allow-critical` | Acknowledge critical-risk faults. |
@@ -24,7 +24,7 @@ Unique command prefixes remain available for active commands. Ambiguous prefixes
 | `-p, --podman` | Select Podman. |
 | `-k, --kubernetes` | Select Kubernetes. |
 | `-d, --debug` | Re-raise unexpected errors. |
-| `--target NAME` | Select a target profile. |
+| `--target NAME` | Select a target profile from the configuration's `targets`. |
 | `--format text\|json\|yaml` | Select output format. |
 | `--no-color` | Disable ANSI color. |
 
@@ -46,6 +46,10 @@ Prepare configuration, dependencies, and executable plans.
 - `mayhem prepare config show [--json]`
 - `mayhem prepare config explain [--json]`
 - `mayhem prepare config validate`
+
+`config show` includes the `targets` section (the target profiles, under the
+`profiles:` alias as well) and the `sources` map records which layer supplied
+it. `config explain` reports `targets` as its own row.
 - `mayhem prepare dependencies check|install|compile`
 - `mayhem prepare check`
 - `mayhem prepare validate [SPEC] -c COMPOSE`
@@ -184,6 +188,25 @@ Inspect and extend provider, fault, and capability coverage.
 - `mayhem init` — detect a project and create a safe starter configuration.
 - `mayhem doctor` — check configuration, database, engines, topology, capabilities, and permissions.
 - `mayhem verify RUN_ID` — verify a recorded evidence envelope without mutation.
+
+`doctor` reports the target it resolved and the engines available for it:
+
+- `config.target.selected` — the selected target profile and its engine. The
+  same record is emitted whether the target came from `--target` or was the
+  single configured profile.
+- `config.target.ambiguous` — more than one target profile is configured and no
+  `--target` was given. Nothing is selected; pass `--target NAME`.
+- `config.target.mismatch` — the `--target` name is not a configured profile.
+- `config.target_profile.<name>.policy_advisory` — the profile declares a
+  `policy:` the run does not enforce; use `--policy` or the `policy:` block.
+- `engine.target.available` / `engine.target.missing` — whether the selected
+  target's engine binary (`docker`, `podman`, `kubectl`) is on `PATH`. This is
+  file presence, checked without a subprocess, and does not claim the runtime is
+  healthy.
+
+`--profile` selects a configuration overlay (`mayhem.{profile}.yaml`) and is
+never compared against target-profile names; a target profile is selected with
+`--target`.
 
 ## Command inventory
 

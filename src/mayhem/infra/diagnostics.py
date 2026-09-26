@@ -12,6 +12,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.target_profiles import TargetProfile
 from mayhem.infra.migrations import ALL_MIGRATIONS
 
 if TYPE_CHECKING:
@@ -163,9 +164,7 @@ def check_config(config_path: str | Path | None, profile: str | None) -> list[Di
 def check_target_profiles(config_path: str | Path | None) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     try:
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
-
-        profiles = load_profiles_from_mayhem_yaml(config_path)
+        profiles = _configured_target_profiles(config_path)
         if not profiles:
             records.append(
                 _record(
@@ -201,6 +200,204 @@ def check_target_profiles(config_path: str | Path | None) -> list[DiagnosticReco
             )
         )
     return records
+
+
+def _configured_target_profiles(
+    config_path: str | Path | None,
+) -> dict[str, TargetProfile]:
+    """Target profiles of *config_path*, from the effective config when possible.
+
+    The layered configuration is the source of truth: ``load_config`` carries
+    the validated profiles and merges the profile overlay, so a doctor run
+    reports the profiles that would actually be used. A profile-only document
+    (no ``apiVersion``) is not a loadable configuration, so the file reader is
+    the fallback for it; both share one validator
+    (:func:`mayhem.domain.target_profiles.parse_profiles_mapping`).
+    """
+    from mayhem.config import load_config as _load
+    from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+
+    try:
+        cfg, _sources = _load(config_path=config_path, environ={})
+    except Exception:
+        return load_profiles_from_mayhem_yaml(config_path)
+    return dict(cfg.targets)
+
+
+def _select_from(
+    profiles: dict[str, TargetProfile], target: str | None
+) -> tuple[TargetProfile | None, bool]:
+    """``(selected, ambiguous)`` for *target* within already-loaded *profiles*.
+
+    Selection semantics are the domain's, unchanged: an explicit ``--target``
+    wins, a single configured profile is inferred, and more than one without
+    ``--target`` is ambiguous and resolves to nothing rather than guessing. An
+    unknown ``--target`` resolves to nothing too; ``config.target.mismatch`` is
+    what reports it.
+    """
+    if not profiles:
+        return None, False
+    if target is not None:
+        return profiles.get(target), False
+    if len(profiles) == 1:
+        return next(iter(profiles.values())), False
+    return None, True
+
+
+def _selected_target_profile(
+    config_path: str | Path | None, target: str | None
+) -> tuple[dict[str, TargetProfile], TargetProfile | None, bool]:
+    """``(profiles, selected, ambiguous)`` for *target*."""
+    profiles = _configured_target_profiles(config_path)
+    selected, ambiguous = _select_from(profiles, target)
+    return profiles, selected, ambiguous
+
+
+def check_target_selection(
+    config_path: str | Path | None,
+    target: str | None = None,
+    *,
+    profiles: dict[str, TargetProfile] | None = None,
+) -> list[DiagnosticRecord]:
+    """Report the selected target profile, or why none was selected.
+
+    ``config.target.selected`` is the stable machine-readable record: same id,
+    same message, and the same ``config`` category the doctor command has
+    always emitted for an explicitly selected target.
+    """
+    records: list[DiagnosticRecord] = []
+    try:
+        if profiles is None:
+            profiles, selected, ambiguous = _selected_target_profile(config_path, target)
+        else:
+            selected, ambiguous = _select_from(profiles, target)
+    except SchemaValidationError as exc:
+        return [
+            _record(
+                "config.target.error",
+                DiagnosticCategory.config,
+                DiagnosticSeverity.error,
+                str(exc),
+                remediation="fix target profile",
+                evidence_ref=target or "",
+            )
+        ]
+    if ambiguous:
+        records.append(
+            _record(
+                "config.target.ambiguous",
+                DiagnosticCategory.config,
+                DiagnosticSeverity.warning,
+                "multiple target profiles are configured; pass --target to choose one "
+                f"(available: {', '.join(sorted(profiles))})",
+                remediation="pass --target NAME; nothing is selected by default",
+                evidence_ref=",".join(sorted(profiles)),
+            )
+        )
+        return records
+    if selected is not None:
+        records.append(
+            _record(
+                "config.target.selected",
+                DiagnosticCategory.config,
+                DiagnosticSeverity.info,
+                f"target {selected.name!r} selected (engine={selected.engine})",
+                remediation="",
+                evidence_ref=selected.name,
+            )
+        )
+    return records
+
+
+def check_target_profile_policy(profiles: dict[str, TargetProfile]) -> list[DiagnosticRecord]:
+    """Warn about a target profile's declarative ``policy:``.
+
+    A target profile's ``policy:`` names a policy the run does **not** enforce:
+    the enforced policy is the one ``--policy``/``MAYHEM_POLICY``/``policy:``
+    resolves. Saying so is more useful than letting the field read as if it
+    were in force, and an unrecognized name is called out separately.
+    """
+    from mayhem.domain.policy import BUILTIN_PROFILES
+
+    records: list[DiagnosticRecord] = []
+    for name, profile in sorted(profiles.items()):
+        declared = profile.policy
+        if not declared:
+            continue
+        records.append(
+            _record(
+                f"config.target_profile.{name}.policy_advisory",
+                DiagnosticCategory.config,
+                DiagnosticSeverity.warning,
+                f"target profile {name!r} declares policy {declared!r}, which the run "
+                "does not enforce; the enforced policy comes from --policy or policy:",
+                remediation="select the policy with --policy or the config policy: block",
+                evidence_ref=declared,
+            )
+        )
+        if declared not in BUILTIN_PROFILES:
+            records.append(
+                _record(
+                    f"config.target_profile.{name}.policy_unknown",
+                    DiagnosticCategory.config,
+                    DiagnosticSeverity.warning,
+                    f"target profile {name!r} declares unknown policy {declared!r}; "
+                    f"available: {', '.join(sorted(BUILTIN_PROFILES))}",
+                    remediation="use a built-in policy name or define a custom one",
+                    evidence_ref=declared,
+                )
+            )
+    return records
+
+
+#: The binary each target-profile engine needs on PATH.
+_ENGINE_BINARIES = {"docker": "docker", "podman": "podman", "kubernetes": "kubectl"}
+
+
+def check_engine_for_target(engine: str | None) -> list[DiagnosticRecord]:
+    """Whether the selected target's engine binary is on ``PATH``.
+
+    ``shutil.which`` only: file presence, never a subprocess, and never a claim
+    that the runtime is healthy.
+    """
+    if not engine:
+        return []
+    binary = _ENGINE_BINARIES.get(engine)
+    if binary is None:
+        return [
+            _record(
+                "engine.target.unknown",
+                DiagnosticCategory.engine,
+                DiagnosticSeverity.warning,
+                f"target profile engine {engine!r} has no known binary on PATH",
+                remediation="use engine docker, podman, or kubernetes",
+                evidence_ref=engine,
+            )
+        ]
+    found = shutil.which(binary)
+    if found:
+        return [
+            _record(
+                "engine.target.available",
+                DiagnosticCategory.engine,
+                DiagnosticSeverity.info,
+                f"{binary} found at {found} for target engine {engine!r}; "
+                "file presence does not prove the runtime is healthy",
+                remediation="verify the runtime is running separately",
+                evidence_ref=found,
+            )
+        ]
+    return [
+        _record(
+            "engine.target.missing",
+            DiagnosticCategory.engine,
+            DiagnosticSeverity.warning,
+            f"{binary} not found in PATH; the selected target's engine {engine!r} "
+            "cannot be used until it is installed",
+            remediation=f"install {binary} or select a target profile whose engine is present",
+            evidence_ref="PATH",
+        )
+    ]
 
 
 def check_spec(spec_path: str | Path | None) -> list[DiagnosticRecord]:
@@ -631,45 +828,44 @@ def check_permissions(
 def check_profile_identity(
     config_path: str | Path | None, profile: str | None
 ) -> list[DiagnosticRecord]:
-    records: list[DiagnosticRecord] = []
-    try:
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+    """Check the ``--profile`` *configuration overlay* selection.
 
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-        if profile is not None and profile not in profiles and profiles:
-            records.append(
-                _record(
-                    "config.profile.mismatch",
-                    DiagnosticCategory.config,
-                    DiagnosticSeverity.error,
-                    f"profile {profile!r} not found; available: {', '.join(sorted(profiles))}",
-                    remediation="use an existing profile or create it",
-                    evidence_ref=profile,
-                )
-            )
-        elif profile is not None and profiles:
-            records.append(
-                _record(
-                    "config.profile.matched",
-                    DiagnosticCategory.config,
-                    DiagnosticSeverity.info,
-                    f"profile {profile!r} identity verified",
-                    remediation="",
-                    evidence_ref=profile,
-                )
-            )
-    except Exception as exc:
-        records.append(
+    ``--profile`` names a ``mayhem.{profile}.yaml`` overlay, not a target
+    profile. It is therefore never compared against target-profile names: a
+    missing overlay is a configuration error (``load_config`` already refuses
+    it), and nothing is reported when the overlay resolves. The old check
+    compared the overlay name with the ``targets:`` names, which reported a
+    false mismatch for every layered configuration that also defined targets.
+    """
+    if profile is None:
+        return []
+    overlay = Path(config_path).parent / f"mayhem.{profile}.yaml" if config_path else Path(
+        f"mayhem.{profile}.yaml"
+    )
+    if overlay.exists():
+        return [
             _record(
-                "config.profile.error",
+                "config.profile.matched",
                 DiagnosticCategory.config,
-                DiagnosticSeverity.error,
-                str(exc),
-                remediation="fix profile definition",
-                evidence_ref=profile or "",
+                DiagnosticSeverity.info,
+                f"configuration profile overlay {profile!r} resolved to {overlay}",
+                remediation="",
+                evidence_ref=str(overlay),
             )
+        ]
+    return [
+        _record(
+            "config.profile.overlay_missing",
+            DiagnosticCategory.config,
+            DiagnosticSeverity.error,
+            f"configuration profile overlay {profile!r} not found at {overlay}",
+            remediation=(
+                f"create {overlay} or drop --profile; "
+                "a target profile is selected with --target, not --profile"
+            ),
+            evidence_ref=profile,
         )
-    return records
+    ]
 
 
 def check_policy_identity(
@@ -736,25 +932,26 @@ def check_policy_identity(
 
 
 def check_target_mismatch(
-    config_path: str | Path | None, target: str | None
+    config_path: str | Path | None,
+    target: str | None,
+    *,
+    profiles: dict[str, TargetProfile] | None = None,
 ) -> list[DiagnosticRecord]:
     records: list[DiagnosticRecord] = []
     try:
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
-
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-        if target is not None and profiles and target not in profiles:
+        resolved = _configured_target_profiles(config_path) if profiles is None else profiles
+        if target is not None and resolved and target not in resolved:
             records.append(
                 _record(
                     "config.target.mismatch",
                     DiagnosticCategory.config,
                     DiagnosticSeverity.error,
-                    f"target {target!r} not found; available: {', '.join(sorted(profiles))}",
+                    f"target {target!r} not found; available: {', '.join(sorted(resolved))}",
                     remediation="use an existing target or create it",
                     evidence_ref=target,
                 )
             )
-        elif target is not None and target in profiles:
+        elif target is not None and target in resolved:
             records.append(
                 _record(
                     "config.target.identity_ok",
@@ -795,11 +992,18 @@ def run_diagnostics(
     records.extend(check_spec(spec_path))
     records.extend(check_database(db_path))
     records.extend(check_engine())
+    try:
+        profiles, selected, _ambiguous = _selected_target_profile(config_path, target)
+    except Exception:
+        profiles, selected = {}, None
+    records.extend(check_target_selection(config_path, target, profiles=profiles))
+    records.extend(check_engine_for_target(selected.engine if selected is not None else None))
+    records.extend(check_target_profile_policy(profiles))
     records.extend(check_topology(compose_path, config_path))
     records.extend(check_capabilities())
     records.extend(check_profile_identity(config_path, profile))
     records.extend(check_policy_identity(config_path, profile, policy))
-    records.extend(check_target_mismatch(config_path, target))
+    records.extend(check_target_mismatch(config_path, target, profiles=profiles))
     from mayhem.config import load_config as _load
 
     try:

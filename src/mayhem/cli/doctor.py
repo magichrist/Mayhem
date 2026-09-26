@@ -6,55 +6,12 @@ import click
 
 from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
-from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml, select_profile
 from mayhem.infra.diagnostics import (
     DiagnosticCategory,
     DiagnosticRecord,
     DiagnosticSeverity,
     run_diagnostics,
 )
-
-
-def _target_records(target: str | None, config_path: str | None) -> list[DiagnosticRecord]:
-    if target is None:
-        return []
-    try:
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-        selected = select_profile(profiles, target)
-        if selected is None and profiles:
-            return [
-                DiagnosticRecord(
-                    id="config.target.not_selected",
-                    category=DiagnosticCategory.config,
-                    severity=DiagnosticSeverity.error,
-                    message=f"target {target!r} could not be selected",
-                    remediation="check mayhem.yaml targets",
-                    evidence_ref=target,
-                )
-            ]
-        if selected is not None:
-            return [
-                DiagnosticRecord(
-                    id="config.target.selected",
-                    category=DiagnosticCategory.config,
-                    severity=DiagnosticSeverity.info,
-                    message=f"target {selected.name!r} selected (engine={selected.engine})",
-                    remediation="",
-                    evidence_ref=selected.name,
-                )
-            ]
-        return []
-    except Exception as exc:
-        return [
-            DiagnosticRecord(
-                id="config.target.error",
-                category=DiagnosticCategory.config,
-                severity=DiagnosticSeverity.error,
-                message=str(exc),
-                remediation="fix target profile",
-                evidence_ref=target or "",
-            )
-        ]
 
 
 def _render_human(records: list[DiagnosticRecord]) -> None:
@@ -107,7 +64,6 @@ def doctor_cmd(
         compose_path=compose,
         spec_path=obj.config,
     )
-    records.extend(_target_records(obj.target, obj.config))
     if category is not None:
         records = [r for r in records if r.category.value == category]
     if as_json:

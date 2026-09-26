@@ -44,6 +44,90 @@ def _validate_name(name: str) -> None:
         raise SchemaValidationError("target_profile", f"invalid target name: {name!r}")
 
 
+def is_spec_document(data: Any) -> bool:
+    """True when a parsed document is an experiment spec, not a profile document.
+
+    A drill spec declares ``kind: drill`` and owns a top-level ``targets:``
+    block of *logical targets* (name → :class:`~mayhem.domain.experiments.DrillTarget`,
+    k-plan-1 §1.2). That block shares a key with target profiles but has a
+    different schema, so it is never read as one.
+    """
+    return isinstance(data, dict) and isinstance(data.get("kind"), str)
+
+
+def parse_profiles_mapping(
+    raw: Any, source: str = "target profiles"
+) -> dict[str, TargetProfile]:
+    """Validate a raw ``targets:``/``profiles:`` mapping into target profiles.
+
+    The single pure validator for the target-profile vocabulary: no file access,
+    no environment, and no dependency on :mod:`mayhem.config` (the domain layer
+    never imports upward). Every reader — the standalone profile file, the
+    layered ``mayhem.yaml``, and ``load_config`` itself — delegates here so a
+    profile means exactly one thing.
+
+    ``source`` names the origin in error messages. ``None`` (an empty
+    ``targets:`` block) yields no profiles rather than an error.
+
+    Raises:
+        SchemaValidationError: for a non-mapping block, an invalid profile
+            name, a non-mapping profile, a forbidden credential key, an
+            unsupported engine, an unknown key, or an unresolvable
+            ``extends``.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SchemaValidationError(
+            "target_profile", f"{source}: profiles must be a mapping of name to profile"
+        )
+    result: dict[str, TargetProfile] = {}
+    for name, profile_data in raw.items():
+        _validate_name(str(name))
+        pdata = profile_data
+        if pdata is None:
+            pdata = {}
+        if not isinstance(pdata, dict):
+            raise SchemaValidationError(
+                "target_profile", f"{source}: profile {name!r} must be a mapping"
+            )
+        _reject_credentials(pdata)
+        merged = dict(pdata)
+        merged["name"] = str(name)
+        if "engine" in merged and merged["engine"] not in _ALLOWED_ENGINES:
+            raise SchemaValidationError(
+                "target_profile",
+                f"{source}: profile {name!r} has invalid engine {merged['engine']!r}",
+            )
+        try:
+            result[str(name)] = TargetProfile.model_validate(merged)
+        except ValidationError as exc:
+            raise SchemaValidationError(
+                "target_profile", f"{source}: invalid profile {name!r}: {exc}"
+            ) from None
+    if any(v.extends is not None for v in result.values()):
+        result = _resolve_inheritance(result)
+    return result
+
+
+def _profile_block(data: dict[str, Any], *, bare_document: bool) -> Any:
+    """The raw target-profile mapping of a document, or ``None``.
+
+    ``targets:`` wins over the ``profiles:`` alias. A drill spec's own
+    ``targets:`` block is *not* a profile block and yields ``None`` — see
+    :func:`is_spec_document`. When neither key is present and the caller
+    accepts a profile-only document (``load_profiles_from_file`` does,
+    ``mayhem.yaml`` does not), the document itself is the mapping.
+    """
+    if is_spec_document(data):
+        return None
+    if "targets" in data:
+        return data["targets"]
+    if "profiles" in data:
+        return data["profiles"]
+    return data if bare_document else None
+
+
 def load_profiles_from_file(path: str | Path) -> dict[str, TargetProfile]:
     p = Path(path)
     if not p.exists():
@@ -54,43 +138,10 @@ def load_profiles_from_file(path: str | Path) -> dict[str, TargetProfile]:
         raise SchemaValidationError("target_profile", f"invalid YAML in {p}: {exc}") from None
     if not isinstance(data, dict):
         raise SchemaValidationError("target_profile", f"{p} must contain a mapping")
-    raw_profiles: Any = (
-        data.get("targets")
-        if "targets" in data
-        else data.get("profiles")
-        if "profiles" in data
-        else data
-    )
+    raw_profiles = _profile_block(data, bare_document=True)
     if raw_profiles is None:
         return {}
-    if not isinstance(raw_profiles, dict):
-        raise SchemaValidationError(
-            "target_profile", "profiles must be a mapping of name to profile"
-        )
-    result: dict[str, TargetProfile] = {}
-    for name, profile_data in raw_profiles.items():
-        _validate_name(str(name))
-        pdata = profile_data
-        if pdata is None:
-            pdata = {}
-        if not isinstance(pdata, dict):
-            raise SchemaValidationError("target_profile", f"profile {name!r} must be a mapping")
-        _reject_credentials(pdata)
-        merged = dict(pdata)
-        merged["name"] = str(name)
-        if "engine" in merged and merged["engine"] not in _ALLOWED_ENGINES:
-            raise SchemaValidationError(
-                "target_profile", f"profile {name!r} has invalid engine {merged['engine']!r}"
-            )
-        try:
-            result[str(name)] = TargetProfile.model_validate(merged)
-        except ValidationError as exc:
-            raise SchemaValidationError(
-                "target_profile", f"invalid profile {name!r}: {exc}"
-            ) from None
-    if any(v.extends is not None for v in result.values()):
-        result = _resolve_inheritance(result)
-    return result
+    return parse_profiles_mapping(raw_profiles, source=str(p))
 
 
 _ALLOWED_INHERITANCE_KEYS = frozenset(
@@ -151,6 +202,12 @@ def _resolve_inheritance(profiles: dict[str, TargetProfile]) -> dict[str, Target
 
 
 def load_profiles_from_mayhem_yaml(path: str | Path | None = None) -> dict[str, TargetProfile]:
+    """Target profiles carried by a ``mayhem.yaml`` document.
+
+    Unlike :func:`load_config`, no ``apiVersion`` is required: a
+    profile-only document is a valid input here, which is what the layered
+    configuration and the runtime-context fixtures rely on.
+    """
     base = Path(path) if path else Path("mayhem.yaml")
     if not base.exists():
         return {}
@@ -160,34 +217,10 @@ def load_profiles_from_mayhem_yaml(path: str | Path | None = None) -> dict[str, 
         raise SchemaValidationError("target_profile", f"invalid YAML in {base}: {exc}") from None
     if not isinstance(data, dict):
         return {}
-    raw = data.get("targets") if "targets" in data else data.get("profiles")
+    raw = _profile_block(data, bare_document=False)
     if raw is None:
         return {}
-    if not isinstance(raw, dict):
-        raise SchemaValidationError("target_profile", "profiles must be a mapping")
-    result: dict[str, TargetProfile] = {}
-    for name, profile_data in raw.items():
-        _validate_name(str(name))
-        if profile_data is None:
-            profile_data = {}  # noqa: PLW2901
-        if not isinstance(profile_data, dict):
-            raise SchemaValidationError("target_profile", f"profile {name!r} must be a mapping")
-        _reject_credentials(profile_data)
-        merged = dict(profile_data)
-        merged["name"] = str(name)
-        if "engine" in merged and merged["engine"] not in _ALLOWED_ENGINES:
-            raise SchemaValidationError(
-                "target_profile", f"profile {name!r} has invalid engine {merged['engine']!r}"
-            )
-        try:
-            result[str(name)] = TargetProfile.model_validate(merged)
-        except ValidationError as exc:
-            raise SchemaValidationError(
-                "target_profile", f"invalid profile {name!r}: {exc}"
-            ) from None
-    if any(v.extends is not None for v in result.values()):
-        result = _resolve_inheritance(result)
-    return result
+    return parse_profiles_mapping(raw, source=str(base))
 
 
 def select_profile(profiles: dict[str, TargetProfile], name: str | None) -> TargetProfile | None:

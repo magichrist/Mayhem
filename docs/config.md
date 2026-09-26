@@ -22,13 +22,13 @@ The base file is selected as follows:
   path, `--profile ci` reads `./mayhem.ci.yaml`.
 
 There is no implicit search of `.mayhem/`, the home directory, or
-`~/.config/mayhem/`. There is also no `profiles:` mapping inside the base file.
-An explicitly selected file must exist; the default `mayhem.yaml` is optional
-when no profile or file path is requested.
+`~/.config/mayhem/`. An explicitly selected file must exist; the default
+`mayhem.yaml` is optional when no profile or file path is requested.
 
-Nested mappings are deep-merged. Scalar and list values are replaced by the
-later layer. Provenance records the last layer that supplied each top-level
-field.
+Nested mappings are deep-merged, with one exception: `targets` (target
+profiles) merge per profile *name*, so a later layer replaces a same-named
+profile whole instead of merging into it. Provenance records the last layer
+that supplied each top-level field.
 
 ## Standalone configuration
 
@@ -57,6 +57,7 @@ toolkit:
 runtime: docker
 target:
   containers: []
+targets: {}
 kubernetes:
   context: null
   namespace: null
@@ -72,6 +73,63 @@ maniac:
 default so direct construction does not need one, but `_read_document` rejects a
 file that omits or misspells the YAML field.
 
+## Target profiles
+
+`targets` holds the named target profiles — the validated description of what a
+run may touch. `profiles:` is an accepted alias for the same block; it
+normalizes into `targets` and is not a second field.
+
+```yaml
+apiVersion: mayhem/v1
+targets:
+  dev:
+    engine: docker
+    compose: docker-compose.yml
+  prod:
+    engine: kubernetes
+    context: prod-eu
+    namespace: checkout
+```
+
+| Profile field | Type | Default | Contract |
+|---------------|------|---------|----------|
+| `engine` | `docker`, `podman`, or `kubernetes` | `docker` | Runtime the profile targets. |
+| `compose` | string or `null` | `null` | Compose blueprint for container engines. |
+| `context` | string or `null` | `null` | Kubeconfig context for `kubernetes`. |
+| `namespace` | string or `null` | `null` | Kubernetes namespace scope. |
+| `policy` | string or `null` | `null` | Declarative policy name. It is **not** enforced: the enforced policy is the one `--policy` or the `policy:` block resolves. `mayhem doctor` warns when a profile declares one. |
+| `workload_selector` | string or `null` | `null` | Kubernetes workload selector. |
+| `capability_policy` | string or `null` | `null` | Capability policy for Kubernetes target resolution. |
+| `targets` | list of strings | `[]` | Container names the profile addresses. |
+| `observability` | mapping or `null` | `null` | Evidence sources for the target. |
+| `extends` | string or `null` | `null` | Name of a single parent profile to inherit from. |
+| `env_ref` | string or `null` | `null` | Opaque reference to externally held environment data. |
+
+The mapping key is the profile's identity and is validated: names match
+`[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}`. Every profile is validated by one pure
+validator (`parse_profiles_mapping` in
+[`src/mayhem/domain/target_profiles.py`](../src/mayhem/domain/target_profiles.py)),
+which the loader, the standalone profile-file reader, and the diagnostics all
+delegate to. It refuses unknown keys, a non-mapping profile, a `name` other
+than the mapping key, an unsupported `engine`, a forbidden credential key, and
+an `extends` that does not resolve. Inheritance is one level deep: `extends` may
+not itself extend, and a child may only set keys from the allowlist `engine`,
+`compose`, `namespace`, `context`, `policy`, `workload_selector`,
+`capability_policy`, `targets`, `observability`, `env_ref`.
+
+Forbidden credential keys in a target profile: `password`, `secret`, `token`,
+`credentials`, `api_key`, `apikey`. A wider set is redacted when configuration
+is rendered; see [`policy-and-break-glass.md`](policy-and-break-glass.md).
+
+A drill document's own top-level `targets:` block is *not* a target-profile
+block. It declares the spec's logical targets
+(`runtime:`/`docker:`/`kubernetes:`/`faults:`) and is never read as profiles;
+see [`drill-spec.md`](drill-spec.md).
+
+Selection is `--target`, not `--profile`: an explicit `--target` wins, a single
+configured profile is selected implicitly, and more than one without `--target`
+is ambiguous — nothing is selected and `mayhem doctor` says so.
+
 ## Top-level fields
 
 | Field | Type | Default | Contract |
@@ -82,7 +140,8 @@ file that omits or misspells the YAML field.
 | `storage` | mapping | `mayhem.db`, `.mayhem/artifacts` | Store and artifact locations. |
 | `toolkit` | mapping | empty map | Binary overrides keyed by toolkit name. |
 | `runtime` | `docker`, `podman`, or `kubernetes` | `docker` | Runtime setting in the configuration model. Root CLI runtime flags are tracked separately by the CLI. |
-| `target` | mapping | empty list | Explicit container names for discovery when no compose blueprint is used. |
+| `target` | mapping | empty list | Explicit container names for discovery when no compose blueprint is used. Unrelated to `targets`. |
+| `targets` | mapping of name to target profile | `{}` | Named target profiles. `profiles:` is an accepted alias. See [Target profiles](#target-profiles). |
 | `kubernetes` | mapping | `null` context and namespace | Discovery overrides for Kubernetes. |
 | `recovery_grace` | positive float seconds | `300.0` | Bounded wait used by pod-lifecycle compensation. |
 | `log_level` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` | `INFO` | Configured log verbosity. |
@@ -137,7 +196,9 @@ the matching `policy.critical_fault_acks` entry, and root
 A profile is a separate configuration document with the same version and
 top-level schema; omitted fields retain earlier-layer values. Relative
 references such as a profile's `toolkit.binaries` values are data; the loader
-does not discover additional files from them.
+does not discover additional files from them. `--profile` selects a
+*configuration overlay*, not a target profile — target profiles are chosen with
+`--target`.
 
 ```bash
 mayhem --config ./ops/base.yaml --profile ci prepare config show
@@ -151,6 +212,17 @@ With an explicit base path, this loads:
 The overlay must itself contain `apiVersion: mayhem/v1`. Unknown profiles are
 not ignored: selecting a profile whose overlay does not exist raises a
 configuration error.
+
+An overlay may contribute target profiles. Profiles merge per name across
+layers, so an overlay that redefines `prod` replaces the base layer's `prod`
+whole and leaves every other profile untouched; a profile the overlay does not
+mention is inherited unchanged. A name declared under both `targets:` and
+`profiles:` in the *same* document is a duplicate and is refused rather than
+resolved by precedence. Because the accumulated profile block is re-validated
+after each layer, a profile may `extends:` a profile declared in an earlier
+layer, and a profile a later layer replaced with an invalid one is still
+refused. The section's provenance is reported as `targets` by
+`mayhem prepare config explain`.
 
 ## Environment variables
 
@@ -187,6 +259,10 @@ used by the plan; it is not copied into `MayhemConfig`. Spec-only settings such
 as `max_faults`, `timeout`, `recovery`, `on_failure`, and `maniac` are not
 standalone configuration fields.
 
+A drill spec's top-level `targets:` block declares the spec's logical targets,
+not target profiles, so loading a spec as configuration never produces profiles
+and the spec's own `targets:` is never read as one.
+
 If a drill spec has no embedded `config:` mapping, loading it as configuration
 uses defaults and emits `SpecFileUsedAsConfig`. The lifecycle commands still
 parse the drill independently. See [`drill-spec.md`](drill-spec.md) for that
@@ -205,6 +281,7 @@ Current root CLI controls relate to layering and execution as follows:
 |-------------|--------|
 | `--config PATH` | Selects the base document; it does not itself override a field. |
 | `--profile NAME` | Adds the separate profile overlay; it does not itself override a field. |
+| `--target NAME` | Selects a target profile from `targets`; it does not rewrite the configuration. |
 | `--allow-critical` | Supplies the CLI-side critical acknowledgement in `SafetyContext`; it does not mutate `policy.allow_critical`. |
 | `--skip-gate` | Controls the impact gate; it is not a configuration field. |
 | `--podman` / `--kubernetes` | Select CLI engine state; they do not rewrite `runtime`. |
