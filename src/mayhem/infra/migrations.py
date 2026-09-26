@@ -676,6 +676,33 @@ M0019_COVERAGE_GRAPH = Migration(
 )
 
 
+M0020_CAMPAIGN_CHECKPOINTS = Migration(
+    version=20,
+    name="campaign_checkpoints",
+    statements=(
+        """
+        CREATE TABLE campaign_checkpoints (
+            campaign_id TEXT NOT NULL,
+            experiment_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            lease_id TEXT NOT NULL DEFAULT '',
+            attempt INTEGER NOT NULL DEFAULT 0,
+            fingerprint TEXT NOT NULL DEFAULT '',
+            resume_safe INTEGER NOT NULL DEFAULT 1,
+            detail TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (campaign_id, experiment_id)
+        )
+        """,
+        "CREATE INDEX idx_campaign_checkpoints_state ON campaign_checkpoints(state)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_campaign_checkpoints_state",
+        "DROP TABLE campaign_checkpoints",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -696,4 +723,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0017_RESOLVED_TARGET,
     M0018_REPLAY_CAPSULES,
     M0019_COVERAGE_GRAPH,
+    M0020_CAMPAIGN_CHECKPOINTS,
 )

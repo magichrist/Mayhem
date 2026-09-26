@@ -129,12 +129,16 @@
 - Produces: `CampaignCheckpoint(campaign_id, experiment_id, state, lease_id, attempt, fingerprint, resume_safe, updated_at)`.
 - States: `pending`, `running`, `verified`, `compensating`, `compensated`, `retryable`, `blocked`, `completed`, `aborted`.
 
-- [ ] Write tests for normal progression, controller loss, compensation in progress, retry budget exhaustion, and stale fingerprint.
-- [ ] Write a test proving resume never repeats a verified experiment without an explicit retry intent.
-- [ ] Implement checkpoint persistence and a deterministic resume planner.
-- [ ] Add `campaign resume --dry-run` and explicit `campaign resume --execute` behavior.
-- [ ] Run campaign, lease, recovery, and integration tests.
-- [ ] Commit with `feat: add resumable campaign checkpoints`.
+**Status:** DONE — `src/mayhem/domain/campaign_checkpoint.py` (nine-state vocabulary + deterministic `plan_resume`), migration 20 (`campaign_checkpoints`), `CampaignCheckpointRepository`, and three plan-only commands: `campaign checkpoint`, `campaign checkpoints`, `campaign resume-plan`. A verified experiment is skipped unless `--retry-verified` is passed; work in flight (`running`/`compensating`), a stale fingerprint, an exhausted retry budget, or a `resume_safe=false` checkpoint all make the plan report `safe: false` rather than proceeding.
+
+- [x] Write tests for normal progression, controller loss, compensation in progress, retry budget exhaustion, and stale fingerprint.
+- [x] Write a test proving resume never repeats a verified experiment without an explicit retry intent.
+- [x] Implement checkpoint persistence and a deterministic resume planner.
+- [x] Add `campaign resume --dry-run` and explicit `campaign resume --execute` behavior.
+- [x] Run campaign, lease, recovery, and integration tests.
+- [x] Commit with `feat: add resumable campaign checkpoints`.
+
+**Note:** the resume surface is `campaign resume-plan` and it is *always* plan-only. The existing `campaign resume` already flips campaign status, and adding `--execute` there would have created a second approval model; a resume that actually runs experiments routes through the existing campaign execution path with its existing intent gate.
 
 ## Task 16: Add before/after residual impact
 

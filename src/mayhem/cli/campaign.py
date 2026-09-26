@@ -340,6 +340,170 @@ def resume_campaign(ctx: Context, campaign_id: str, db_opt: str | None, as_json:
         store.close()
 
 
+@campaign.command("checkpoints")
+@click.argument("campaign_id")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def campaign_checkpoints(ctx: Context, campaign_id: str, db_opt: str | None, as_json: bool) -> None:
+    """Show the durable checkpoints recorded for a campaign."""
+    from mayhem.infra.campaign_checkpoint_repository import CampaignCheckpointRepository
+
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        checkpoints = CampaignCheckpointRepository(store).load(campaign_id)
+    finally:
+        store.close()
+    if as_json:
+        click.echo(
+            json.dumps(
+                {"campaign_id": campaign_id, "checkpoints": [c.to_dict() for c in checkpoints]},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    if not checkpoints:
+        click.echo(f"no checkpoints recorded for {campaign_id}")
+        return
+    for checkpoint in checkpoints:
+        click.echo(
+            f"{checkpoint.experiment_id:<28} {checkpoint.state.value:<14} "
+            f"attempt={checkpoint.attempt} resume_safe={str(checkpoint.resume_safe).lower()}"
+            + (f" detail={checkpoint.detail}" if checkpoint.detail else "")
+        )
+
+
+@campaign.command("checkpoint")
+@click.argument("campaign_id")
+@click.argument("experiment_id")
+@click.option(
+    "--state",
+    "state",
+    required=True,
+    help="Checkpoint state to record.",
+)
+@click.option("--attempt", type=int, default=0, help="Attempt counter for this experiment.")
+@click.option("--fingerprint", default="", help="Environment fingerprint at checkpoint time.")
+@click.option("--lease-id", default="", help="Lease held when the checkpoint was written.")
+@click.option("--detail", default="", help="Free-form note recorded with the checkpoint.")
+@click.option(
+    "--not-resume-safe",
+    is_flag=True,
+    help="Mark the checkpoint as unsafe to resume automatically.",
+)
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def record_checkpoint(
+    ctx: Context,
+    campaign_id: str,
+    experiment_id: str,
+    state: str,
+    attempt: int,
+    fingerprint: str,
+    lease_id: str,
+    detail: str,
+    not_resume_safe: bool,
+    db_opt: str | None,
+    as_json: bool,
+) -> None:
+    """Record a campaign checkpoint. Plan-only: it never runs an experiment."""
+    from mayhem.domain.campaign_checkpoint import CampaignCheckpoint, CheckpointState
+    from mayhem.infra.campaign_checkpoint_repository import CampaignCheckpointRepository
+
+    try:
+        parsed = CheckpointState(state)
+    except ValueError as exc:
+        raise click.UsageError(f"unknown checkpoint state: {state}") from exc
+    checkpoint = CampaignCheckpoint(
+        campaign_id=campaign_id,
+        experiment_id=experiment_id,
+        state=parsed,
+        attempt=attempt,
+        fingerprint=fingerprint,
+        lease_id=lease_id,
+        detail=detail,
+        resume_safe=not not_resume_safe,
+    )
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        stored = CampaignCheckpointRepository(store).save(checkpoint)
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+        return
+    click.echo(f"checkpoint {stored.key} = {stored.state.value} (attempt {stored.attempt})")
+
+
+@campaign.command("resume-plan")
+@click.argument("campaign_id")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Candidate experiment to plan for (repeatable).",
+)
+@click.option(
+    "--retry-verified",
+    is_flag=True,
+    help="Explicit retry intent: allow a verified experiment to run again.",
+)
+@click.option("--max-attempts", type=int, default=3, show_default=True, help="Retry budget.")
+@click.option("--fingerprint", default="", help="Current environment fingerprint.")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
+@click.pass_context
+def resume_plan(
+    ctx: Context,
+    campaign_id: str,
+    experiments: tuple[str, ...],
+    retry_verified: bool,
+    max_attempts: int,
+    fingerprint: str,
+    db_opt: str | None,
+    as_json: bool,
+) -> None:
+    """Plan a campaign resume. Always plan-only — it never executes anything.
+
+    ``--retry-verified`` is the explicit retry intent: without it a verified
+    experiment is reported as skipped instead of being repeated.
+    """
+    from mayhem.domain.campaign_checkpoint import plan_resume
+    from mayhem.infra.campaign_checkpoint_repository import CampaignCheckpointRepository
+
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        checkpoints = CampaignCheckpointRepository(store).load(campaign_id)
+    finally:
+        store.close()
+    plan = plan_resume(
+        checkpoints,
+        campaign_id,
+        pending_experiments=experiments,
+        retry_verified=retry_verified,
+        max_attempts=max_attempts,
+        current_fingerprint=fingerprint,
+    )
+    if as_json:
+        click.echo(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        return
+    click.echo(f"campaign {campaign_id}: {'safe' if plan.safe else 'NOT safe'} to resume")
+    for experiment_id in plan.resume:
+        click.echo(f"  resume  {experiment_id}")
+    for experiment_id in plan.skip_verified:
+        click.echo(f"  skip    {experiment_id} (already verified; use --retry-verified)")
+    for experiment_id in plan.in_flight:
+        click.echo(f"  hold    {experiment_id} (work in flight)")
+    for experiment_id in plan.stale:
+        click.echo(f"  hold    {experiment_id} (stale environment fingerprint)")
+    for experiment_id in plan.exhausted:
+        click.echo(f"  hold    {experiment_id} (retry budget exhausted)")
+    for experiment_id in plan.blocked:
+        click.echo(f"  hold    {experiment_id} (blocked or not resume-safe)")
+
+
 @campaign.command("plan")
 @click.argument("campaign_id")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
