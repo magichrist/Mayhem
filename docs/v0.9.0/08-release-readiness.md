@@ -71,9 +71,11 @@ A v0.9.0 feature is complete only when:
 | Every new v0.9.0 command reachable from the installed wheel | PASS (`game-day`, `bundle`, `inspect replay/graph/residual`, `campaign resume-plan`, `experiment compose`, `discover capabilities`) |
 | Core checkpoint (6 invariants) | PASS (`docs/v0.9.0/06-core-implementation-plan.md`) |
 | Expansion checkpoint (6 invariants) | PASS (`tests/unit/test_expansion_checkpoint.py`) |
-| Clean-venv wheel smoke (`MAYHEM_PACKAGE_SMOKE=1`) | BLOCKED — this sandbox cannot reach pypi.org (read timeout while installing dependencies), so dependency resolution is unverified locally. CI re-runs this job with network access; the wheel itself is built, installed, imported, and exercised offline. |
-| `lint-imports` | NOT A GATE — known architecture-contract debt, deliberately non-blocking |
-| Repository-wide `ruff` / `mypy` | PRE-EXISTING FAILURES — not introduced by v0.9.0; CI treats ruff as non-fatal |
+| Clean-venv wheel smoke (`MAYHEM_PACKAGE_SMOKE=1`) | PASS on CI (run 36275532737). Locally this sandbox cannot reach pypi.org, so the same job was reproduced offline: `pip install --no-deps --target`, import, console scripts, `mayhem --version`, `python -m mayhem --version`, and every new command's `--help`. |
+| `lint-imports` | NOT A GATE — known architecture-contract debt, deliberately non-blocking (`advisory quality checks` runs with `continue-on-error: true`) |
+| `ruff` fatal subset (E9,F63,F7,F82,F821,F811) | PASS |
+| Repository-wide `ruff` / `mypy` | PRE-EXISTING FAILURES — not introduced by v0.9.0; advisory only |
+| GitHub Actions CI on `v0.9.0` | PASS (run 36275532737): unit, integration, e2e, schema, ruff-fatal, package build, wheel smoke, artifact verification |
 
 ## Rollback plan
 
