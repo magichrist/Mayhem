@@ -1,8 +1,9 @@
 """Expansion checkpoint (v0.9.0 tasks 11-20).
 
-Each test here backs one line of the "Expansion checkpoint" section of
-`docs/v0.9.0/07-expansion-implementation-plan.md`. The checkpoint is only
-marked done because these exist.
+Each test here backs one of the six expansion invariants: plan-only execution,
+text/JSON/YAML coverage, bounded and redacted integrations, controller-loss
+recovery, sandbox refusal of undeclared mutation, and no live code enabled by
+default.
 """
 
 from __future__ import annotations

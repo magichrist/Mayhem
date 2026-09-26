@@ -314,7 +314,7 @@ plan-only until explicitly executed, and every claim is recorded in evidence.
 | Residual impact | Before/after comparison proving the system came back; an unavailable source reads `unavailable`, never `clean`. | `mayhem inspect residual` |
 | Game days | Sessions with a freeze window, named approvers, and dual control for critical faults. | `mayhem game-day` |
 | Provider sandbox | Default grant is read-only; signed fault packs; unsigned is development-only. | [`docs/provider-sdk.md`](docs/provider-sdk.md) |
-| Observability | Read-only Prometheus/Loki connectors and local OpenTelemetry spans. | [`docs/observability.md`](docs/observability.md) |
+| Observability | Read-only Prometheus/Loki connectors (bounded timeout, response-size cap, redacted errors) plus local OpenTelemetry spans. | `src/mayhem/observability/` |
 | Evidence bundles | Hash-chained, offline-verifiable bundles of a run's evidence. | `mayhem bundle verify PATH` |
 
 Two honesty rules are worth stating plainly, because they change what output
@@ -334,15 +334,20 @@ mayhem inspect replay export RUN_ID --out bundle/
 mayhem bundle verify bundle/
 ```
 
-### v0.9.0 documentation
+### v0.9.0 status
 
-| Document | Contents |
-|----------|----------|
-| [`docs/v0.9.0/01-vision-and-positioning.md`](docs/v0.9.0/01-vision-and-positioning.md) | What v0.9.0 is for |
-| [`docs/v0.9.0/04-architecture-and-decisions.md`](docs/v0.9.0/04-architecture-and-decisions.md) | ADRs and the decisions behind them |
-| [`docs/v0.9.0/06-core-implementation-plan.md`](docs/v0.9.0/06-core-implementation-plan.md) | Core tasks 1-10 and the core checkpoint |
-| [`docs/v0.9.0/07-expansion-implementation-plan.md`](docs/v0.9.0/07-expansion-implementation-plan.md) | Expansion tasks 11-20 and the expansion checkpoint |
-| [`docs/v0.9.0/08-release-readiness.md`](docs/v0.9.0/08-release-readiness.md) | Gate results and what is still excluded |
+The v0.9.0 planning package was scaffolding and has been removed; the behavior
+it described is what is implemented and documented above. What remains verified:
+
+| Gate | Result |
+|------|--------|
+| `pytest tests/unit tests/integration tests/e2e` | PASS |
+| Coverage of the v0.9.0 modules | 100% on 14 of 15; `domain/scenarios.py` 99% (3 unreachable defensive lines) |
+| `uv build --sdist --wheel` + `scripts/verify_release_artifacts.py` | PASS (9 checks) |
+| Wheel install, import, console scripts, `mayhem --version`, `python -m mayhem` | PASS |
+| GitHub Actions on `v0.9.0` | PASS — unit, integration, e2e, schema, ruff-fatal, package build, wheel smoke, artifact verification |
+| Repository-wide `ruff` / `mypy` / `lint-imports` | Pre-existing failures, advisory only (not release-gating) |
+| Live Kubernetes / remote-agent execution | Not claimed, and not enabled by default |
 
 ---
 
@@ -436,8 +441,8 @@ is as small as possible:
 The [examples/k8s README](examples/k8s/README.md) and
 [documentation authority index](docs/README.md#kubernetes-status-vocabulary)
 explain the separate Kubernetes states. Historical discovery reports and the
-dated [grounding log](docs/grounding-log.md) are retained for traceability and
-must not be treated as live-cluster evidence.
+discovery reports are retained in git history for traceability and must not be
+treated as live-cluster evidence.
 
 ---
 

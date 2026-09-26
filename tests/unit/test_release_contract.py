@@ -81,8 +81,8 @@ K8S_EXECUTABLE = k8s_available_faults()
 #: command that no longer exists. The classification comes from
 #: ``docs/README.md``: user guide, current references, current product/architecture
 #: contracts, and the executable design rules. Dated audits and discovery
-#: reports (``grounding-log.md``, ``k8s-*.md``, ``m7-*.md``), ADRs, and forward
-#: plans (``new-plan/``, ``v0.9.0/``, ``superpowers/``) are excluded on purpose:
+#: reports (``k8s-*.md``, ``m7-*.md``), ADRs, and forward
+#: plans (``new-plan/``, ``superpowers/``) are excluded on purpose:
 #: they record what was true when written, and rewriting them would falsify that
 #: record.
 CURRENT_DOCS: tuple[str, ...] = (
@@ -92,7 +92,6 @@ CURRENT_DOCS: tuple[str, ...] = (
     "docs/config.md",
     "docs/drill-spec.md",
     "docs/fault-catalog/*.md",
-    "docs/grounding-rules.md",
     "docs/policy-and-break-glass.md",
     "docs/product/*.md",
     "docs/provider-sdk.md",

@@ -47,8 +47,6 @@ Untracked working notes are not part of the documentation authority.
 | [`drill-spec.md`](drill-spec.md) | current reference | Drill DSL reference; validate examples against the current Pydantic models. |
 | [`compensation.md`](compensation.md) | current reference | Compensation lifecycle reference; executor behavior remains authoritative in source and tests. |
 | [`adr/adr-m7-1-k8s-executor.md`](adr/adr-m7-1-k8s-executor.md) | implemented design record | The dated decision and rollout design. Later source may extend or supersede its snapshots. |
-| [`grounding-rules.md`](grounding-rules.md) | implemented design record | Binding product rules for commands and gates; not a runtime API reference. |
-| [`grounding-log.md`](grounding-log.md) | historical audit | Snapshot dated 2026-09-10. Its `verified` rows are not current behavior claims. |
 | [`m7-k8s-executor-discovery.md`](m7-k8s-executor-discovery.md) | historical audit | Dated discovery report; its pre-implementation descriptions are retained for traceability. |
 | [`adr-adr-m7-1-k8s-executor-flip.md`](adr-adr-m7-1-k8s-executor-flip.md) | historical audit | Duplicate discovery/flip report retained as a historical artifact, not as the ADR of record. |
 | [`k8s-plan-1.md`](k8s-plan-1.md) | implemented design record | Ten plan-1 families are implemented and unit-tested through mocked Kubernetes seams; live-cluster behavior remains unverified. |
