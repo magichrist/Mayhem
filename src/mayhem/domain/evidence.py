@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class ActionOutcome(StrEnum):
+    APPLIED = "applied"
+    VERIFIED = "verified"
+    COMPENSATED = "compensated"
+    ACKNOWLEDGED_NO_BACKEND = "acknowledged_no_backend"
+    REFUSED = "refused"
+    FAILED = "failed"
 
 
 class EvidenceEnvelope(BaseModel):
@@ -43,6 +53,7 @@ class EvidenceEnvelope(BaseModel):
     execution_intent: dict[str, Any] | None = None
     replay_digest: str = ""
     evidence_status: str = "complete"
+    action_outcomes: tuple[str, ...] = ()
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

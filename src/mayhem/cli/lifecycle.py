@@ -762,6 +762,9 @@ def _write_evidence_after_run(
             k8s_recovery_guidance=str(getattr(preflight, "k8s_recovery_guidance", "") or ""),
             skip_gate=skip_gate,
             execution_intent=intent.to_dict() if intent is not None else None,
+            action_outcomes=tuple(
+                str(getattr(getattr(s, "outcome", ""), "value", "")) for s in getattr(result, "steps", [])
+            ),
         )
         try:
             write_evidence(store, envelope)

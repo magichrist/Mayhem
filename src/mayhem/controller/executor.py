@@ -40,6 +40,7 @@ from mayhem.domain.checks import CheckLocus
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import ResolutionError, SelectionError
 from mayhem.domain.events import Event, EventKind
+from mayhem.domain.evidence import ActionOutcome
 from mayhem.domain.experiments import OnFailure
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
@@ -106,6 +107,20 @@ class StepReport:
     @property
     def resource_conflict(self) -> bool:
         return self.status == "resource_conflict"
+
+    @property
+    def outcome(self) -> ActionOutcome:
+        if self.status == "acknowledged_no_backend":
+            return ActionOutcome.ACKNOWLEDGED_NO_BACKEND
+        if self.status in {"failed_to_apply", "refused"}:
+            return ActionOutcome.REFUSED
+        if not self.ok:
+            return ActionOutcome.FAILED
+        if self.status in {"compensated", "recovered"}:
+            return ActionOutcome.COMPENSATED
+        if self.status in {"verified", "target_drift"}:
+            return ActionOutcome.VERIFIED
+        return ActionOutcome.APPLIED
 
 
 @dataclass(frozen=True)
@@ -766,7 +781,10 @@ class RunEngine:
                 report, dirty = self._execute_check_spec(step), []
             elif action_type in ("start_load", "stop_load", "notify"):
                 report = StepReport(
-                    step.id, True, f"{action_type} acknowledged (no backend wired yet)"
+                    step.id,
+                    False,
+                    f"{action_type} has no execution backend; action acknowledged without effect",
+                    status="acknowledged_no_backend",
                 )
                 dirty = []
             else:
