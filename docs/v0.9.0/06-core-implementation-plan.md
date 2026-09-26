@@ -256,13 +256,15 @@
 **Interfaces:**
 - Produces action outcome states: `applied`, `verified`, `compensated`, `acknowledged_no_backend`, `refused`, `failed`.
 
-- [ ] Write tests for `start_load`, `stop_load`, and `notify` showing they cannot report unqualified success without a backend.
-- [ ] Write tests proving catalog-only and no-backend actions are visible in text and JSON output.
-- [ ] Run the tests and expect the current acknowledgement behavior to fail.
-- [ ] Implement the outcome state and map no-backend actions to an explicit degraded/acknowledged state.
-- [ ] Update evidence and report rendering.
-- [ ] Run focused catalog and run-state tests.
-- [ ] Commit with `fix: make unsupported actions honest`.
+**Status:** IMPLEMENTED — commits `47617a3`, `0a5bffb`; no-backend actions report `acknowledged_no_backend`; focused action-outcome and catalog tests pass.
+
+- [x] Write tests for `start_load`, `stop_load`, and `notify` showing they cannot report unqualified success without a backend.
+- [x] Write tests proving catalog-only and no-backend actions are visible in text and JSON output.
+- [x] Run the tests and expect the current acknowledgement behavior to fail.
+- [x] Implement the outcome state and map no-backend actions to an explicit degraded/acknowledged state.
+- [x] Update evidence and report rendering.
+- [x] Run focused catalog and run-state tests.
+- [x] Commit with `fix: make unsupported actions honest`.
 
 ## Checkpoint after core plan
 
