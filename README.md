@@ -262,6 +262,7 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem extend` | Inspect and extend faults, capabilities, dependencies, and providers. |
 | `mayhem game-day` | Plan and run controlled game-day sessions with named approvals. |
 | `mayhem bundle` | Verify a portable evidence bundle offline. |
+| `mayhem completion` | Print a bash/zsh/fish completion script. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
 
 Use each command's current `--help` output for accepted arguments. `mayhem commands show`
@@ -325,6 +326,23 @@ means:
 - **No live verification is claimed without a live run.** The capability
   dashboard reports `live=false` for every row in this repository; `live=true`
   can only come from a recorded live run.
+
+### Shell completion
+
+`mayhem completion SHELL` prints a completion script to stdout. Nothing is
+installed and nothing is executed — you choose where it goes. Completion is
+dynamic, so the candidates always match the commands your installed version
+actually has:
+
+```bash
+mayhem completion bash >> ~/.bashrc
+mayhem completion zsh  > "${fpath[1]}/_mayhem"
+mayhem completion fish > ~/.config/fish/completions/mayhem.fish
+```
+
+`bash` needs **bash >= 4.4**; macOS ships 3.2, where dynamic completion is not
+available — use `zsh` or `fish` there, or install a newer bash. The generated
+bash script says so in its header.
 
 ```bash
 mayhem --version                     # installed version, or 0.0.0+source in a checkout

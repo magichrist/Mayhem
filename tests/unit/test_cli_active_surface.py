@@ -10,6 +10,7 @@ ACTIVE_COMMANDS = {
     "bundle",
     "campaign",
     "commands",
+    "completion",
     "discover",
     "doctor",
     "experiment",

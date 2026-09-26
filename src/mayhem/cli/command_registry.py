@@ -15,6 +15,7 @@ class CommandSpec:
 COMMAND_HELP: dict[str, str] = {
     "campaign": "Create, inspect, and run chaos campaigns.",
     "commands": "Show the command migration map.",
+    "completion": "Generate a shell completion script for this Mayhem build.",
     "discover": "Discover targets, engines, and capabilities.",
     "doctor": "Check configuration, database, engines, and permissions.",
     "experiment": "Inspect and validate authored experiment specs.",
@@ -35,6 +36,7 @@ COMMAND_HELP: dict[str, str] = {
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("campaign", "run", help_group="experiments", mutating=True),
     CommandSpec("commands", "inspect", help_group="inspect"),
+    CommandSpec("completion", "inspect", help_group="inspect"),
     CommandSpec("discover", "discover", help_group="discovery"),
     CommandSpec("doctor", "inspect", help_group="inspect"),
     CommandSpec("experiment", "experiment", help_group="experiments"),
@@ -55,6 +57,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 def register_commands(app: Any) -> None:
     from mayhem.cli.campaign import campaign
     from mayhem.cli.commands import commands
+    from mayhem.cli.completion import completion
     from mayhem.cli.doctor import doctor_cmd
     from mayhem.cli.experiment import experiment
     from mayhem.cli.game_day import game_day
@@ -66,6 +69,7 @@ def register_commands(app: Any) -> None:
     command_map = {
         "campaign": campaign,
         "commands": commands,
+        "completion": completion,
         "discover": discover,
         "doctor": doctor_cmd,
         "experiment": experiment,

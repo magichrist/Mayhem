@@ -8,6 +8,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "bundle",
     "campaign",
         "commands",
+        "completion",
         "discover",
         "doctor",
         "experiment",

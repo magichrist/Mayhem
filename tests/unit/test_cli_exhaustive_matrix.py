@@ -28,6 +28,7 @@ ACTIVE_ROOTS = {
     "bundle",
     "campaign",
     "commands",
+    "completion",
     "discover",
     "doctor",
     "experiment",
