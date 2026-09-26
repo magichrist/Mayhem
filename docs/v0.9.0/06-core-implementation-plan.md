@@ -222,6 +222,8 @@
 
 ## Task 9: Repair release quality gates
 
+**Status:** IMPLEMENTED — commits `2a11329`, `a340c6f`; CI/workflow contract tests pass; artifact build and wheel smoke remain for final verification.
+
 **Files:**
 - Create: `.github/workflows/ci.yml`
 - Modify: `.github/workflows/release.yml`
@@ -234,13 +236,13 @@
 - Produces: PR checks for unit, integration, package build, wheel install, schema validation, Ruff, mypy, and dependency/security scans.
 - Produces: release artifact verification report.
 
-- [ ] Write a packaging smoke test that installs the wheel into a clean temporary environment and runs `mayhem --help` and `mayhem discover capabilities --format json`.
-- [ ] Write a workflow contract test for required job names and commands.
+- [x] Write a packaging smoke test that installs the wheel into a clean temporary environment and runs `mayhem --help` and `mayhem discover capabilities --format json`.
+- [x] Write a workflow contract test for required job names and commands.
 - [ ] Run the tests and expect missing CI/package checks to fail.
-- [ ] Add the CI workflow, artifact verification script, schema checks, and immutable action references.
-- [ ] Keep live conformance in a separate opt-in workflow/job.
+- [x] Add the CI workflow, artifact verification script, schema checks, and immutable action references.
+- [x] Keep live conformance in a separate opt-in workflow/job.
 - [ ] Run all gates locally where possible and record any environment-only exclusions.
-- [ ] Commit with `ci: add v0.9.0 quality gates`.
+- [x] Commit with `ci: add v0.9.0 quality gates`.
 
 ## Task 10: Make no-backend actions honest
 
