@@ -30,6 +30,27 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 
+def mayhem_version() -> str:
+    """Installed version, or a source-checkout marker when not installed.
+
+    ``mayhem --version`` must work from a wheel *and* from a plain source
+    checkout, so a missing distribution is reported rather than raised.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mayhem-cli")
+    except PackageNotFoundError:
+        return "0.0.0+source"
+
+
+def _print_version(ctx: click.Context, _param: object, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(f"mayhem {mayhem_version()}")
+    ctx.exit(0)
+
+
 _STATE: dict[str, str] = {
     "debug": "",
     "engine": "",
@@ -45,6 +66,15 @@ _STATE: dict[str, str] = {
     epilog=PREFIX_HELP,
     help="mayhem — safe-by-construction chaos experiments.",
     no_args_is_help=True,
+)
+@click.option(
+    "--version",
+    "show_version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_version,
+    help="Show the installed Mayhem version and exit.",
 )
 @click.option("--db", default=None, help="SQLite database path [default: mayhem.db].")
 @click.option("--config", "config_path", default=None, help="Path to mayhem.yaml.")

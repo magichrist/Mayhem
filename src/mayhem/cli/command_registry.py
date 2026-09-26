@@ -28,6 +28,7 @@ COMMAND_HELP: dict[str, str] = {
     "recover": "Plan or execute recovery for a run.",
     "run": "Compile, approve, execute, and record a drill.",
     "verify": "Verify a recorded evidence envelope without mutation.",
+    "verify-bundle": "Verify a portable evidence bundle offline.",
 }
 
 
@@ -47,6 +48,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("recover", "recover", help_group="recover", mutating=True),
     CommandSpec("run", "run", help_group="run", mutating=True),
     CommandSpec("verify", "inspect", help_group="inspect"),
+    CommandSpec("verify-bundle", "inspect", help_group="inspect"),
 )
 
 
@@ -58,6 +60,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.game_day import game_day
     from mayhem.cli.init import init_cmd
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
+    from mayhem.cli.verify_bundle import verify_bundle_cmd
     from mayhem.cli.workflows import discover, extend, inspect, prepare
 
     command_map = {
@@ -76,6 +79,7 @@ def register_commands(app: Any) -> None:
         "recover": recover,
         "run": run,
         "verify": verify,
+        "verify-bundle": verify_bundle_cmd,
     }
     for spec in COMMAND_SPECS:
         command = command_map[spec.name]

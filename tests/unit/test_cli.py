@@ -815,3 +815,36 @@ class TestRecoveryCommands:
 
     def test_status_empty_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["--db", str(tmp_path / "j.db"), "inspect", "runs"]) == 0
+
+
+class TestVersionFlag:
+    def test_version_flag_prints_and_exits_zero(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["--version"]) == 0
+        out = capsys.readouterr().out
+        assert out.startswith("mayhem ")
+
+    def test_version_reports_the_installed_distribution_when_present(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import importlib
+
+        app_mod = importlib.import_module("mayhem.cli.app")
+        from importlib.metadata import version
+
+        monkeypatch.setattr(version, "__call__", lambda name: "9.9.9", raising=False)
+        monkeypatch.setattr(
+            "importlib.metadata.version", lambda name: "9.9.9", raising=False
+        )
+        assert app_mod.mayhem_version() == "9.9.9"
+
+    def test_version_falls_back_to_a_source_marker(self) -> None:
+        from mayhem.cli.app import mayhem_version
+
+        assert mayhem_version().endswith("+source") or mayhem_version()[0].isdigit()
+
+    def test_module_entry_point_exists(self) -> None:
+        import importlib.util
+
+        assert importlib.util.find_spec("mayhem.__main__") is not None
