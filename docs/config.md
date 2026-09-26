@@ -123,7 +123,7 @@ Forbidden credential keys in a target profile: `password`, `secret`, `token`,
 `credentials`, `api_key`, `apikey`. A wider set is redacted when configuration
 is rendered — by `config show`, by `config explain`, and by evidence alike — so
 free-form blocks such as a profile's `observability:` are filtered by one
-policy; see [`policy-and-break-glass.md`](policy-and-break-glass.md).
+policy; see `src/mayhem/controller/safety.py`.
 
 A drill document's own top-level `targets:` block is *not* a target-profile
 block. It declares the spec's logical targets
@@ -311,4 +311,4 @@ Current root CLI controls relate to layering and execution as follows:
 | `--skip-gate` | Controls the impact gate; it is not a configuration field. |
 | `--podman` / `--kubernetes` | Select CLI engine state; they do not rewrite `runtime`. |
 
-Use [`reference/cli.md`](reference/cli.md) for the executable command surface.
+Use `src/mayhem/cli/command_registry.py` for the executable command surface.

@@ -2,8 +2,8 @@
 
 This page is the authority index for Mayhem documentation. It classifies every
 Markdown document tracked in the repository and records which source files
-control current behavior. Historical evidence, design reports, and forward plans
-must not be read as a statement of the current executable contract.
+control current behavior. When prose disagrees with one of those sources, the
+source is current and the prose needs correction.
 
 ## Source authority
 
@@ -12,46 +12,33 @@ must not be read as a statement of the current executable contract.
 | Layered configuration | [`src/mayhem/config.py`](../src/mayhem/config.py) |
 | CLI commands and global options | [`src/mayhem/cli/app.py`](../src/mayhem/cli/app.py) and [`src/mayhem/cli/`](../src/mayhem/cli/) |
 | Stable exit codes | [`src/mayhem/cli/exit_codes.py`](../src/mayhem/cli/exit_codes.py) |
+| Command inventory | [`src/mayhem/cli/command_registry.py`](../src/mayhem/cli/command_registry.py) |
 | Drill schema | [`src/mayhem/domain/experiments.py`](../src/mayhem/domain/experiments.py) and [`src/mayhem/spec.py`](../src/mayhem/spec.py) |
+| Execution intent and approval | [`src/mayhem/domain/execution_intent.py`](../src/mayhem/domain/execution_intent.py) |
+| Typed admission | [`src/mayhem/domain/admission.py`](../src/mayhem/domain/admission.py) |
+| Capability truth | [`src/mayhem/domain/capability_status.py`](../src/mayhem/domain/capability_status.py) and [`src/mayhem/infra/catalog_report.py`](../src/mayhem/infra/catalog_report.py) |
+| Replay capsules | [`src/mayhem/domain/replay.py`](../src/mayhem/domain/replay.py) |
+| Evidence and redaction | [`src/mayhem/domain/evidence.py`](../src/mayhem/domain/evidence.py) and [`src/mayhem/domain/redaction.py`](../src/mayhem/domain/redaction.py) |
+| Evidence bundles | [`src/mayhem/domain/evidence_bundle.py`](../src/mayhem/domain/evidence_bundle.py) |
+| Provider sandbox and packs | [`src/mayhem/providers/permissions.py`](../src/mayhem/providers/permissions.py) and [`src/mayhem/providers/pack.py`](../src/mayhem/providers/pack.py) |
 | Fault catalog and support declarations | [`src/mayhem/domain/catalog.py`](../src/mayhem/domain/catalog.py) and [`src/mayhem/controller/k8s_runtime.py`](../src/mayhem/controller/k8s_runtime.py) |
 | Kubernetes planning and execution seams | [`src/mayhem/controller/planner.py`](../src/mayhem/controller/planner.py), [`src/mayhem/agents/k8s_resolve.py`](../src/mayhem/agents/k8s_resolve.py), and [`src/mayhem/agents/executors.py`](../src/mayhem/agents/executors.py) |
 
-When prose disagrees with one of these sources, the source is current and the
-prose needs correction. The consistency tests in
-[`tests/unit/test_documentation_consistency.py`](../tests/unit/test_documentation_consistency.py)
-guard relative links and documented exit-code identifiers.
-
 ## Document inventory
-
-The inventory below covers the repository Markdown set: the previously tracked
-documents plus the two new current references created by this synchronization.
-Untracked working notes are not part of the documentation authority.
 
 | Document | Classification | Current-use rule |
 |----------|----------------|------------------|
-| [`../README.md`](../README.md) | user guide | Start here for the supported compose-oriented workflow. Its Kubernetes status section is a capability summary, not cluster-validation evidence. |
+| [`../README.md`](../README.md) | user guide | Start here: quickstart, CLI surface, safety model, status, and what v0.9.0 added. |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | historical audit | Release history up to the last generated tag; it does not describe uncommitted behavior. |
-| [`product/cli-product-direction.md`](product/cli-product-direction.md) | current product direction | Locked user experience, workflow map, terminology, and product outcomes. |
-| [`product/command-architecture.md`](product/command-architecture.md) | current architecture contract | Context layering, mutation safety, output, error, and compatibility rules. |
-| [`new-plan/README.md`](new-plan/README.md) | forward-looking plan | Builder-agent roadmap for the next CLI and platform product direction. |
-| [`reference/experiment-dsl.md`](reference/experiment-dsl.md) | current reference | Duration grammar used by the drill schema. |
-| [`reference/sqlite-schema.md`](reference/sqlite-schema.md) | current reference | Store schema and migration source map. |
-| [`reference/fault-catalog.md`](reference/fault-catalog.md) | current reference | Current Kubernetes fault catalog status and capability gates. |
-| [`architecture/fault-taxonomy.md`](architecture/fault-taxonomy.md) | current reference | Fault definition and dispatch authority. |
-| [`architecture/safety.md`](architecture/safety.md) | current reference | Plan-time safety gate order and refusal contract. |
-| [`architecture/toolkit.md`](architecture/toolkit.md) | current reference | Toolkit resolution and execution boundary. |
-| [`k8s-new.md`](k8s-new.md) | historical audit | Older workload-lane milestone reference; current catalog/runtime wins. |
-| [`fault-catalog/README.md`](fault-catalog/README.md) | current reference | Compatibility location for the catalog snapshot. |
+| [`drill-spec.md`](drill-spec.md) | current reference | Drill DSL reference, including the v0.9.0 `slo:` block and the scenario document format. |
 | [`config.md`](config.md) | current reference | Authoritative checked-in summary of `src/mayhem/config.py`. |
-| [`reference/cli.md`](reference/cli.md) | current reference | Authoritative checked-in command and exit-code summary of the executable CLI. |
-| [`drill-spec.md`](drill-spec.md) | current reference | Drill DSL reference; validate examples against the current Pydantic models. |
 | [`compensation.md`](compensation.md) | current reference | Compensation lifecycle reference; executor behavior remains authoritative in source and tests. |
-| [`adr/adr-m7-1-k8s-executor.md`](adr/adr-m7-1-k8s-executor.md) | implemented design record | The dated decision and rollout design. Later source may extend or supersede its snapshots. |
-| [`m7-k8s-executor-discovery.md`](m7-k8s-executor-discovery.md) | historical audit | Dated discovery report; its pre-implementation descriptions are retained for traceability. |
-| [`adr-adr-m7-1-k8s-executor-flip.md`](adr-adr-m7-1-k8s-executor-flip.md) | historical audit | Duplicate discovery/flip report retained as a historical artifact, not as the ADR of record. |
-| [`k8s-plan-1.md`](k8s-plan-1.md) | implemented design record | Ten plan-1 families are implemented and unit-tested through mocked Kubernetes seams; live-cluster behavior remains unverified. |
-| [`k8s-plan-2.md`](k8s-plan-2.md) | implemented design record | Ten plan-2 families are implemented and unit-tested through mocked Kubernetes seams; DNS and node-control behavior remains capability-gated. |
-| [`../examples/k8s/README.md`](../examples/k8s/README.md) | unsupported/catalog-only | Manifest-backed planning example and capability warning. It is not proof of live-cluster execution. |
+| [`fault-catalog/README.md`](fault-catalog/README.md) | current reference | Fault catalog and capability snapshot. |
+| [`fault-catalog/reliability-matrix.md`](fault-catalog/reliability-matrix.md) | current reference | Per-fault reliability and compensation matrix. |
+
+Planning packages, dated discovery reports, and per-release readiness notes were
+removed once their content was implemented and folded into the references above.
+They remain in git history if a historical record is ever needed.
 
 ## Kubernetes status vocabulary
 

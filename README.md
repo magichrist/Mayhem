@@ -245,7 +245,9 @@ The full configuration reference is in
 
 The active CLI is workflow-oriented: `discover`, `prepare`, `experiment`, `run`, `inspect`, `recover`, and `extend`. Guided `init` and `doctor` are active, and all legacy root commands and aliases have been removed. Exit codes, machine-readable fields, and database migrations remain stable.
 
-See [`docs/product/cli-product-direction.md`](docs/product/cli-product-direction.md), [`docs/product/command-architecture.md`](docs/product/command-architecture.md), and [`docs/new-plan/README.md`](docs/new-plan/README.md).
+The command inventory, global options, and stable exit codes are generated from
+[`src/mayhem/cli/command_registry.py`](src/mayhem/cli/command_registry.py) and
+[`src/mayhem/cli/exit_codes.py`](src/mayhem/cli/exit_codes.py).
 
 Root options precede the command. Unique prefixes work at the root and in the workflow groups.
 
@@ -262,12 +264,9 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem bundle` | Verify a portable evidence bundle offline. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
 
-Use each command's current `--help` output for accepted arguments. The full
-sub-command inventory, root options, and stable exit codes are in
-[`docs/reference/cli.md`](docs/reference/cli.md); that inventory is compared
-against `src/mayhem/cli/command_registry.py` by
-`tests/unit/test_release_contract.py`, so a command that is not documented
-here fails the suite.
+Use each command's current `--help` output for accepted arguments. `mayhem commands show`
+prints the live command map, and `tests/unit/test_cli_exhaustive_matrix.py` fails
+when a registered command is missing from the active surface.
 
 ---
 
@@ -290,7 +289,7 @@ stored spec paths, `pause` and `resume` stop and continue a running campaign,
 and `archive` or `abort` sets the corresponding terminal status. The current
 command surface does not expose campaign scheduling, priority ordering, or
 policy/window editing. See the
-[command inventory](docs/reference/cli.md#command-inventory).
+`mayhem commands show`.
 
 ---
 
@@ -302,7 +301,7 @@ plan-only until explicitly executed, and every claim is recorded in evidence.
 
 | Area | What it gives you | Where |
 |------|-------------------|-------|
-| Explicit intent | Every mutating command needs an approval; `--dry-run` previews and returns before any engine exists. | `mayhem run --execute`, [`docs/reference/cli.md`](docs/reference/cli.md) |
+| Explicit intent | Every mutating command needs an approval; `--dry-run` previews and returns before any engine exists. | `mayhem run --execute`, `src/mayhem/cli/command_registry.py` |
 | Runtime context | Engine, target, and namespace resolved once and propagated; a target-type mismatch is refused **before** any lease or subprocess. | `mayhem doctor`, evidence `k8s_context` |
 | Capability truth | What each fault can actually do per engine, with a reason and a source of truth for every blocked row. | `mayhem discover capabilities [--explain] [--blocked]` |
 | Replay capsules | A versioned, digest-checked capsule per run; export and validate offline. | `mayhem inspect replay export\|validate RUN_ID` |
@@ -313,7 +312,7 @@ plan-only until explicitly executed, and every claim is recorded in evidence.
 | Campaign resume | Durable checkpoints; a verified experiment is never repeated without `--retry-verified`. | `mayhem campaign resume-plan` |
 | Residual impact | Before/after comparison proving the system came back; an unavailable source reads `unavailable`, never `clean`. | `mayhem inspect residual` |
 | Game days | Sessions with a freeze window, named approvers, and dual control for critical faults. | `mayhem game-day` |
-| Provider sandbox | Default grant is read-only; signed fault packs; unsigned is development-only. | [`docs/provider-sdk.md`](docs/provider-sdk.md) |
+| Provider sandbox | Default grant is read-only; signed fault packs; unsigned is development-only. | `src/mayhem/providers/`(docs/provider-sdk.md) |
 | Observability | Read-only Prometheus/Loki connectors (bounded timeout, response-size cap, redacted errors) plus local OpenTelemetry spans. | `src/mayhem/observability/` |
 | Evidence bundles | Hash-chained, offline-verifiable bundles of a run's evidence. | `mayhem bundle verify PATH` |
 
@@ -379,7 +378,7 @@ it described is what is implemented and documented above. What remains verified:
 
 The stable identifiers and numeric values are defined in
 [`src/mayhem/cli/exit_codes.py`](src/mayhem/cli/exit_codes.py) and documented in
-[`docs/reference/cli.md`](docs/reference/cli.md#exit-codes). The deterministic
+`src/mayhem/cli/exit_codes.py`. The deterministic
 documentation test rejects identifiers that are not declared in source.
 
 ---
@@ -413,9 +412,9 @@ is as small as possible:
 | [`docs/README.md`](docs/README.md) | Documentation authority, classifications, source-of-truth map, and Kubernetes status vocabulary. |
 | [`docs/drill-spec.md`](docs/drill-spec.md) | Drill DSL reference. |
 | [`docs/config.md`](docs/config.md) | Current layered configuration contract. |
-| [`docs/reference/cli.md`](docs/reference/cli.md) | Current commands, options, and stable exit codes. |
-| [`docs/reference/output-schema.md`](docs/reference/output-schema.md) | Versioned machine-output envelope and the v0.9.0 compatibility boundary. |
-| [`docs/reference/fault-catalog.md`](docs/reference/fault-catalog.md) | Checked Kubernetes fault catalog status snapshot and capability gates. |
+| `src/mayhem/cli/command_registry.py` | Current commands, options, and stable exit codes. |
+| `src/mayhem/schemas/output_v1.json`(docs/reference/output-schema.md) | Versioned machine-output envelope and the v0.9.0 compatibility boundary. |
+| [`docs/fault-catalog/`](docs/fault-catalog/README.md)(docs/reference/fault-catalog.md) | Checked Kubernetes fault catalog status snapshot and capability gates. |
 | [`docs/compensation.md`](docs/compensation.md) | Compensation lifecycle and verification contracts. |
 
 ---

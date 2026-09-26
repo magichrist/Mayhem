@@ -5,7 +5,7 @@ The active CLI exposes this catalog through `mayhem discover faults`,
 runtime-free reliability contract, coverage report, maturity policy, recommendations,
 and Plan 08 family status are documented in [`reliability-matrix.md`](reliability-matrix.md).
 
-The current Kubernetes catalog snapshot is maintained at [`../reference/fault-catalog.md`](../reference/fault-catalog.md). Definitions are sourced from `src/mayhem/domain/catalog.py`; runtime status is sourced from `src/mayhem/controller/k8s_runtime.py`.
+The current Kubernetes catalog snapshot is maintained at [`reliability-matrix.md`](reliability-matrix.md). Definitions are sourced from `src/mayhem/domain/catalog.py`; runtime status is sourced from `src/mayhem/controller/k8s_runtime.py`.
 
 ## Container and Kubernetes expansion
 

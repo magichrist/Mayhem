@@ -27,7 +27,7 @@ mayhem maniac   examples/testCase/mayhem.yaml --compose examples/testCase/docker
 
 `run` and `maniac` inject faults, so both need the explicit `--execute`
 approval; without it they stop at a preview and no lease is ever created. See
-[CLI reference](reference/cli.md#execution-intent).
+[CLI reference](../README.md#whats-new-in-v090).
 
 The positional spec path may be omitted when the global ``--config`` flag
 names the drill spec itself — useful from a directory without a spec file:

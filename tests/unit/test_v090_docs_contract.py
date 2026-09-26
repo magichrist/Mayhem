@@ -113,14 +113,6 @@ def test_documented_time_window_format_is_accepted() -> None:
     )
 
 
-def test_readme_links_the_v090_documents_that_exist() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    links = re.findall(r"\]\((docs/v0\.9\.0/[^)]+)\)", readme)
-    assert links, "README does not link the v0.9.0 documents"
-    for link in links:
-        assert (ROOT / link).exists(), f"README links a missing document: {link}"
-
-
 def test_readme_documents_every_new_command_group() -> None:
     from mayhem.cli.command_registry import COMMAND_SPECS
 

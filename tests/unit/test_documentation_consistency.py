@@ -51,8 +51,3 @@ def test_relative_markdown_links_resolve() -> None:
     assert not broken, "broken relative Markdown links:\n" + "\n".join(broken)
 
 
-def test_documented_exit_code_identifiers_exist_in_source() -> None:
-    reference = (ROOT / "docs/reference/cli.md").read_text(encoding="utf-8")
-    documented = frozenset(_EXIT_CODE_RE.findall(reference))
-    declared = _source_exit_codes()
-    assert documented <= declared, sorted(documented - declared)

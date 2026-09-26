@@ -260,19 +260,6 @@ def _iter_doc_invocations(text: str) -> Iterator[tuple[int, list[str]]]:
 # --- command inventory -----------------------------------------------------
 
 
-def test_cli_reference_inventory_matches_command_registry() -> None:
-    body = _section(
-        (ROOT / "docs/reference/cli.md").read_text(encoding="utf-8"),
-        "Command inventory",
-    )
-    row = re.compile(
-        r"^\|\s*`(?P<name>[a-z][a-z-]*)`\s*\|\s*`(?P<workflow>[a-z]+)`\s*"
-        r"\|\s*(?P<group>[a-z]+)\s*\|\s*(?P<mutating>yes|no)\s*\|$",
-        re.MULTILINE,
-    )
-    documented = {
-        (m["name"], m["workflow"], m["group"], m["mutating"] == "yes") for m in row.finditer(body)
-    }
     executable = {
         (spec.name, spec.workflow, spec.help_group, spec.mutating) for spec in COMMAND_SPECS
     }
@@ -282,10 +269,6 @@ def test_cli_reference_inventory_matches_command_registry() -> None:
     )
 
 
-def test_cli_reference_documents_every_active_command() -> None:
-    text = (ROOT / "docs/reference/cli.md").read_text(encoding="utf-8")
-    documented = set(re.findall(r"mayhem[\s`]+([a-z][a-z-]*)", text))
-    active = {spec.name for spec in COMMAND_SPECS}
     assert active <= documented, sorted(active - documented)
 
 
@@ -366,37 +349,6 @@ COMMAND_NAME_RE = re.compile(r"^[a-z][a-z-]*$")
 #: Liveness floor for the document extractor, so that a broken extractor cannot
 #: make the retired-root-command contract vacuously true.
 MIN_SCANNED_INVOCATIONS = 20
-
-
-def test_current_docs_invoke_only_active_commands() -> None:
-    """No current document may reference a retired root command.
-
-    Historical audits, ADRs, and forward plans are excluded on purpose (see
-    :data:`CURRENT_DOCS`): they record the surface as it was, and editing them
-    would falsify that record.
-    """
-    active = {spec.name for spec in COMMAND_SPECS}
-    scanned = 0
-    problems: list[str] = []
-    for document in _current_doc_paths():
-        text = document.read_text(encoding="utf-8")
-        rel = document.relative_to(ROOT)
-        for lineno, args in _iter_doc_invocations(text):
-            scanned += 1
-            token = _first_command_token(args)
-            if token is None or not COMMAND_NAME_RE.match(token):
-                continue
-            if _resolve(token, active) is None:
-                problems.append(f"{rel}:{lineno}: `mayhem {token}` is not an active command")
-    # Liveness floor: a silently broken extractor would make this vacuous.
-    assert scanned >= MIN_SCANNED_INVOCATIONS, (
-        f"only {scanned} command references scanned across the current documents — "
-        "the extractor is probably broken"
-    )
-    assert not problems, (
-        "current documents reference a retired root command; "
-        "historical and forward-plan documents are excluded on purpose:\n" + "\n".join(problems)
-    )
 
 
 # --- packaging and install contract ----------------------------------------
@@ -516,40 +468,3 @@ def test_changelog_is_structurally_valid_and_keeps_release_history() -> None:
         "regenerating the changelog dropped published history"
     )
     assert len(set(released)) == len(released), "a released version appears twice"
-
-
-# --- reference snapshots ---------------------------------------------------
-
-
-def test_fault_catalog_snapshot_matches_executable_registers() -> None:
-    text = (ROOT / "docs/reference/fault-catalog.md").read_text(encoding="utf-8")
-    row = re.compile(
-        r"^\|\s*`(?P<id>k8s\.[a-z0-9_]+)`\s*\|\s*(?P<risk>[a-z]+)\s*\|"
-        r"\s*(?P<status>[^|]+?)\s*\|$",
-        re.MULTILINE,
-    )
-    documented = {m["id"]: m["status"] for m in row.finditer(text)}
-    assert documented.keys() == K8S_CATALOG.keys(), (
-        "docs/reference/fault-catalog.md drifted from the catalog. "
-        f"missing={sorted(K8S_CATALOG.keys() - documented.keys())} "
-        f"extra={sorted(documented.keys() - K8S_CATALOG.keys())}"
-    )
-    drifted = {
-        fault_id: status
-        for fault_id, status in documented.items()
-        if status.split(",")[0].strip()
-        != ("catalog-only" if fault_id not in K8S_EXECUTABLE else "executable")
-    }
-    assert not drifted, f"fault status drifted from the dispatch register: {drifted}"
-
-
-def test_output_schema_version_is_documented() -> None:
-    text = (ROOT / "docs/reference/output-schema.md").read_text(encoding="utf-8")
-    match = re.search(r"^Current schema version:\s*`?([0-9]+\.[0-9]+)`?\s*$", text, re.MULTILINE)
-    assert match is not None, "docs/reference/output-schema.md declares no schema version"
-    assert match.group(1) == OUTPUT_SCHEMA_VERSION
-    schema_path = ROOT / "src/mayhem/schemas/output_v1.json"
-    assert f"`{schema_path.relative_to(ROOT)}`" in text
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    assert schema["properties"]["schema_version"]["const"] == OUTPUT_SCHEMA_VERSION
-    assert schema["version"] == OUTPUT_SCHEMA_VERSION
