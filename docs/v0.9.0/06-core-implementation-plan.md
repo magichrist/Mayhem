@@ -122,6 +122,8 @@
 
 ## Task 5: Add capability truth records
 
+**Status:** DONE — commit `45bd1fd`; targeted capability/catalog/doctor tests pass.
+
 **Files:**
 - Create: `src/mayhem/domain/capability_status.py`
 - Modify: `src/mayhem/infra/catalog_report.py`
@@ -135,13 +137,13 @@
 - Produces: `CapabilityStatus(fault_id, engine, registered, available, target_supported, unit_verified, live_verified, compensation_complete, blocked_reason)`.
 - Produces: `mayhem discover capabilities --explain` with text, JSON, and YAML output.
 
-- [ ] Write tests for catalog-only, unavailable runtime, missing target support, missing compensation, and unit-verified states.
-- [ ] Write CLI tests that require human-readable reasons and stable machine-readable fields.
-- [ ] Run focused tests and expect missing status dimensions to fail.
-- [ ] Implement the status record and derive it from catalog, provider, runtime, and conformance registries.
-- [ ] Expose the dashboard through doctor/discover/toolkit without changing existing fault IDs.
-- [ ] Run focused tests, catalog tests, and output-schema tests.
-- [ ] Commit with `feat: expose capability truth for every fault`.
+- [x] Write tests for catalog-only, unavailable runtime, missing target support, missing compensation, and unit-verified states.
+- [x] Write CLI tests that require human-readable reasons and stable machine-readable fields.
+- [x] Run focused tests and expect missing status dimensions to fail.
+- [x] Implement the status record and derive it from catalog, provider, runtime, and conformance registries.
+- [x] Expose the dashboard through doctor/discover/toolkit without changing existing fault IDs.
+- [x] Run focused tests, catalog tests, and output-schema tests.
+- [x] Commit with `feat: expose capability truth for every fault`.
 
 ## Task 6: Enforce typed executor admission
 
