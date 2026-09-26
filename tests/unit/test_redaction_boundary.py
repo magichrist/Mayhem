@@ -59,3 +59,19 @@ def test_evidence_records_redaction_metrics_without_secret_values() -> None:
     assert metrics["redacted_path_count"] >= 1
     assert metrics["policy_version"]
     assert "hunter2" not in str(envelope.model_dump(mode="json"))
+
+
+def test_redacts_bearer_and_authorization_credentials() -> None:
+    value, changed = redact_text("Authorization: Bearer prom-secret-token-value")
+    assert changed is True
+    assert "prom-secret-token-value" not in value
+    assert "Bearer ***REDACTED***" in value
+    bare, bare_changed = redact_text("sent bearer ghp_abcdefgh12345 upstream")
+    assert bare_changed is True
+    assert "ghp_abcdefgh12345" not in bare
+
+
+def test_redaction_keeps_non_credential_text_intact() -> None:
+    value, changed = redact_text("bearer of the bad news")
+    assert changed is False
+    assert value == "bearer of the bad news"

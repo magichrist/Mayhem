@@ -61,6 +61,9 @@ class EvidenceEnvelope(BaseModel):
     slo_outcomes: tuple[dict[str, Any], ...] = ()
     # v0.9.0 task 16: before/after comparison proving the system returned.
     residual_impact: dict[str, Any] = Field(default_factory=dict)
+    # v0.9.0 task 19: which observability spans a run emitted. Names only —
+    # span attributes are redacted at the sink and never persisted here.
+    emitted_spans: tuple[str, ...] = ()
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

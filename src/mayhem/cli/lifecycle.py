@@ -778,6 +778,43 @@ def _write_evidence_after_run(
         except Exception:
             replay_digest = ""
         try:
+            from mayhem.observability.otel import InMemorySpanSink, missing_spans, record_span
+
+            span_sink = InMemorySpanSink()
+            record_span(span_sink, "mayhem.plan", run_id=run_id, steps=len(getattr(plan, "steps", ())))
+            record_span(
+                span_sink,
+                "mayhem.approval",
+                run_id=run_id,
+                approved=intent is not None,
+                engine=engine,
+            )
+            record_span(span_sink, "mayhem.lease", run_id=run_id, dirty=len(getattr(result, "dirty_leases", ())))
+            record_span(span_sink, "mayhem.mutation", run_id=run_id, status=str(getattr(result, "status", "")))
+            record_span(span_sink, "mayhem.verification", run_id=run_id, verdict=verdict)
+            record_span(
+                span_sink,
+                "mayhem.compensation",
+                run_id=run_id,
+                recovery=recovery_state,
+            )
+            record_span(span_sink, "mayhem.evidence", run_id=run_id, evidence_status=verdict)
+            envelope = envelope.model_copy(
+                update={
+                    "emitted_spans": span_sink.names(),
+                }
+            )
+        except Exception as exc:
+            envelope = envelope.model_copy(
+                update={
+                    "emitted_spans": (),
+                    "remediation": (
+                        *envelope.remediation,
+                        f"span emission failed: {type(exc).__name__}",
+                    ),
+                }
+            )
+        try:
             from mayhem.domain.observations import (
                 collect as collect_observations,
                 evaluate_all,

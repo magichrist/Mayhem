@@ -13,6 +13,12 @@ _URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<user>[
 _ASSIGNMENT_SECRET = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|registry[_-]?token)\s*=\s*[^\s,;]+"
 )
+# ``Authorization: Bearer <token>`` and a bare ``Bearer <token>`` — the shape
+# every connector credential takes on the wire.
+_BEARER_TOKEN = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/-]{8,})")
+_AUTHORIZATION_HEADER = re.compile(
+    r"(?i)(authorization\s*[:=]\s*)((?:bearer|basic|token)\s+)?([^\s,;]+)"
+)
 # `--password hunter2`, `--token abc`, `-p abc` — space-separated CLI secrets,
 # which the assignment pattern above cannot see.
 _FLAG_SECRET = re.compile(
@@ -36,6 +42,16 @@ def redact_text(value: str) -> tuple[str, bool]:
     redacted = _URL_CREDENTIALS.sub(r"\g<scheme>***:***@", value)
     redacted = _ASSIGNMENT_SECRET.sub(lambda match: f"{match.group(1)}=***REDACTED***", redacted)
     redacted = _FLAG_SECRET.sub(lambda match: f"{match.group(1)}***REDACTED***", redacted)
+    # Bearer first: it consumes the scheme *and* the token, so the header
+    # pattern below cannot stop at the space and leave the secret behind.
+    redacted = _BEARER_TOKEN.sub(lambda match: f"{match.group(1)}***REDACTED***", redacted)
+    def _header(match: re.Match[str]) -> str:
+        # Keep the scheme so the reader still sees *what* kind of credential
+        # was removed, but never its value.
+        scheme = match.group(2) or ""
+        return f"{match.group(1)}{scheme}***REDACTED***"
+
+    redacted = _AUTHORIZATION_HEADER.sub(_header, redacted)
     return redacted, redacted != value
 
 

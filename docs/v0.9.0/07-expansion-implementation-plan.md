@@ -226,12 +226,16 @@
 **Interfaces:**
 - Produces: `SpanSink`, `MetricQuery`, `LogQuery`; all connectors are read-only except the local OpenTelemetry span sink.
 
-- [ ] Write tests with fake HTTP servers for Prometheus query responses and Loki query responses.
-- [ ] Write tests proving connector credentials are redacted and connector errors produce degraded evidence.
-- [ ] Implement bounded timeouts, response-size limits, and redaction.
-- [ ] Add OpenTelemetry spans for plan, approval, lease, mutation, verification, compensation, and evidence persistence.
-- [ ] Run connector, evidence, redaction, and integration tests.
-- [ ] Commit with `feat: add observability connectors`.
+**Status:** DONE — `src/mayhem/observability/` (`base.py` bounds, `prometheus.py`, `loki.py`, `otel.py`), the `emitted_spans` field on the evidence envelope, span emission in the run path, and a new `docs/observability.md`. All three remote-facing connectors are read-only; the only write is the in-process span sink. The fake-HTTP tests also exposed a real gap — `Authorization: Bearer …` was not covered by the redaction policy — so bearer/authorization redaction was added to `domain/redaction.py` and covered by new boundary tests.
+
+- [x] Write tests with fake HTTP servers for Prometheus query responses and Loki query responses.
+- [x] Write tests proving connector credentials are redacted and connector errors produce degraded evidence.
+- [x] Implement bounded timeouts, response-size limits, and redaction.
+- [x] Add OpenTelemetry spans for plan, approval, lease, mutation, verification, compensation, and evidence persistence.
+- [x] Run connector, evidence, redaction, and integration tests.
+- [x] Commit with `feat: add observability connectors`.
+
+**Note:** the connectors take an injectable `opener`, so the tests use a fake transport rather than binding a socket — the same seam makes the timeout, the size cap, and the redaction path directly observable. Only span *names* reach evidence; attributes are redacted at the sink and never persisted.
 
 ## Task 20: Add signed evidence bundle verifier
 
