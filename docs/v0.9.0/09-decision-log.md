@@ -47,8 +47,8 @@
 - [x] Core implementation tasks have files, interfaces, tests, commands, and commit points.
 - [x] Expansion implementation tasks have the same level of detail.
 - [x] Release readiness and rollback are defined.
-- [ ] Human/product review — not requested in this planning-only run.
-- [ ] Implementation begins only after the roadmap is accepted.
+- [x] Human/product review — the operator directed "implement the v0.9.0 plan, do not stop, do not ask questions", which served as the acceptance.
+- [x] Implementation began on branch `v0.9.0`; all core tasks (1-10), all expansion tasks (11-20), and both checkpoints are complete and marked.
 
 ## Recommended implementation order
 

@@ -64,11 +64,16 @@ A v0.9.0 feature is complete only when:
 
 | Gate | Result |
 | --- | --- |
+| `pytest tests/unit tests/integration` | PASS (full run, after tasks 1-10 and again after tasks 11-20) |
 | `uv build --sdist --wheel` | PASS |
-| `python scripts/verify_release_artifacts.py dist` | PASS |
-| Focused unit tests (intent, profiles, capabilities, admission, replay, redaction, CI contract, action outcomes) | PASS |
-| `pytest tests/unit tests/integration` | NOT RUN — deferred by explicit user instruction; must pass in CI before tagging |
-| Clean-venv wheel smoke (`MAYHEM_PACKAGE_SMOKE=1`) | BLOCKED — local sandbox cannot reach pypi.org (read timeout while installing dependencies); the wheel itself was built and verified. CI re-runs this job. |
+| `python scripts/verify_release_artifacts.py dist` | PASS (9 checks) |
+| Wheel install + import + console scripts + `mayhem --version` + `python -m mayhem` | PASS (offline: `pip install --no-deps --target`, then run) |
+| Every new v0.9.0 command reachable from the installed wheel | PASS (`game-day`, `bundle`, `inspect replay/graph/residual`, `campaign resume-plan`, `experiment compose`, `discover capabilities`) |
+| Core checkpoint (6 invariants) | PASS (`docs/v0.9.0/06-core-implementation-plan.md`) |
+| Expansion checkpoint (6 invariants) | PASS (`tests/unit/test_expansion_checkpoint.py`) |
+| Clean-venv wheel smoke (`MAYHEM_PACKAGE_SMOKE=1`) | BLOCKED — this sandbox cannot reach pypi.org (read timeout while installing dependencies), so dependency resolution is unverified locally. CI re-runs this job with network access; the wheel itself is built, installed, imported, and exercised offline. |
+| `lint-imports` | NOT A GATE — known architecture-contract debt, deliberately non-blocking |
+| Repository-wide `ruff` / `mypy` | PRE-EXISTING FAILURES — not introduced by v0.9.0; CI treats ruff as non-fatal |
 
 ## Rollback plan
 
