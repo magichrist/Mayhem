@@ -93,7 +93,9 @@ class TestDocumentedExitCodes:
             raise ToolError("docker", "timeout after 30s")
 
         monkeypatch.setattr(services_mod, "probe_capabilities", _boom)
-        assert main(["discover", "capabilities"]) == int(ExitCode.TOOLKIT_ERROR)
+        # v0.9.0: `discover capabilities` reports fault truth; the live tool
+        # probe that can raise ToolError is `extend capabilities`.
+        assert main(["extend", "capabilities"]) == int(ExitCode.TOOLKIT_ERROR)
 
     def test_debug_reraises_internal_errors(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.yaml"

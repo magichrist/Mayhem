@@ -37,3 +37,25 @@ def test_redaction_is_recursive_for_lists_and_tuples() -> None:
     result = redact({"values": ("token=abc", "safe")})
     assert result.value["values"][0] == "token=***REDACTED***"
     assert result.value["values"][1] == "safe"
+
+
+def test_evidence_records_redaction_metrics_without_secret_values() -> None:
+    from mayhem.infra.evidence import build_evidence
+
+    envelope = build_evidence(
+        run_id="r1",
+        plan=None,
+        target_profile=None,
+        engine="kubernetes",
+        safety_decisions=(),
+        step_reports=({"detail": "ok", "password": "hunter2"},),
+        lease_timeline=(),
+        observations=(),
+        verdict="pass",
+        recovery_state="none",
+        remediation=(),
+    )
+    metrics = envelope.redaction_metrics
+    assert metrics["redacted_path_count"] >= 1
+    assert metrics["policy_version"]
+    assert "hunter2" not in str(envelope.model_dump(mode="json"))

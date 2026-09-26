@@ -912,14 +912,13 @@ class RunEngine:
                     },
                 )
             )
-        undo_spec = k8s_undo_spec(fault.fault_id, target, pid=pid, boot=boot)
         from mayhem.domain.admission import admit_resolved_target
 
         admission = admit_resolved_target(
             fault.fault_id,
             target,
             required_target_types=("pod",),
-            compensation_complete=bool(undo_spec),
+            compensation_complete=True,
         )
         if not admission.allowed:
             return (
@@ -927,6 +926,18 @@ class RunEngine:
                     step.id,
                     False,
                     f"failed_to_apply: {admission.code}: {admission.reason} (safe-aborted, no lease)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        undo_spec = k8s_undo_spec(fault.fault_id, target, pid=pid, boot=boot)
+        if not undo_spec:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    f"failed_to_apply: compensation.incomplete: no undo spec for "
+                    f"{fault.fault_id} (safe-aborted, no lease)",
                     status="failed_to_apply",
                 ),
                 [],
@@ -1138,15 +1149,13 @@ class RunEngine:
                         },
                     )
                 )
-            mutation = k8s_mutation_spec(fault.fault_id, target, params=fault.params)
-            undo_ops = (mutation, *k8s_undo_ops_for(fault.fault_id, target))
             from mayhem.domain.admission import admit_resolved_target
 
             admission = admit_resolved_target(
                 fault.fault_id,
                 target,
                 required_target_types=("pod",),
-                compensation_complete=bool(undo_ops),
+                compensation_complete=True,
             )
             if not admission.allowed:
                 return (
@@ -1158,6 +1167,8 @@ class RunEngine:
                     ),
                     [],
                 )
+            mutation = k8s_mutation_spec(fault.fault_id, target, params=fault.params)
+            undo_ops = (mutation, *k8s_undo_ops_for(fault.fault_id, target))
             lease = self._client.acquire(
                 run_id=plan.run_id,
                 fault_id=fault.fault_id,
@@ -1421,14 +1432,13 @@ class RunEngine:
         if resolved is None:
             return StepReport(step.id, False, "node resolve returned no target"), []
         params: dict[str, object] = dict(fault.params or {})
-        undo_ops = k8s_node_undo_ops(fault.fault_id, resolved, params)
         from mayhem.domain.admission import admit_resolved_target
 
         admission = admit_resolved_target(
             fault.fault_id,
             resolved,
             required_target_types=("node",),
-            compensation_complete=bool(undo_ops),
+            compensation_complete=True,
         )
         if not admission.allowed:
             return (
@@ -1436,6 +1446,18 @@ class RunEngine:
                     step.id,
                     False,
                     f"failed_to_apply: {admission.code}: {admission.reason} (safe-aborted, no lease)",
+                    status="failed_to_apply",
+                ),
+                [],
+            )
+        undo_ops = k8s_node_undo_ops(fault.fault_id, resolved, params)
+        if not undo_ops:
+            return (
+                StepReport(
+                    step.id,
+                    False,
+                    f"failed_to_apply: compensation.incomplete: no undo ops for "
+                    f"{fault.fault_id} (safe-aborted, no lease)",
                     status="failed_to_apply",
                 ),
                 [],

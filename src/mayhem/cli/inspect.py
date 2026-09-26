@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
+from typing import Literal, cast
 
 import click
 
@@ -185,6 +187,120 @@ def inspect_leases(ctx: click.Context, run_id: str | None, as_json: bool) -> Non
         )
 
 
+@click.group("replay", help="Export and validate replay capsules.")
+def replay_group() -> None:
+    """Replay capsule surfaces."""
+
+
+@replay_group.command("export")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.option(
+    "--out",
+    type=click.Path(),
+    default=None,
+    help="Write the capsule to this file instead of stdout.",
+)
+@click.pass_context
+def replay_export(ctx: click.Context, run_id: str, as_json: bool, out: str | None) -> None:
+    """Export the stored replay capsule for a run, or capture it if missing."""
+    from mayhem.infra.replay_repository import ReplayRepository, build_capsule
+
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    store = open_store(obj.db)
+    try:
+        repo = ReplayRepository(store)
+        capsule = repo.load(run_id) or build_capsule(store, run_id)
+        if capsule is None:
+            click.echo(f"no run or capsule recorded for {run_id}", err=True)
+            raise SystemExit(1)
+        repo.save(capsule)
+    finally:
+        store.close()
+    payload = capsule.model_dump(mode="json")
+    if out:
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+        click.echo(f"wrote {out} (digest {capsule.digest()[:12]})")
+        return
+    if as_json or not sys.stdout.isatty():
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(f"run: {capsule.run_id}")
+    click.echo(f"schema: {capsule.schema_version}")
+    click.echo(f"digest: {capsule.digest()}")
+    click.echo(f"engine: {capsule.runtime.get('engine', '') or '-'}")
+    click.echo(f"fingerprints: {json.dumps(capsule.fingerprints, sort_keys=True)}")
+
+
+@replay_group.command("validate")
+@click.argument("run_id")
+@click.option(
+    "--mode",
+    type=click.Choice(["validate", "dry_run"]),
+    default="validate",
+    show_default=True,
+)
+@click.option(
+    "--current-fingerprint",
+    default=None,
+    help="Environment fingerprint to compare against the recorded one.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def replay_validate(
+    ctx: click.Context,
+    run_id: str,
+    mode: str,
+    current_fingerprint: str | None,
+    as_json: bool,
+) -> None:
+    """Validate a stored replay capsule without mutating anything."""
+    from mayhem.domain.replay import validate_replay_capsule
+    from mayhem.infra.replay_repository import ReplayRepository, build_capsule
+
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    store = open_store(obj.db)
+    try:
+        capsule = ReplayRepository(store).load(run_id) or build_capsule(store, run_id)
+    finally:
+        store.close()
+    if capsule is None:
+        click.echo(f"no run or capsule recorded for {run_id}", err=True)
+        raise SystemExit(1)
+    result = validate_replay_capsule(
+        capsule,
+        mode=cast("Literal['validate', 'dry_run']", mode),
+        current_fingerprint=current_fingerprint,
+    )
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "run_id": capsule.run_id,
+                    "valid": result.valid,
+                    "errors": list(result.errors),
+                    "warnings": list(result.warnings),
+                    "plan_hash": result.plan_hash,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"run: {capsule.run_id}")
+        click.echo(f"valid: {str(result.valid).lower()}")
+        click.echo(f"plan hash: {result.plan_hash}")
+        for error in result.errors:
+            click.echo(f"error: {error}")
+        for warning in result.warnings:
+            click.echo(f"warning: {warning}")
+    if not result.valid:
+        raise SystemExit(1)
+
+
+inspect.add_command(replay_group)
 inspect.add_command(_clone(status, "runs"))
 inspect.add_command(_clone(history, "history"))
 inspect.add_command(_clone(coverage_cmd, "coverage"))

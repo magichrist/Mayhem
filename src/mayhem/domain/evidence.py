@@ -54,6 +54,7 @@ class EvidenceEnvelope(BaseModel):
     replay_digest: str = ""
     evidence_status: str = "complete"
     action_outcomes: tuple[str, ...] = ()
+    redaction_metrics: dict[str, Any] = Field(default_factory=dict)
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

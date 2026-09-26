@@ -69,7 +69,17 @@ ACTIVE_GROUP_PATHS = {
         "check",
         "plan",
     ),
-    "inspect": ("doctor", "run", "leases", "runs", "history", "coverage", "expert", "next"),
+    "inspect": (
+        "doctor",
+        "run",
+        "leases",
+        "runs",
+        "history",
+        "coverage",
+        "expert",
+        "next",
+        "replay",
+    ),
     "recover": ("status", "plan", "execute"),
 }
 
@@ -442,9 +452,7 @@ def test_discover_faults_has_static_catalog_success_and_json_explain() -> None:
     assert json.loads(explained.output)["id"] == "proc.pause"
 
 
-def test_discover_engines_and_capabilities_use_fakes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_discover_engines_and_capabilities_report_truth(monkeypatch: pytest.MonkeyPatch) -> None:
     descriptors = [
         SimpleNamespace(
             name=name,
@@ -472,15 +480,18 @@ def test_discover_engines_and_capabilities_use_fakes(
     ]
     assert engine_payload["engines"][0]["binary_available"] is True
 
-    report = SimpleNamespace(
-        model_dump=lambda **kwargs: {
-            "tools": [{"manifest": {"tool": "fake", "provides": ["net"]}, "version": "1"}]
-        }
-    )
-    monkeypatch.setattr("mayhem.cli.services.probe_capabilities", lambda **kwargs: report)
+    # v0.9.0: `discover capabilities` reports fault capability truth (ADR-M2-2);
+    # live tool probing moved to `discover tools list`.
     capabilities = _run("discover", "capabilities", "--json")
     assert capabilities.exit_code == 0
-    assert json.loads(capabilities.output)["tools"][0]["manifest"]["tool"] == "fake"
+    payload = json.loads(capabilities.output)
+    rows = payload["capabilities"]
+    assert rows, "capability dashboard must not be empty"
+    first = rows[0]
+    assert {"fault_id", "engine", "supported", "registered", "unit_verified"} <= set(first)
+    assert all(row["live_verified"] is False for row in rows), (
+        "no live verification may be claimed without a live run"
+    )
 
 
 def test_extend_provider_inspect_and_load_use_loader_fake(

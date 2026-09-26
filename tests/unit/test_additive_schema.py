@@ -134,4 +134,5 @@ def test_name_snapshot_is_stable() -> None:
         "run_controller_pid",
         "five_state_coverage",
         "resolved_target",
+        "replay_capsules",
     ), "migration name sequence drifted from the snapshot — append-only."

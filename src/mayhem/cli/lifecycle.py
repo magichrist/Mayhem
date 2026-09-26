@@ -766,6 +766,17 @@ def _write_evidence_after_run(
                 str(getattr(getattr(s, "outcome", ""), "value", "")) for s in getattr(result, "steps", [])
             ),
         )
+        replay_digest = ""
+        try:
+            from mayhem.infra.replay_repository import ReplayRepository, build_capsule
+
+            capsule = build_capsule(store, run_id, engine=engine, policy={"engine": engine})
+            if capsule is not None:
+                ReplayRepository(store).save(capsule)
+                replay_digest = capsule.digest()
+                envelope = envelope.model_copy(update={"replay_digest": replay_digest})
+        except Exception:
+            replay_digest = ""
         try:
             write_evidence(store, envelope)
         except Exception as exc:
@@ -1547,15 +1558,6 @@ def maniac(
     # Resolved once here, at the CLI edge, and reused for the gate below and
     # for the engine; nothing downstream re-reads the environment.
     allow_implicit = implicit_execution_allowed()
-    # A --dry-run invocation is a preview, so it needs no approval; the
-    # structural return before the engine below is what guarantees it cannot
-    # inject. Only a reachable mutation is gated, and --dry-run is not one.
-    if not obj.dry_run:
-        require_explicit_approval(
-            "maniac",
-            approved=execute,
-            allow_implicit=allow_implicit,
-        )
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(),
         target=obj.target,
@@ -1649,6 +1651,16 @@ def maniac(
                 f"{style.cyan(compiled.run_id)}; nothing injected"
             )
             return
+        # The approval gate sits here — after argument validation, spec
+        # resolution, and the dry-run return, immediately before the engine
+        # (and therefore any lease or subprocess) can be built. A --dry-run
+        # invocation returns above, so a preview never reaches a mutation and
+        # never needs approval; nothing below this line runs without it.
+        require_explicit_approval(
+            "maniac",
+            approved=execute,
+            allow_implicit=allow_implicit,
+        )
         # NB: the RunEngine is a local named ``run_engine`` — the resolved
         # context owns the engine *name*, and rebinding it here used to leak a
         # RunEngine object into the preflight/evidence ``engine: str`` fields.

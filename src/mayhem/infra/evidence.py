@@ -11,9 +11,9 @@ from mayhem.infra.report import report_id_for_run
 
 
 def _sanitize_evidence_dict(data: dict[str, Any]) -> dict[str, Any]:
-    from mayhem.domain.policy import sanitize_for_logging
+    from mayhem.domain.redaction import redact
 
-    return sanitize_for_logging(data)
+    return dict(redact(data).value)
 
 
 def build_evidence(
@@ -51,10 +51,26 @@ def build_evidence(
 ) -> EvidenceEnvelope:
     phash = plan_hash_for(plan) if plan is not None else ""
     pid = getattr(plan, "run_id", run_id) if plan is not None else run_id
-    sanitized_reports = tuple(_sanitize_evidence_dict(dict(r)) for r in step_reports)
-    sanitized_leases = tuple(_sanitize_evidence_dict(dict(r)) for r in lease_timeline)
-    sanitized_obs = tuple(_sanitize_evidence_dict(dict(r)) for r in observations)
-    sanitized_blast = _sanitize_evidence_dict(dict(blast_radius or {}))
+    from mayhem.domain.redaction import RULE_VERSION
+
+    redaction_paths: list[str] = []
+
+    def _redact_into(data: dict[str, Any]) -> dict[str, Any]:
+        from mayhem.domain.redaction import redact
+
+        result = redact(data)
+        redaction_paths.extend(result.removed_paths)
+        return dict(result.value)
+
+    sanitized_reports = tuple(_redact_into(dict(r)) for r in step_reports)
+    sanitized_leases = tuple(_redact_into(dict(r)) for r in lease_timeline)
+    sanitized_obs = tuple(_redact_into(dict(r)) for r in observations)
+    sanitized_blast = _redact_into(dict(blast_radius or {}))
+    redaction_metrics = {
+        "policy_version": RULE_VERSION,
+        "redacted_path_count": len(redaction_paths),
+        "redacted_paths": tuple(sorted(set(redaction_paths))),
+    }
     extra_verdict = verdict
     extra_remediation = list(remediation)
     if skip_gate:
@@ -115,6 +131,7 @@ def build_evidence(
         replay_digest=replay_digest,
         evidence_status=evidence_status,
         action_outcomes=tuple(action_outcomes),
+        redaction_metrics=redaction_metrics,
         verification_basis="live" if engine and verdict not in ("", "planned") else "unit_tested",
     )
 
