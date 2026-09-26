@@ -79,12 +79,16 @@
 - Produces: `ObservationProvider`, `ObservationQuery`, `ObservationResult`, `SloCriterion`.
 - Supports HTTP/process checks first; Prometheus/Loki adapters consume the same contract later.
 
-- [ ] Write tests for latency threshold, error-budget threshold, recovery-time, saturation, and missing-observation behavior.
-- [ ] Write a fake provider that returns deterministic observations and a redacted result.
-- [ ] Add criterion types to the drill schema with explicit units, windows, and failure semantics.
-- [ ] Implement provider-neutral collection and persist observation provenance in evidence.
-- [ ] Run observation, evidence, lifecycle, and fake integration tests.
-- [ ] Commit with `feat: add provider-neutral SLO observations`.
+**Status:** DONE — `src/mayhem/domain/observations.py` (contracts), `src/mayhem/providers/observation.py` (HTTP/process/static providers), `ExecutionPlan.slo`, and `observation_provenance` / `slo_outcomes` on the evidence envelope. A missing observation fails its criterion rather than passing, and a crashing provider becomes an `error` result rather than a silent pass.
+
+- [x] Write tests for latency threshold, error-budget threshold, recovery-time, saturation, and missing-observation behavior.
+- [x] Write a fake provider that returns deterministic observations and a redacted result.
+- [x] Add criterion types to the drill schema with explicit units, windows, and failure semantics.
+- [x] Implement provider-neutral collection and persist observation provenance in evidence.
+- [x] Run observation, evidence, lifecycle, and fake integration tests.
+- [x] Commit with `feat: add provider-neutral SLO observations`.
+
+**Note:** the default provider is a local static one, so a run records only measurements it actually took; the Prometheus and Loki adapters arrive with task 19 and stay opt-in.
 
 ## Task 14: Add scenario variables and conditional steps
 

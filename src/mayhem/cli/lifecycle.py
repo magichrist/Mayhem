@@ -778,6 +778,33 @@ def _write_evidence_after_run(
         except Exception:
             replay_digest = ""
         try:
+            from mayhem.domain.observations import (
+                collect as collect_observations,
+                evaluate_all,
+                provenance_summary,
+            )
+
+            provider = _observation_provider_for(engine)
+            if provider is not None:
+                queries, criteria = _slo_from_plan(plan)
+                observed = collect_observations(provider, queries)
+                outcomes = evaluate_all(criteria, observed)
+                envelope = envelope.model_copy(
+                    update={
+                        "observation_provenance": provenance_summary(observed),
+                        "slo_outcomes": tuple(outcome.to_dict() for outcome in outcomes),
+                    }
+                )
+        except Exception as exc:
+            envelope = envelope.model_copy(
+                update={
+                    "observation_provenance": {
+                        "status": "degraded",
+                        "detail": f"observation collection failed: {type(exc).__name__}",
+                    }
+                }
+            )
+        try:
             write_evidence(store, envelope)
         except Exception as exc:
             envelope = envelope.model_copy(
@@ -860,6 +887,55 @@ def _suggest_next_cell(
             )
     finally:
         store.close()
+
+
+def _observation_provider_for(engine: str) -> object | None:
+    """Provider for read-only observation collection; ``None`` disables it."""
+    from mayhem.providers.observation import StaticObservationProvider
+
+    # Live providers are opt-in (task 19 wires the remote ones); the default is
+    # a local provider so evidence never claims a measurement it did not take.
+    return StaticObservationProvider()
+
+
+def _slo_from_plan(plan: object) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    """Extract observation queries and SLO criteria declared by the plan."""
+    from mayhem.domain.observations import (
+        CriterionKind,
+        CriterionOperator,
+        ObservationQuery,
+        SloCriterion,
+    )
+
+    queries: list[ObservationQuery] = []
+    criteria: list[SloCriterion] = []
+    raw = getattr(plan, "slo", None) or []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        metric = str(item.get("metric") or "")
+        if not metric:
+            continue
+        queries.append(
+            ObservationQuery(
+                metric=metric,
+                window_s=float(item.get("window_s", 60.0) or 60.0),
+                unit=str(item.get("unit") or "ms"),
+                target=str(item.get("target") or ""),
+            )
+        )
+        criteria.append(
+            SloCriterion(
+                kind=CriterionKind(str(item.get("kind", "latency"))),
+                metric=metric,
+                operator=CriterionOperator(str(item.get("operator", "lte"))),
+                threshold=float(item.get("threshold", 0.0) or 0.0),
+                unit=str(item.get("unit") or "ms"),
+                window_s=float(item.get("window_s", 60.0) or 60.0),
+                name=str(item.get("name") or ""),
+            )
+        )
+    return tuple(queries), tuple(criteria)
 
 
 @click.command("validate")

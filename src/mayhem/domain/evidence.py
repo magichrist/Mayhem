@@ -55,6 +55,10 @@ class EvidenceEnvelope(BaseModel):
     evidence_status: str = "complete"
     action_outcomes: tuple[str, ...] = ()
     redaction_metrics: dict[str, Any] = Field(default_factory=dict)
+    # v0.9.0 task 13: where each observation came from, and how many criteria
+    # passed. Counts and provenance only — never a raw provider payload.
+    observation_provenance: dict[str, Any] = Field(default_factory=dict)
+    slo_outcomes: tuple[dict[str, Any], ...] = ()
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

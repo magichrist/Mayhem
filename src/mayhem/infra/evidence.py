@@ -48,6 +48,8 @@ def build_evidence(
     replay_digest: str = "",
     evidence_status: str = "complete",
     action_outcomes: tuple[str, ...] = (),
+    observation_provenance: dict[str, Any] | None = None,
+    slo_outcomes: tuple[dict[str, Any], ...] = (),
 ) -> EvidenceEnvelope:
     phash = plan_hash_for(plan) if plan is not None else ""
     pid = getattr(plan, "run_id", run_id) if plan is not None else run_id
@@ -132,6 +134,8 @@ def build_evidence(
         evidence_status=evidence_status,
         action_outcomes=tuple(action_outcomes),
         redaction_metrics=redaction_metrics,
+        observation_provenance=dict(observation_provenance or {}),
+        slo_outcomes=tuple(slo_outcomes),
         verification_basis="live" if engine and verdict not in ("", "planned") else "unit_tested",
     )
 

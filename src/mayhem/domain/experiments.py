@@ -10,7 +10,7 @@ committed. Since the clean break (ADR-0021) the only supported kind is
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -480,6 +480,10 @@ class ExecutionPlan(BaseModel):
     seed: int | None = None
     success: SuccessCriteria | None = None  # copied from the spec (ADR-M4-3)
     observability: ObservabilityConfig | None = None  # copied from the spec (ADR-M4-4)
+    # v0.9.0 task 13: provider-neutral SLO criteria with explicit units, windows
+    # and failure semantics. Kept as plain dicts on the frozen plan so the
+    # domain model owns the shape but the criterion vocabulary owns the values.
+    slo: tuple[dict[str, Any], ...] = ()
     decision_refs: tuple[DecisionRef, ...] = ()  # governing ADR ids + timestamps
 
     @model_validator(mode="after")
