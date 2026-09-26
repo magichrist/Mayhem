@@ -171,6 +171,8 @@
 
 ## Task 7: Add replay capsules and approval artifacts
 
+**Status:** IMPLEMENTED — commit `78ce528`; replay unit, migration, and SQLite round-trip tests pass; CLI export and broader evidence verification deferred.
+
 **Files:**
 - Create: `src/mayhem/domain/replay.py`
 - Create: `src/mayhem/infra/replay_repository.py`
@@ -184,13 +186,13 @@
 - Produces: `ReplayCapsule(schema_version, spec, plan, policy, target, runtime, versions, seed, fingerprints, digests)`.
 - Produces: `validate_replay_capsule(capsule, mode=validate|dry_run) -> ReplayValidation`.
 
-- [ ] Write tests for deterministic capsule serialization, digest verification, stale fingerprint detection, and dry-run validation.
-- [ ] Write a round-trip test that creates a capsule, reloads it from SQLite, and reproduces the plan identity without mutation.
+- [x] Write tests for deterministic capsule serialization, digest verification, stale fingerprint detection, and dry-run validation.
+- [x] Write a round-trip test that creates a capsule, reloads it from SQLite, and reproduces the plan identity without mutation.
 - [ ] Run tests and expect missing persistence/model behavior to fail.
-- [ ] Implement schema, SQLite migration, repository, and evidence linkage.
+- [x] Implement schema, SQLite migration, repository, and evidence linkage.
 - [ ] Add CLI output for capsule export/validate through existing inspect/report surfaces.
 - [ ] Run focused, integration, migration, and evidence tests.
-- [ ] Commit with `feat: persist replayable run capsules`.
+- [x] Commit with `feat: persist replayable run capsules`.
 
 ## Task 8: Centralize redaction and recovery evidence
 
