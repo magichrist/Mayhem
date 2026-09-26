@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,6 +109,7 @@ def resolve_runtime_context(
     engine: str | None = None,
     target: str | None = None,
     config_path: str | None = None,
+    profile: str | None = None,
     unavailable_fallback: str | None = "podman",
 ) -> RuntimeContext:
     """Resolve the runtime **once** for a plan (v0.9.0).
@@ -129,7 +129,10 @@ def resolve_runtime_context(
 
     For ``kubernetes`` the kubeconfig context and namespace are read from the
     selected target profile; container engines never touch the docker/podman
-    descriptors when the engine is ``kubernetes``.
+    descriptors when the engine is ``kubernetes``. ``profile`` is the
+    configuration overlay (``mayhem.{profile}.yaml``), so a target profile
+    declared only in that overlay is still found — the same effective
+    configuration every other consumer resolves.
 
     ``runtime_version`` is *not* probed here (that would cost two subprocesses
     on every command); use :func:`with_runtime_version` where it is displayed.
@@ -155,10 +158,12 @@ def resolve_runtime_context(
     provider_version: str | None = None
     if resolved_engine == "kubernetes":
         provider_version = _kubernetes_provider_version()
-        profile = _select_target_profile(target, config_path)
-        if profile is not None and getattr(profile, "engine", "kubernetes") == "kubernetes":
-            kube_context = profile.context
-            namespace = profile.namespace
+        selected_profile = _select_target_profile(target, config_path, profile)
+        if selected_profile is not None and getattr(selected_profile, "engine", "kubernetes") == (
+            "kubernetes"
+        ):
+            kube_context = selected_profile.context
+            namespace = selected_profile.namespace
 
     return RuntimeContext(
         engine=resolved_engine,
@@ -169,47 +174,28 @@ def resolve_runtime_context(
     )
 
 
-def _select_target_profile(target: str | None, config_path: str | None) -> Any:
+def _select_target_profile(
+    target: str | None, config_path: str | None, profile: str | None = None
+) -> Any:
     """The target profile a selection resolves to, or ``None``.
 
-    Resolution comes from the effective layered configuration when that
-    configuration loads: target profiles are first-class configuration
-    (v0.9.0 task 4), so a ``targets:``/``profiles:`` block in ``mayhem.yaml``
-    is validated and carried by ``MayhemConfig`` rather than re-parsed here. A
-    profile-only document (no ``apiVersion``) is not a loadable configuration,
-    so the file reader stays as the fallback for it; both share one validator.
+    Resolution goes through the one configuration seam
+    (:func:`mayhem.config.select_target_profile`), so a profile contributed by
+    the ``mayhem.{profile}.yaml`` overlay is visible here exactly as it is to
+    topology, preflight, and diagnostics. ``profile`` is the configuration
+    overlay, not a target-profile name.
 
     Selection semantics are unchanged, and mirror
     ``mayhem.controller.preflight._k8s_profile``: an explicit ``--target``
     wins, a single configured profile is inferred, and anything ambiguous
     resolves to nothing rather than guessing.
     """
-    from mayhem.config import SpecFileUsedAsConfig
-    from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+    from mayhem.config import select_target_profile as _select
 
-    profiles: dict[str, Any] = {}
-    with warnings.catch_warnings():
-        # A drill spec declares `kind: drill`; it owns its own `targets:`
-        # block (logical targets, not profiles) and its embedded `config:`
-        # section is not a configuration layer for us. Treating it as "no
-        # profiles here" is the caller's fallback path, not a hidden error.
-        warnings.simplefilter("ignore", SpecFileUsedAsConfig)
-        try:
-            cfg, _sources = load_config(config_path=config_path, environ={})
-        except Exception:
-            profiles = {}
-        else:
-            profiles = dict(cfg.targets)
-    if not profiles:
-        try:
-            profiles = load_profiles_from_mayhem_yaml(config_path)
-        except Exception:
-            return None
-    if target is not None:
-        return profiles.get(target)
-    if len(profiles) == 1:
-        return next(iter(profiles.values()))
-    return None
+    try:
+        return _select(config_path, profile=profile, target=target)
+    except Exception:
+        return None
 
 
 def with_topology_fingerprint(
@@ -256,6 +242,7 @@ def build_graph(
     engine_name: str | None = None,
     target: str | None = None,
     config_path: str | None = None,
+    profile: str | None = None,
 ) -> TopologyGraph:
     """Build a topology graph from a compose blueprint or the live cluster.
 
@@ -264,7 +251,9 @@ def build_graph(
     which case the graph comes straight from the kubeconfig-resolved cluster
     (no blueprint involved). ``compose`` defaults to auto-detect in the
     caller (``_resolve_compose``), so reaching here with ``None`` and a
-    container engine means no blueprint was found.
+    container engine means no blueprint was found. ``profile`` is the
+    configuration overlay, so a Kubernetes target profile declared only there is
+    still honoured.
     """
     from mayhem.cli.app import _STATE
     from mayhem.cli.topology import _resolve_engine
@@ -276,7 +265,9 @@ def build_graph(
 
     if engine == "kubernetes":
         if compose is None:
-            return _kubernetes_discovery_graph(target=target, config_path=config_path)
+            return _kubernetes_discovery_graph(
+                target=target, config_path=config_path, profile=profile
+            )
         from mayhem.topology.providers.k8s_manifest import KubernetesManifestProvider
         from mayhem.topology.service import TopologyService as _ManifestTopologyService
 
@@ -328,7 +319,7 @@ def build_graph(
 
 
 def _kubernetes_discovery_graph(
-    target: str | None = None, config_path: str | None = None
+    target: str | None = None, config_path: str | None = None, profile: str | None = None
 ) -> TopologyGraph:
     """Discover the topology from the live cluster (``--kubernetes`` engine).
 
@@ -350,17 +341,16 @@ def _kubernetes_discovery_graph(
     namespace = None
     workload_selector = None
     if target is not None:
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+        from mayhem.config import select_target_profile
 
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-        profile = profiles.get(target)
-        if profile is None:
+        found = select_target_profile(config_path, profile=profile, target=target)
+        if found is None:
             raise ValueError(f"unknown Kubernetes target profile {target!r}")
-        if profile.engine != "kubernetes":
+        if found.engine != "kubernetes":
             raise ValueError(f"target profile {target!r} is not a Kubernetes profile")
-        context = profile.context
-        namespace = profile.namespace
-        workload_selector = profile.workload_selector
+        context = found.context
+        namespace = found.namespace
+        workload_selector = found.workload_selector
     provider = KubernetesProvider(
         "kubernetes",
         context=context,

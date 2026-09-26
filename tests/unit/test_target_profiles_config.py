@@ -61,9 +61,11 @@ def test_empty_and_absent_blocks_are_not_errors():
     assert parse_profiles_mapping({"bare": None})["bare"].engine == "docker"
 
 
-def test_profile_name_is_taken_from_the_mapping_key():
+def test_profile_name_is_the_mapping_key_and_overwrites_the_body():
+    """The key is authoritative: a body ``name:`` is overwritten, not refused."""
     profiles = parse_profiles_mapping({"dev": {"name": "ignored", "engine": "podman"}})
     assert profiles["dev"].name == "dev"
+    assert list(profiles) == ["dev"]
     assert "ignored" not in profiles
 
 
@@ -114,11 +116,11 @@ def test_inherited_parent_may_not_smuggle_a_credential():
 
 
 def test_a_name_maps_to_exactly_one_profile():
-    """The mapping key is the identity; a profile body cannot rename or add one."""
+    """One key is one profile: the key is its identity and its name."""
     profiles = parse_profiles_mapping({"dev": {"engine": "docker"}})
     assert list(profiles) == ["dev"]
     assert profiles["dev"].name == "dev"
-    # Declaring a name that is not a mapping is refused rather than coerced.
+    # A body that is not a mapping is refused rather than coerced.
     with pytest.raises(SchemaValidationError, match="must be a mapping"):
         parse_profiles_mapping({"dev": "engine: docker"})
 

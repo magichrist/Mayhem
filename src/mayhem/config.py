@@ -24,9 +24,14 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.experiments import BlastRadiusBudget, ManiacCfg
-from mayhem.domain.policy import BUILTIN_PROFILES
+from mayhem.domain.policy import BUILTIN_PROFILES, sanitize_for_logging
 from mayhem.domain.risks import RiskLevel
-from mayhem.domain.target_profiles import TargetProfile, parse_profiles_mapping, select_profile
+from mayhem.domain.target_profiles import (
+    TargetProfile,
+    load_profiles_from_mayhem_yaml,
+    parse_profiles_mapping,
+    select_profile,
+)
 
 
 class SpecFileUsedAsConfig(Warning):
@@ -182,26 +187,6 @@ MayhemConfig = MayhemConfigBase
 _PROFILE_LAYER_KEYS = ("targets", "profiles")
 
 
-def target_profiles(config: MayhemConfig) -> dict[str, TargetProfile]:
-    """The validated target profiles carried by an effective configuration."""
-    return dict(config.targets)
-
-
-def select_target_profile(
-    config: MayhemConfig, name: str | None = None
-) -> TargetProfile | None:
-    """The target profile a selection resolves to, or ``None``.
-
-    The configuration-level seam onto :func:`mayhem.domain.target_profiles.select_profile`,
-    so topology, preflight, policy, and machine-readable output all resolve
-    the *same* profile from the *same* loaded configuration. An explicit
-    ``name`` wins; a single configured profile is inferred; anything ambiguous
-    resolves to nothing rather than guessing, and an unknown ``name`` is
-    refused.
-    """
-    return select_profile(target_profiles(config), name)
-
-
 def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
     for key, value in src.items():
         if isinstance(dst.get(key), dict) and isinstance(value, dict):
@@ -242,10 +227,23 @@ def _apply_env(data: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
 
 
 def _sanitize_value(key: str, value: Any) -> Any:
+    """Redact a configuration value for display.
+
+    Two layers, both of them redaction-only:
+
+    * the *field* name (``policy``'s nested keys, a field literally named
+      ``token``), using :data:`_SECRET_FIELD_NAMES`;
+    * the *value* mapping, using the same
+      :func:`mayhem.domain.policy.sanitize_for_logging` policy that ``config
+      show`` and the evidence envelope use — so free-form data a field carries
+      (a target profile's ``observability`` block, for instance) is filtered by
+      exactly the same rules, including its list recursion and its wider key
+      set.
+    """
     if key.lower() in _SECRET_FIELD_NAMES:
         return "***REDACTED***"
     if isinstance(value, dict):
-        return {k: _sanitize_value(k, v) for k, v in value.items()}
+        return sanitize_for_logging(value)
     return value
 
 
@@ -457,6 +455,81 @@ def load_config(
         return MayhemConfig.model_validate(merged), sources
     except ValidationError as exc:
         raise SchemaValidationError("config", f"invalid configuration: {exc}") from None
+
+
+def effective_target_profiles(
+    config_path: str | Path | None = None,
+    profile: str | None = None,
+    *,
+    environ: dict[str, str] | None = None,
+) -> dict[str, TargetProfile]:
+    """The target profiles of the **effective** configuration.
+
+    The base document plus the ``mayhem.{profile}.yaml`` overlay, merged per
+    profile name by :func:`load_config`. This is the single resolution seam for
+    production consumers — CLI services, topology, preflight, and diagnostics
+    all call it — so a profile declared only in an overlay is visible to all of
+    them and none of them re-reads the base file on its own.
+
+    Two deliberate tolerances, both pre-existing behaviours of the readers
+    this replaces:
+
+    * A profile-only document (no ``apiVersion``) is not a loadable
+      configuration, so the profile-file reader is the fallback. Nothing is lost
+      for that shape; a *requested but missing* overlay simply leaves the base
+      document's profiles in place, and ``mayhem doctor`` reports the missing
+      overlay.
+    * A drill spec (``kind: drill``) is not a configuration layer, so its own
+      ``targets:`` block — its logical targets — is never read as profiles.
+
+    Both paths share one validator,
+    :func:`mayhem.domain.target_profiles.parse_profiles_mapping`; there is no
+    second implementation of the profile vocabulary anywhere in the tree.
+    """
+    with warnings.catch_warnings():
+        # A spec declared where a config was expected is not an error for a
+        # profile lookup: its `targets:` block is logical targets, so the
+        # answer is "no profiles here". Surfaces that genuinely load a spec as
+        # configuration (config show/explain, doctor) still surface the
+        # warning; only this lookup suppresses it.
+        warnings.simplefilter("ignore", SpecFileUsedAsConfig)
+        try:
+            cfg, _sources = load_config(
+                config_path=config_path,
+                profile=profile,
+                environ={} if environ is None else environ,
+            )
+        except (OSError, ValueError, SchemaValidationError):
+            return load_profiles_from_mayhem_yaml(config_path)
+    return dict(cfg.targets)
+
+
+def select_target_profile(
+    config_path: str | Path | None = None,
+    *,
+    profile: str | None = None,
+    target: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> TargetProfile | None:
+    """The target profile a selection resolves to, or ``None``.
+
+    :func:`effective_target_profiles` plus the domain's selection rule, so every
+    consumer starts from the same *effective* configuration — base document plus
+    the ``mayhem.{profile}.yaml`` overlay. An explicit ``target`` wins; a single
+    configured profile is inferred; anything ambiguous resolves to nothing
+    rather than guessing, and an unknown ``target`` is refused.
+
+    Consumers that must distinguish *ambiguous* from *unknown* (preflight's
+    Kubernetes cross-check, topology discovery, the doctor's own reporting)
+    select from the resolved mapping themselves, using
+    :func:`effective_target_profiles` for the resolution.
+
+    ``profile`` is the configuration overlay (``mayhem.{profile}.yaml``), not a
+    target-profile name.
+    """
+    return select_profile(
+        effective_target_profiles(config_path, profile, environ=environ), target
+    )
 
 
 def snapshot_id_for(config: MayhemConfig) -> str:

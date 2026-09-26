@@ -503,8 +503,16 @@ def _graph_from(
     resolved = _resolve_compose(compose)
     try:
         config_path = getattr(ctx.obj, "config", None) if ctx.obj is not None else None
+        # The configuration overlay travels with the config path, so discovery
+        # resolves target profiles from the same effective configuration every
+        # other stage uses.
+        config_profile = getattr(ctx.obj, "profile", None) if ctx.obj is not None else None
         return build_graph(
-            resolved, engine_name=engine, target=target, config_path=config_path
+            resolved,
+            engine_name=engine,
+            target=target,
+            config_path=config_path,
+            profile=config_profile,
         ), resolved
     except ValueError as exc:
         raise click.UsageError(str(exc), ctx=ctx) from None
@@ -526,15 +534,20 @@ def _runtime_context(
     engine: str | None,
     target: str | None,
     config_path: str | None,
+    profile: str | None = None,
 ) -> RuntimeContext:
     """Resolve the runtime once for a command.
 
     Every downstream step (discovery, planning, preflight, execution) takes
     this object instead of re-deriving an engine from a flag. The topology
     fingerprint is attached afterwards by
-    :func:`with_topology_fingerprint`, once the graph exists.
+    :func:`with_topology_fingerprint`, once the graph exists. ``profile`` is
+    the configuration overlay, so a Kubernetes target profile declared only in
+    ``mayhem.{profile}.yaml`` is resolved here too.
     """
-    return resolve_runtime_context(engine=engine, target=target, config_path=config_path)
+    return resolve_runtime_context(
+        engine=engine, target=target, config_path=config_path, profile=profile
+    )
 
 
 def _preflight_for_run(
@@ -546,8 +559,15 @@ def _preflight_for_run(
     target: str | None,
     engine: str,
     config_path: str | None = None,
+    profile: str | None = None,
     runtime: RuntimeContext | None = None,
 ) -> object:
+    """Build the run's preflight.
+
+    ``profile`` is the configuration overlay and is forwarded, so preflight
+    validates target profiles against the same effective configuration — overlay
+    included — that the run resolved them from.
+    """
     fingerprint = getattr(prepared, "fingerprint", "") if prepared is not None else ""
     cfg_id = getattr(prepared, "config_snapshot_id", "") if prepared is not None else ""
     topo_id = getattr(prepared, "topology_snapshot_id", "") if prepared is not None else ""
@@ -558,7 +578,7 @@ def _preflight_for_run(
         graph=graph,
         store=store,
         config_path=config_path,
-        profile=None,
+        profile=profile,
         allow_critical=getattr(safety, "allow_critical_cli", False)
         if safety is not None
         else False,
@@ -816,7 +836,10 @@ def validate(ctx: click.Context, experiment: str | None, compose: str | None) ->
     """Compile a drill spec and run every safety gate without executing it."""
     obj = _ctx(ctx)
     runtime = _runtime_context(
-        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+        engine=_resolve_engine_from_state(),
+        target=obj.target,
+        config_path=obj.config,
+        profile=obj.profile,
     )
     graph, resolved_compose = _graph_from(ctx, compose, engine=runtime.engine, target=obj.target)
     runtime = with_topology_fingerprint(runtime, graph)
@@ -867,7 +890,10 @@ def plan(
 ) -> None:
     obj = _ctx(ctx)
     runtime = _runtime_context(
-        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+        engine=_resolve_engine_from_state(),
+        target=obj.target,
+        config_path=obj.config,
+        profile=obj.profile,
     )
     graph, resolved_compose = _graph_from(ctx, compose, engine=runtime.engine, target=obj.target)
     runtime = with_topology_fingerprint(runtime, graph)
@@ -891,6 +917,7 @@ def plan(
             plan=compiled.plan,
             target=obj.target,
             config_path=obj.config,
+            profile=obj.profile,
             engine=runtime.engine,
             runtime=runtime,
         )
@@ -1019,6 +1046,7 @@ def run(
         engine=run_engine or _resolve_engine_from_state(),
         target=target_name,
         config_path=obj.config,
+        profile=obj.profile,
     )
     effective_engine = runtime.engine
     graph, resolved_compose = _graph_from(ctx, compose, engine=effective_engine, target=target_name)
@@ -1055,6 +1083,7 @@ def run(
                         plan=compiled_plan,
                         target=target_name,
                         config_path=obj.config,
+                        profile=obj.profile,
                         engine=effective_engine,
                         runtime=runtime,
                     )
@@ -1113,6 +1142,7 @@ def run(
                             engine_name=effective_engine,
                             target=target_name,
                             config_path=obj.config,
+                            profile=obj.profile,
                         ),
                         on_event=_debug_progress() if obj.debug else None,
                         bypass=bypass,
@@ -1130,6 +1160,7 @@ def run(
                         plan=compiled_plan,
                         target=target_name,
                         config_path=obj.config,
+                        profile=obj.profile,
                         engine=engine_name,
                         runtime=runtime,
                     )
@@ -1169,6 +1200,7 @@ def run(
                         plan=loaded_plan,
                         target=target_name,
                         config_path=obj.config,
+                        profile=obj.profile,
                         engine=effective_engine,
                         runtime=runtime,
                     )
@@ -1196,6 +1228,7 @@ def run(
                     plan=loaded_plan,
                     target=target_name,
                     config_path=obj.config,
+                    profile=obj.profile,
                     engine=engine_name,
                     runtime=runtime,
                 )
@@ -1213,6 +1246,7 @@ def run(
                         engine_name=effective_engine,
                         target=target_name,
                         config_path=obj.config,
+                        profile=obj.profile,
                     ),
                     on_event=_debug_progress() if obj.debug else None,
                     bypass={},
@@ -1265,6 +1299,7 @@ def run(
             plan=compiled.plan,
             target=target_name,
             config_path=obj.config,
+            profile=obj.profile,
             engine=effective_engine,
             runtime=runtime,
         )
@@ -1352,6 +1387,7 @@ def run(
                 engine_name=effective_engine,
                 target=target_name,
                 config_path=obj.config,
+                profile=obj.profile,
             ),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass2,
@@ -1498,7 +1534,10 @@ def maniac(
             allow_implicit=allow_implicit,
         )
     runtime = _runtime_context(
-        engine=_resolve_engine_from_state(), target=obj.target, config_path=obj.config
+        engine=_resolve_engine_from_state(),
+        target=obj.target,
+        config_path=obj.config,
+        profile=obj.profile,
     )
     engine = runtime.engine
     graph, resolved_compose = _graph_from(ctx, compose, engine=engine, target=obj.target)
@@ -1605,7 +1644,13 @@ def maniac(
         run_engine = engine_for(
             store,
             engine,
-            live_graph=lambda: build_graph(resolved_compose, engine_name=engine, target=obj.target),
+            live_graph=lambda: build_graph(
+                resolved_compose,
+                engine_name=engine,
+                target=obj.target,
+                config_path=obj.config,
+                profile=obj.profile,
+            ),
             on_event=_debug_progress() if obj.debug else None,
             bypass=bypass,
             recovery_grace=prepared.recovery_grace,
@@ -1623,6 +1668,7 @@ def maniac(
                 plan=compiled.plan,
                 target=obj.target,
                 config_path=obj.config,
+                profile=obj.profile,
                 engine=engine,
                 runtime=runtime,
             )

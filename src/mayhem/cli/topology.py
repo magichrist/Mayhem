@@ -94,6 +94,10 @@ def discover(  # noqa: PLR0912, PLR0915
     if selected_target is None and ctx.obj is not None:
         selected_target = getattr(ctx.obj, "target", None)
     config_path = getattr(ctx.obj, "config", None) if ctx.obj is not None else None
+    # The configuration overlay, resolved once and used for both the runtime
+    # context and the profile cross-check below, so `discover` cannot validate a
+    # target against a different profile set than it resolved.
+    config_profile = getattr(ctx.obj, "profile", None) if ctx.obj is not None else None
     explicit_engine = (
         runtime if runtime is not None else _resolve_engine(str(_STATE.get("engine", "")))
     )
@@ -104,6 +108,7 @@ def discover(  # noqa: PLR0912, PLR0915
             engine=explicit_engine,
             target=selected_target,
             config_path=config_path,
+            profile=config_profile,
             unavailable_fallback=None,
         )
     except InvariantViolationError as exc:
@@ -119,12 +124,14 @@ def discover(  # noqa: PLR0912, PLR0915
 
     if engine == "kubernetes":
         from mayhem.agents.k8s_resolve import K8sEngineMode, resolve_k8s_target_context
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+        from mayhem.config import effective_target_profiles
 
         # The profile is re-read only to validate the selection the runtime
         # context already made (ambiguity / engine mismatch), never to
-        # re-derive its context or namespace.
-        profiles = load_profiles_from_mayhem_yaml(config_path)
+        # re-derive its context or namespace. It is the *effective*
+        # configuration's profiles, overlay included, so it is the same set
+        # `resolve_runtime_context` just used.
+        profiles = effective_target_profiles(config_path, config_profile)
         profile = profiles.get(selected_target) if selected_target is not None else None
         if selected_target is None and len(profiles) > 1:
             raise click.ClickException(

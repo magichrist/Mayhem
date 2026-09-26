@@ -97,7 +97,7 @@ targets:
 | `compose` | string or `null` | `null` | Compose blueprint for container engines. |
 | `context` | string or `null` | `null` | Kubeconfig context for `kubernetes`. |
 | `namespace` | string or `null` | `null` | Kubernetes namespace scope. |
-| `policy` | string or `null` | `null` | Declarative policy name. It is **not** enforced: the enforced policy is the one `--policy` or the `policy:` block resolves. `mayhem doctor` warns when a profile declares one. |
+| `policy` | string or `null` | `null` | Declarative policy name. It is **not** enforced: the enforced policy is the one `--policy` or the `policy:` block resolves. `mayhem doctor` reports a name that is not a built-in policy. |
 | `workload_selector` | string or `null` | `null` | Kubernetes workload selector. |
 | `capability_policy` | string or `null` | `null` | Capability policy for Kubernetes target resolution. |
 | `targets` | list of strings | `[]` | Container names the profile addresses. |
@@ -106,20 +106,24 @@ targets:
 | `env_ref` | string or `null` | `null` | Opaque reference to externally held environment data. |
 
 The mapping key is the profile's identity and is validated: names match
-`[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}`. Every profile is validated by one pure
-validator (`parse_profiles_mapping` in
+`[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}`. A profile's own `name` field is redundant, not
+authoritative: the key always wins and a `name` in the body is **overwritten**
+with the key, not refused. Every profile is validated by one pure validator
+(`parse_profiles_mapping` in
 [`src/mayhem/domain/target_profiles.py`](../src/mayhem/domain/target_profiles.py)),
 which the loader, the standalone profile-file reader, and the diagnostics all
-delegate to. It refuses unknown keys, a non-mapping profile, a `name` other
-than the mapping key, an unsupported `engine`, a forbidden credential key, and
-an `extends` that does not resolve. Inheritance is one level deep: `extends` may
-not itself extend, and a child may only set keys from the allowlist `engine`,
-`compose`, `namespace`, `context`, `policy`, `workload_selector`,
-`capability_policy`, `targets`, `observability`, `env_ref`.
+delegate to. It refuses unknown keys, a non-mapping profile, an unsupported
+`engine`, a forbidden credential key, and an `extends` that does not resolve.
+Inheritance is one level deep: `extends` may not itself extend, and a child may
+only set keys from the allowlist `engine`, `compose`, `namespace`, `context`,
+`policy`, `workload_selector`, `capability_policy`, `targets`, `observability`,
+`env_ref`.
 
 Forbidden credential keys in a target profile: `password`, `secret`, `token`,
 `credentials`, `api_key`, `apikey`. A wider set is redacted when configuration
-is rendered; see [`policy-and-break-glass.md`](policy-and-break-glass.md).
+is rendered — by `config show`, by `config explain`, and by evidence alike — so
+free-form blocks such as a profile's `observability:` are filtered by one
+policy; see [`policy-and-break-glass.md`](policy-and-break-glass.md).
 
 A drill document's own top-level `targets:` block is *not* a target-profile
 block. It declares the spec's logical targets
@@ -129,6 +133,24 @@ see [`drill-spec.md`](drill-spec.md).
 Selection is `--target`, not `--profile`: an explicit `--target` wins, a single
 configured profile is selected implicitly, and more than one without `--target`
 is ambiguous — nothing is selected and `mayhem doctor` says so.
+
+### Where profiles are resolved from
+
+One function answers "which target profiles are in effect":
+`mayhem.config.effective_target_profiles(config_path, profile)`, the base
+document merged with the `mayhem.{profile}.yaml` overlay. Every consumer goes
+through it — CLI services, topology discovery, preflight, and diagnostics — so
+a profile declared only in an overlay is visible to all of them and none of them
+re-reads the base file on its own.
+`mayhem.config.select_target_profile(...)` is the same resolution plus the
+selection rule.
+
+Two shapes are tolerated deliberately, because the readers that predate the
+overlay-aware loader had them: a profile-only document with no `apiVersion` is
+not a loadable configuration, so the profile-file reader answers for it (and an
+overlay cannot be merged onto it); and a *requested but missing* overlay leaves
+the base document's profiles in place, with `mayhem doctor` reporting the
+missing overlay.
 
 ## Top-level fields
 
@@ -222,7 +244,10 @@ resolved by precedence. Because the accumulated profile block is re-validated
 after each layer, a profile may `extends:` a profile declared in an earlier
 layer, and a profile a later layer replaced with an invalid one is still
 refused. The section's provenance is reported as `targets` by
-`mayhem prepare config explain`.
+`mayhem prepare config explain`, whose rows are redacted with the same policy
+`config show` uses. An overlay's profiles are in effect for the whole run, not
+just for the loader: discovery, preflight, and the doctor all resolve them from
+the same effective configuration.
 
 ## Environment variables
 

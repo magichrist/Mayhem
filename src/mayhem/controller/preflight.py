@@ -237,15 +237,20 @@ def build_preflight(
     k8s_recovery_guidance = None
     k8s_drift_status = None
     if effective_engine == "kubernetes":
-        from mayhem.domain.target_profiles import load_profiles_from_mayhem_yaml
+        from mayhem.config import effective_target_profiles
 
-        profiles = load_profiles_from_mayhem_yaml(config_path)
-        profile, ambiguous = _k8s_profile(profiles, target)
+        # The *effective* configuration, overlay included: a Kubernetes target
+        # profile declared only in `mayhem.{profile}.yaml` is the same profile
+        # every other consumer resolves, so preflight never validates against
+        # a different set of profiles than the run will use.
+        profiles = effective_target_profiles(config_path, profile)
+        # `selected` is the target profile; `profile` stays the overlay name.
+        selected, ambiguous = _k8s_profile(profiles, target)
         if ambiguous:
             warnings.append(
                 "target profile is ambiguous; pass --target NAME or use explicit context/namespace"
             )
-        k8s_target_scope = str(target or getattr(profile, "name", "") or "unspecified")
+        k8s_target_scope = str(target or getattr(selected, "name", "") or "unspecified")
         if runtime is not None:
             # The context and namespace come from the runtime resolved once; the
             # profile lookup above is a validation cross-check, not a second
@@ -253,10 +258,10 @@ def build_preflight(
             k8s_context = runtime.context or ""
             k8s_namespace = runtime.namespace or ""
         else:
-            k8s_context = getattr(profile, "context", None) or ""
-            k8s_namespace = getattr(profile, "namespace", None) or ""
-        if profile is not None and profile.engine != "kubernetes":
-            blocked.append(f"target profile {profile.name!r} is not a Kubernetes profile")
+            k8s_context = getattr(selected, "context", None) or ""
+            k8s_namespace = getattr(selected, "namespace", None) or ""
+        if selected is not None and selected.engine != "kubernetes":
+            blocked.append(f"target profile {selected.name!r} is not a Kubernetes profile")
         if not k8s_context:
             k8s_capability_verdict = "unconfigured: no Kubernetes context selected"
         elif not k8s_namespace:
@@ -264,7 +269,7 @@ def build_preflight(
         else:
             k8s_capability_verdict = (
                 f"unavailable: live client not probed; profile capability policy="
-                f"{getattr(profile, 'capability_policy', None) or 'default'}"
+                f"{getattr(selected, 'capability_policy', None) or 'default'}"
             )
         k8s_resolved_pod = "runtime-resolved at execution"
         k8s_resolved_node = "runtime-resolved at execution"

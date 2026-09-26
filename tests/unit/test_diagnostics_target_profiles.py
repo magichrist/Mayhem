@@ -1,10 +1,13 @@
 """v0.9.0 task 4 — doctor/diagnostics speak about target profiles.
 
-The selected target, the engines actually available for it, and the reason no
-target was selected are all reported explicitly. The stable machine-readable
-contract is unchanged: ``config.target.selected`` keeps its id, message, and
-``config`` category, no new diagnostic category is introduced, and ``--profile``
-(a configuration overlay) is never compared against target-profile names.
+The selected target, the engine it needs, and the reason no target was selected
+are reported explicitly, and the target is resolved from the *effective*
+configuration (base document plus the ``--profile`` overlay) — the same one
+topology and preflight resolve. The stable machine-readable contract is
+unchanged: ``config.target.selected`` keeps its id, message, and ``config``
+category, ``config.profile.mismatch`` keeps its id for a `--profile` that does
+not resolve, no diagnostic category is added, and the engine family stays one
+record per binary.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from mayhem.cli.app import app
 from mayhem.domain.target_profiles import parse_profiles_mapping
 from mayhem.infra.diagnostics import (
     DiagnosticCategory,
-    check_engine_for_target,
+    check_engine,
     check_profile_identity,
     check_target_profile_policy,
     check_target_profiles,
@@ -95,66 +98,108 @@ def test_an_invalid_profile_block_is_reported_as_a_target_error(tmp_path: Path):
     assert records[0].severity.value == "error"
 
 
-# --- available engines, via shutil.which and no subprocess ------------------
+# --- the profile overlay is part of the effective configuration ---------------
 
 
-def test_engine_available_is_reported_from_path_presence(monkeypatch):
-    monkeypatch.setattr(
-        "mayhem.infra.diagnostics.shutil.which", lambda binary: "/usr/bin/docker"
+def test_a_target_declared_only_in_the_overlay_is_reported(tmp_path: Path):
+    base = tmp_path / "mayhem.yaml"
+    base.write_text("apiVersion: mayhem/v1\ntargets:\n  dev:\n    engine: docker\n")
+    (tmp_path / "mayhem.staging.yaml").write_text(
+        "apiVersion: mayhem/v1\ntargets:\n  edge:\n    engine: kubernetes\n"
     )
-    records = check_engine_for_target("docker")
-    assert _ids(records) == ["engine.target.available"]
-    assert records[0].category is DiagnosticCategory.engine
-    assert "/usr/bin/docker" in records[0].message
-    # File presence is not health: the message must not claim it is.
-    assert "healthy" in records[0].message
+    assert "config.target_profile.edge" in _ids(check_target_profiles(str(base), "staging"))
+    assert "config.target_profile.edge" not in _ids(check_target_profiles(str(base)))
+    records = check_target_selection(str(base), "edge", profile="staging")
+    assert "config.target.selected" in _ids(records)
+    assert "engine=kubernetes" in records[0].message
 
 
-def test_engine_missing_is_a_warning(monkeypatch):
-    monkeypatch.setattr("mayhem.infra.diagnostics.shutil.which", lambda binary: None)
-    records = check_engine_for_target("kubernetes")
-    assert _ids(records) == ["engine.target.missing"]
-    assert records[0].severity.value == "warning"
-    assert "kubectl" in records[0].message
-
-
-def test_kubernetes_maps_to_kubectl(monkeypatch):
-    seen: list[str] = []
-
-    def _which(binary: str) -> str | None:
-        seen.append(binary)
-        return None
-
-    monkeypatch.setattr("mayhem.infra.diagnostics.shutil.which", _which)
-    check_engine_for_target("kubernetes")
-    assert seen == ["kubectl"]
-
-
-def test_no_selected_target_reports_no_engine(monkeypatch):
-    monkeypatch.setattr(
-        "mayhem.infra.diagnostics.shutil.which",
-        lambda binary: "/usr/bin/docker",
+def test_the_overlay_replaces_a_same_named_profile_whole(tmp_path: Path):
+    base = tmp_path / "mayhem.yaml"
+    base.write_text(CONFIG)
+    (tmp_path / "mayhem.staging.yaml").write_text(
+        "apiVersion: mayhem/v1\ntargets:\n  prod:\n    engine: podman\n"
     )
-    assert check_engine_for_target(None) == []
+    records = check_target_selection(str(base), "prod", profile="staging")
+    assert records[0].message == "target 'prod' selected (engine=podman)"
 
 
-# --- profile policy warnings -------------------------------------------------
+# --- engines: one record per binary, annotated for the selected target -------
 
 
-def test_a_declarative_target_policy_is_flagged_as_not_enforced():
-    profiles = parse_profiles_mapping({"dev": {"engine": "docker", "policy": "strict"}})
-    records = check_target_profile_policy(profiles)
-    assert _ids(records) == ["config.target_profile.dev.policy_advisory"]
-    assert records[0].severity.value == "warning"
-    assert "--policy" in records[0].message
-
-
-def test_an_unknown_target_policy_is_reported_separately():
-    profiles = parse_profiles_mapping({"dev": {"engine": "docker", "policy": "nonsense"}})
-    assert _ids(check_target_profile_policy(profiles)) == [
-        "config.target_profile.dev.policy_advisory",
-        "config.target_profile.dev.policy_unknown",
+def test_engine_records_stay_one_per_binary(monkeypatch):
+    monkeypatch.setattr(
+        "mayhem.infra.diagnostics.shutil.which", lambda binary: f"/usr/bin/{binary}"
+    )
+    records = check_engine()
+    # Exactly one record per binary — no second, target-specific availability
+    # family. (The Kubernetes adapter record is environment-dependent and is
+    # not asserted here.)
+    assert _ids(records)[:3] == [
+        "engine.docker.found",
+        "engine.podman.found",
+        "engine.kubectl.found",
     ]
+    assert len([r for r in records if r.id.startswith("engine.") and "kubernetes" not in r.id]) == 3
+
+
+def test_the_selected_target_engine_is_annotated_not_duplicated(monkeypatch):
+    monkeypatch.setattr(
+        "mayhem.infra.diagnostics.shutil.which", lambda binary: f"/usr/bin/{binary}"
+    )
+    records = check_engine("kubernetes")
+    # Still three records — one per binary — and only `kubectl` is marked as
+    # the one the selected target needs.
+    assert _ids(records).count("engine.kubectl.found") == 1
+    assert "engine.target" not in " ".join(_ids(records))
+    kubectl = next(r for r in records if r.id == "engine.kubectl.found")
+    assert "required by the selected target (engine=kubernetes)" in kubectl.message
+    assert "does not prove" in kubectl.message
+    for record in records:
+        if record.id == "engine.docker.found":
+            assert "required by the selected target" not in record.message
+
+
+def test_a_missing_engine_the_selected_target_needs_says_so(monkeypatch):
+    monkeypatch.setattr("mayhem.infra.diagnostics.shutil.which", lambda binary: None)
+    records = check_engine("docker")
+    assert _ids(records)[:3] == [
+        "engine.docker.missing",
+        "engine.podman.missing",
+        "engine.kubectl.missing",
+    ]
+    docker = next(r for r in records if r.id == "engine.docker.missing")
+    assert "the selected target's engine 'docker' cannot be used" in docker.message
+    assert docker.remediation == (
+        "install docker or select a target profile whose engine is present"
+    )
+    podman = next(r for r in records if r.id == "engine.podman.missing")
+    assert "selected target" not in podman.message
+
+
+def test_no_selected_target_leaves_the_engine_records_unannotated(monkeypatch):
+    monkeypatch.setattr("mayhem.infra.diagnostics.shutil.which", lambda binary: None)
+    for record in check_engine(None):
+        assert "selected target" not in record.message
+        assert "selected target" not in record.remediation
+
+
+# --- an unresolvable target policy is the only thing worth reporting --------
+
+
+def test_a_resolvable_target_policy_is_not_reported():
+    profiles = parse_profiles_mapping({"dev": {"engine": "docker", "policy": "strict"}})
+    assert check_target_profile_policy(profiles) == []
+
+
+def test_an_unknown_target_policy_is_reported_once():
+    profiles = parse_profiles_mapping({"dev": {"engine": "docker", "policy": "nonsense"}})
+    records = check_target_profile_policy(profiles)
+    assert _ids(records) == ["config.target_profile.dev.policy_unknown"]
+    assert records[0].severity.value == "warning"
+    assert records[0].category is DiagnosticCategory.config
+    assert "nonsense" in records[0].message
+    assert "available" in records[0].message
 
 
 def test_a_profile_without_a_policy_says_nothing():
@@ -172,14 +217,24 @@ def test_profile_overlay_is_not_compared_against_target_names(tmp_path: Path):
     records = check_profile_identity(str(base), "staging")
     assert _ids(records) == ["config.profile.matched"]
     assert records[0].severity.value == "info"
+    assert records[0].evidence_ref == "staging"
 
 
-def test_a_missing_profile_overlay_is_a_configuration_error(tmp_path: Path):
+def test_a_missing_profile_overlay_keeps_the_pre_existing_record_id(tmp_path: Path):
+    """`config.profile.mismatch` stays the id; only its meaning is corrected."""
     base = tmp_path / "mayhem.yaml"
     base.write_text(CONFIG)
+    (tmp_path / "mayhem.prod.yaml").write_text("apiVersion: mayhem/v1\n")
     records = check_profile_identity(str(base), "absent")
-    assert _ids(records) == ["config.profile.overlay_missing"]
+    assert _ids(records) == ["config.profile.mismatch"]
     assert records[0].severity.value == "error"
+    assert records[0].evidence_ref == "absent"
+    message = records[0].message
+    assert "profile 'absent' not found" in message
+    # The message keeps its `not found; available: …` shape and now names the
+    # overlays that do exist and the file that was expected.
+    assert "available: mayhem.prod.yaml" in message
+    assert "mayhem.absent.yaml" in message
     assert "--target" in records[0].remediation
 
 
@@ -193,7 +248,9 @@ def test_no_profile_flag_says_nothing(tmp_path: Path):
 
 
 def test_run_diagnostics_reports_target_and_engine_together(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("mayhem.infra.diagnostics.shutil.which", lambda binary: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "mayhem.infra.diagnostics.shutil.which", lambda binary: f"/usr/bin/{binary}"
+    )
     base = tmp_path / "mayhem.yaml"
     base.write_text(CONFIG)
     records = run_diagnostics(
@@ -201,9 +258,28 @@ def test_run_diagnostics_reports_target_and_engine_together(tmp_path: Path, monk
     )
     ids = _ids(records)
     assert "config.target.selected" in ids
-    assert "engine.target.available" in ids
+    assert "engine.docker.found" in ids
     assert "config.target.ambiguous" not in ids
+    assert not any(i.startswith("engine.target") for i in ids)
     assert all(r.category in set(DiagnosticCategory) for r in records)
+
+
+def test_run_diagnostics_resolves_the_overlay(tmp_path: Path):
+    base = tmp_path / "mayhem.yaml"
+    base.write_text(CONFIG)
+    (tmp_path / "mayhem.staging.yaml").write_text(
+        "apiVersion: mayhem/v1\ntargets:\n  edge:\n    engine: kubernetes\n"
+    )
+    records = run_diagnostics(
+        config_path=str(base),
+        profile="staging",
+        target="edge",
+        db_path=str(tmp_path / "absent.db"),
+    )
+    ids = _ids(records)
+    assert "config.target.selected" in ids
+    assert "config.target_profile.edge" in ids
+    assert "config.profile.matched" in ids
 
 
 def test_check_target_profiles_still_reports_a_valid_block(tmp_path: Path):
@@ -262,6 +338,23 @@ def test_doctor_does_not_report_a_false_profile_mismatch(tmp_path, monkeypatch):
             app, ["--config", "mayhem.yaml", "--profile", "staging", "doctor", "--json"]
         )
         payload = json.loads(result.output)
-        ids = {r["id"] for r in payload["diagnostics"]}
-        assert "config.profile.mismatch" not in ids
-        assert "config.profile.matched" in ids
+        by_id = {r["id"]: r for r in payload["diagnostics"]}
+        assert "config.profile.matched" in by_id
+        # The two target names in the base document are not "available profiles"
+        # for --profile, and the overlay resolved, so there is no mismatch.
+        mismatches = [r for r in payload["diagnostics"] if r["id"] == "config.profile.mismatch"]
+        assert mismatches == []
+
+
+def test_doctor_reports_a_missing_overlay_as_a_profile_mismatch(tmp_path, monkeypatch):
+    runner = CliRunner()
+    with monkeypatch.context() as mp:
+        mp.chdir(tmp_path)
+        (Path("mayhem.yaml")).write_text(CONFIG)
+        result = runner.invoke(
+            app, ["--config", "mayhem.yaml", "--profile", "absent", "doctor", "--json"]
+        )
+        payload = json.loads(result.output)
+        by_id = {r["id"]: r for r in payload["diagnostics"]}
+        assert by_id["config.profile.mismatch"]["severity"] == "error"
+        assert by_id["config.profile.mismatch"]["evidence_ref"] == "absent"

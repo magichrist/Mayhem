@@ -8,11 +8,11 @@ Selection via `--policy` flag or `MAYHEM_POLICY` env. Conflicting sources reject
 
 ## Environment isolation
 
-- Target profiles are configuration: a top-level `targets:` block (or its `profiles:` alias) in `mayhem.yaml` is validated by `load_config` and merged per profile name across layers. See [`config.md`](config.md).
+- Target profiles are configuration: a top-level `targets:` block (or its `profiles:` alias) in `mayhem.yaml` is validated by `load_config` and merged per profile name across layers. The merged, overlay-aware result is what every consumer resolves (discovery, preflight, diagnostics). See [`config.md`](config.md).
 - Target-profile inheritance allowlist: engine, compose, namespace, context, policy, targets, observability, env_ref. Inheritance is one level deep.
 - Credential keys rejected inside a target profile: password, secret, token, credentials, api_key, apikey.
-- Redacted when configuration is rendered (`sanitize_for_logging` in config show, explain, and evidence): password, secret, token, credentials, api_key, apikey, kubeconfig, registry_token, registry_tokens, secret_value, secrets.
-- A target profile's `policy:` is declarative. It names a policy the run does not enforce; the enforced policy is the one `--policy`, `MAYHEM_POLICY`, or the `policy:` block resolves. `mayhem doctor` reports a profile that declares one, and separately reports a name that is not a built-in policy.
+- Redacted when configuration is rendered — by `sanitize_for_logging` in config show, config explain, and evidence: password, secret, token, credentials, api_key, apikey, kubeconfig, registry_token, registry_tokens, secret_value, secrets.
+- A target profile's `policy:` is declarative. It names a policy the run does not enforce; the enforced policy is the one `--policy`, `MAYHEM_POLICY`, or the `policy:` block resolves. `mayhem doctor` reports a profile whose declared name is not a built-in policy, and says nothing about a name that resolves.
 - A drill document's own `targets:` block declares logical targets, not target profiles, and is never read as one.
 
 ## Environment fingerprint

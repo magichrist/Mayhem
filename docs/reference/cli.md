@@ -49,7 +49,8 @@ Prepare configuration, dependencies, and executable plans.
 
 `config show` includes the `targets` section (the target profiles, under the
 `profiles:` alias as well) and the `sources` map records which layer supplied
-it. `config explain` reports `targets` as its own row.
+it. `config explain` reports `targets` as its own row, with the same redaction
+`config show` and the evidence envelope apply.
 - `mayhem prepare dependencies check|install|compile`
 - `mayhem prepare check`
 - `mayhem prepare validate [SPEC] -c COMPOSE`
@@ -189,7 +190,11 @@ Inspect and extend provider, fault, and capability coverage.
 - `mayhem doctor` — check configuration, database, engines, topology, capabilities, and permissions.
 - `mayhem verify RUN_ID` — verify a recorded evidence envelope without mutation.
 
-`doctor` reports the target it resolved and the engines available for it:
+`doctor` reports the target it resolved and the engines available for it. The
+target is resolved from the *effective* configuration — the base document plus
+the `--profile` overlay — which is the same resolution topology discovery,
+preflight, and execution use, so a profile declared only in
+`mayhem.{profile}.yaml` is reported here too:
 
 - `config.target.selected` — the selected target profile and its engine. The
   same record is emitted whether the target came from `--target` or was the
@@ -197,16 +202,23 @@ Inspect and extend provider, fault, and capability coverage.
 - `config.target.ambiguous` — more than one target profile is configured and no
   `--target` was given. Nothing is selected; pass `--target NAME`.
 - `config.target.mismatch` — the `--target` name is not a configured profile.
-- `config.target_profile.<name>.policy_advisory` — the profile declares a
-  `policy:` the run does not enforce; use `--policy` or the `policy:` block.
-- `engine.target.available` / `engine.target.missing` — whether the selected
-  target's engine binary (`docker`, `podman`, `kubectl`) is on `PATH`. This is
-  file presence, checked without a subprocess, and does not claim the runtime is
+- `config.target_profile.<name>.policy_unknown` — the profile's declarative
+  `policy:` names nothing that can be honoured. A policy name that *is* built in
+  is not reported: the field is a label, not the enforced policy (that comes
+  from `--policy` or the `policy:` block).
+- `engine.<binary>.found` / `engine.<binary>.missing` — one record per engine
+  binary (`docker`, `podman`, `kubectl`), which is all `doctor` has ever
+  reported. When a target is selected, the record for the binary that target's
+  engine needs says so, and a missing one is reported as blocking that target
+  rather than as an optional runtime that happens to be absent. This is file
+  presence, checked without a subprocess, and never a claim that a runtime is
   healthy.
 
 `--profile` selects a configuration overlay (`mayhem.{profile}.yaml`) and is
-never compared against target-profile names; a target profile is selected with
-`--target`.
+never compared against target-profile names. `config.profile.mismatch` is
+reported when the requested overlay does not exist (its message names the file
+that was expected and the overlays that do exist); a target profile is selected
+with `--target`.
 
 ## Command inventory
 
