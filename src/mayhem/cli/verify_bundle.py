@@ -25,16 +25,16 @@ def verify(path: str, as_json: bool) -> None:
     try:
         bundle = load_bundle(path)
     except BundleVerificationError as exc:
-        if as_json:
-            click.echo(json.dumps({"valid": False, "errors": [str(exc)]}, indent=2))
-        else:
+        from mayhem.cli.output import echo_machine
+
+        if not echo_machine({"valid": False, "errors": [str(exc)]}, as_json=as_json):
             click.echo(f"unreadable bundle: {exc}", err=True)
         raise SystemExit(1) from exc
 
+    from mayhem.cli.output import echo_machine
+
     result = verify_bundle(bundle)
-    if as_json:
-        click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-    else:
+    if not echo_machine(result.to_dict(), as_json=as_json):
         click.echo(
             f"bundle valid: {str(result.valid).lower()} "
             f"(signed={str(result.signed).lower()}, "
@@ -61,8 +61,9 @@ def show(path: str, as_json: bool) -> None:
     except BundleVerificationError as exc:
         click.echo(f"unreadable bundle: {exc}", err=True)
         raise SystemExit(1) from exc
-    if as_json:
-        click.echo(json.dumps(bundle.manifest.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(bundle.manifest.to_dict(), as_json=as_json):
         return
     click.echo(f"bundle schema {bundle.manifest.schema_version}, root {bundle.manifest.root_digest[:12]}")
     for artifact in bundle.manifest.artifacts:

@@ -98,8 +98,9 @@ def create(
         stored = GameDayRepository(store).save(session)
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(stored.to_dict(), as_json=as_json):
         return
     click.echo(f"game day {stored.id} planned (state {stored.state.value})")
     if stored.window:
@@ -132,8 +133,9 @@ def approve(
         )
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(stored.to_dict(), as_json=as_json):
         return
     click.echo(
         f"approval recorded for {stored.id}: {len(set(stored.gate.approved_by))} distinct approver(s)"
@@ -154,8 +156,9 @@ def show(session_id: str, db_opt: str | None, as_json: bool) -> None:
     if session is None:
         click.echo(f"unknown game-day session: {session_id}", err=True)
         raise SystemExit(1)
-    if as_json:
-        click.echo(json.dumps(session.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(session.to_dict(), as_json=as_json):
         return
     click.echo(f"game day {session.id}: {session.state.value}")
     if session.window:
@@ -177,8 +180,9 @@ def list_sessions(db_opt: str | None, as_json: bool) -> None:
         sessions = GameDayRepository(store).list_sessions()
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps([s.to_dict() for s in sessions], indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine([s.to_dict() for s in sessions], as_json=as_json):
         return
     if not sessions:
         click.echo("no game-day sessions")
@@ -200,6 +204,7 @@ def list_sessions(db_opt: str | None, as_json: bool) -> None:
 def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | None, as_json: bool) -> None:
     """Start a session. Without ``--execute`` this is a plan-only preview."""
     from mayhem.cli.app import implicit_execution_allowed
+    from mayhem.cli.output import echo_machine
     from mayhem.domain.execution_intent import require_explicit_approval
 
     store = _open_store(db_opt)
@@ -218,19 +223,14 @@ def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | 
             except GameDayError as exc:
                 click.echo(f"cannot start: {exc}", err=True)
                 raise SystemExit(1) from exc
-            if as_json:
-                click.echo(
-                    json.dumps(
-                        {
-                            "started": False,
-                            "reason": "pass --execute to start",
-                            "plan": planned.to_dict(),
-                        },
-                        indent=2,
-                        sort_keys=True,
-                    )
-                )
-            else:
+            if not echo_machine(
+                    {
+                        "started": False,
+                        "reason": "pass --execute to start",
+                        "plan": planned.to_dict(),
+                    },
+                    as_json=as_json,
+                ):
                 click.echo(
                     f"plan only: session {session_id} would start "
                     f"(approvers: {', '.join(session.gate.approved_by) or 'none'}); "
@@ -253,8 +253,7 @@ def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | 
         stored = repo.save(updated)
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps({"started": True, **stored.to_dict()}, indent=2, sort_keys=True))
+    if echo_machine({"started": True, **stored.to_dict()}, as_json=as_json):
         return
     click.echo(f"game day {stored.id} running")
 
@@ -288,8 +287,9 @@ def pause_cmd(
             raise SystemExit(1) from exc
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(stored.to_dict(), as_json=as_json):
         return
     click.echo(f"game day {stored.id} paused by {operator}")
 
@@ -323,7 +323,8 @@ def complete_cmd(
             raise SystemExit(1) from exc
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(stored.to_dict(), as_json=as_json):
         return
     click.echo(f"game day {stored.id} completed; evidence bundle {stored.evidence_bundle}")

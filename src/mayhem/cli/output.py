@@ -99,6 +99,44 @@ def is_human_format(fmt: str) -> bool:
     return fmt not in ("json", "yaml")
 
 
+def current_format(default: str = "text") -> str:
+    """The format the global ``--format`` option resolved to for this command.
+
+    The root group stores the resolved format in ``mayhem.cli.app._STATE``;
+    that is the single source of truth every command reads, so a new command
+    gets text/JSON/YAML for free.
+    """
+    import importlib
+
+    try:
+        app_module = importlib.import_module("mayhem.cli.app")
+    except Exception:
+        return default
+    value = getattr(app_module, "_STATE", {}).get("format", "")
+    return str(value).lower() if value else default
+
+
+def echo_machine(payload: object, *, as_json: bool = False) -> bool:
+    """Echo ``payload`` as JSON or YAML when a machine format is requested.
+
+    Returns ``True`` when it handled the output, so the caller can skip its own
+    human rendering. ``--json`` is honoured for compatibility, and the global
+    ``--format yaml`` gives every command the same three modes.
+    """
+    import click
+
+    fmt = "json" if as_json else current_format()
+    if fmt not in ("json", "yaml"):
+        return False
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return True
+    import yaml
+
+    click.echo(yaml.safe_dump(json.loads(json.dumps(payload, default=str)), sort_keys=True))
+    return True
+
+
 def should_use_color(no_color: bool = False) -> bool:
     if no_color:
         return False

@@ -263,9 +263,12 @@
 
 ## Expansion checkpoint
 
-- [ ] All new commands are plan-only until explicitly executed.
-- [ ] Every new output is schema-validated and covered in human/JSON/YAML modes.
-- [ ] All new integrations have timeout, redaction, and degraded-state tests.
-- [ ] Campaign resume and game-day flows pass controller-loss simulations.
-- [ ] Provider sandbox tests reject undeclared mutation authority.
-- [ ] No live Kubernetes or remote-agent code is enabled by default.
+**Status:** DONE — every line below is backed by a named test in
+`tests/unit/test_expansion_checkpoint.py` (plus the per-task suites it points at).
+
+- [x] All new commands are plan-only until explicitly executed. *(checkpoint test drives `experiment compose|check-scenario`, `campaign resume-plan`, `inspect graph|coverage-diff|residual`, `bundle verify|show` with `RunEngine` booby-trapped, and proves `game-day start` stays `planned` without `--execute`)*
+- [x] Every new output is schema-validated and covered in human/JSON/YAML modes. *(one shared `echo_machine` helper reads the root group's resolved `--format`, so every new command renders text, JSON, and YAML; the checkpoint test parses all three)*
+- [x] All new integrations have timeout, redaction, and degraded-state tests. *(connector bounds, redacted failure detail, degraded observation and bundle states)*
+- [x] Campaign resume and game-day flows pass controller-loss simulations. *(both are reopened from disk after the writing store is closed; in-flight work makes a resume `safe: false`)*
+- [x] Provider sandbox tests reject undeclared mutation authority. *(`ProviderPermissionSet.default` and `PackLoader` both refuse `target:mutate` without an explicit grant)*
+- [x] No live Kubernetes or remote-agent code is enabled by default. *(the default observation provider is the local static one, and an AST check proves none of the thirteen new modules import `kubernetes`, `mayhem.agent`, or `subprocess` at module scope)*

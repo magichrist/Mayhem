@@ -354,14 +354,15 @@ def campaign_checkpoints(ctx: Context, campaign_id: str, db_opt: str | None, as_
         checkpoints = CampaignCheckpointRepository(store).load(campaign_id)
     finally:
         store.close()
-    if as_json:
-        click.echo(
-            json.dumps(
-                {"campaign_id": campaign_id, "checkpoints": [c.to_dict() for c in checkpoints]},
-                indent=2,
-                sort_keys=True,
-            )
-        )
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(
+        {
+            "campaign_id": campaign_id,
+            "checkpoints": [c.to_dict() for c in checkpoints],
+        },
+        as_json=as_json,
+    ):
         return
     if not checkpoints:
         click.echo(f"no checkpoints recorded for {campaign_id}")
@@ -431,8 +432,9 @@ def record_checkpoint(
         stored = CampaignCheckpointRepository(store).save(checkpoint)
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(stored.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(stored.to_dict(), as_json=as_json):
         return
     click.echo(f"checkpoint {stored.key} = {stored.state.value} (attempt {stored.attempt})")
 
@@ -486,8 +488,9 @@ def resume_plan(
         max_attempts=max_attempts,
         current_fingerprint=fingerprint,
     )
-    if as_json:
-        click.echo(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(plan.to_dict(), as_json=as_json):
         return
     click.echo(f"campaign {campaign_id}: {'safe' if plan.safe else 'NOT safe'} to resume")
     for experiment_id in plan.resume:

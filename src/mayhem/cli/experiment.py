@@ -62,9 +62,10 @@ def compose(scenario: str, assignments: tuple[str, ...], seed: int | None, as_js
         compiled = compile_scenario(_load_scenario(scenario), supplied, seed=seed)
     except ScenarioError as exc:
         raise click.ClickException(str(exc)) from exc
+    from mayhem.cli.output import echo_machine
+
     payload = compiled.to_dict()
-    if as_json:
-        click.echo(json_dumps(payload))
+    if echo_machine(payload, as_json=as_json):
         return
     click.echo(f"scenario: {compiled.scenario_name}")
     click.echo(f"digest: {compiled.digest}")
@@ -88,9 +89,9 @@ def validate_scenario(scenario: str, as_json: bool) -> None:
         parsed = _load_scenario(scenario)
         defaults = resolve_variables(parsed, {})
     except ScenarioError as exc:
-        if as_json:
-            click.echo(json_dumps({"valid": False, "error": str(exc)}))
-        else:
+        from mayhem.cli.output import echo_machine
+
+        if not echo_machine({"valid": False, "error": str(exc)}, as_json=as_json):
             click.echo(f"invalid: {exc}")
         raise SystemExit(1) from exc
     payload = {
@@ -101,8 +102,9 @@ def validate_scenario(scenario: str, as_json: bool) -> None:
         "defaults": defaults,
         "steps": [step.id for step in parsed.steps],
     }
-    if as_json:
-        click.echo(json_dumps(payload))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(payload, as_json=as_json):
         return
     click.echo(f"valid: {parsed.name}")
     click.echo(f"variables: {', '.join(payload['variables']) or '-'}")

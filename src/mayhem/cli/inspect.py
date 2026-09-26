@@ -403,9 +403,9 @@ def inspect_residual(
     payload = assessment.to_dict()
     if detail:
         payload["detail"] = detail
-    if as_json:
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-    else:
+    from mayhem.cli.output import echo_machine
+
+    if not echo_machine(payload, as_json=as_json):
         click.echo(f"residual impact: {assessment.status}")
         for violation in assessment.violations:
             marker = "tolerated" if violation.tolerated else "VIOLATION"
@@ -461,8 +461,9 @@ def inspect_graph(
         graph = repo.graph(service=service, engine=engine, evidence_status=evidence_status)
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(graph.to_dict(), indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(graph.to_dict(), as_json=as_json):
         return
     summary = graph.summary()
     click.echo(
@@ -510,8 +511,9 @@ def inspect_coverage_diff(ctx: click.Context, baseline: str, as_json: bool, save
             payload = {"baseline": baseline, **delta.to_dict()}
     finally:
         store.close()
-    if as_json:
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+    from mayhem.cli.output import echo_machine
+
+    if echo_machine(payload, as_json=as_json):
         return
     for key, value in payload.items():
         click.echo(f"{key}: {value}")
