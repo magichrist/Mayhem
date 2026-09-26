@@ -20,7 +20,15 @@ from mayhem.domain.provider import (
     ensure_api_compatible,
     ensure_permissions,
 )
+from mayhem.domain.provider import ProviderPermission
 from mayhem.providers.builtin import create_builtin_registry
+from mayhem.providers.pack import (
+    FaultPack,
+    PackValidationError,
+    load_pack,
+    validate_pack,
+)
+from mayhem.providers.permissions import ProviderPermissionSet, SandboxRefusal
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -82,6 +90,79 @@ class ProviderLoadReport:
             "loaded": list(self.loaded),
             "failures": [failure.to_dict() for failure in self.failures],
         }
+
+
+class PackLoader:
+    """Opt-in fault-pack loading behind explicit permission grants (task 18).
+
+    Nothing loads unless the caller opts in: ``--allow-development-only`` for an
+    unsigned pack, and a named permission grant for anything beyond the default
+    read-only posture. Every refusal is deterministic and says what to change.
+    """
+
+    def __init__(
+        self,
+        *,
+        grants: dict[str, ProviderPermissionSet] | None = None,
+        allow_development_only: bool = False,
+    ) -> None:
+        self._grants = dict(grants or {})
+        self._allow_development_only = allow_development_only
+
+    def permissions_for(self, provider_id: str) -> ProviderPermissionSet:
+        return self._grants.get(provider_id) or ProviderPermissionSet.default(provider_id)
+
+    def grant(self, provider_id: str, permissions: ProviderPermissionSet) -> None:
+        self._grants[provider_id] = permissions
+
+    @staticmethod
+    def _require_mutation_grant(
+        pack: FaultPack, permissions: ProviderPermissionSet
+    ) -> None:
+        if not pack.faults or permissions.mutating:
+            return
+        for fault in pack.faults:
+            permissions.require(
+                ProviderPermission.TARGET_MUTATE,
+                reason=(
+                    f"pack fault {fault.id!r} mutates a target; "
+                    "grant target:mutate explicitly to load it"
+                ),
+            )
+
+    def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate without loading; never raises for a merely invalid pack."""
+        try:
+            pack = load_pack(payload)
+        except PackValidationError as exc:
+            return {"loadable": False, "reason": str(exc)}
+        permissions = self.permissions_for(pack.manifest.provider_id)
+        try:
+            self._require_mutation_grant(pack, permissions)
+        except SandboxRefusal as exc:
+            return {"loadable": False, "reason": str(exc)}
+        try:
+            return validate_pack(
+                pack,
+                granted_permissions=permissions.granted,
+                allow_development_only=self._allow_development_only,
+            )
+        except PackValidationError as exc:
+            return {"loadable": False, "reason": str(exc)}
+
+    def load(self, payload: dict[str, Any]) -> tuple[FaultPack, dict[str, Any]]:
+        """Validate and return the pack, or raise ``PackValidationError``."""
+        pack = load_pack(payload)
+        permissions = self.permissions_for(pack.manifest.provider_id)
+        # The pack must not exceed its own grant, and a mutating pack needs an
+        # explicit target:mutate grant rather than the default posture.
+        self._require_mutation_grant(pack, permissions)
+        report = validate_pack(
+            pack,
+            granted_permissions=permissions.granted,
+            allow_development_only=self._allow_development_only,
+        )
+        return pack, report
 
 
 class ProviderLoader:

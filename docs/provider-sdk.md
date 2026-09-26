@@ -215,3 +215,39 @@ A missing, broken, or incompatible provider must leave built-in Docker, Podman, 
 ## Builder workflow
 
 A builder or test author can add a test provider by creating metadata and a first-party runtime, then registering it directly with `ProviderRegistry` or loading its explicit catalog. No CLI internals need to change. The provider remains test-only until its permissions, safety behavior, compensation, evidence, catalog, and security response have been reviewed.
+
+## Sandboxed loading and fault packs (v0.9.0)
+
+Third-party code runs behind an explicit permission grant. The default posture
+(`ProviderPermissionSet.default`) grants `target:read` and nothing else — no
+target mutation, no subprocess, no network, no filesystem write, and no
+environment read (there is no such grant in the vocabulary, by design).
+
+Anything beyond that must be granted per provider:
+
+```python
+from mayhem.providers.loader import PackLoader
+from mayhem.providers.permissions import ProviderPermissionSet
+
+loader = PackLoader(allow_development_only=False)
+loader.grant(
+    "acme.packs",
+    ProviderPermissionSet.from_names("acme.packs", ("target:read", "target:mutate")),
+)
+pack, report = loader.load(pack_document)
+```
+
+A fault pack is a versioned, digest-bearing document:
+
+- `schema_version` and `manifest.api_version` must be a version this Mayhem implements.
+- `pack_digest()` is computed over the canonical content, excluding the declared
+  digest, so a tampered pack fails the digest check.
+- An unsigned pack is **local development only**: `validate_pack` refuses it
+  unless `allow_development_only=True`, and the load report then says
+  `development_only: true`.
+- Duplicate or unnamespaced fault ids, unsafe targets (`host`, absolute paths,
+  `node://`, `ssh://`), missing compensation, and permissions outside the
+  provider's grant are all refused — and every problem is reported at once, in a
+  fixed order, so the message is a stable contract.
+- `PackLoader.inspect()` never raises: it returns `{"loadable": False, "reason": …}`
+  so a CLI can show why a pack was refused without catching exceptions.

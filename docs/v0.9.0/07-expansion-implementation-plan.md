@@ -201,12 +201,16 @@
 - Produces: `ProviderPermissionSet`, `ProviderManifest`, `FaultPack`, `pack_digest`.
 - Default permission set: no target mutation, no subprocess, no network, no environment read.
 
-- [ ] Write malicious-provider tests for filesystem access, network access, subprocess execution, environment capture, and implicit mutation requests.
-- [ ] Write pack validation tests for schema version, signature/digest, compatibility, duplicate IDs, unsafe targets, and incomplete compensation.
-- [ ] Implement opt-in loading with explicit permission grants and deterministic refusal messages.
-- [ ] Add a signed/digest workflow that treats an unsigned pack as local development-only.
-- [ ] Run provider, security, catalog, and CLI tests.
-- [ ] Commit with `feat: sandbox providers and fault packs`.
+**Status:** DONE — `src/mayhem/providers/permissions.py` (`ProviderPermissionSet`, default = `target:read` only), `src/mayhem/providers/pack.py` (`ProviderManifest`, `FaultPack`, `pack_digest`, `validate_pack`), `PackLoader` in `providers/loader.py`, and a new "Sandboxed loading and fault packs" section in `docs/provider-sdk.md`. `PackLoader.inspect()` never raises — it returns the refusal reason — while `load()` raises a deterministic `SandboxRefusal`/`PackValidationError`. Environment capture is refused structurally: there is no environment-read grant in the vocabulary at all.
+
+- [x] Write malicious-provider tests for filesystem access, network access, subprocess execution, environment capture, and implicit mutation requests.
+- [x] Write pack validation tests for schema version, signature/digest, compatibility, duplicate IDs, unsafe targets, and incomplete compensation.
+- [x] Implement opt-in loading with explicit permission grants and deterministic refusal messages.
+- [x] Add a signed/digest workflow that treats an unsigned pack as local development-only.
+- [x] Run provider, security, catalog, and CLI tests.
+- [x] Commit with `feat: sandbox providers and fault packs`.
+
+**Note:** the permission vocabulary is the pre-existing `mayhem.domain.provider.ProviderPermission` enum (network, filesystem:read/write, subprocess, target:read/mutate) rather than a second enum, so a pack cannot invent a permission the rest of the codebase does not already police.
 
 ## Task 19: Add observability connectors
 
