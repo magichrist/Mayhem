@@ -26,7 +26,7 @@ def _clone(command: click.Command, name: str) -> click.Command:
 discover = make_group("discover", "Discover targets, engines, and capabilities.")
 discover.add_command(_clone(topology.commands["discover"], "topology"))
 discover.add_command(_clone(toolkit.commands["faults"], "faults"))
-discover.add_command(_clone(toolkit.commands["list"], "capabilities"))
+discover.add_command(_clone(toolkit.commands["capabilities"], "capabilities"))
 
 
 @discover.command("engines")

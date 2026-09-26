@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
+from importlib.util import find_spec
+from shutil import which
 from typing import TYPE_CHECKING
 
 from mayhem.agents.executors import executor_for
 from mayhem.controller.compensation import template_for
 from mayhem.controller.k8s_runtime import k8s_available_faults, k8s_contract_for
+from mayhem.domain.capability_status import CapabilityStatus
 from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.domain.faults import EngineLane, FaultDefinition, MaturityLevel
 
@@ -123,6 +126,73 @@ def execution_status(definition: FaultDefinition, engine: str) -> str:
     else:
         status = "supported"
     return status
+
+
+def _engine_available(engine: str) -> bool:
+    if engine == "kubernetes":
+        return find_spec("kubernetes") is not None
+    return which(engine) is not None
+
+
+def capability_status(definition: FaultDefinition, engine: str) -> CapabilityStatus:
+    lane = _engine_lane(engine)
+    target_supported = lane is not None and lane in definition.engine_lanes
+    if engine == "kubernetes":
+        registered = definition.id in k8s_available_faults()
+        try:
+            compensation_complete = k8s_contract_for(definition.id) is not None
+        except LookupError:
+            compensation_complete = False
+    else:
+        registered = executor_for(definition.id) is not None
+        compensation_complete = template_for(definition.id) is not None
+    unit_verified = definition.maturity in {
+        MaturityLevel.VERIFIED_UNIT,
+        MaturityLevel.VERIFIED_LIVE,
+        MaturityLevel.STABLE,
+    }
+    if definition.catalog_only:
+        blocked_reason = definition.refusal_reason or "catalog-only definition"
+    elif lane is None:
+        blocked_reason = "engine lane is not supported"
+    elif not target_supported:
+        blocked_reason = f"fault does not declare the {engine} engine lane"
+    elif not registered:
+        blocked_reason = "executor or runtime contract is not registered"
+    elif not compensation_complete:
+        blocked_reason = "compensation contract is not registered"
+    else:
+        blocked_reason = ""
+    return CapabilityStatus(
+        fault_id=definition.id,
+        engine=engine,
+        registered=registered,
+        available=_engine_available(engine),
+        target_supported=target_supported,
+        unit_verified=unit_verified,
+        live_verified=False,
+        compensation_complete=compensation_complete,
+        blocked_reason=blocked_reason,
+    )
+
+
+def build_capability_statuses(*, engine: str | None = None) -> list[CapabilityStatus]:
+    engines = (engine,) if engine else ("docker", "podman", "kubernetes")
+    return [
+        capability_status(definition, engine_name)
+        for engine_name in engines
+        for definition in all_definitions()
+    ]
+
+
+def build_capability_report(*, engine: str | None = None) -> dict[str, object]:
+    rows = build_capability_statuses(engine=engine)
+    return {
+        "schema_version": "1.0",
+        "engine": engine,
+        "generated_at": date.today().isoformat(),
+        "capabilities": [row.to_dict() for row in rows],
+    }
 
 
 def _executor_name(definition: FaultDefinition, engine: str) -> str:

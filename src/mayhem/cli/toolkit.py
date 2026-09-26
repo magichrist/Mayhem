@@ -118,6 +118,64 @@ def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_js
             click.echo(f"{definition.id:<24} risk={definition.risk.value:<6} undo={undoable}")
 
 
+@toolkit.command("capabilities")
+@click.option(
+    "--engine",
+    "engine_opt",
+    type=click.Choice(["docker", "podman", "kubernetes"], case_sensitive=False),
+    default=None,
+    help="Filter capability truth by engine.",
+)
+@click.option("--explain", "explain_id", metavar="FAULT", help="Explain one fault capability.")
+@click.option("--json", "as_json", is_flag=True, help="Emit capability truth as JSON.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"], case_sensitive=False),
+    default=None,
+    help="Output format; --json is retained for compatibility.",
+)
+def capabilities(
+    engine_opt: str | None,
+    explain_id: str | None,
+    as_json: bool,
+    output_format: str | None,
+) -> None:
+    """Report registered, available, verified, and blocked fault capabilities."""
+    from mayhem.infra.catalog_report import build_capability_report, build_capability_statuses
+
+    engine = engine_opt.lower() if engine_opt else None
+    if explain_id:
+        rows = [row for row in build_capability_statuses(engine=engine) if row.fault_id == explain_id]
+        if not rows:
+            raise click.ClickException(f"unknown fault: {explain_id}")
+        payload: object = {"capabilities": [row.to_dict() for row in rows]}
+    else:
+        payload = build_capability_report(engine=engine)
+    fmt = output_format.lower() if output_format else ("json" if as_json else "text")
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if fmt == "yaml":
+        import yaml
+
+        click.echo(yaml.safe_dump(payload, sort_keys=True))
+        return
+    rows = payload["capabilities"] if isinstance(payload, dict) else []
+    for row in rows:
+        reason = row.get("blocked_reason") or "-"
+        click.echo(
+            f"{row['fault_id']:<28} {row['engine']:<10} "
+            f"supported={str(row['supported']).lower():<5} "
+            f"registered={str(row['registered']).lower():<5} "
+            f"available={str(row['available']).lower():<5} "
+            f"unit={str(row['unit_verified']).lower():<5} "
+            f"live={str(row['live_verified']).lower():<5} "
+            f"compensation={str(row['compensation_complete']).lower():<5} "
+            f"reason={reason}"
+        )
+
+
 @toolkit.command("list")
 @click.option("--host", default="local", show_default=True, help="Host to probe.")
 @click.option("--json", "as_json", is_flag=True, help="Emit the CapabilityReport as JSON.")

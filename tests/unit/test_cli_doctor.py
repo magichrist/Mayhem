@@ -26,6 +26,8 @@ def test_doctor_json_output_stable(tmp_path, monkeypatch):
         payload = json.loads(result.output)
         assert "diagnostics" in payload
         assert "summary" in payload
+        assert "capabilities" in payload
+        assert payload["capabilities"]["schema_version"] == "1.0"
         for rec in payload["diagnostics"]:
             assert "id" in rec
             assert "category" in rec

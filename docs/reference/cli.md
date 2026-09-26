@@ -37,7 +37,7 @@ Discover the execution surface and catalog before mutating anything.
 - `mayhem discover engines`
 - `mayhem discover topology --compose COMPOSE`
 - `mayhem discover faults`
-- `mayhem discover capabilities`
+- `mayhem discover capabilities [--engine docker|podman|kubernetes] [--explain FAULT] [--format text|json|yaml]`
 
 ### `mayhem prepare`
 
@@ -91,7 +91,7 @@ applied.
 | `mayhem run --diff FILE` | Prints the plan diff, then reports `nothing executed`. |
 | `mayhem maniac` | Compiles and reports how many rounds were drawn, then reports `nothing injected`. |
 | `mayhem campaign run ID` | Reports the experiment count and campaign status, then reports `nothing mutated`; the campaign row is not touched either. |
-| `mayhem explore` (live) | Renders the ranked queue (same as `--dry-run`); no cell runs. |
+| `mayhem experiment explore` (live) | Renders the ranked queue (same as `--dry-run`); no cell runs. |
 | `mayhem prepare dependencies install` | Prints the dependency plan; nothing is installed. |
 | `mayhem recover execute RUN_ID` | Prints the recovery plan, then reports `nothing compensated`. |
 | `mayhem recover RUN_ID` (legacy shim) | Prints the recovery plan, then reports `nothing compensated`. |
@@ -130,7 +130,7 @@ that were reviewed. Refusals use stable codes and exit with
 | `mayhem run SPEC` | `--execute` |
 | `mayhem maniac` | `--execute` |
 | `mayhem campaign run ID` | `--execute` |
-| `mayhem explore` (live) | `--execute` |
+| `mayhem experiment explore` (live) | `--execute` |
 | `mayhem recover execute RUN_ID` | the sub-command name |
 | `mayhem recover RUN_ID` (legacy shim) | `--execute` |
 | `mayhem janitor` | `-e` / `--execute` |
