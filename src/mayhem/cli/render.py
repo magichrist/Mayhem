@@ -150,6 +150,13 @@ def render_evidence_human(envelope: Any) -> str:
         lines.append(f"remediation: {'; '.join(data['remediation'])}")
     if data.get("action_outcomes"):
         lines.append(f"action outcomes: {'; '.join(data['action_outcomes'])}")
+    residual = data.get("residual_impact") or {}
+    if residual:
+        lines.append(
+            f"residual impact: {residual.get('status', 'unknown')} "
+            f"({residual.get('untolerated_count', 0)} untolerated "
+            f"of {residual.get('signals_compared', 0)} signal(s))"
+        )
     metrics = data.get("redaction_metrics") or {}
     if metrics:
         lines.append(

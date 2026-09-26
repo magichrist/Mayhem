@@ -153,12 +153,16 @@
 **Interfaces:**
 - Produces: `ImpactSnapshot`, `ResidualImpactAssessment(expected, observed, tolerated, violations)`.
 
-- [ ] Write tests for clean recovery, partial recovery, unexpected persistent change, unavailable observation source, and explicitly accepted residual impact.
-- [ ] Implement before/after snapshot comparison using existing topology and observation contracts.
-- [ ] Add residual impact to evidence, inspect, and recovery reports.
-- [ ] Require explicit acceptance metadata for any tolerated violation.
-- [ ] Run evidence, recovery, inspect, and integration tests.
-- [ ] Commit with `feat: verify residual impact after compensation`.
+**Status:** DONE — `src/mayhem/domain/residual_impact.py`, the `residual_impact` field on the evidence envelope (also rendered by `render_evidence_human`), and the read-only `mayhem inspect residual` command. An unavailable observation source reports `unavailable`, never `clean`, and a deviation is `tolerated` only when an `ImpactAcceptance` names a human and a reason — there is no silent tolerance.
+
+- [x] Write tests for clean recovery, partial recovery, unexpected persistent change, unavailable observation source, and explicitly accepted residual impact.
+- [x] Implement before/after snapshot comparison using existing topology and observation contracts.
+- [x] Add residual impact to evidence, inspect, and recovery reports.
+- [x] Require explicit acceptance metadata for any tolerated violation.
+- [x] Run evidence, recovery, inspect, and integration tests.
+- [x] Commit with `feat: verify residual impact after compensation`.
+
+**Note:** `inspect residual` is read-only; the live run path records the assessment into the evidence envelope, and the command recomputes or replays it from recorded values rather than mutating state.
 
 ## Task 17: Add game-day mode
 

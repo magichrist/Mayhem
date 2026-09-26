@@ -59,6 +59,8 @@ class EvidenceEnvelope(BaseModel):
     # passed. Counts and provenance only — never a raw provider payload.
     observation_provenance: dict[str, Any] = Field(default_factory=dict)
     slo_outcomes: tuple[dict[str, Any], ...] = ()
+    # v0.9.0 task 16: before/after comparison proving the system returned.
+    residual_impact: dict[str, Any] = Field(default_factory=dict)
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

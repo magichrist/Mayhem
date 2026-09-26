@@ -300,6 +300,126 @@ def replay_validate(
         raise SystemExit(1)
 
 
+@inspect.command("residual")
+@click.argument("run_id")
+@click.option(
+    "--expect",
+    "expected",
+    multiple=True,
+    metavar="SIGNAL=VALUE",
+    help="Baseline signal to compare against (repeatable).",
+)
+@click.option(
+    "--observed",
+    "observed",
+    multiple=True,
+    metavar="SIGNAL=VALUE",
+    help="Post-recovery signal to compare (repeatable).",
+)
+@click.option("--tolerance", type=float, default=0.0, show_default=True, help="Allowed drift.")
+@click.option(
+    "--accept",
+    "acceptances",
+    multiple=True,
+    metavar="SIGNAL=WHO:REASON",
+    help="Explicitly accept a residual deviation for one signal.",
+)
+@click.option(
+    "--from-observations",
+    is_flag=True,
+    help="Use the evidence envelope's own observation values.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def inspect_residual(
+    ctx: click.Context,
+    run_id: str,
+    expected: tuple[str, ...],
+    observed: tuple[str, ...],
+    tolerance: float,
+    acceptances: tuple[str, ...],
+    from_observations: bool,
+    as_json: bool,
+) -> None:
+    """Report residual impact for a run: did the system come back?"""
+    from mayhem.domain.residual_impact import (
+        ImpactAcceptance,
+        ImpactSnapshot,
+        assess_residual_impact,
+    )
+
+    def _parse(pairs: tuple[str, ...]) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for pair in pairs:
+            if "=" not in pair:
+                raise click.UsageError(f"expected SIGNAL=VALUE, got {pair!r}")
+            signal, _, raw = pair.partition("=")
+            try:
+                values[signal.strip()] = float(raw)
+            except ValueError as exc:
+                raise click.UsageError(f"signal {signal!r} is not numeric: {raw!r}") from exc
+        return values
+
+    before_values = _parse(expected)
+    after_values = _parse(observed)
+    detail = ""
+    if from_observations:
+        obj = ctx.obj
+        assert isinstance(obj, CliContext)
+        store = open_store(obj.db)
+        try:
+            envelope = load_evidence(store, run_id)
+        finally:
+            store.close()
+        if envelope is None:
+            click.echo(f"no evidence recorded for {run_id}", err=True)
+            raise SystemExit(1)
+        for observation in envelope.observations:
+            metric = str(observation.get("metric") or "")
+            value = observation.get("value")
+            if metric and isinstance(value, (int, float)):
+                before_values.setdefault(metric, float(value))
+                after_values.setdefault(metric, float(value))
+        detail = "signals read from the evidence envelope"
+
+    acceptance_models: list[ImpactAcceptance] = []
+    for item in acceptances:
+        if "=" not in item:
+            raise click.UsageError(f"expected SIGNAL=WHO:REASON, got {item!r}")
+        signal, _, rest = item.partition("=")
+        who, _, reason = rest.partition(":")
+        if not who or not reason:
+            raise click.UsageError(f"acceptance needs WHO and REASON, got {item!r}")
+        acceptance_models.append(
+            ImpactAcceptance(signal=signal.strip(), accepted_by=who, reason=reason)
+        )
+
+    assessment = assess_residual_impact(
+        ImpactSnapshot(label="before", values=before_values, source="cli"),
+        ImpactSnapshot(label="after", values=after_values, source="cli"),
+        tolerance=tolerance,
+        acceptances=tuple(acceptance_models),
+    )
+    payload = assessment.to_dict()
+    if detail:
+        payload["detail"] = detail
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        click.echo(f"residual impact: {assessment.status}")
+        for violation in assessment.violations:
+            marker = "tolerated" if violation.tolerated else "VIOLATION"
+            click.echo(
+                f"  {marker:<10} {violation.signal}: expected {violation.expected}, "
+                f"observed {violation.observed} (delta {violation.delta})"
+            )
+            if violation.acceptance:
+                click.echo(
+                    f"             accepted by {violation.acceptance.accepted_by}: "
+                    f"{violation.acceptance.reason}"
+                )
+
+
 inspect.add_command(replay_group)
 
 @inspect.command("graph")

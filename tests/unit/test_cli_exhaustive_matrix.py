@@ -84,6 +84,7 @@ ACTIVE_GROUP_PATHS = {
         "replay",
         "graph",
         "coverage-diff",
+        "residual",
     ),
     "recover": ("status", "plan", "execute"),
 }
