@@ -483,6 +483,12 @@ def write_report_artifacts(
     )
     directory = Path(selected_policy.artifact_dir)
     directory.mkdir(parents=True, exist_ok=True)
+    # v0.9.0: the artifact writers are the last gate before bytes hit disk, so
+    # redaction is enforced here too — a directly-constructed envelope must not
+    # be able to smuggle a secret into a report file.
+    from mayhem.infra.evidence import redact_envelope
+
+    envelope = redact_envelope(envelope)
     report_id = _report_id(envelope)
     renderers = {
         "markdown": ("md", render_report_markdown),

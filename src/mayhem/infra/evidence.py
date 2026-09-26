@@ -136,8 +136,28 @@ def build_evidence(
     )
 
 
+def redact_envelope(envelope: EvidenceEnvelope) -> EvidenceEnvelope:
+    """Return a sanitized copy — the last gate before bytes hit disk.
+
+    ``build_evidence`` already redacts, but any caller can construct an
+    ``EvidenceEnvelope`` directly. Enforcing the policy here means no write
+    path can leak a secret, and the metrics are recomputed at the boundary so
+    they describe what was actually written.
+    """
+    from mayhem.domain.redaction import RULE_VERSION, redact
+
+    result = redact(envelope.model_dump(mode="json"))
+    payload = dict(result.value)
+    payload["redaction_metrics"] = {
+        "policy_version": RULE_VERSION,
+        "redacted_path_count": len(result.removed_paths),
+        "redacted_paths": tuple(sorted(set(result.removed_paths))),
+    }
+    return EvidenceEnvelope.model_validate(payload)
+
+
 def write_evidence(store: Any, envelope: EvidenceEnvelope) -> None:
-    stable = envelope.model_copy(
+    stable = redact_envelope(envelope).model_copy(
         update={"report_id": envelope.report_id or report_id_for_run(envelope.run_id)}
     )
     with store.write() as conn:
@@ -190,7 +210,7 @@ def list_evidence(store: Any, limit: int = 20) -> list[EvidenceEnvelope]:
 def write_evidence_file(envelope: EvidenceEnvelope, evidence_dir: str | Path) -> Path:
     from mayhem.cli.execution import artifact_name
 
-    stable = envelope.model_copy(
+    stable = redact_envelope(envelope).model_copy(
         update={"report_id": envelope.report_id or report_id_for_run(envelope.run_id)}
     )
     directory = Path(evidence_dir)

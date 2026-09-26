@@ -13,6 +13,11 @@ _URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<user>[
 _ASSIGNMENT_SECRET = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|registry[_-]?token)\s*=\s*[^\s,;]+"
 )
+# `--password hunter2`, `--token abc`, `-p abc` — space-separated CLI secrets,
+# which the assignment pattern above cannot see.
+_FLAG_SECRET = re.compile(
+    r"(?i)(--?(?:password|passwd|token|secret|api[_-]?key|registry[_-]?token)\s+)(\S+)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +35,7 @@ def _is_secret_key(key: str) -> bool:
 def redact_text(value: str) -> tuple[str, bool]:
     redacted = _URL_CREDENTIALS.sub(r"\g<scheme>***:***@", value)
     redacted = _ASSIGNMENT_SECRET.sub(lambda match: f"{match.group(1)}=***REDACTED***", redacted)
+    redacted = _FLAG_SECRET.sub(lambda match: f"{match.group(1)}***REDACTED***", redacted)
     return redacted, redacted != value
 
 
