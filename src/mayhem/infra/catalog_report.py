@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from mayhem.agents.executors import executor_for
 from mayhem.controller.compensation import template_for
 from mayhem.controller.k8s_runtime import k8s_available_faults, k8s_contract_for
-from mayhem.domain.capability_status import CapabilityStatus
+from mayhem.domain.capability_status import CapabilityDashboard, CapabilityStatus
 from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.domain.faults import EngineLane, FaultDefinition, MaturityLevel
 
@@ -173,7 +173,37 @@ def capability_status(definition: FaultDefinition, engine: str) -> CapabilitySta
         live_verified=False,
         compensation_complete=compensation_complete,
         blocked_reason=blocked_reason,
+        family=definition.id.split(".", 1)[0],
+        maturity=definition.maturity.value,
+        source_of_truth=_source_of_truth(definition, engine),
+        remediation=_remediation(definition, engine, blocked_reason),
     )
+
+
+def _source_of_truth(definition: FaultDefinition, engine: str) -> str:
+    """Which artifact decides this row — never a guess."""
+    if definition.catalog_only:
+        return "fault catalog (catalog-only definition)"
+    if engine == "kubernetes":
+        return "kubernetes runtime contract + fault catalog"
+    return "executor registry + undo template registry"
+
+
+def _remediation(definition: FaultDefinition, engine: str, blocked_reason: str) -> str:
+    """Actionable next step for a blocked row; empty when nothing blocks it."""
+    if not blocked_reason:
+        return ""
+    if definition.replacement_fault_id:
+        return f"use {definition.replacement_fault_id} instead"
+    if definition.catalog_only:
+        return "catalog-only: no executor is planned; treat as documentation"
+    if engine == "kubernetes":
+        return "register a kubernetes contract (k8s_contract_for) for this fault"
+    if "engine lane" in blocked_reason:
+        return f"declare the {engine} engine lane on this fault, or run it on a supported engine"
+    if "compensation" in blocked_reason:
+        return "register an undo template so compensation is complete"
+    return "register an executor for this fault"
 
 
 def build_capability_statuses(*, engine: str | None = None) -> list[CapabilityStatus]:
@@ -185,14 +215,24 @@ def build_capability_statuses(*, engine: str | None = None) -> list[CapabilitySt
     ]
 
 
+def build_capability_dashboard(
+    *,
+    engine: str | None = None,
+    family: str | None = None,
+    maturity: str | None = None,
+    blocked: bool | None = None,
+) -> CapabilityDashboard:
+    """Read-only capability dashboard with the documented filters applied."""
+    dashboard = CapabilityDashboard(
+        engine=engine.lower() if engine else None,
+        rows=tuple(build_capability_statuses(engine=engine)),
+        generated_at=date.today().isoformat(),
+    )
+    return dashboard.filtered(engine=engine, family=family, maturity=maturity, blocked=blocked)
+
+
 def build_capability_report(*, engine: str | None = None) -> dict[str, object]:
-    rows = build_capability_statuses(engine=engine)
-    return {
-        "schema_version": "1.0",
-        "engine": engine,
-        "generated_at": date.today().isoformat(),
-        "capabilities": [row.to_dict() for row in rows],
-    }
+    return build_capability_dashboard(engine=engine).to_dict()
 
 
 def _executor_name(definition: FaultDefinition, engine: str) -> str:

@@ -31,12 +31,14 @@
 - Produces: `CapabilityDashboard(engine, rows, generated_at, schema_version)`.
 - Consumes: `CapabilityStatus` records from the core plan.
 
-- [ ] Write tests for Docker, Podman, Kubernetes, catalog-only, blocked, and unit-verified rows.
-- [ ] Write text/JSON/YAML output tests and filter tests by engine, fault family, maturity, and blocked reason.
-- [ ] Implement `discover capabilities` and `discover capabilities --explain`.
-- [ ] Include remediation text and source of truth for every blocked row.
-- [ ] Run dashboard, CLI, output-schema, and catalog tests.
-- [ ] Commit with `feat: add capability truth dashboard`.
+**Status:** DONE — the dashboard itself landed with core task 5 (commit `45bd1fd`); this pass added the `CapabilityDashboard` model, the engine/family/maturity/blocked filters, per-row remediation and source-of-truth text, and the test suite. The command lives in `src/mayhem/cli/toolkit.py` rather than a separate `capabilities.py`, because it shares the toolkit group with `discover faults`.
+
+- [x] Write tests for Docker, Podman, Kubernetes, catalog-only, blocked, and unit-verified rows.
+- [x] Write text/JSON/YAML output tests and filter tests by engine, fault family, maturity, and blocked reason.
+- [x] Implement `discover capabilities` and `discover capabilities --explain`.
+- [x] Include remediation text and source of truth for every blocked row.
+- [x] Run dashboard, CLI, output-schema, and catalog tests.
+- [x] Commit with `feat: add capability truth dashboard`.
 
 ## Task 12: Add the resilience coverage graph
 

@@ -127,6 +127,14 @@ def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_js
     help="Filter capability truth by engine.",
 )
 @click.option("--explain", "explain_id", metavar="FAULT", help="Explain one fault capability.")
+@click.option("--family", default=None, help="Only rows whose fault family matches.")
+@click.option("--maturity", default=None, help="Only rows with this maturity level.")
+@click.option(
+    "--blocked/--supported",
+    "blocked",
+    default=None,
+    help="Only blocked rows, or only rows that are not blocked.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit capability truth as JSON.")
 @click.option(
     "--format",
@@ -138,20 +146,26 @@ def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_js
 def capabilities(
     engine_opt: str | None,
     explain_id: str | None,
+    family: str | None,
+    maturity: str | None,
+    blocked: bool | None,
     as_json: bool,
     output_format: str | None,
 ) -> None:
     """Report registered, available, verified, and blocked fault capabilities."""
-    from mayhem.infra.catalog_report import build_capability_report, build_capability_statuses
+    from mayhem.infra.catalog_report import build_capability_dashboard
 
     engine = engine_opt.lower() if engine_opt else None
+    dashboard = build_capability_dashboard(
+        engine=engine, family=family, maturity=maturity, blocked=blocked
+    )
     if explain_id:
-        rows = [row for row in build_capability_statuses(engine=engine) if row.fault_id == explain_id]
+        rows = dashboard.find(explain_id)
         if not rows:
             raise click.ClickException(f"unknown fault: {explain_id}")
         payload: object = {"capabilities": [row.to_dict() for row in rows]}
     else:
-        payload = build_capability_report(engine=engine)
+        payload = dashboard.to_dict()
     fmt = output_format.lower() if output_format else ("json" if as_json else "text")
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -162,6 +176,12 @@ def capabilities(
         click.echo(yaml.safe_dump(payload, sort_keys=True))
         return
     rows = payload["capabilities"] if isinstance(payload, dict) else []
+    if isinstance(payload, dict) and "summary" in payload:
+        summary = payload["summary"]
+        click.echo(
+            f"capabilities: {summary['total']} rows, {summary['supported']} supported, "
+            f"{summary['blocked']} blocked (schema {payload['schema_version']})"
+        )
     for row in rows:
         reason = row.get("blocked_reason") or "-"
         click.echo(
@@ -172,8 +192,14 @@ def capabilities(
             f"unit={str(row['unit_verified']).lower():<5} "
             f"live={str(row['live_verified']).lower():<5} "
             f"compensation={str(row['compensation_complete']).lower():<5} "
+            f"maturity={row.get('maturity_band', 'unknown'):<14} "
             f"reason={reason}"
         )
+        if row.get("remediation"):
+            click.echo(
+                f"{'':<28} ↳ {row['remediation']} "
+                f"(source: {row.get('source_of_truth', '-')})"
+            )
 
 
 @toolkit.command("list")
