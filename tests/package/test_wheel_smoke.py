@@ -42,3 +42,37 @@ def test_wheel_cli_smoke(tmp_path: Path) -> None:
     payload = json.loads(capability_result.stdout)
     assert payload["schema_version"] == "1.0"
     assert payload["capabilities"]
+
+
+@pytest.mark.skipif(os.environ.get("MAYHEM_PACKAGE_SMOKE") != "1", reason="package smoke opt-in")
+def test_wheel_reports_its_version(tmp_path: Path) -> None:
+    """`mayhem --version` must work from the installed wheel."""
+    wheel = _wheel()
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+    python = venv / "bin" / "python"
+    subprocess.run([str(python), "-m", "pip", "install", "--quiet", str(wheel)], check=True)
+    env = {**os.environ, "HOME": str(tmp_path)}
+
+    script = subprocess.run(
+        [str(venv / "bin" / "mayhem"), "--version"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert script.returncode == 0, script.stderr
+    assert script.stdout.startswith("mayhem ")
+    assert script.stdout.strip() != "mayhem 0.0.0+source", (
+        "an installed wheel must report its real version, not the source marker"
+    )
+
+    module = subprocess.run(
+        [str(python), "-m", "mayhem", "--version"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert module.returncode == 0, module.stderr
+    assert module.stdout.startswith("mayhem ")
