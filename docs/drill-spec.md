@@ -112,7 +112,7 @@ its own schema freeze, not by `apiVersion`.
 | Field          | Type                              | Default | Description |
 |----------------|-----------------------------------|---------|-------------|
 | `risk_ceiling` | `low` / `medium` / `high` / `critical` | `high`  | Refuse any fault whose catalog risk exceeds this. Tightens the policy ceiling in `mayhem.yaml`; it can only make the policy tighter, never looser. |
-| `max_faults`   | int (≥ 0)                         | `1`     | Maximum number of faults injected concurrently. `0` lets a parallel step run unbounded. |
+| `max_faults`   | int (≥ 0)                         | `1`     | **Declared but not enforced.** No gate reads this value, so it does not bound anything. The executable budget is `blast_radius.max_concurrent_faults` in the layered `mayhem.yaml` — see [Fault budgets](#fault-budgets). |
 | `timeout`      | duration                          | `30m`   | Whole-run timeout; the executor aborts and recovers past this. |
 | `log_level`    | `DEBUG` / `INFO` / `WARNING` / `ERROR` | `INFO` | Log verbosity for the drill run. |
 | `recovery`     | bool                              | `true`  | Automatically undo each fault after injection (restore the container). `false` keeps the perturbation in place so downstream checks observe whether the stack self-heals — see [Recovery control](#recovery-control). |
@@ -122,6 +122,7 @@ its own schema freeze, not by `apiVersion`.
 ```yaml
 config:
   risk_ceiling: critical
+  # Declared, but no gate reads it — see #fault-budgets.
   max_faults: 1
   timeout: 30m
   log_level: INFO
@@ -130,6 +131,39 @@ config:
   #        the stack self-heals without the engine reviving anything.
   recovery: true
 ```
+
+### Fault budgets
+
+Two different settings are called "max faults", and only one of them does
+anything.
+
+| Setting | Where | Default | Enforced? |
+|---------|-------|---------|-----------|
+| `config.max_faults` | the drill spec's own `config:` block | `1` | **No.** It is a declared `DrillConfig` field, and no code path under `src/` reads it. Its value never affects planning or execution. |
+| `blast_radius.max_concurrent_faults` | the layered `mayhem.yaml` | `3` | **Yes.** Enforced by the safety gate for every fault step. |
+
+`blast_radius.max_concurrent_faults` is the control that actually refuses a
+drill, and it does not measure concurrency. While a plan is walked step by step
+it is compared against the running count of fault **steps** seen so far plus
+the step being gated (`len(fault_ids_so_far) + 1`), and that count is never
+reset between steps or between rounds. It is therefore a **prefix count of the
+plan's fault steps**: a plan with 42 fault steps trips the default budget of
+`3` on step 4, even when every step is a `sequential` round that injects a
+single fault and nothing is ever concurrent. A long drill is refused with:
+
+```
+blocked:
+  - [safety.refused] blast radius: max_concurrent_faults exceeded
+    [blast_radius.max_concurrent_faults]
+```
+
+To get such a drill past the gate, raise `blast_radius.max_concurrent_faults`
+in the policy or shorten the plan. The remedy is **not** `config.max_faults`.
+
+Note also that the `blast_radius: {...}` line shown by preflight output is a
+looser re-derivation than the real gate: it omits the dependents closure and
+never surfaces `max_concurrent_faults` or `max_duration_per_fault_s`. The
+displayed values are indicative only.
 
 ### Maniac mode
 
@@ -328,7 +362,7 @@ the action to take. Steps run left to right, top to bottom.
 
 | Key         | Value                               | Meaning |
 |-------------|-------------------------------------|---------|
-| `parallel`  | list of names                       | Inject this step's fault on all named targets concurrently (subject to `max_faults`). For `containers:` specs these are `container_name:` values; for `targets:` specs they are the logical target names. |
+| `parallel`  | list of names                       | Inject this step's fault on all named targets concurrently (subject to the `blast_radius.max_concurrent_faults` budget, which counts fault steps rather than concurrency — see [Fault budgets](#fault-budgets)). For `containers:` specs these are `container_name:` values; for `targets:` specs they are the logical target names. |
 | `sequential`| list of names                       | Run this step's faults against each target one after another (same name contract as `parallel`). |
 | `wait`      | `{duration}` (or `{until_check_passes, timeout}`) | Wait before the next step. |
 | `check`     | list of inline probes               | Inline health probe(s) evaluated between rounds (legacy shorthand; prefer `check_spec` for new drills). |
@@ -356,9 +390,10 @@ execution:
         target: testcase-api
 ```
 
-`max_faults` gates **concurrently injected** faults, not the count of steps —
-a `parallel` step with more containers than `max_faults` queues containers into
-rounds so the concurrency ceiling is never exceeded.
+Fault steps in a plan are counted, not scheduled, against
+`blast_radius.max_concurrent_faults`, and `config.max_faults` gates nothing at
+all — see [Fault budgets](#fault-budgets) before assuming a `parallel` step is
+bounded by either.
 
 ### `check` (inline)
 
@@ -633,8 +668,8 @@ writing — the catalog implementation is authoritative and is what
 | `cpu.saturate` | cpu | medium | 300s | host, service | — | `percent` (percent, min 1, max 100) |
 | `cpu.throttle` | cpu | medium | 300s | container, service | docker_engine | `percent` (percent, min 1, max 100) |
 | `db.connection_exhaust` | database | high | 120s | container, external_dependency, service | — | `connections` (integer, min 1, max 256, **required**); `host` (string, **required**); `port` (integer, min 1, max 65535, default `3306`) |
-| `db.query_error` | database | high | 300s | container, external_dependency, service | net_admin | `probability` (percent, min 1, max 100, default `100.0`); `error` (string, default `deadlock`); `port` (integer, min 1, max 65535, default `3306`) |
-| `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration) |
+| `db.query_error` | database | high | 300s | container, external_dependency, service | net_admin | `probability` (percent, min 1, max 100, default `100.0`); `error` (`deadlock` / `lock_timeout` / `serialization_failure`, default `deadlock`); `timeout_ms` (integer, min 100, max 120000, default `5000`); `port` (integer, min 1, max 65535, default `3306`) |
+| `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration); `mode` (`latency` / `timeout`, default `latency`) |
 | `dependency.block` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `dependency.connection_refuse` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `dependency.flap` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `interval` (duration, default `10.0`); `failure_probability` (percent, default `50.0`); `protocol` (string, default `tcp`) |
@@ -644,10 +679,10 @@ writing — the catalog implementation is authoritative and is what
 | `dns.resolve_delay` | dns | medium | 300s | host, service | net_admin | `seconds` (duration) |
 | `dns.servfail` | dns | medium | 120s | host, service | net_admin | — |
 | `dns.timeout` | dns | high | 120s | host, service | net_admin | — |
-| `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (integer, default `64`) |
-| `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99) |
+| `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (integer, default `64`); `mode` (`exhaust` / `leak`, default `exhaust`) |
+| `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99); `path` (string, default `/tmp`) |
 | `fs.inode_exhaust` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99) |
-| `fs.io_stress` | storage | medium | 120s | container, host, service | — | `seconds` (duration); `workers` (integer, min 1, max 8, default `1`); `io_bytes` (bytes, default `64M`); `read_mb_s` (integer, min 1, max 512); `write_mb_s` (integer, min 1, max 512); `block_size` (string, default `64k`) |
+| `fs.io_stress` | storage | medium | 120s | container, host, service | — | `seconds` (duration); `workers` (integer, min 1, max 8, default `1`); `io_bytes` (bytes, default `64M`); `read_mb_s` (integer, min 1, max 512); `write_mb_s` (integer, min 1, max 512); `block_size` (string, default `64k`); `op` (`read` / `write` / `both`, default `both`) |
 | `fs.read_only` | storage | high | 120s | container, host, service | fs_control | `path` (string, default `/`) |
 | `fuzz.protocol_abuse` | fuzz | high | 180s | external_dependency, service | — | — |
 | `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (integer, default `500`); `probability` (percent, min 0, max 100, default `0.0`); `port` (integer, min 1, max 65535, default `80`) |
@@ -662,7 +697,7 @@ writing — the catalog implementation is authoritative and is what
 | `k8s.pod_partition` | k8s | high | 300s | pod | kubernetes_engine | `seconds` (duration) |
 | `k8s.pod_pressure` | k8s | medium | 300s | pod | kubernetes_engine | `resource` (string, default `cpu`); `target_percent` (percent, min 1, max 100) |
 | `load.spike` | load | low | 900s | service | — | `rps` (integer, min 1); `seconds` (duration) |
-| `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (percent, min 1, max 99); `amount` (bytes); `mode` (string, default `allocate`) |
+| `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (percent, min 1, max 99); `amount` (bytes); `mode` (`allocate` / `reclaim` / `freeze`, default `allocate`) |
 | `mem.leak` | memory | high | 300s | container, service | — | `rate_mb` (integer, min 1, max 512, default `8`) |
 | `net.bandwidth` | network | medium | 300s | container, service | net_admin | `rate` (string, **required**); `burst` (string, default `10k`); `direction` (string, default `egress`) |
 | `net.connection_refuse` | network | high | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
@@ -685,6 +720,170 @@ The full, authoritative catalog is available at runtime: `mayhem discover faults
 lists every definition with its risk and compensatability; `mayhem discover capabilities`
 probes the host for the tool capabilities (docker, podman, network tooling, …)
 the faults require.
+
+Several faults expose a **variant parameter** that selects between mechanisms
+behind one fault id, rather than requiring a separate id per mechanism. The
+sections below document those axes. Every example uses the explicit `params:`
+mapping; a param matching a `ParamSpec` name may equally be given as a flat
+sibling key of `fault:` (see [`DrillFault`](#drillfault)).
+
+### `db.query_error`
+
+`error` selects the wire mechanism the client sees, and `timeout_ms` bounds how
+long the client waits for the two timeout-shaped mechanisms.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `error` | string | `deadlock` | `deadlock` — connection reset (TCP RST) to the DB port. `lock_timeout` — the connection is blackholed, so the client's own statement timeout fires. `serialization_failure` — latency is injected on the DB flow, so the transaction fails client-side. |
+| `timeout_ms` | integer (100–120000) | `5000` | How long the client waits. Applies to `lock_timeout` and `serialization_failure`; `deadlock` resets immediately and ignores it. |
+
+```yaml
+# A deadlock: the connection is reset, the client fails at once.
+- fault: db.query_error
+  duration: 30s
+  params:
+    error: deadlock
+
+# A lock timeout: the client waits 2s on its own statement timeout.
+- fault: db.query_error
+  duration: 30s
+  params:
+    error: lock_timeout
+    timeout_ms: 2000
+
+# A serialization failure: injected latency on the DB flow aborts the
+# transaction client-side.
+- fault: db.query_error
+  duration: 30s
+  params:
+    error: serialization_failure
+    timeout_ms: 8000
+```
+
+### `db.slow_query`
+
+`mode` decides whether the fault is actually slow or actually times out.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `mode` | string | `latency` | `latency` — real added latency on the DB flow. `timeout` — packets are dropped, so the client blocks until its own timeout. |
+
+> **Breaking change.** The default is `latency`, which is **not** the
+> behaviour this fault had before the `mode` parameter existed. The previous
+> build always blackholed the DB flow — that is now `mode: timeout`. Any drill
+> that relied on the old blackhole must now say so explicitly, or it will
+> silently become a latency fault instead of a hang.
+
+```yaml
+# The default: the query really does get slower.
+- fault: db.slow_query
+  duration: 30s
+  params:
+    seconds: 5s
+
+# The pre-`mode` behaviour, spelled out: the client hangs until its own timeout.
+- fault: db.slow_query
+  duration: 30s
+  params:
+    mode: timeout
+```
+
+### `fd.exhaust`
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `mode` | string | `exhaust` | `exhaust` — open descriptors up to `limit` and hold them. `leak` — descriptors are acquired gradually and never released, so the process leaks them. |
+
+```yaml
+# Fill the table and hold it there for the duration.
+- fault: fd.exhaust
+  duration: 20s
+  params:
+    limit: 64
+    mode: exhaust
+
+# Leak descriptors gradually; the count never comes back down.
+- fault: fd.exhaust
+  duration: 60s
+  params:
+    limit: 256
+    mode: leak
+```
+
+### `fs.fill`
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `path` | string | `/tmp` | The filesystem to fill. Any path reachable from the fault's target. |
+
+`path` replaces two narrower concepts. Filling a scratch filesystem is
+`path: /tmp`; filling a log filesystem is `path: /var/log`. Neither needs its
+own fault id.
+
+```yaml
+- fault: fs.fill
+  duration: 30s
+  params:
+    percent: 90
+    path: /var/log     # the default is /tmp
+```
+
+### `fs.io_stress`
+
+`op` selects which of the already-declared throughput parameters are driven.
+`read_mb_s` and `write_mb_s` keep their own meaning; `op` decides whether each
+one is acted on.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `op` | string | `both` | `read` — drive `read_mb_s` only. `write` — drive `write_mb_s` only. `both` — drive whichever of the two is set. |
+
+```yaml
+# Sustained reads at 200 MiB/s per worker; write_mb_s is not driven.
+- fault: fs.io_stress
+  duration: 30s
+  params:
+    op: read
+    read_mb_s: 200
+
+# Sustained writes at 100 MiB/s per worker; read_mb_s is not driven.
+- fault: fs.io_stress
+  duration: 30s
+  params:
+    op: write
+    write_mb_s: 100
+```
+
+### `mem.exhaust`
+
+`mode` was previously reserved on the schema and rejected every value other
+than `allocate`; the rejection is gone and each value is a real mechanism.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `mode` | string | `allocate` | `allocate` — commit anonymous memory and hold it. `reclaim` — allocate then release, forcing continuous kernel reclaim and thrash. `freeze` — hold resident memory, forcing reclaim pressure without further allocation. |
+
+```yaml
+# The default: grow the resident set and keep it.
+- fault: mem.exhaust
+  duration: 30s
+  params:
+    amount: 512M
+    mode: allocate
+
+# Churn: allocate and release in a loop so the kernel reclaims continuously.
+- fault: mem.exhaust
+  duration: 60s
+  params:
+    amount: 256M
+    mode: reclaim
+
+# Hold what is already resident and apply pressure without growing.
+- fault: mem.exhaust
+  duration: 60s
+  params:
+    mode: freeze
+```
 
 ### `net.load`
 
