@@ -90,6 +90,11 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "net.packet_loss": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.bandwidth": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.partition": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
+    "net.interface_down": FaultRequirement(bins=frozenset({"ip"}), caps=frozenset({"NET_ADMIN"})),
+    "net.mtu_mismatch": FaultRequirement(bins=frozenset({"ip"}), caps=frozenset({"NET_ADMIN"})),
+    "net.tcp_half_open": FaultRequirement(
+        bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
     "net.reorder": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.duplicate": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
     "net.corrupt": FaultRequirement(bins=frozenset({"tc"}), caps=frozenset({"NET_ADMIN"})),
@@ -100,6 +105,21 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
     "http.upstream_timeout": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "http.response_truncate": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dependency.response_truncate": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "http.header_inject": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "http.stream_stall": FaultRequirement(
+        bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "dependency.circuit_open": FaultRequirement(
         bins=frozenset({"python", "iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
     "app.response_5xx": FaultRequirement(
@@ -179,6 +199,11 @@ _PACKAGE_MANAGERS = ("apt-get", "apk", "dnf", "yum", "microdnf", "zypper")
 _PROBE_BINS: tuple[str, ...] = (
     "kill",
     "tc",
+    # ``ip`` is probed for the same reason ``tc`` is: net.interface_down and
+    # net.mtu_mismatch shell out to it. A requirement bin missing from this
+    # tuple can never be reported present, so the gate would mark every
+    # ip-backed fault permanently inert regardless of the container.
+    "ip",
     "iptables",
     "python",
     "python3",
@@ -540,6 +565,18 @@ def bypass_from_verdicts(
 # is reported as a manual step, never auto-installed.
 _PM_PACKAGES: dict[str, dict[str, str]] = {
     "python": dict.fromkeys(_PACKAGE_MANAGERS, "python3"),
+    # ``ip`` is packaged with ``tc`` in iproute2/iproute on every supported
+    # distro, so it deliberately shares those package rows rather than adding
+    # a divergent one. It must also be in _PROBE_BINS or the gate can never see
+    # it present and would mark every ip-backed fault permanently inert.
+    "ip": {
+        "apt-get": "iproute2",
+        "apk": "iproute2",
+        "dnf": "iproute",
+        "yum": "iproute",
+        "microdnf": "iproute",
+        "zypper": "iproute2",
+    },
     "tc": {
         "apt-get": "iproute2",
         "apk": "iproute2",

@@ -954,6 +954,145 @@ def _tc_port_netem_verify(fault: PlannedFault, node: TopologyNode) -> tuple[Veri
     )
 
 
+def _net_interface_down_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Take a link down; undo brings it back up.
+
+    ``net.partition`` shapes traffic with a qdisc and leaves the link up, so a
+    driver that still sees carrier or still holds the interface behaves
+    differently from one whose link is genuinely gone. Undo re-links the device
+    and then proves it is usable, so a mistyped ``device`` cannot pass silently.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    device = _net_device(fault)
+    inject = ["ip", "link", "set", "dev", device, "down"]
+    undo = [
+        "sh",
+        "-c",
+        f"ip link set dev {device} up; ip link show dev {device} | grep -q 'state UP'",
+    ]
+    return (
+        _tool_op(fault, node, "net.link_state", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _net_interface_down_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    device = _net_device(fault)
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"ip link show dev {device} | grep -q 'state UP'"],
+            incontainer=True,
+        ),
+    )
+
+
+def _net_mtu_mismatch_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Drop the interface MTU so large packets must fragment or fail.
+
+    The original MTU is captured into a marker file at inject and read back at
+    undo, so the restore is exact even if the interface was never 1500.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    device = _net_device(fault)
+    mtu = _iparam(fault, "mtu", 1400)
+    if not 576 <= mtu <= 9216:
+        raise InvariantViolationError("fault_mtu", f"unsupported MTU {mtu}; expected 576-9216")
+    saved = _tool_marker(fault, node, "mtu")
+    inject = [
+        "sh",
+        "-c",
+        f"ip link show dev {device} | sed -n 's/.*mtu \\([0-9]*\\).*/\\1/p' "
+        f"> {saved}; ip link set dev {device} mtu {mtu}",
+    ]
+    undo = [
+        "sh",
+        "-c",
+        f'test -s {saved} && ip link set dev {device} mtu "$(cat {saved})"; rm -f {saved}; true',
+    ]
+    return (_tool_op(fault, node, "net.mtu", _incontainer_argv(inject), _incontainer_argv(undo)),)
+
+
+def _net_mtu_mismatch_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    saved = _tool_marker(fault, node, "mtu")
+    return (_exec_verify(node, ["sh", "-c", f"test ! -e {saved}"], incontainer=True),)
+
+
+def _net_tcp_half_open_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Drop SYN-ACK so a connection is opened but never completed.
+
+    ``net.partition`` is a total egress blackhole and ``net.connection_reset``
+    fails an established flow with RST. Neither produces the half-open state a
+    client sees when its SYN is answered by nothing at all: the socket is
+    created on both sides and then hangs.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    dport = _iparam(fault, "port", 0)
+    if dport <= 0:
+        raise InvariantViolationError("fault_port", "net.tcp_half_open requires a port")
+    body = ["-p", "tcp", "--dport", str(dport), "--tcp-flags", "SYN,ACK", "SYN", "-j", "DROP"]
+    inject = ["iptables", "-I", "OUTPUT", *body]
+    undo = ["iptables", "-D", "OUTPUT", *body]
+    return (
+        _tool_op(
+            fault,
+            node,
+            "iptables.half_open",
+            _incontainer_argv(inject),
+            _incontainer_argv(undo),
+        ),
+    )
+
+
+def _net_tcp_half_open_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    dport = _iparam(fault, "port", 0)
+    return (
+        _exec_verify(
+            node,
+            [
+                "sh",
+                "-c",
+                f"! iptables -S OUTPUT | grep -q -- '--dport {dport} --tcp-flags'",
+            ],
+            incontainer=True,
+        ),
+    )
+
+
+def _net_device(fault: PlannedFault) -> str:
+    """Interface name, validated: it reaches an ``ip link`` argv and an ``sh -c``."""
+    device = str(_param(fault, "device", _EGRESS_DEV)).strip()
+    if not device or not all(c.isalnum() or c in "._:-" for c in device):
+        raise InvariantViolationError("fault_device", f"unsupported network device name {device!r}")
+    return device
+
+
 def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
@@ -1654,6 +1793,56 @@ def _pulse_netfilter(
     return undo, verify
 
 
+def _http_headers(fault: PlannedFault) -> str | None:
+    """Validate and return the caller-supplied response headers.
+
+    ``ParamSpec`` cannot constrain this: it has no pattern, max_length, or enum,
+    only a lower length bound, so the value is arbitrary text from a drill spec.
+    Three things are therefore enforced here, at plan time.
+
+    1. **No CR.** HTTP heads are CRLF-delimited, so a CR inside a value can
+       terminate the line early and start a new one. Rejecting every CR closes
+       that off regardless of what follows it.
+    2. **Every line is a ``Name: value`` pair.** This is what makes multiple
+       headers safe *by construction*: if every line has to parse as a header
+       before the value is accepted, an attacker cannot smuggle a bare LF to
+       split the response, because the resulting line would not be a header and
+       is refused. A single LF is the multi-header separator the operator uses;
+       it is re-joined as CRLF when the head is built.
+    3. **ASCII.** The head is encoded with ``.encode('ascii')``, which raises
+       ``UnicodeEncodeError`` — not an ``OSError`` — so it would escape the
+       proxy's ``except OSError`` and kill the connection thread.
+
+    Refusing is the honest outcome: silently stripping would produce a fault that
+    does not do what the operator wrote.
+    """
+    raw = _param(fault, "headers", "")
+    if raw is None or str(raw) == "":
+        return None
+    text = str(raw)
+    if "\r" in text:
+        raise InvariantViolationError(
+            "fault_headers",
+            "http.header_inject headers must not contain CR; that would end the "
+            "response line early. Separate multiple headers with a single LF.",
+        )
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError:
+        raise InvariantViolationError(
+            "fault_headers", "http.header_inject headers must be ASCII"
+        ) from None
+    lines = text.split("\n")
+    for line in lines:
+        name, sep, _value = line.partition(":")
+        if not sep or not name.strip():
+            raise InvariantViolationError(
+                "fault_headers",
+                f"http.header_inject header {line!r} is not a 'Name: value' pair",
+            )
+    return "\r\n".join(lines)
+
+
 def _http_proxy_source(
     *,
     target: int,
@@ -1664,6 +1853,10 @@ def _http_proxy_source(
     rate: int | None = None,
     burst: int = 200,
     code: int = 429,
+    declared: int | None = None,
+    send_bytes: int = 0,
+    headers: str | None = None,
+    stall_ms: int | None = None,
 ) -> str:
     """In-container python passthrough proxy serving a fault mode.
 
@@ -1673,6 +1866,11 @@ def _http_proxy_source(
       * delay  — responded calls are held ``delay_ms`` before relaying
       * rate   — responded calls consume a token bucket (``rate``/s, ``burst``
                  tokens, ``code`` when dry)
+      * declared/send_bytes — a canned response that promises ``declared`` bytes
+                 and delivers ``send_bytes``, so the client sees a short body
+      * headers — extra response headers spliced into the canned response
+      * stall  — the client-bound relay pauses ``stall_ms`` after the first
+                 upstream chunk, which is the response head
     Unresponded calls (outside ``prob``) relay through untouched. The accept
     loop blocks, keeping the interpreter alive for the whole lease.
     """
@@ -1683,6 +1881,10 @@ def _http_proxy_source(
         "status = 0",
         "rate = 0",
         "delay_s = 0.0",
+        "declared = 0",
+        "send_bytes = 0",
+        "extra = ''",
+        "stall_s = 0.0",
         "ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
         "ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)",
         "ls.bind(('127.0.0.1', 0))",
@@ -1711,14 +1913,31 @@ def _http_proxy_source(
         ]
     if delay_ms is not None and int(delay_ms) > 0:
         lines.append(f"delay_s = {max(int(delay_ms), 1) / 1000.0:.3f}")
+    if declared is not None:
+        # Only emitted when a fault asks for it, so the three pre-existing modes
+        # still render byte-identical source.
+        lines.append(f"declared = {max(int(declared), 0)}")
+        lines.append(f"send_bytes = {max(int(send_bytes), 0)}")
+    if headers:
+        # ``!r`` makes this a safe python literal: the value comes from a drill
+        # spec, and interpolating it raw would let a quote break out of the
+        # literal and execute inside the target container. CRLF and non-ASCII
+        # are rejected by the caller before we get here (see _http_headers).
+        lines.append(f"extra = {headers!r}")
+    if stall_ms is not None and int(stall_ms) > 0:
+        lines.append(f"stall_s = {max(int(stall_ms), 1) / 1000.0:.3f}")
     lines += [
-        "def relay(a, b):",
+        "def relay(a, b, stall=0.0):",
+        "    stalled = False",
         "    try:",
         "        while True:",
         "            d = a.recv(65536)",
         "            if not d:",
         "                break",
         "            b.sendall(d)",
+        "            if stall and not stalled:",
+        "                stalled = True",
+        "                time.sleep(stall)",
         "    except OSError:",
         "        pass",
         "    finally:",
@@ -1729,12 +1948,21 @@ def _http_proxy_source(
         "def forward(c):",
         "    s = socket.create_connection(('127.0.0.1', TARGET), timeout=30)",
         "    t1 = threading.Thread(target=relay, args=(c, s), daemon=True)",
-        "    t2 = threading.Thread(target=relay, args=(s, c), daemon=True)",
+        "    t2 = threading.Thread(target=relay, args=(s, c, stall_s), daemon=True)",
         "    t1.start(); t2.start(); t1.join(); t2.join()",
         "    s.close()",
         "def canned(c, n):",
-        "    line = f'HTTP/1.1 {n} X\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'",
-        "    c.sendall(line.encode('ascii'))",
+        "    head = f'HTTP/1.1 {n} X\\r\\n'",
+        "    if extra:",
+        "        head += extra + '\\r\\n'",
+        "    head += f'Content-Length: {declared}\\r\\nConnection: close\\r\\n\\r\\n'",
+        "    c.sendall(head.encode('ascii'))",
+        "    if send_bytes:",
+        "        c.sendall(b'x' * send_bytes)",
+        "        try:",
+        "            c.shutdown(socket.SHUT_WR)",
+        "        except OSError:",
+        "            pass",
         "def handle(c):",
         "    try:",
         "        if random.random() >= PROB:",
@@ -1768,6 +1996,16 @@ class _HttpEffect:
     rate: int | None = None
     burst: int = 200
     code: int = 429
+    #: Content-Length to declare on a canned response. ``None`` keeps the
+    #: pre-existing modes emitting a literal ``Content-Length: 0``.
+    declared: int | None = None
+    #: Bytes to actually write after the head. Less than ``declared`` is a
+    #: truncated response; equal is a complete one.
+    send_bytes: int = 0
+    #: Extra response headers, already validated by :func:`_http_headers`.
+    headers: str | None = None
+    #: Pause the client-bound relay this long after the first upstream chunk.
+    stall_ms: int | None = None
 
 
 def _http_proxy_ops(
@@ -1803,6 +2041,10 @@ def _http_proxy_ops(
         rate=effect.rate,
         burst=effect.burst,
         code=effect.code,
+        declared=effect.declared,
+        send_bytes=effect.send_bytes,
+        headers=effect.headers,
+        stall_ms=effect.stall_ms,
     )
     inject = (
         f"cat > {srcf} <<'MAYHEM_PY_EOF'\n{source}MAYHEM_PY_EOF\n"
@@ -1854,6 +2096,86 @@ def _http_proxy_verify(
             ],
             incontainer=True,
         ),
+    )
+
+
+def _http_response_truncate_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Promise a body larger than the one delivered, then close.
+
+    A truncated response is not the same fault as a reset: the client has a valid
+    status line and a short body, and it is the client's framing logic that has
+    to notice. ``http.connection_close`` drops the connection, and
+    ``fuzz.protocol_abuse`` attacks the request side.
+    """
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(
+            status=_iparam(fault, "status", 200),
+            declared=_iparam(fault, "bytes", 64) * 64,
+            send_bytes=_iparam(fault, "bytes", 64),
+        ),
+    )
+
+
+def _http_header_inject_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Add caller-supplied headers to a canned response.
+
+    A broken or unexpected header is a real production failure that a status
+    code cannot express: the response is well-formed and the client still
+    misbehaves because of a header it did not expect.
+    """
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(
+            status=_iparam(fault, "status", 200),
+            headers=_http_headers(fault),
+        ),
+    )
+
+
+def _dep_circuit_open_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Answer without dialling upstream at all.
+
+    The proxy already supports this: every branch that does not call
+    ``forward()`` answers without touching the target, which is exactly what a
+    tripped breaker does. ``Retry-After`` is what makes it observably a breaker
+    rather than a generic 503, so it is emitted alongside the status.
+    """
+    retry_after = _iparam(fault, "retry_after_s", 30)
+    headers = f"Retry-After: {max(int(retry_after), 0)}"
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(
+            status=_iparam(fault, "status", 503),
+            headers=headers,
+        ),
+    )
+
+
+def _http_stream_stall_undo(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[UndoOp, ...]:
+    """Hold the client after the response head arrives.
+
+    The relay already streams in 64 KiB chunks on two threads, so stalling the
+    client-bound pump after its first chunk — the status line and headers — needs
+    no new concurrency, and the direction is one-sided for free. The observable
+    effect is strongest against streaming or large responses; a small body that
+    arrives in one segment may not stall until the client wants the next byte.
+    """
+    return _http_proxy_ops(
+        fault,
+        nodes,
+        effect=_HttpEffect(stall_ms=_iparam(fault, "stall_ms", 5000)),
     )
 
 
@@ -2617,6 +2939,9 @@ def _dep_timeout_verify(
 def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
     return {
         "net.latency": _tool_template(_net_latency_undo, _net_latency_verify),
+        "net.interface_down": _tool_template(_net_interface_down_undo, _net_interface_down_verify),
+        "net.mtu_mismatch": _tool_template(_net_mtu_mismatch_undo, _net_mtu_mismatch_verify),
+        "net.tcp_half_open": _tool_template(_net_tcp_half_open_undo, _net_tcp_half_open_verify),
         "net.partition": _tool_template(_net_partition_undo, _net_partition_verify),
         "net.corrupt": _tool_template(_net_corrupt_undo, _net_corrupt_verify),
         "net.congestion": _tool_template(_net_congestion_undo, _net_congestion_verify),
@@ -2678,6 +3003,13 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "dependency.block": _tool_template(_dep_block_undo, _dep_block_verify),
         "dependency.timeout": _tool_template(_dep_timeout_undo, _dep_timeout_verify),
         "dependency.flap": _tool_template(_dep_flap_undo, _dep_flap_verify),
+        "http.response_truncate": _tool_template(_http_response_truncate_undo, _http_proxy_verify),
+        "http.header_inject": _tool_template(_http_header_inject_undo, _http_proxy_verify),
+        "http.stream_stall": _tool_template(_http_stream_stall_undo, _http_proxy_verify),
+        "dependency.circuit_open": _tool_template(_dep_circuit_open_undo, _http_proxy_verify),
+        "dependency.response_truncate": _tool_template(
+            _http_response_truncate_undo, _http_proxy_verify
+        ),
         "dependency.rate_limit": _tool_template(_dep_rate_limit_undo, _dep_rate_limit_verify),
         "dependency.connection_refuse": _tool_template(
             _dep_conn_refuse_undo, _dep_conn_refuse_verify

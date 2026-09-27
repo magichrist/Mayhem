@@ -983,6 +983,163 @@ CATALOG: tuple[FaultDefinition, ...] = (
         ),
         observable_effect="the target reads corrupted bytes from the affected file",
     ),
+    _define(
+        id="net.interface_down",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.SERVICE, NodeKind.PROCESS}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="device", type=ParamType.STRING, default="eth0", min_length=1),
+        ),
+        observable_effect="the interface loses carrier, so the stack reports the link down",
+    ),
+    _define(
+        id="net.mtu_mismatch",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.SERVICE, NodeKind.PROCESS}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="device", type=ParamType.STRING, default="eth0", min_length=1),
+            ParamSpec(name="mtu", type=ParamType.INTEGER, minimum=576, maximum=9216, default=1400),
+        ),
+        observable_effect="large packets must fragment or are dropped, degrading throughput",
+    ),
+    _define(
+        id="net.tcp_half_open",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.SERVICE, NodeKind.PROCESS}),
+        max_duration_s=300.0,
+        # Required, like net.connection_reset: a half-open fault aimed at an
+        # unspecified port perturbs nothing, so there is no safe default.
+        params_schema=(
+            ParamSpec(name="port", type=ParamType.INTEGER, required=True, minimum=1, maximum=65535),
+        ),
+        observable_effect="connections to the port are opened but never completed, then hang",
+    ),
+    _define(
+        id="http.response_truncate",
+        category=FaultCategory.HTTP_API,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="status", type=ParamType.INTEGER, minimum=100, maximum=599, default=200),
+            ParamSpec(name="bytes", type=ParamType.INTEGER, minimum=0, maximum=65536, default=64),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+        ),
+        observable_effect="the response declares more bytes than it delivers, then closes",
+    ),
+    _define(
+        id="dependency.response_truncate",
+        category=FaultCategory.DEPENDENCY,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="status", type=ParamType.INTEGER, minimum=100, maximum=599, default=200),
+            ParamSpec(name="bytes", type=ParamType.INTEGER, minimum=0, maximum=65536, default=64),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+        ),
+        observable_effect="an upstream response is cut short mid-body",
+    ),
+    _define(
+        id="http.header_inject",
+        category=FaultCategory.HTTP_API,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="status", type=ParamType.INTEGER, minimum=100, maximum=599, default=200),
+            ParamSpec(name="headers", type=ParamType.STRING, default=""),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+        ),
+        observable_effect="the response carries headers the client did not expect",
+    ),
+    _define(
+        id="http.stream_stall",
+        category=FaultCategory.HTTP_API,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(
+                name="stall_ms", type=ParamType.INTEGER, minimum=1, maximum=30000, default=5000
+            ),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+        ),
+        observable_effect="the response head arrives and the body then stalls mid-flight",
+    ),
+    _define(
+        id="dependency.circuit_open",
+        category=FaultCategory.DEPENDENCY,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
+        applicable_node_kinds=frozenset(
+            {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.EXTERNAL_DEPENDENCY}
+        ),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="status", type=ParamType.INTEGER, minimum=100, maximum=599, default=503),
+            ParamSpec(
+                name="retry_after_s", type=ParamType.INTEGER, minimum=0, maximum=3600, default=30
+            ),
+            ParamSpec(
+                name="probability",
+                type=ParamType.PERCENT,
+                minimum=1.0,
+                maximum=100.0,
+                default=100.0,
+            ),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+        ),
+        observable_effect="the upstream is never dialled; the caller sees a tripped breaker",
+    ),
     # ── Kubernetes archetypes (ADR-M7-3, ADR-M7-4) ──────────────────────────
     # All k8s archetypes are AVAILABLE when the live cluster driver is present;
     # the executor register is the source of truth for executability.  Families
