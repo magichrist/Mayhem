@@ -35,6 +35,18 @@ containers:
         duration: 10s
         url: http://testcase-api:8080/
 
+      # Catalogued podman/docker faults this drill cannot reach: a compose
+      # `containers:` entry resolves to a *service* node, and these six are
+      # scoped to container/process nodes only, so the planner refuses them
+      # ("does not apply to any node matched by container ..."). They need a
+      # process/container target, which a compose spec cannot express.
+      # - fault: cpu.burst              # percent: 95
+      # - fault: mem.freeze             # percent: 90, hold_s: 30s
+      # - fault: mem.swap_pressure      # percent: 80, swap_mb: 64
+      # - fault: process.restart_delay  # restarts: 3, delay: 5s
+      # - fault: fs.quota               # quota_mb: 64
+      # - fault: fs.write_delay         # delay_ms: 100
+
       # ── application / upstream response behaviour ─────────────────────
       - fault: app.response_5xx
         params:
@@ -95,28 +107,7 @@ containers:
           restarts: 3
           interval: 2s
         duration: 20s
-      - fault: process.restart_delay
-        params:
-          restarts: 3
-          delay: 5s
-        duration: 20s
-
       # ── cpu / memory pressure ──────────────────────────────────────────
-      - fault: cpu.burst
-        params:
-          percent: 95
-        duration: 10s
-      - fault: mem.freeze
-        params:
-          percent: 90
-          hold_s: 30s
-        duration: 35s
-      - fault: mem.swap_pressure
-        params:
-          percent: 80
-          swap_mb: 64
-        duration: 10s
-
 
   testcase-lb:
     faults:
@@ -243,20 +234,14 @@ containers:
       - fault: proc.pause
         duration: 10s
 
-      # ── filesystem faults (./data is mounted read-only, so these act
-      #    on the container's own rootfs) ─────────────────────────────────
-      - fault: fs.quota
-        params:
-          quota_mb: 64
-        duration: 10s
+      # ./data is mounted read-only, so this acts on the container rootfs.
       - fault: fs.read_only
         params:
           path: /
         duration: 10s
-      - fault: fs.write_delay
-        params:
-          delay_ms: 100
-        duration: 10s
+
+      # ── filesystem faults (./data is mounted read-only, so these act
+      #    on the container's own rootfs) ─────────────────────────────────
 
 execution:
   - parallel: [testcase-api, testcase-download-1]

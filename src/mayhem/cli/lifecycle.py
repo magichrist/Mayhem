@@ -1140,7 +1140,11 @@ def plan(
     help="After execution, suggest the most valuable untested cell to run next.",
 )
 @click.option(
-    "--execute", is_flag=True, default=False, help="Explicit approval to execute the plan."
+    "-e",
+    "--execute",
+    is_flag=True,
+    default=False,
+    help="Explicit approval to execute the plan.",
 )
 @click.option(
     "--from-plan",
