@@ -110,11 +110,11 @@ def _pod_fault_plan() -> object:
         ExperimentKind,
         PlannedFault,
         PlannedStep,
+        Wait,
     )
     from mayhem.domain.identity import RuntimeLabel
-    from mayhem.domain.target import ResourceKind, TargetScope
     from mayhem.domain.leases import UndoOp
-    from mayhem.domain.experiments import Wait
+    from mayhem.domain.target import ResourceKind, TargetScope
 
     scope = TargetScope(
         logical_id="checkout",
@@ -130,7 +130,9 @@ def _pod_fault_plan() -> object:
         undo_ops=(UndoOp(op="k8s.exec", args={"undo_command": "CONT"}),),
         duration="0.1s",
     )
-    step = PlannedStep(id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0))
+    step = PlannedStep(
+        id="k8s-0000", seq=0, fault=fault, raw_action=Wait(type="wait", duration=0.0)
+    )
     return ExecutionPlan(
         run_id="admit-order",
         kind=ExperimentKind.DRILL,
@@ -144,9 +146,8 @@ def _pod_fault_plan() -> object:
 def test_pod_fault_refuses_node_target_before_lease_or_spec_construction(tmp_path) -> None:
     """A target-type mismatch must not reach lease creation or spec building."""
     from mayhem.controller.executor import RunEngine
-    from mayhem.infra.store import Store
-
     from mayhem.infra.lease_repository import SQLiteLeaseSink
+    from mayhem.infra.store import Store
 
     store = Store.open_migrated(tmp_path / "admission.db")
     engine = RunEngine(

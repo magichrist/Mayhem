@@ -111,8 +111,9 @@ two-thread pump:
 ```python
 def relay(a, b):
     while True:
-        d = a.recv(65536)      # 64 KiB chunks, not read-whole-response
-        if not d: break
+        d = a.recv(65536)  # 64 KiB chunks, not read-whole-response
+        if not d:
+            break
         b.sendall(d)
 ```
 

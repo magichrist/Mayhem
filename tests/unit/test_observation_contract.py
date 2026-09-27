@@ -47,7 +47,15 @@ def test_error_budget_threshold() -> None:
         threshold=0.01,
         unit="ratio",
     )
-    assert criterion.evaluate(_obs("http.errors", 0.001, )).passed is True
+    assert (
+        criterion.evaluate(
+            _obs(
+                "http.errors",
+                0.001,
+            )
+        ).passed
+        is True
+    )
     assert criterion.evaluate(_obs("http.errors", 0.2)).passed is False
 
 
@@ -236,7 +244,9 @@ def test_process_provider_reads_numeric_stdout() -> None:
 def test_process_provider_reports_nonzero_exit_as_error() -> None:
     from mayhem.providers.observation import ProcessObservationProvider
 
-    provider = ProcessObservationProvider(runner=lambda argv: SimpleNamespace(stdout="", returncode=2))
+    provider = ProcessObservationProvider(
+        runner=lambda argv: SimpleNamespace(stdout="", returncode=2)
+    )
     result = provider.observe(ObservationQuery(metric="procs", target="false"))
     assert result.status is ObservationStatus.ERROR
     assert result.available is False

@@ -18,7 +18,9 @@ def _real_evidence() -> dict:
         target_profile="checkout",
         engine="kubernetes",
         safety_decisions=("impact-gate:pass",),
-        step_reports=({"step_id": "s1", "ok": True, "detail": "ok", "password": "hunter2-plaintext"},),
+        step_reports=(
+            {"step_id": "s1", "ok": True, "detail": "ok", "password": "hunter2-plaintext"},
+        ),
         lease_timeline=(),
         observations=({"metric": "http.latency", "value": 0.5},),
         verdict="pass",

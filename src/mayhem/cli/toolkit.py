@@ -201,8 +201,7 @@ def capabilities(
         )
         if row.get("remediation"):
             click.echo(
-                f"{'':<28} ↳ {row['remediation']} "
-                f"(source: {row.get('source_of_truth', '-')})"
+                f"{'':<28} ↳ {row['remediation']} (source: {row.get('source_of_truth', '-')})"
             )
 
 

@@ -53,9 +53,9 @@ class HttpObservationProvider:
                 detail="query has no target url",
             )
         started = time.monotonic()
-        request = urllib.request.Request(query.target, method="GET")  # noqa: S310
+        request = urllib.request.Request(query.target, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 body = response.read(MAX_RESPONSE_BYTES)
                 elapsed_ms = (time.monotonic() - started) * 1000.0
                 if query.metric.endswith("status"):
@@ -132,7 +132,7 @@ class ProcessObservationProvider:
             else:
                 import subprocess
 
-                completed = subprocess.run(  # noqa: S603
+                completed = subprocess.run(
                     argv,
                     capture_output=True,
                     text=True,

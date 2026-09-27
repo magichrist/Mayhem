@@ -30,7 +30,7 @@ from mayhem.domain.execution_intent import (
     require_execution_intent,
     require_explicit_approval,
 )
-from mayhem.domain.experiments import ExperimentKind, ExecutionPlan, PlannedStep, Wait
+from mayhem.domain.experiments import ExecutionPlan, ExperimentKind, PlannedStep, Wait
 from mayhem.domain.preflight import plan_hash_for
 from mayhem.infra.evidence import build_evidence
 
@@ -113,9 +113,7 @@ class TestPresence:
 
     def test_allow_implicit_true_allows_the_implicit_path(self) -> None:
         assert (
-            require_execution_intent(
-                None, plan_hash=PLAN_HASH, allow_implicit=True, action="run"
-            )
+            require_execution_intent(None, plan_hash=PLAN_HASH, allow_implicit=True, action="run")
             is None
         )
 
@@ -247,9 +245,7 @@ class TestExplicitApproval:
         assert excinfo.value.details["action"] == "explore"
 
     def test_allow_implicit_true_covers_simple_approvals(self) -> None:
-        assert (
-            require_explicit_approval("explore", approved=False, allow_implicit=True) is None
-        )
+        assert require_explicit_approval("explore", approved=False, allow_implicit=True) is None
 
     def test_allow_implicit_defaults_to_refuse(self) -> None:
         with pytest.raises(ExecutionIntentRefused):

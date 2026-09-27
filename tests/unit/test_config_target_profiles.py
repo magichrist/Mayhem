@@ -16,7 +16,6 @@ prove that the runtime context and preflight resolve through them, so a profile
 declared only in ``mayhem.{profile}.yaml`` is the profile the run uses.
 """
 
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -270,10 +269,7 @@ def test_a_config_document_with_the_same_shape_is_still_validated(tmp_path: Path
     """
     base = _write(
         tmp_path / "mayhem.yaml",
-        f"apiVersion: {API_VERSION}\n"
-        "targets:\n"
-        "  api:\n"
-        "    runtime: docker\n",
+        f"apiVersion: {API_VERSION}\ntargets:\n  api:\n    runtime: docker\n",
     )
     with pytest.raises(SchemaValidationError, match="invalid profile"):
         load_config(config_path=base, environ={})
@@ -354,7 +350,7 @@ def test_the_seam_ignores_a_missing_overlay_rather_than_failing(tmp_path: Path):
 # --- every consumer resolves the same effective profiles ---------------------
 
 
-def _plan() -> "ExecutionPlan":
+def _plan() -> ExecutionPlan:
     from mayhem.domain.experiments import ExecutionPlan, ExperimentKind, PlannedStep, Wait
 
     return ExecutionPlan(

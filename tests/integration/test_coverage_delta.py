@@ -82,7 +82,9 @@ def test_baseline_survives_a_reopen(tmp_path) -> None:
     store = Store.open_migrated(db)
     try:
         repo = CoverageGraphRepository(store)
-        repo.record_nodes(build_graph([{"service": "a", "fault_family": "k8s", "covered": False}]).nodes)
+        repo.record_nodes(
+            build_graph([{"service": "a", "fault_family": "k8s", "covered": False}]).nodes
+        )
         repo.save_baseline("start", repo.graph())
     finally:
         store.close()

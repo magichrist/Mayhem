@@ -818,15 +818,14 @@ class TestRecoveryCommands:
 
 
 class TestVersionFlag:
-    def test_version_flag_prints_and_exits_zero(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_version_flag_prints_and_exits_zero(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["--version"]) == 0
         out = capsys.readouterr().out
         assert out.startswith("mayhem ")
 
     def test_version_reports_the_installed_distribution_when_present(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import importlib
 
@@ -834,9 +833,7 @@ class TestVersionFlag:
         from importlib.metadata import version
 
         monkeypatch.setattr(version, "__call__", lambda name: "9.9.9", raising=False)
-        monkeypatch.setattr(
-            "importlib.metadata.version", lambda name: "9.9.9", raising=False
-        )
+        monkeypatch.setattr("importlib.metadata.version", lambda name: "9.9.9", raising=False)
         assert app_mod.mayhem_version() == "9.9.9"
 
     def test_version_falls_back_to_a_source_marker(self) -> None:

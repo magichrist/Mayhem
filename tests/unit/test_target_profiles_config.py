@@ -281,7 +281,5 @@ def test_profile_file_reader_ignores_a_drill_specs_targets(tmp_path: Path):
 
 def test_a_config_document_still_reads_its_targets(tmp_path: Path):
     """The guard is the spec marker, not the presence of ``targets:``."""
-    path = _write_yaml(
-        tmp_path / "mayhem.yaml", {"apiVersion": "mayhem/v1", "targets": VALID_RAW}
-    )
+    path = _write_yaml(tmp_path / "mayhem.yaml", {"apiVersion": "mayhem/v1", "targets": VALID_RAW})
     assert sorted(load_profiles_from_mayhem_yaml(path)) == ["dev", "prod"]

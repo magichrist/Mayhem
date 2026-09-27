@@ -21,14 +21,6 @@ from typing import TYPE_CHECKING
 
 from mayhem.domain.catalog import all_definitions
 from mayhem.domain.common import utc_now
-from mayhem.domain.coverage_graph import (
-    GRAPH_SCHEMA_VERSION,
-    CoverageDelta,
-    CoverageEdge,
-    CoverageGraph,
-    CoverageNode,
-    build_edges,
-)
 from mayhem.domain.coverage import (
     CellFilters,
     CellState,
@@ -38,6 +30,13 @@ from mayhem.domain.coverage import (
     CoverageSummary,
     ResilienceCell,
     transition,
+)
+from mayhem.domain.coverage_graph import (
+    GRAPH_SCHEMA_VERSION,
+    CoverageDelta,
+    CoverageGraph,
+    CoverageNode,
+    build_edges,
 )
 from mayhem.infra.ranking import rank_resilience_cells
 

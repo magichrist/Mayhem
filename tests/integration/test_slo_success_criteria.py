@@ -84,11 +84,21 @@ def test_a_failing_slo_is_recorded_as_a_failure() -> None:
     from mayhem.cli.lifecycle import _slo_from_plan
 
     plan = _plan(
-        [{"metric": "cpu.saturation", "kind": "saturation", "operator": "lte", "threshold": 0.8, "unit": "ratio"}]
+        [
+            {
+                "metric": "cpu.saturation",
+                "kind": "saturation",
+                "operator": "lte",
+                "threshold": 0.8,
+                "unit": "ratio",
+            }
+        ]
     )
     _, criteria = _slo_from_plan(plan)
     provider = StaticObservationProvider({"cpu.saturation": 0.99})
-    outcomes = evaluate_all(criteria, collect(provider, (ObservationQuery(metric="cpu.saturation", unit="ratio"),)))
+    outcomes = evaluate_all(
+        criteria, collect(provider, (ObservationQuery(metric="cpu.saturation", unit="ratio"),))
+    )
     assert outcomes[0].passed is False
     assert outcomes[0].kind is CriterionKind.SATURATION
 
@@ -96,7 +106,9 @@ def test_a_failing_slo_is_recorded_as_a_failure() -> None:
 def test_missing_observation_degrades_instead_of_passing() -> None:
     from mayhem.cli.lifecycle import _slo_from_plan
 
-    plan = _plan([{"metric": "absent.metric", "kind": "latency", "operator": "lte", "threshold": 1.0}])
+    plan = _plan(
+        [{"metric": "absent.metric", "kind": "latency", "operator": "lte", "threshold": 1.0}]
+    )
     _, criteria = _slo_from_plan(plan)
     outcomes = evaluate_all(criteria, ())
     assert outcomes[0].passed is False
@@ -139,7 +151,9 @@ def test_evidence_file_keeps_provenance_and_drops_secrets(tmp_path) -> None:
         target_profile=None,
         engine="kubernetes",
         safety_decisions=(),
-        step_reports=({"detail": "password=hunter2-plaintext", "registry_token": "reg-secret-xyz"},),
+        step_reports=(
+            {"detail": "password=hunter2-plaintext", "registry_token": "reg-secret-xyz"},
+        ),
         lease_timeline=(),
         observations=(),
         verdict="pass",

@@ -44,14 +44,18 @@ def _envelope(run_id: str, **kwargs):
 
 def test_recovery_that_restores_the_system_proves_clean(tmp_path) -> None:
     assessment = assess_residual_impact(
-        ImpactSnapshot(label="before", values={"restarts": 0.0, "replicas": 3.0}, source="topology"),
+        ImpactSnapshot(
+            label="before", values={"restarts": 0.0, "replicas": 3.0}, source="topology"
+        ),
         ImpactSnapshot(label="after", values={"restarts": 0.0, "replicas": 3.0}, source="topology"),
     )
     assert assessment.status == CLEAN
     store = Store.open_migrated(tmp_path / "r.db")
     try:
         write_evidence(store, _envelope("run-clean", residual_impact=assessment.to_dict()))
-        rows = store.query("SELECT envelope_json FROM evidence_envelopes WHERE run_id = 'run-clean'")
+        rows = store.query(
+            "SELECT envelope_json FROM evidence_envelopes WHERE run_id = 'run-clean'"
+        )
     finally:
         store.close()
     assert json.loads(dict(rows[0])["envelope_json"])["residual_impact"]["status"] == CLEAN
@@ -164,7 +168,9 @@ def test_cli_recovery_report_reflects_the_stored_assessment(tmp_path) -> None:
     finally:
         store.close()
 
-    result = CliRunner().invoke(inspect_residual, ["run-1", "--from-observations", "--json"], obj=_ctx(db))
+    result = CliRunner().invoke(
+        inspect_residual, ["run-1", "--from-observations", "--json"], obj=_ctx(db)
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == CLEAN
 

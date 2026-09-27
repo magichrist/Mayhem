@@ -46,7 +46,6 @@ It deliberately does **not** validate:
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 import tomllib
@@ -57,7 +56,6 @@ import click
 
 from mayhem.cli.app import app
 from mayhem.cli.command_registry import COMMAND_SPECS
-from mayhem.cli.output import OUTPUT_SCHEMA_VERSION
 from mayhem.controller.k8s_runtime import k8s_available_faults
 from mayhem.domain.catalog import CATALOG
 from mayhem.providers.builtin import create_builtin_registry
@@ -256,9 +254,7 @@ def _iter_doc_invocations(text: str) -> Iterator[tuple[int, list[str]]]:
                 if words and words[0] == "mayhem":
                     yield lineno, words[1:]
 
-
-# --- command inventory -----------------------------------------------------
-
+    # --- command inventory -----------------------------------------------------
 
     executable = {
         (spec.name, spec.workflow, spec.help_group, spec.mutating) for spec in COMMAND_SPECS
@@ -267,7 +263,6 @@ def _iter_doc_invocations(text: str) -> Iterator[tuple[int, list[str]]]:
         "docs/reference/cli.md command inventory drifted from the command registry. "
         f"missing={sorted(executable - documented)} extra={sorted(documented - executable)}"
     )
-
 
     assert active <= documented, sorted(active - documented)
 

@@ -422,6 +422,7 @@ def inspect_residual(
 
 inspect.add_command(replay_group)
 
+
 @inspect.command("graph")
 @click.option("--service", default=None, help="Only nodes for this service.")
 @click.option("--engine", default=None, help="Only nodes for this engine.")
@@ -477,7 +478,9 @@ def inspect_graph(
         )
         for edge in graph.edges:
             if edge.source == node.service and edge.target == node.fault_family:
-                click.echo(f"    -> {edge.target} ({edge.evidence_status}, {edge.weight} attempt(s))")
+                click.echo(
+                    f"    -> {edge.target} ({edge.evidence_status}, {edge.weight} attempt(s))"
+                )
 
 
 @inspect.command("coverage-diff")

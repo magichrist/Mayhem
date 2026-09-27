@@ -58,9 +58,9 @@ def test_plan_only_commands_never_build_an_engine(tmp_path, monkeypatch) -> None
     )
     from mayhem.domain.evidence_bundle import build_bundle
 
-    bundle_dir = build_bundle(evidence={"run_id": "r1", "redaction_metrics": {"policy_version": "1"}}).write(
-        tmp_path / "bundle"
-    )
+    bundle_dir = build_bundle(
+        evidence={"run_id": "r1", "redaction_metrics": {"policy_version": "1"}}
+    ).write(tmp_path / "bundle")
     substitutions = {"SCENARIO": str(scenario), "BUNDLE": str(bundle_dir)}
     app = _app()
     for group, command, positionals, extra in PLAN_ONLY_COMMANDS:
@@ -78,6 +78,7 @@ def test_game_day_start_requires_execute(tmp_path, monkeypatch) -> None:
     db = tmp_path / "gd.db"
     Store.open_migrated(db).close()
     app = _app()
+
     # The root group rewrites ctx.obj from its own --db option, so every
     # invocation must carry it explicitly.
     def _gd(*args: str) -> object:
@@ -135,9 +136,7 @@ def test_new_outputs_render_in_all_three_modes(tmp_path) -> None:
     for args in invocations:
         text = CliRunner().invoke(app, args, obj=_ctx(db))
         as_json = CliRunner().invoke(app, [*args, "--json"], obj=_ctx(db))
-        as_yaml = CliRunner().invoke(
-            app, ["--format", "yaml", *args], obj=_ctx(db)
-        )
+        as_yaml = CliRunner().invoke(app, ["--format", "yaml", *args], obj=_ctx(db))
         assert text.exit_code in (0, 1), f"{args}: {text.output}"
         assert as_json.exit_code in (0, 1), f"{args}: {as_json.output}"
         assert as_yaml.exit_code in (0, 1), f"{args}: {as_yaml.output}"
@@ -153,10 +152,14 @@ def test_new_outputs_render_in_all_three_modes(tmp_path) -> None:
 def test_remote_connectors_are_bounded() -> None:
     import inspect as py_inspect
 
-    from mayhem.observability import prometheus, loki
+    from mayhem.observability import loki, prometheus
 
     for module in (prometheus, loki):
-        signature = py_inspect.signature(module.__dict__["fetch_json"].__globals__ and module.PrometheusConnector.__init__ if module is prometheus else module.LokiConnector.__init__)
+        signature = py_inspect.signature(
+            module.__dict__["fetch_json"].__globals__ and module.PrometheusConnector.__init__
+            if module is prometheus
+            else module.LokiConnector.__init__
+        )
         assert "timeout_s" in signature.parameters
         assert "max_bytes" in signature.parameters
 
@@ -220,10 +223,10 @@ def test_campaign_checkpoints_survive_a_controller_restart(tmp_path) -> None:
 
 
 def test_game_day_session_survives_a_controller_restart(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
     from mayhem.domain.game_day import OperatorAcknowledgement, SessionState, start
     from mayhem.infra.game_day_repository import GameDayRepository
-
-    from datetime import UTC, datetime, timedelta
 
     db = tmp_path / "gd.db"
     store = Store.open_migrated(db)
@@ -263,7 +266,7 @@ def test_sandbox_rejects_undeclared_mutation() -> None:
 
 def test_pack_loader_rejects_a_mutating_pack_without_a_grant() -> None:
     from mayhem.providers.loader import PackLoader
-    from mayhem.providers.pack import PackValidationError, ProviderManifest, FaultPack
+    from mayhem.providers.pack import FaultPack, PackValidationError, ProviderManifest
     from mayhem.providers.permissions import SandboxRefusal
 
     pack = FaultPack(

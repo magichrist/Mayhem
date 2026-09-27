@@ -43,7 +43,11 @@ def test_blocked_rows_name_a_source_of_truth_and_next_step() -> None:
 
 
 def test_catalog_only_rows_are_visible_and_not_supported() -> None:
-    rows = [row for row in build_capability_dashboard(engine="docker").rows if "catalog" in row.remediation]
+    rows = [
+        row
+        for row in build_capability_dashboard(engine="docker").rows
+        if "catalog" in row.remediation
+    ]
     assert rows
     for row in rows:
         assert row.supported is False

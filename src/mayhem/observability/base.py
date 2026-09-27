@@ -36,10 +36,10 @@ def fetch_json(
     """GET a JSON document with a timeout and a hard response-size cap."""
     import json
 
-    request = urllib.request.Request(url, headers=headers or {})  # noqa: S310
+    request = urllib.request.Request(url, headers=headers or {})
     open_fn = opener if opener is not None else urllib.request.urlopen
     try:
-        with open_fn(request, timeout=timeout_s) as response:  # noqa: S310
+        with open_fn(request, timeout=timeout_s) as response:
             body = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         raise ConnectorError(f"HTTP {exc.code} from connector") from exc

@@ -77,12 +77,16 @@ class ReplayRepository:
             )
 
     def load(self, run_id: str) -> ReplayCapsule | None:
-        rows = self._store.query("SELECT capsule_json FROM replay_capsules WHERE run_id = ?", (run_id,))
+        rows = self._store.query(
+            "SELECT capsule_json FROM replay_capsules WHERE run_id = ?", (run_id,)
+        )
         if not rows:
             return None
         raw = rows[0]["capsule_json"]
         return ReplayCapsule.model_validate_json(raw)
 
     def list_run_ids(self) -> tuple[str, ...]:
-        rows = self._store.query("SELECT run_id FROM replay_capsules ORDER BY created_at DESC, run_id")
+        rows = self._store.query(
+            "SELECT run_id FROM replay_capsules ORDER BY created_at DESC, run_id"
+        )
         return tuple(str(row["run_id"]) for row in rows)

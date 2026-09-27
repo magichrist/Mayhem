@@ -44,10 +44,12 @@ def _create(db, **overrides) -> str:
 def test_approval_flow_from_plan_to_completion(tmp_path) -> None:
     from mayhem.cli.game_day import (
         approve,
-        complete_cmd as complete,
         list_sessions,
         show,
         start_cmd,
+    )
+    from mayhem.cli.game_day import (
+        complete_cmd as complete,
     )
     from mayhem.infra.game_day_repository import GameDayRepository
     from mayhem.infra.store import Store

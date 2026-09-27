@@ -101,9 +101,7 @@ class EvidenceBundle:
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
         for name, payload in self.artifacts.items():
-            (target / name).write_text(
-                json.dumps(payload, indent=2, sort_keys=True, default=str)
-            )
+            (target / name).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
         (target / "manifest.json").write_text(
             json.dumps(self.manifest.to_dict(), indent=2, sort_keys=True)
         )
@@ -171,9 +169,7 @@ def build_bundle(
         previous_root=previous_root,
         signature=signature,
         signer=signer,
-        redaction_policy=str(
-            (evidence.get("redaction_metrics") or {}).get("policy_version", "")
-        ),
+        redaction_policy=str((evidence.get("redaction_metrics") or {}).get("policy_version", "")),
         created_at=created_at,
     )
     return EvidenceBundle(manifest=manifest, artifacts=artifacts)
@@ -229,9 +225,7 @@ def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
             {"previous": running, "name": artifact["name"], "digest": computed}
         )
         if expected_chain != artifact.get("chain", ""):
-            errors.append(
-                f"artifact {artifact['name']!r} is out of chain order or was reordered"
-            )
+            errors.append(f"artifact {artifact['name']!r} is out of chain order or was reordered")
             continue
         running = expected_chain
 

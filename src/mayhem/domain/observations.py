@@ -130,7 +130,9 @@ class SloCriterion:
             criterion_id=self.criterion_id,
             kind=self.kind,
             passed=passed,
-            reason="" if passed else f"{value}{self.unit} violates {self.operator.value} {self.threshold}{self.unit}",
+            reason=""
+            if passed
+            else f"{value}{self.unit} violates {self.operator.value} {self.threshold}{self.unit}",
             observed=value,
             threshold=self.threshold,
             unit=self.unit,
@@ -226,5 +228,7 @@ def provenance_summary(observations: tuple[ObservationResult, ...]) -> dict[str,
         "count": len(observations),
         "available": sum(1 for observation in observations if observation.available),
         "missing": sum(1 for observation in observations if not observation.available),
-        "sources": sorted({observation.provenance for observation in observations if observation.provenance}),
+        "sources": sorted(
+            {observation.provenance for observation in observations if observation.provenance}
+        ),
     }

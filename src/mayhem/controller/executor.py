@@ -72,8 +72,8 @@ if TYPE_CHECKING:
     from mayhem.controller.resource_manager import ResourceManager
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.checks import SteadyStateCheck
-    from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.execution_intent import ExecutionIntent
+    from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.identity import ProcessRuntimeIdentity
     from mayhem.domain.resolution import ResolvedPodTarget
     from mayhem.domain.runtime_context import RuntimeContext

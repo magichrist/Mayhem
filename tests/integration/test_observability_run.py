@@ -67,11 +67,11 @@ def test_span_attributes_never_reach_the_evidence(tmp_path) -> None:
 
 def test_connector_failure_degrades_evidence_instead_of_claiming_success() -> None:
     from mayhem.domain.observations import (
+        CriterionKind,
+        CriterionOperator,
         ObservationQuery,
         ObservationStatus,
         SloCriterion,
-        CriterionKind,
-        CriterionOperator,
     )
     from mayhem.providers.observation import HttpObservationProvider
 

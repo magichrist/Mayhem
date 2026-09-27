@@ -557,9 +557,7 @@ def select_target_profile(
     ``profile`` is the configuration overlay (``mayhem.{profile}.yaml``), not a
     target-profile name.
     """
-    return select_profile(
-        effective_target_profiles(config_path, profile, environ=environ), target
-    )
+    return select_profile(effective_target_profiles(config_path, profile, environ=environ), target)
 
 
 def snapshot_id_for(config: MayhemConfig) -> str:

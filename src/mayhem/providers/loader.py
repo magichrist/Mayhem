@@ -115,9 +115,7 @@ class PackLoader:
         self._grants[provider_id] = permissions
 
     @staticmethod
-    def _require_mutation_grant(
-        pack: FaultPack, permissions: ProviderPermissionSet
-    ) -> None:
+    def _require_mutation_grant(pack: FaultPack, permissions: ProviderPermissionSet) -> None:
         if not pack.faults or permissions.mutating:
             return
         for fault in pack.faults:

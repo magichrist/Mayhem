@@ -34,9 +34,7 @@ class SandboxRefusal(Exception):
         self.provider_id = provider_id
         self.permission = permission
         self.reason = reason
-        super().__init__(
-            f"provider {provider_id!r} denied {permission!r}: {reason}"
-        )
+        super().__init__(f"provider {provider_id!r} denied {permission!r}: {reason}")
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -90,10 +88,7 @@ class ProviderPermissionSet:
         raise SandboxRefusal(
             self.provider_id,
             permission.value,
-            reason
-            or (
-                "not granted; add an explicit permission grant for this provider"
-            ),
+            reason or ("not granted; add an explicit permission grant for this provider"),
         )
 
     def check(self, requested: frozenset[ProviderPermission]) -> tuple[str, ...]:

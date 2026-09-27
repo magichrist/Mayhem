@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+
 # ── scenarios: coercion and constraint branches ──────────────────────────────
 def test_number_variable_rejects_non_numeric() -> None:
     from mayhem.domain.scenarios import Scenario, ScenarioError, resolve_variables
@@ -161,7 +162,11 @@ def test_http_provider_reports_an_http_error_code(monkeypatch) -> None:
 
     def raise_http_error(request: object, timeout: float | None = None) -> object:
         raise urllib.error.HTTPError(
-            "http://svc", 503, "Service Unavailable", {}, None  # type: ignore[arg-type]
+            "http://svc",
+            503,
+            "Service Unavailable",
+            {},
+            None,  # type: ignore[arg-type]
         )
 
     monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
@@ -178,9 +183,7 @@ def test_process_provider_without_an_injected_runner() -> None:
     from mayhem.domain.observations import ObservationQuery
     from mayhem.providers.observation import ProcessObservationProvider
 
-    result = ProcessObservationProvider().observe(
-        ObservationQuery(metric="procs", target="echo 7")
-    )
+    result = ProcessObservationProvider().observe(ObservationQuery(metric="procs", target="echo 7"))
     assert result.value == 7.0
     assert result.provenance == "process"
 
@@ -264,9 +267,7 @@ def test_prometheus_uses_the_promql_label_when_present() -> None:
     def opener(request: object, timeout: float | None = None) -> _Response:
         seen.append(getattr(request, "full_url", ""))
         return _Response(
-            json.dumps(
-                {"status": "success", "data": {"result": [{"value": [1, "1.5"]}]}}
-            ).encode()
+            json.dumps({"status": "success", "data": {"result": [{"value": [1, "1.5"]}]}}).encode()
         )
 
     PrometheusConnector("http://prom:9090", opener=opener).observe(
@@ -335,7 +336,7 @@ def test_loki_skips_malformed_streams_and_entries() -> None:
         },
     }
     connector = LokiConnector("http://loki:3100", opener=_opener(payload))
-    assert connector.query_lines(LogQuery(selector="{app=\"x\"}")) == ("good",)
+    assert connector.query_lines(LogQuery(selector='{app="x"}')) == ("good",)
 
 
 def test_loki_query_sends_start_and_end() -> None:
@@ -348,7 +349,7 @@ def test_loki_query_sends_start_and_end() -> None:
         return _Response(json.dumps({"status": "success", "data": {"result": []}}).encode())
 
     LokiConnector("http://loki:3100", opener=opener).query_lines(
-        LogQuery(selector="{app=\"x\"}", start="t0", end="t1", limit=5)
+        LogQuery(selector='{app="x"}', start="t0", end="t1", limit=5)
     )
     assert "start=t0" in seen[0]
     assert "end=t1" in seen[0]
@@ -358,9 +359,9 @@ def test_loki_query_sends_start_and_end() -> None:
 def test_log_query_to_dict() -> None:
     from mayhem.observability.loki import LogQuery
 
-    query = LogQuery(selector="{app=\"x\"}", start="t0", end="t1", limit=7, labels={"a": "b"})
+    query = LogQuery(selector='{app="x"}', start="t0", end="t1", limit=7, labels={"a": "b"})
     assert query.to_dict() == {
-        "selector": "{app=\"x\"}",
+        "selector": '{app="x"}',
         "start": "t0",
         "end": "t1",
         "limit": 7,
@@ -374,7 +375,11 @@ def test_http_error_status_becomes_a_connector_error() -> None:
 
     def opener(request: object, timeout: float | None = None) -> object:
         raise urllib.error.HTTPError(
-            "http://x", 502, "Bad Gateway", {}, None  # type: ignore[arg-type]
+            "http://x",
+            502,
+            "Bad Gateway",
+            {},
+            None,  # type: ignore[arg-type]
         )
 
     with pytest.raises(ConnectorError, match="HTTP 502"):
@@ -493,9 +498,7 @@ def test_coverage_node_maturity_bands() -> None:
 def test_bundle_manifest_without_a_redaction_policy_is_refused() -> None:
     from mayhem.domain.evidence_bundle import build_bundle, verify_bundle
 
-    bundle = build_bundle(
-        evidence={"run_id": "r", "redaction_metrics": {"policy_version": "1"}}
-    )
+    bundle = build_bundle(evidence={"run_id": "r", "redaction_metrics": {"policy_version": "1"}})
     # Strip the policy the builder derived from the evidence marker.
     stripped = type(bundle)(
         manifest=type(bundle.manifest)(
@@ -539,9 +542,7 @@ def test_drill_spec_accepts_the_documented_slo_block() -> None:
         {
             "kind": "drill",
             "name": "checkout-slo",
-            "containers": {
-                "checkout": {"faults": [{"fault": "cpu.saturate", "duration": "1s"}]}
-            },
+            "containers": {"checkout": {"faults": [{"fault": "cpu.saturate", "duration": "1s"}]}},
             "execution": [{"sequential": ["checkout"]}],
             "slo": [
                 {
@@ -559,9 +560,10 @@ def test_drill_spec_accepts_the_documented_slo_block() -> None:
 
 
 def test_planner_carries_spec_slo_into_the_plan() -> None:
+    from tests.conftest import build_compose_runtime_graph
+
     from mayhem.controller.planner import plan_drill
     from mayhem.domain.experiments import DrillSpec
-    from tests.conftest import build_compose_runtime_graph
 
     spec = DrillSpec.model_validate(
         {

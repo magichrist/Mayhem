@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
-import re
 import tarfile
 import zipfile
 from email.parser import Parser
@@ -36,7 +34,9 @@ def verify(dist: Path) -> list[tuple[str, str, str]]:
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         metadata_name = next((name for name in names if name.endswith(".dist-info/METADATA")), None)
-        entry_name = next((name for name in names if name.endswith(".dist-info/entry_points.txt")), None)
+        entry_name = next(
+            (name for name in names if name.endswith(".dist-info/entry_points.txt")), None
+        )
         if metadata_name is None:
             _fail(results, "wheel-metadata", "METADATA missing")
             return results
@@ -54,7 +54,10 @@ def verify(dist: Path) -> list[tuple[str, str, str]]:
             _fail(results, "no-extras", "unexpected optional extras")
         else:
             _pass(results, "no-extras")
-        if entry_name is None or "mayhem = mayhem.cli.app:main" not in archive.read(entry_name).decode():
+        if (
+            entry_name is None
+            or "mayhem = mayhem.cli.app:main" not in archive.read(entry_name).decode()
+        ):
             _fail(results, "console-scripts", "mayhem entry point missing")
         else:
             _pass(results, "console-scripts")

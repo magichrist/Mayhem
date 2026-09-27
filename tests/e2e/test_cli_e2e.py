@@ -186,9 +186,7 @@ class TestToolkitGroup:
         assert data["capabilities"]
         assert {"total", "supported", "blocked"} <= set(data["summary"])
 
-    def test_capabilities_accepts_a_yaml_format(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_capabilities_accepts_a_yaml_format(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = main(["--format", "yaml", "discover", "capabilities"])
         assert rc == 0
         payload = yaml.safe_load(capsys.readouterr().out)
@@ -361,7 +359,9 @@ class TestTopologyGroup:
         assert "depends_on" in edge_kinds
 
     def test_discover_compose_with_directory(self, capsys: pytest.CaptureFixture[str]) -> None:
-        rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE.parent), "--runtime", "docker"])
+        rc = main(
+            ["discover", "topology", "--compose", str(COMPOSE_FILE.parent), "--runtime", "docker"]
+        )
         assert rc == 0
 
     def test_discover_compose_has_drift_report(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -989,7 +989,9 @@ class TestCaseTopology:
     def test_drift_has_missing_services(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without runtime, all services should show as missing."""
         with patch("mayhem.topology.providers.adapter_registry.best_effort", return_value=None):
-            rc = main(["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"])
+            rc = main(
+                ["discover", "topology", "--compose", str(COMPOSE_FILE), "--runtime", "docker"]
+            )
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         drift = data.get("drift", {})

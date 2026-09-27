@@ -13,7 +13,7 @@ import hashlib
 import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from mayhem.domain.provider import ProviderPermission
 
@@ -131,9 +131,7 @@ def validate_pack(
             f"pack digest mismatch: declared {pack.declared_digest[:12]}, computed {digest[:12]}"
         )
     if expected_digest and expected_digest != digest:
-        problems.append(
-            f"pack digest does not match the expected {expected_digest[:12]}"
-        )
+        problems.append(f"pack digest does not match the expected {expected_digest[:12]}")
 
     if not pack.signed:
         if not allow_development_only:
@@ -155,9 +153,7 @@ def validate_pack(
         if lowered and lowered.startswith(FORBIDDEN_TARGET_PREFIXES):
             problems.append(f"fault {fault.id!r} names an unsafe target {fault.target!r}")
         if not fault.reversible and not fault.compensation:
-            problems.append(
-                f"fault {fault.id!r} is irreversible with no compensation"
-            )
+            problems.append(f"fault {fault.id!r} is irreversible with no compensation")
         if not fault.compensation:
             problems.append(f"fault {fault.id!r} declares no compensation")
 
@@ -166,9 +162,7 @@ def validate_pack(
         requested |= set(fault.permissions)
     ungranted = sorted(p.value for p in requested - granted_permissions)
     if ungranted:
-        problems.append(
-            "pack requests permissions that were not granted: " + ", ".join(ungranted)
-        )
+        problems.append("pack requests permissions that were not granted: " + ", ".join(ungranted))
 
     if problems:
         raise PackValidationError(

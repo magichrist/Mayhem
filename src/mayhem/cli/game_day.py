@@ -22,6 +22,8 @@ from mayhem.domain.game_day import (
     GameDaySession,
     OperatorAcknowledgement,
     SessionState,
+)
+from mayhem.domain.game_day import (
     start as start_session,
 )
 from mayhem.infra.game_day_repository import GameDayRepository
@@ -127,9 +129,7 @@ def approve(
             click.echo(f"unknown game-day session: {session_id}", err=True)
             raise SystemExit(1)
         stored = repo.save(
-            session.with_approval(
-                OperatorAcknowledgement(actor=actor, role=role, reason=reason)
-            )
+            session.with_approval(OperatorAcknowledgement(actor=actor, role=role, reason=reason))
         )
     finally:
         store.close()
@@ -201,7 +201,9 @@ def list_sessions(db_opt: str | None, as_json: bool) -> None:
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 @click.pass_context
-def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | None, as_json: bool) -> None:
+def start_cmd(
+    ctx: click.Context, session_id: str, execute: bool, db_opt: str | None, as_json: bool
+) -> None:
     """Start a session. Without ``--execute`` this is a plan-only preview."""
     from mayhem.cli.app import implicit_execution_allowed
     from mayhem.cli.output import echo_machine
@@ -224,13 +226,13 @@ def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | 
                 click.echo(f"cannot start: {exc}", err=True)
                 raise SystemExit(1) from exc
             if not echo_machine(
-                    {
-                        "started": False,
-                        "reason": "pass --execute to start",
-                        "plan": planned.to_dict(),
-                    },
-                    as_json=as_json,
-                ):
+                {
+                    "started": False,
+                    "reason": "pass --execute to start",
+                    "plan": planned.to_dict(),
+                },
+                as_json=as_json,
+            ):
                 click.echo(
                     f"plan only: session {session_id} would start "
                     f"(approvers: {', '.join(session.gate.approved_by) or 'none'}); "
@@ -263,9 +265,7 @@ def start_cmd(ctx: click.Context, session_id: str, execute: bool, db_opt: str | 
 @click.option("--operator", required=True, help="Who is pausing the session.")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def pause_cmd(
-    session_id: str, operator: str, db_opt: str | None, as_json: bool
-) -> None:
+def pause_cmd(session_id: str, operator: str, db_opt: str | None, as_json: bool) -> None:
     """Pause a running session."""
     from mayhem.domain.game_day import pause as pause_session
 
@@ -278,9 +278,7 @@ def pause_cmd(
             raise SystemExit(1)
         try:
             stored = repo.save(
-                pause_session(
-                    session, OperatorAcknowledgement(actor=operator, role="operator")
-                )
+                pause_session(session, OperatorAcknowledgement(actor=operator, role="operator"))
             )
         except GameDayError as exc:
             click.echo(f"refused: {exc}", err=True)
@@ -303,9 +301,7 @@ def pause_cmd(
 )
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def complete_cmd(
-    session_id: str, evidence_bundle: str, db_opt: str | None, as_json: bool
-) -> None:
+def complete_cmd(session_id: str, evidence_bundle: str, db_opt: str | None, as_json: bool) -> None:
     """Complete a session with its final evidence bundle."""
     from mayhem.domain.game_day import complete as complete_session
 

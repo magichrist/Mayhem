@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.package
 
 
@@ -28,7 +27,11 @@ def test_wheel_cli_smoke(tmp_path: Path) -> None:
     subprocess.run([str(python), "-m", "pip", "install", "--quiet", str(wheel)], check=True)
     env = {**os.environ, "PATH": f"{venv / 'bin'}:{os.environ['PATH']}", "HOME": str(tmp_path)}
     help_result = subprocess.run(
-        [str(venv / "bin" / "mayhem"), "--help"], capture_output=True, text=True, env=env, cwd=tmp_path
+        [str(venv / "bin" / "mayhem"), "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
     )
     assert help_result.returncode == 0, help_result.stderr
     capability_result = subprocess.run(

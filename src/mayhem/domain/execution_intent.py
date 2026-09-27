@@ -146,9 +146,7 @@ class ExecutionIntent:
         mismatch — an approval that approves nothing authorizes nothing.
         """
         fields: list[str] = []
-        if not self.plan_hash:
-            fields.append("plan_hash")
-        elif plan_hash and self.plan_hash != plan_hash:
+        if not self.plan_hash or (plan_hash and self.plan_hash != plan_hash):
             fields.append("plan_hash")
         if self.engine and engine and self.engine != engine:
             fields.append("engine")
@@ -246,9 +244,7 @@ def require_execution_intent(
             },
             remediation="re-approve against the current plan and retry",
         )
-    fields = intent.mismatches(
-        plan_hash=plan_hash, engine=engine, target_identity=target_identity
-    )
+    fields = intent.mismatches(plan_hash=plan_hash, engine=engine, target_identity=target_identity)
     if fields:
         raise ExecutionIntentRefused(
             INTENT_MISMATCH,
@@ -291,8 +287,7 @@ def require_explicit_approval(
         return
     raise ExecutionIntentRefused(
         INTENT_REQUIRED,
-        f"{action} refused: {action} mutates the target and needs an explicit "
-        "approval flag",
+        f"{action} refused: {action} mutates the target and needs an explicit approval flag",
         details={"action": action, "implicit_execution_env": IMPLICIT_EXECUTION_ENV},
     )
 

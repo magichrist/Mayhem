@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from mayhem.observability.base import ConnectorError, fetch_json, redacted
-from mayhem.observability.loki import LokiConnector, LogQuery
+from mayhem.observability.loki import LogQuery, LokiConnector
 from mayhem.observability.otel import (
     SPAN_NAMES,
     InMemorySpanSink,
@@ -21,7 +21,7 @@ from mayhem.observability.prometheus import MetricQuery, PrometheusConnector
 
 
 class _FakeResponse(io.BytesIO):
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> _FakeResponse:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -111,7 +111,7 @@ def test_prometheus_observe_success_path() -> None:
 # ── Loki ─────────────────────────────────────────────────────────────────────
 def test_loki_returns_redacted_lines() -> None:
     connector = LokiConnector("http://loki:3100", opener=_opener(LOKI_OK))
-    lines = connector.query_lines(LogQuery(selector="{app=\"checkout\"}"))
+    lines = connector.query_lines(LogQuery(selector='{app="checkout"}'))
     assert lines == ("line one", "line two")
 
 
@@ -119,13 +119,11 @@ def test_loki_redacts_tokens_in_log_lines() -> None:
     payload = {
         "status": "success",
         "data": {
-            "result": [
-                {"stream": {}, "values": [["1", "auth failed token=ghp_supersecretvalue"]]}
-            ]
+            "result": [{"stream": {}, "values": [["1", "auth failed token=ghp_supersecretvalue"]]}]
         },
     }
     connector = LokiConnector("http://loki:3100", opener=_opener(payload))
-    lines = connector.query_lines(LogQuery(selector="{app=\"checkout\"}"))
+    lines = connector.query_lines(LogQuery(selector='{app="checkout"}'))
     assert "ghp_supersecretvalue" not in lines[0]
     assert "REDACTED" in lines[0]
 
@@ -133,18 +131,18 @@ def test_loki_redacts_tokens_in_log_lines() -> None:
 def test_loki_error_status_raises() -> None:
     connector = LokiConnector("http://loki:3100", opener=_opener(LOKI_ERROR))
     with pytest.raises(ConnectorError, match="loki query failed"):
-        connector.query_lines(LogQuery(selector="{app=\"checkout\"}"))
+        connector.query_lines(LogQuery(selector='{app="checkout"}'))
 
 
 def test_loki_count_counts_lines() -> None:
     connector = LokiConnector("http://loki:3100", opener=_opener(LOKI_OK))
-    assert connector.count(LogQuery(selector="{app=\"checkout\"}")) == 2
+    assert connector.count(LogQuery(selector='{app="checkout"}')) == 2
 
 
 def test_loki_missing_result_list_raises() -> None:
     connector = LokiConnector("http://loki:3100", opener=_opener({"status": "success", "data": {}}))
     with pytest.raises(ConnectorError, match="no result list"):
-        connector.query_lines(LogQuery(selector="{app=\"checkout\"}"))
+        connector.query_lines(LogQuery(selector='{app="checkout"}'))
 
 
 # ── bounds, timeouts, redaction ──────────────────────────────────────────────

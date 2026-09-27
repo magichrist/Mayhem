@@ -55,9 +55,7 @@ def is_spec_document(data: Any) -> bool:
     return isinstance(data, dict) and isinstance(data.get("kind"), str)
 
 
-def parse_profiles_mapping(
-    raw: Any, source: str = "target profiles"
-) -> dict[str, TargetProfile]:
+def parse_profiles_mapping(raw: Any, source: str = "target profiles") -> dict[str, TargetProfile]:
     """Validate a raw ``targets:``/``profiles:`` mapping into target profiles.
 
     The single pure validator for the target-profile vocabulary: no file access,

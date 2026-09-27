@@ -9,7 +9,6 @@ from mayhem.cli.app import main
 from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.infra import catalog_report
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -58,9 +57,7 @@ def test_capability_dashboard_supports_json_and_explain(
     assert payload["schema_version"] == "1.0"
     assert payload["engine"] == "docker"
     assert payload["capabilities"]
-    assert {"fault_id", "engine", "supported", "blocked_reason"} <= set(
-        payload["capabilities"][0]
-    )
+    assert {"fault_id", "engine", "supported", "blocked_reason"} <= set(payload["capabilities"][0])
 
     assert main(["discover", "capabilities", "--explain", "proc.pause"]) == 0
     explain = capsys.readouterr().out

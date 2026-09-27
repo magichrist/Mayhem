@@ -11,7 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time as dtime
+from datetime import UTC, datetime
+from datetime import time as dtime
 from enum import StrEnum
 from typing import Any
 
@@ -170,8 +171,7 @@ class Scenario(BaseModel):
             for condition in step.when:
                 if condition.variable not in declared:
                     raise ScenarioError(
-                        f"step {step.id!r} conditions on undeclared variable "
-                        f"{condition.variable!r}"
+                        f"step {step.id!r} conditions on undeclared variable {condition.variable!r}"
                     )
         return self
 
@@ -280,9 +280,7 @@ def _check_constraints(variable: ScenarioVariable, value: Any) -> None:
             )
 
 
-def resolve_variables(
-    scenario: Scenario, supplied: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def resolve_variables(scenario: Scenario, supplied: dict[str, Any] | None = None) -> dict[str, Any]:
     """Merge supplied values with defaults, then validate every constraint."""
     provided = dict(supplied or {})
     unknown = sorted(set(provided) - set(scenario.variable_names()))
@@ -323,7 +321,11 @@ def compile_scenario(
             skipped.append(step.id)
             if step.else_action is not None:
                 steps.append(
-                    {"id": f"{step.id}:else", "action": dict(step.else_action), "variables": dict(resolved)}
+                    {
+                        "id": f"{step.id}:else",
+                        "action": dict(step.else_action),
+                        "variables": dict(resolved),
+                    }
                 )
     return CompiledScenario(
         scenario_name=scenario.name,

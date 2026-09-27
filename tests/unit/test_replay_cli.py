@@ -139,9 +139,8 @@ def test_cli_replay_validate_fails_on_stale_fingerprint(tmp_path) -> None:
 def test_cli_replay_validate_unknown_run_exits_nonzero(tmp_path) -> None:
     from click.testing import CliRunner
 
-    from mayhem.cli.inspect import replay_group
-
     from mayhem.cli.context import CliContext
+    from mayhem.cli.inspect import replay_group
 
     ctx_obj = CliContext(db=str(tmp_path / "replay.db"))
     Store.open_migrated(ctx_obj.db).close()
@@ -155,9 +154,7 @@ def test_tampered_capsule_fails_validation(tmp_path) -> None:
         _seed_run(store, "run-1")
         capsule = build_capsule(store, "run-1", engine="kubernetes")
         assert capsule is not None
-        tampered = ReplayCapsule.model_validate(
-            {**capsule.model_dump(mode="json"), "seed": 999}
-        )
+        tampered = ReplayCapsule.model_validate({**capsule.model_dump(mode="json"), "seed": 999})
         result = validate_replay_capsule(tampered, mode="validate")
         assert result.valid is False
         assert "capsule digest mismatch" in result.errors

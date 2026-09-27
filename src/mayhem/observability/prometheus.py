@@ -5,17 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from mayhem.observability.base import (
-    DEFAULT_TIMEOUT_S,
-    ConnectorError,
-    fetch_json,
-    redacted,
-)
 from mayhem.domain.observations import (
     PROVENANCE_PROMETHEUS,
     ObservationQuery,
     ObservationResult,
     ObservationStatus,
+)
+from mayhem.observability.base import (
+    DEFAULT_TIMEOUT_S,
+    ConnectorError,
+    fetch_json,
+    redacted,
 )
 
 

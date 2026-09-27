@@ -6,10 +6,11 @@ from typing import Any
 
 from mayhem.domain.policy import _SECRET_KEYS
 
-
 RULE_VERSION = "1"
 
-_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<user>[^:/@\s]+):(?P<password>[^@/\s]+)@")
+_URL_CREDENTIALS = re.compile(
+    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<user>[^:/@\s]+):(?P<password>[^@/\s]+)@"
+)
 _ASSIGNMENT_SECRET = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|registry[_-]?token)\s*=\s*[^\s,;]+"
 )
@@ -45,6 +46,7 @@ def redact_text(value: str) -> tuple[str, bool]:
     # Bearer first: it consumes the scheme *and* the token, so the header
     # pattern below cannot stop at the space and leave the secret behind.
     redacted = _BEARER_TOKEN.sub(lambda match: f"{match.group(1)}***REDACTED***", redacted)
+
     def _header(match: re.Match[str]) -> str:
         # Keep the scheme so the reader still sees *what* kind of credential
         # was removed, but never its value.

@@ -6,7 +6,6 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from click.testing import CliRunner
 
 from mayhem.domain.game_day import (
     ApprovalGate,
@@ -21,9 +20,7 @@ from mayhem.domain.game_day import (
     start,
 )
 
-WINDOW = FreezeWindow(
-    starts_at="2026-09-26T00:00:00Z", ends_at="2026-09-27T00:00:00Z"
-)
+WINDOW = FreezeWindow(starts_at="2026-09-26T00:00:00Z", ends_at="2026-09-27T00:00:00Z")
 INSIDE = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
 OUTSIDE = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 

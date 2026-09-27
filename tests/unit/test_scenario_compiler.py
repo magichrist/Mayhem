@@ -9,8 +9,8 @@ import pytest
 
 from mayhem.domain.scenarios import (
     Condition,
-    ConditionOperator,
     ConditionalStep,
+    ConditionOperator,
     Scenario,
     ScenarioError,
     ScenarioVariable,
@@ -194,10 +194,12 @@ def test_numeric_condition_operators() -> None:
 
 def test_in_and_contains_operators() -> None:
     assert Condition(variable="l", operator=ConditionOperator.IN, value=["a"]).evaluate({"l": "a"})
-    assert not Condition(variable="l", operator=ConditionOperator.IN, value=["b"]).evaluate({"l": "a"})
-    assert Condition(
-        variable="s", operator=ConditionOperator.CONTAINS, value="err"
-    ).evaluate({"s": "an error occurred"})
+    assert not Condition(variable="l", operator=ConditionOperator.IN, value=["b"]).evaluate(
+        {"l": "a"}
+    )
+    assert Condition(variable="s", operator=ConditionOperator.CONTAINS, value="err").evaluate(
+        {"s": "an error occurred"}
+    )
 
 
 def test_condition_on_undeclared_variable_is_refused_at_compile() -> None:
@@ -241,7 +243,10 @@ def test_compilation_is_deterministic_for_the_same_variables_and_seed() -> None:
 
 def test_a_different_seed_changes_the_digest() -> None:
     scenario = _scenario()
-    assert compile_scenario(scenario, {}, seed=1).digest != compile_scenario(scenario, {}, seed=2).digest
+    assert (
+        compile_scenario(scenario, {}, seed=1).digest
+        != compile_scenario(scenario, {}, seed=2).digest
+    )
 
 
 def test_compiled_plan_preserves_the_scenario_source() -> None:

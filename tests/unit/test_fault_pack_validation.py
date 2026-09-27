@@ -91,9 +91,7 @@ def test_unsigned_pack_is_local_development_only() -> None:
     unsigned = _pack(signature="", signer="")
     with pytest.raises(PackValidationError, match="local development only"):
         validate_pack(unsigned, granted_permissions=GRANTED)
-    report = validate_pack(
-        unsigned, granted_permissions=GRANTED, allow_development_only=True
-    )
+    report = validate_pack(unsigned, granted_permissions=GRANTED, allow_development_only=True)
     assert report["signed"] is False
     assert report["development_only"] is True
 
@@ -114,9 +112,7 @@ def test_unnamespaced_fault_id_is_refused() -> None:
         validate_pack(_pack(faults=[_fault(id="latency")]), granted_permissions=GRANTED)
 
 
-@pytest.mark.parametrize(
-    "target", ["host", "/etc/passwd", "node://n1", "ssh://root@host"]
-)
+@pytest.mark.parametrize("target", ["host", "/etc/passwd", "node://n1", "ssh://root@host"])
 def test_unsafe_targets_are_refused(target: str) -> None:
     with pytest.raises(PackValidationError, match="unsafe target"):
         validate_pack(_pack(faults=[_fault(target=target)]), granted_permissions=GRANTED)
@@ -136,9 +132,7 @@ def test_reversible_fault_with_compensation_is_accepted() -> None:
 
 # ── permissions / compatibility ──────────────────────────────────────────────
 def test_pack_requesting_ungranted_permissions_is_refused() -> None:
-    pack = _pack(
-        manifest={"provider_id": "acme.packs", "permissions": ["subprocess", "network"]}
-    )
+    pack = _pack(manifest={"provider_id": "acme.packs", "permissions": ["subprocess", "network"]})
     with pytest.raises(PackValidationError, match="not granted"):
         validate_pack(pack, granted_permissions=GRANTED)
 
@@ -187,7 +181,9 @@ def test_loader_refuses_a_mutating_pack_without_an_explicit_grant() -> None:
 
 
 def test_loader_loads_a_mutating_pack_once_the_grant_exists() -> None:
-    loader = PackLoader(grants={"acme.packs": ProviderPermissionSet.from_names("acme.packs", ("target:mutate",))})
+    loader = PackLoader(
+        grants={"acme.packs": ProviderPermissionSet.from_names("acme.packs", ("target:mutate",))}
+    )
     pack, report = loader.load(_pack().model_dump(mode="json"))
     assert pack.manifest.provider_id == "acme.packs"
     assert report["loadable"] is True

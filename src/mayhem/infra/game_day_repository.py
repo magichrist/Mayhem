@@ -7,8 +7,6 @@ a campaign status imply a session approval.
 
 from __future__ import annotations
 
-from typing import Any
-
 from mayhem.domain.game_day import GameDaySession
 from mayhem.infra.store import Store
 

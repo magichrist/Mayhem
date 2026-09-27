@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from mayhem.domain.campaign_checkpoint import CampaignCheckpoint, CheckpointState
 from mayhem.infra.store import Store
 

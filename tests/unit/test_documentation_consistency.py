@@ -49,5 +49,3 @@ def test_relative_markdown_links_resolve() -> None:
             if not destination.exists():
                 broken.append(f"{document.relative_to(ROOT)} -> {target}")
     assert not broken, "broken relative Markdown links:\n" + "\n".join(broken)
-
-

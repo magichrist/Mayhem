@@ -109,9 +109,7 @@ def test_missing_artifact_is_reported() -> None:
 
 def test_undeclared_artifact_is_reported() -> None:
     bundle = _bundle()
-    extended = replace(
-        bundle, artifacts={**bundle.artifacts, "observations.json": {"count": 1}}
-    )
+    extended = replace(bundle, artifacts={**bundle.artifacts, "observations.json": {"count": 1}})
     result = verify_bundle(extended)
     assert result.valid is False
     assert any("not in the manifest" in error for error in result.errors)
@@ -131,9 +129,7 @@ def test_unsupported_schema_is_reported() -> None:
     assert any("unsupported bundle schema" in error for error in result.errors)
 
 
-@pytest.mark.parametrize(
-    "name", ["secrets.json", "kubeconfig.json", "env_dump.json", "token.json"]
-)
+@pytest.mark.parametrize("name", ["secrets.json", "kubeconfig.json", "env_dump.json", "token.json"])
 def test_secret_bearing_extras_are_refused(name: str) -> None:
     bundle = _bundle()
     smuggled = replace(bundle, artifacts={**bundle.artifacts, name: {"k": "v"}})

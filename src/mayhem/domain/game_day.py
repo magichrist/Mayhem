@@ -137,9 +137,7 @@ class GameDaySession(BaseModel):
             raise GameDayError(
                 f"cannot move game-day session from {self.state.value!r} to {new_state.value!r}"
             )
-        return self.model_copy(
-            update={"state": new_state, "updated_at": at or self.updated_at}
-        )
+        return self.model_copy(update={"state": new_state, "updated_at": at or self.updated_at})
 
     def with_approval(self, acknowledgement: OperatorAcknowledgement) -> GameDaySession:
         return self.model_copy(
@@ -158,9 +156,7 @@ class GameDaySession(BaseModel):
         return payload
 
 
-def check_approval(
-    session: GameDaySession, *, now: datetime | None = None
-) -> ApprovalGate:
+def check_approval(session: GameDaySession, *, now: datetime | None = None) -> ApprovalGate:
     """Return the gate when the session may start, else raise with the reason."""
     moment = now or datetime.now(UTC)
     if session.window is not None and not session.window.contains(moment):
@@ -193,7 +189,9 @@ def start(session: GameDaySession, *, now: datetime | None = None) -> GameDaySes
     return session.transition(SessionState.RUNNING)
 
 
-def pause(session: GameDaySession, operator: OperatorAcknowledgement, *, at: str = "") -> GameDaySession:
+def pause(
+    session: GameDaySession, operator: OperatorAcknowledgement, *, at: str = ""
+) -> GameDaySession:
     """Operator pause; only meaningful while running."""
     if session.state is not SessionState.RUNNING:
         raise GameDayError(f"cannot pause a session in {session.state.value!r}")
@@ -209,7 +207,11 @@ def complete(session: GameDaySession, evidence_bundle: str, *, at: str = "") -> 
     if not evidence_bundle:
         raise GameDayError("a completed game day must record its evidence bundle")
     return session.model_copy(
-        update={"state": SessionState.COMPLETED, "evidence_bundle": evidence_bundle, "updated_at": at}
+        update={
+            "state": SessionState.COMPLETED,
+            "evidence_bundle": evidence_bundle,
+            "updated_at": at,
+        }
     )
 
 

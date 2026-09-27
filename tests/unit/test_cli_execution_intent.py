@@ -104,9 +104,9 @@ def _env_reads(name: str) -> set[str]:
         if not isinstance(node, ast.Attribute) or node.attr not in {"environ", "getenv"}:
             continue
         base = node.value
-        if isinstance(base, ast.Name) and base.id == "os":
-            reads.add(f"os.{node.attr}")
-        elif isinstance(base, ast.Attribute) and base.attr == "os":
+        if (isinstance(base, ast.Name) and base.id == "os") or (
+            isinstance(base, ast.Attribute) and base.attr == "os"
+        ):
             reads.add(f"os.{node.attr}")
     return reads
 
@@ -1106,7 +1106,7 @@ class TestDryRunNeverAuthorizes:
         def _boom(**_kwargs: object) -> None:
             raise AssertionError("RecoveryService.execute must not run under --dry-run")
 
-        import mayhem.cli.lifecycle as lifecycle
+        from mayhem.cli import lifecycle
 
         monkeypatch.setattr(lifecycle, "_recovery_service", _exploding_service(_boom))
         rc = main(

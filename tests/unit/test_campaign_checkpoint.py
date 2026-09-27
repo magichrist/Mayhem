@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from click.testing import CliRunner
 
 from mayhem.domain.campaign_checkpoint import (
@@ -245,7 +244,10 @@ def test_repository_survives_reopen(tmp_path) -> None:
         store.close()
     store = Store.open_migrated(db)
     try:
-        assert CampaignCheckpointRepository(store).load("camp-1")[0].state is CheckpointState.COMPENSATING
+        assert (
+            CampaignCheckpointRepository(store).load("camp-1")[0].state
+            is CheckpointState.COMPENSATING
+        )
     finally:
         store.close()
 
@@ -304,9 +306,7 @@ def test_cli_resume_plan_is_plan_only_and_reports_skips(tmp_path) -> None:
     db = tmp_path / "cp.db"
     Store.open_migrated(db).close()
     runner = CliRunner()
-    runner.invoke(
-        record_checkpoint, ["camp-1", "done", "--state", "verified"], obj=_ctx(db)
-    )
+    runner.invoke(record_checkpoint, ["camp-1", "done", "--state", "verified"], obj=_ctx(db))
     result = runner.invoke(
         resume_plan, ["camp-1", "--experiment", "done", "--experiment", "next"], obj=_ctx(db)
     )
@@ -323,9 +323,7 @@ def test_cli_resume_plan_json_and_retry_intent(tmp_path) -> None:
     Store.open_migrated(db).close()
     runner = CliRunner()
     runner.invoke(record_checkpoint, ["camp-1", "done", "--state", "verified"], obj=_ctx(db))
-    plain = runner.invoke(
-        resume_plan, ["camp-1", "--experiment", "done", "--json"], obj=_ctx(db)
-    )
+    plain = runner.invoke(resume_plan, ["camp-1", "--experiment", "done", "--json"], obj=_ctx(db))
     assert json.loads(plain.output)["skip_verified"] == ["done"]
     retried = runner.invoke(
         resume_plan,
@@ -341,12 +339,8 @@ def test_cli_resume_plan_flags_an_unsafe_plan(tmp_path) -> None:
     db = tmp_path / "cp.db"
     Store.open_migrated(db).close()
     runner = CliRunner()
-    runner.invoke(
-        record_checkpoint, ["camp-1", "mid", "--state", "compensating"], obj=_ctx(db)
-    )
-    result = runner.invoke(
-        resume_plan, ["camp-1", "--experiment", "mid", "--json"], obj=_ctx(db)
-    )
+    runner.invoke(record_checkpoint, ["camp-1", "mid", "--state", "compensating"], obj=_ctx(db))
+    result = runner.invoke(resume_plan, ["camp-1", "--experiment", "mid", "--json"], obj=_ctx(db))
     payload = json.loads(result.output)
     assert payload["safe"] is False
     assert payload["in_flight"] == ["mid"]

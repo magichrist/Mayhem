@@ -69,8 +69,8 @@ from mayhem.infra.report import report_id_for_run
 if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
-    from mayhem.domain.experiments import DrillSpec
     from mayhem.domain.execution_intent import ExecutionIntent
+    from mayhem.domain.experiments import DrillSpec
     from mayhem.domain.runtime_context import RuntimeContext
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
@@ -655,7 +655,6 @@ def _write_evidence_after_run(
     skip_gate: bool = False,
     intent: ExecutionIntent | None = None,
 ) -> EvidenceEnvelope | None:
-    import contextlib
 
     try:
         run_id = str(getattr(result, "run_id", getattr(preflight, "plan_id", "")) or "")
@@ -763,7 +762,8 @@ def _write_evidence_after_run(
             skip_gate=skip_gate,
             execution_intent=intent.to_dict() if intent is not None else None,
             action_outcomes=tuple(
-                str(getattr(getattr(s, "outcome", ""), "value", "")) for s in getattr(result, "steps", [])
+                str(getattr(getattr(s, "outcome", ""), "value", ""))
+                for s in getattr(result, "steps", [])
             ),
         )
         replay_digest = ""
@@ -778,10 +778,12 @@ def _write_evidence_after_run(
         except Exception:
             replay_digest = ""
         try:
-            from mayhem.observability.otel import InMemorySpanSink, missing_spans, record_span
+            from mayhem.observability.otel import InMemorySpanSink, record_span
 
             span_sink = InMemorySpanSink()
-            record_span(span_sink, "mayhem.plan", run_id=run_id, steps=len(getattr(plan, "steps", ())))
+            record_span(
+                span_sink, "mayhem.plan", run_id=run_id, steps=len(getattr(plan, "steps", ()))
+            )
             record_span(
                 span_sink,
                 "mayhem.approval",
@@ -789,8 +791,18 @@ def _write_evidence_after_run(
                 approved=intent is not None,
                 engine=engine,
             )
-            record_span(span_sink, "mayhem.lease", run_id=run_id, dirty=len(getattr(result, "dirty_leases", ())))
-            record_span(span_sink, "mayhem.mutation", run_id=run_id, status=str(getattr(result, "status", "")))
+            record_span(
+                span_sink,
+                "mayhem.lease",
+                run_id=run_id,
+                dirty=len(getattr(result, "dirty_leases", ())),
+            )
+            record_span(
+                span_sink,
+                "mayhem.mutation",
+                run_id=run_id,
+                status=str(getattr(result, "status", "")),
+            )
             record_span(span_sink, "mayhem.verification", run_id=run_id, verdict=verdict)
             record_span(
                 span_sink,
@@ -817,6 +829,8 @@ def _write_evidence_after_run(
         try:
             from mayhem.domain.observations import (
                 collect as collect_observations,
+            )
+            from mayhem.domain.observations import (
                 evaluate_all,
                 provenance_summary,
             )

@@ -6,8 +6,6 @@ reads a bundle directory and re-derives every hash from the bytes on disk.
 
 from __future__ import annotations
 
-import json
-
 import click
 
 from mayhem.cli.resolver import make_group
@@ -65,6 +63,8 @@ def show(path: str, as_json: bool) -> None:
 
     if echo_machine(bundle.manifest.to_dict(), as_json=as_json):
         return
-    click.echo(f"bundle schema {bundle.manifest.schema_version}, root {bundle.manifest.root_digest[:12]}")
+    click.echo(
+        f"bundle schema {bundle.manifest.schema_version}, root {bundle.manifest.root_digest[:12]}"
+    )
     for artifact in bundle.manifest.artifacts:
         click.echo(f"  {artifact['name']:<22} {artifact['digest'][:12]}")

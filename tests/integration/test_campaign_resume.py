@@ -203,8 +203,8 @@ def test_deleting_a_campaign_clears_its_checkpoints(tmp_path) -> None:
         repo = CampaignCheckpointRepository(store)
         repo.save(_cp("exp-1", CheckpointState.PENDING))
         assert repo.delete_campaign("camp-1") == 1
-        assert plan_resume(repo.load("camp-1"), "camp-1", pending_experiments=("exp-1",)).resume == (
-            "exp-1",
-        )
+        assert plan_resume(
+            repo.load("camp-1"), "camp-1", pending_experiments=("exp-1",)
+        ).resume == ("exp-1",)
     finally:
         store.close()

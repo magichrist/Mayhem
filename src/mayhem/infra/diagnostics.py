@@ -517,7 +517,9 @@ def check_engine(target_engine: str | None = None) -> list[DiagnosticRecord]:
         required = engine == needed
         found = shutil.which(engine)
         if found:
-            suffix = f"; required by the selected target (engine={target_engine})" if required else ""
+            suffix = (
+                f"; required by the selected target (engine={target_engine})" if required else ""
+            )
             records.append(
                 _record(
                     f"engine.{engine}.found",
@@ -540,12 +542,12 @@ def check_engine(target_engine: str | None = None) -> list[DiagnosticRecord]:
                     f"{engine} not found in PATH; the selected target's engine "
                     f"{target_engine!r} cannot be used until it is installed"
                 )
-                remediation = (
-                    f"install {engine} or select a target profile whose engine is present"
-                )
+                remediation = f"install {engine} or select a target profile whose engine is present"
             else:
                 message = f"{engine} not found in PATH; file presence does not prove health"
-                remediation = "install {engine} if you need it; missing optional runtimes are warnings"
+                remediation = (
+                    "install {engine} if you need it; missing optional runtimes are warnings"
+                )
             records.append(
                 _record(
                     f"engine.{engine}.missing",
