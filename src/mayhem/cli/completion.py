@@ -1,20 +1,25 @@
 """``mayhem completion SHELL`` — print a shell completion script.
 
-Click already owns the completion machinery (argument parsing, prefix
-resolution, option completion), so this command does not reimplement any of it:
-it prints the small source script Click documents for the requested shell. The
-generated file therefore cannot drift from the installed program.
+This prints Click's own completion script for the requested shell, verbatim from
+:meth:`click.shell_completion.ShellComplete.source`. That is deliberate:
+hand-rolled wrappers are how you end up binding a function name that does not
+exist (``compdef _mayhem`` instead of ``compdef _mayhem_completion``), which
+parses fine under ``zsh -n`` and then silently completes nothing.
+
+The scripts are self-contained, so you decide where they go:
 
     mayhem completion bash >> ~/.bashrc
     mayhem completion zsh  > "${fpath[1]}/_mayhem"
     mayhem completion fish > ~/.config/fish/completions/mayhem.fish
 
-Requires bash >= 4.4 (macOS ships 3.2); use zsh or fish there.
+Completion is dynamic: the shell asks the installed ``mayhem`` for candidates,
+so the list always matches the commands that build actually has.
 """
 
 from __future__ import annotations
 
 import click
+from click.shell_completion import BashComplete, FishComplete, ShellComplete, ZshComplete
 
 #: The executable users type. Keep in sync with ``[project.scripts]``.
 PROG_NAME = "mayhem"
@@ -24,33 +29,34 @@ SUPPORTED_SHELLS: tuple[str, ...] = ("bash", "zsh", "fish")
 #: ``complete_var`` Click derives from the program name: ``_<PROG>_COMPLETE``.
 COMPLETE_VAR = f"_{PROG_NAME.upper()}_COMPLETE"
 
-_SCRIPTS = {
-    "bash": f"""\
-if [[ -z "${{{COMPLETE_VAR}:-}}" ]]; then
-    eval "$({COMPLETE_VAR}=bash_source {PROG_NAME})"
-fi
-
-complete -F _{PROG_NAME} {PROG_NAME}
-""",
-    "zsh": f"""\
-#compdef {PROG_NAME}
-
-if [[ -z "${{{COMPLETE_VAR}:-}}" ]]; then
-    eval "$({COMPLETE_VAR}=zsh_source {PROG_NAME})"
-fi
-
-compdef _{PROG_NAME} {PROG_NAME}
-""",
-    "fish": f"""\
-if test -z "${{{COMPLETE_VAR}}}"
-    set -x {COMPLETE_VAR} fish_source
-    {PROG_NAME} | source
-    set -e {COMPLETE_VAR}
-end
-
-complete --no-files --command {PROG_NAME}
-""",
+_COMPLETERS = {
+    "bash": BashComplete,
+    "zsh": ZshComplete,
+    "fish": FishComplete,
 }
+
+
+def _app() -> click.Command:
+    # Imported lazily: app -> command_registry -> completion, so a module-level
+    # import here would be circular.
+    from mayhem.cli.app import app
+
+    return app
+
+
+def _source(completer: ShellComplete) -> str:
+    """Render the script, tolerating a host bash too old to run it.
+
+    ``BashComplete.source`` refuses to emit when the *local* bash is < 4.4
+    (macOS ships 3.2). The script itself is version-agnostic — it is the
+    running bash that must be new enough — so a warning plus the script is more
+    useful than a refusal.
+    """
+    try:
+        return completer.source()
+    except RuntimeError as exc:
+        click.echo(f"warning: {exc}", err=True)
+        return ShellComplete.source(completer)
 
 
 @click.command("completion")
@@ -63,7 +69,8 @@ complete --no-files --command {PROG_NAME}
 def completion(shell: str) -> None:
     """Print the completion script for SHELL (bash, zsh, or fish).
 
-    Nothing is installed and nothing is executed: the script is written to
-    stdout so you decide where it goes.
+    Writes to stdout only: nothing is installed, no file is touched, and
+    nothing is executed.
     """
-    click.echo(_SCRIPTS[shell.lower()], nl=False)
+    completer = _COMPLETERS[shell.lower()](_app(), {}, PROG_NAME, COMPLETE_VAR)
+    click.echo(_source(completer), nl=False)

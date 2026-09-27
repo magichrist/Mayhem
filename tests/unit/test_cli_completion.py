@@ -79,25 +79,49 @@ def test_generated_script_parses_in_its_shell(shell: str, tmp_path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_scripts_are_free_of_prose() -> None:
-    """The printed script is something you source, not something you read."""
-    for shell in SHELLS:
-        for line in _script(shell).splitlines():
-            assert not line.startswith("#") or line.startswith("#compdef "), (shell, line)
+@pytest.mark.parametrize(
+    ("shell", "defines", "binder"),
+    [
+        ("bash", "_mayhem_completion()", "complete -o nosort -F _mayhem_completion mayhem"),
+        ("zsh", "_mayhem_completion()", "compdef _mayhem_completion mayhem"),
+        (
+            "fish",
+            "function _mayhem_completion;",
+            'complete --no-files --command mayhem --arguments "(_mayhem_completion)"',
+        ),
+    ],
+)
+def test_script_binds_the_function_it_actually_defines(
+    shell: str, defines: str, binder: str
+) -> None:
+    """The bug that shipped once: binding a function name that is never defined.
+
+    zsh parses a broken `compdef _mayhem` without complaint and then completes
+    nothing, so binding the wrong name can only be caught by asserting on the
+    name itself.
+    """
+    body = _script(shell)
+    assert defines in body
+    assert binder in body, f"{shell} script does not bind _mayhem_completion"
 
 
-def test_zsh_keeps_its_compdef_directive() -> None:
-    """`#compdef` is how zsh binds the file to the command; it is not commentary."""
-    assert _script("zsh").splitlines()[0] == "#compdef mayhem"
+def test_zsh_script_is_autoloadable_from_fpath() -> None:
+    """`_comps[mayhem]` resolves to the file name, so the body must self-dispatch."""
+    body = _script("zsh")
+    assert "zsh_eval_context[-1] == loadautofunc" in body
 
 
 def test_bash_44_requirement_is_documented() -> None:
     """macOS ships bash 3.2, where this cannot work; the docs must say so."""
-    from mayhem.cli import completion as module
-
     readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
     assert "4.4" in readme
-    assert "4.4" in (module.__doc__ or "")
+
+
+def test_bash_script_is_printed_even_on_an_old_bash_host() -> None:
+    """The script is version-agnostic; the *running* bash must be new enough."""
+    result = CliRunner().invoke(app, ["completion", "bash"])
+    assert result.exit_code == 0
+    assert "_mayhem_completion_setup" in result.output
 
 
 # ── the scripts actually complete ────────────────────────────────────────────
@@ -151,3 +175,34 @@ def test_completion_never_suggests_a_removed_command() -> None:
     candidates = " ".join(_complete("bash", [PROG_NAME, ""]))
     for removed in ("topology", "toolkit", "coverage", "expert"):
         assert removed not in candidates
+
+
+ZSH_PROBE = """
+autoload -Uz compinit && compinit -u -d {dump}
+fpath=({fpath} $fpath)
+source {fpath}/_mayhem
+compadd() {{ print -r -- "OFFERED:$*" ; }}
+_describe() {{ local -a a; a=("${{(@P)3}}"); print -r -- "DESCRIBED:${{(j:,:)a}}" ; }}
+words=(mayhem ga); CURRENT=2
+_mayhem_completion
+"""
+
+
+def test_zsh_completion_function_offers_real_candidates(tmp_path) -> None:
+    """Drive the generated function the way zsh does, and read the candidates."""
+    zsh = shutil.which("zsh")
+    if zsh is None:  # pragma: no cover - depends on the host
+        pytest.skip("zsh is not installed")
+
+    fpath = tmp_path / "fpath"
+    fpath.mkdir()
+    (fpath / "_mayhem").write_text(_script("zsh"))
+
+    result = subprocess.run(
+        [zsh, "-c", ZSH_PROBE.format(dump=tmp_path / "zcompdump", fpath=fpath)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # The candidate list comes from the live command tree, not a stale snapshot.
+    assert "game-day" in result.stdout, result.stdout + result.stderr
