@@ -34,7 +34,89 @@ containers:
         users: 100
         duration: 10s
         url: http://testcase-api:8080/
-        
+
+      # ── application / upstream response behaviour ─────────────────────
+      - fault: app.response_5xx
+        params:
+          status: 500
+          probability: 100
+          port: 8080
+        duration: 10s
+      - fault: http.upstream_timeout
+        params:
+          upstream: http://testcase-lb:8080/
+          timeout_ms: 1000
+          port: 8080
+        duration: 10s
+
+      # ── egress faults against the postgres dependency (:5432) ──────────
+      - fault: dependency.connection_refuse
+        params:
+          port: 5432
+          protocol: tcp
+        duration: 10s
+      - fault: net.connection_refuse
+        params:
+          port: 5432
+          protocol: tcp
+        duration: 10s
+      - fault: net.connection_reset
+        params:
+          port: 5432
+          protocol: tcp
+        duration: 10s
+
+      # ── packet-level network faults ────────────────────────────────────
+      - fault: net.congestion
+        params:
+          rate_kbps: 128
+        duration: 10s
+      - fault: net.corrupt
+        params:
+          percent: 1.0
+        duration: 10s
+      - fault: net.duplicate
+        params:
+          percent: 1.0
+          direction: egress
+        duration: 10s
+      - fault: net.reorder
+        params:
+          percent: 1.0
+          delay_ms: 50
+          direction: egress
+        duration: 10s
+
+      # ── process lifecycle ──────────────────────────────────────────────
+      - fault: process.kill
+        duration: 10s
+      - fault: process.crash_loop
+        params:
+          restarts: 3
+          interval: 2s
+        duration: 20s
+      - fault: process.restart_delay
+        params:
+          restarts: 3
+          delay: 5s
+        duration: 20s
+
+      # ── cpu / memory pressure ──────────────────────────────────────────
+      - fault: cpu.burst
+        params:
+          percent: 95
+        duration: 10s
+      - fault: mem.freeze
+        params:
+          percent: 90
+          hold_s: 30s
+        duration: 35s
+      - fault: mem.swap_pressure
+        params:
+          percent: 80
+          swap_mb: 64
+        duration: 10s
+
 
   testcase-lb:
     faults:
@@ -159,6 +241,21 @@ containers:
   testcase-download-1:
     faults:
       - fault: proc.pause
+        duration: 10s
+
+      # ── filesystem faults (./data is mounted read-only, so these act
+      #    on the container's own rootfs) ─────────────────────────────────
+      - fault: fs.quota
+        params:
+          quota_mb: 64
+        duration: 10s
+      - fault: fs.read_only
+        params:
+          path: /
+        duration: 10s
+      - fault: fs.write_delay
+        params:
+          delay_ms: 100
         duration: 10s
 
 execution:
