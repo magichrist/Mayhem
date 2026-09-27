@@ -146,7 +146,10 @@ def test_tool_partition_and_slow_query_are_netfilter_reversible() -> None:
         undo = json.loads(ops[0].args["undo_argv"])
         assert inject[:3] == ["@engine", "exec", "@cont"]
         assert inject != undo
-        assert "iptables" in inject or "tc" in inject
+        # The shaping tool may be an argv element of its own (``tc qdisc ...``)
+        # or live inside a ``sh -c`` body (the port-scoped netem form), so match
+        # on the reconstructed command line rather than on list membership.
+        assert "iptables" in " ".join(inject) or "tc" in " ".join(inject)
 
 
 def test_tool_net_connection_reset_rejects_with_tcp_reset() -> None:

@@ -439,8 +439,21 @@ class TestGateCoverage:
         verdict = gate_fault(fault_id, "testcase-api", "podman", run)
         assert verdict.impact_possible is False
         assert "bin:iptables" in verdict.missing
-        rich = _runtime(bins={"iptables": True}, cap_eff=1 << 12)
+        # Some members of this family also shape latency with netem (db.query_error
+        # error=serialization_failure, db.slow_query mode=latency), so their
+        # requirement set includes tc. The gate is per fault id, not per param,
+        # so the rich runtime must carry every binary the fault may shell out to.
+        required = impact.REQUIREMENTS[fault_id].bins
+        rich = _runtime(bins=dict.fromkeys(required, True), cap_eff=1 << 12)
         assert gate_fault(fault_id, "testcase-api", "podman", rich).impact_possible is True
+
+    @pytest.mark.parametrize("fault_id", ["db.query_error", "db.slow_query"])
+    def test_db_latency_faults_are_not_trusted_without_tc(self, fault_id: str) -> None:
+        """A container with iptables but no iproute2 cannot run the latency mode."""
+        run = _runtime(bins={"iptables": True}, cap_eff=1 << 12)
+        verdict = gate_fault(fault_id, "testcase-api", "podman", run)
+        assert verdict.impact_possible is False
+        assert verdict.missing == ("bin:tc",)
 
     def test_connection_exhaust_is_not_trusted_without_python(self) -> None:
         run = _runtime(bins={"sh": True, "python": False})

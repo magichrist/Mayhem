@@ -325,10 +325,14 @@ CATALOG: tuple[FaultDefinition, ...] = (
         params_schema=(
             _pct(minimum=1.0, maximum=99.0),
             ParamSpec(name="amount", type=ParamType.BYTES),
-            # ``allocate`` (default) commits anonymous memory. A slow, sustained
-            # leak is a distinct fault (mem.leak); this fault only ever allocates,
-            # so any other mode is refused at plan time.
-            ParamSpec(name="mode", type=ParamType.STRING, default="allocate"),
+            # ``allocate`` (default) commits anonymous memory until the undo.
+            # ``freeze`` holds the same footprint for a bounded window instead
+            # of growing it. ``reclaim`` returns each block with MADV_FREE so
+            # the kernel reclaims continuously without the footprint — and
+            # therefore the OOM risk — growing. A slow, sustained *leak* stays
+            # a distinct fault (mem.leak).
+            ParamSpec(name="mode", type=ParamType.STRING, default="allocate", min_length=3),
+            ParamSpec(name="hold_s", type=ParamType.DURATION, default="30s"),
         ),
     ),
     _define(
@@ -350,7 +354,14 @@ CATALOG: tuple[FaultDefinition, ...] = (
             {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
         ),
         max_duration_s=300.0,
-        params_schema=(_pct(minimum=1.0, maximum=99.0),),
+        # The filesystem to fill is a parameter, not a constant: /tmp covers
+        # temp-storage exhaustion, /var/log covers log volume eating the disk,
+        # and any other writable path is equally valid. Undo globs marker.*
+        # siblings, so widening the target never widens the cleanup set.
+        params_schema=(
+            _pct(minimum=1.0, maximum=99.0),
+            ParamSpec(name="path", type=ParamType.STRING, default="/tmp", min_length=1),
+        ),
     ),
     _define(
         id="fs.inode_exhaust",
@@ -384,6 +395,9 @@ CATALOG: tuple[FaultDefinition, ...] = (
                 minimum=1024 * 1024,
                 maximum=1024**3,
             ),
+            # Selects which throughput twins below are driven, so one fault
+            # covers read-only, write-only, and mixed IO stress.
+            ParamSpec(name="op", type=ParamType.STRING, default="both", min_length=3),
             # Spec-compliant throughput twins: when either is set the payload
             # drives sustained read+write I/O at the given MiB/s per worker
             # instead of the io_bytes churn loop.
@@ -594,9 +608,14 @@ CATALOG: tuple[FaultDefinition, ...] = (
         id="db.slow_query",
         category=FaultCategory.DATABASE,
         risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.NET_ADMIN}),
         applicable_node_kinds=frozenset({NodeKind.EXTERNAL_DEPENDENCY, NodeKind.SERVICE}),
         max_duration_s=300.0,
-        params_schema=(_S,),
+        params_schema=(
+            _S,
+            ParamSpec(name="mode", type=ParamType.STRING, default="latency", min_length=3),
+        ),
+        observable_effect="the database dependency answers slowly instead of failing fast",
     ),
     _define(
         id="db.connection_exhaust",
@@ -637,13 +656,25 @@ CATALOG: tuple[FaultDefinition, ...] = (
                 maximum=100.0,
                 default=100.0,
             ),
-            ParamSpec(name="error", type=ParamType.STRING, default="deadlock"),
+            ParamSpec(
+                name="error",
+                type=ParamType.STRING,
+                default="deadlock",
+                min_length=3,
+            ),
             ParamSpec(
                 name="port",
                 type=ParamType.INTEGER,
                 minimum=1,
                 maximum=65535,
                 default=3306,
+            ),
+            ParamSpec(
+                name="timeout_ms",
+                type=ParamType.INTEGER,
+                minimum=100,
+                maximum=120000,
+                default=5000,
             ),
         ),
     ),
@@ -889,7 +920,13 @@ CATALOG: tuple[FaultDefinition, ...] = (
             {NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST, NodeKind.POD}
         ),
         max_duration_s=120.0,
-        params_schema=(ParamSpec(name="limit", type=ParamType.INTEGER, default=64),),
+        # ``exhaust`` (default) takes the whole allowance at once. ``leak``
+        # drips descriptors away without ever releasing one, so the process
+        # approaches its rlimit gradually and never "completes" the burst.
+        params_schema=(
+            ParamSpec(name="limit", type=ParamType.INTEGER, default=64),
+            ParamSpec(name="mode", type=ParamType.STRING, default="exhaust", min_length=3),
+        ),
     ),
     # ── Kubernetes archetypes (ADR-M7-3, ADR-M7-4) ──────────────────────────
     # All k8s archetypes are AVAILABLE when the live cluster driver is present;

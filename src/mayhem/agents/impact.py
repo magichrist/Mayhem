@@ -107,8 +107,12 @@ REQUIREMENTS: dict[str, FaultRequirement] = {
     "net.connection_refuse": FaultRequirement(
         bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})
     ),
-    "db.slow_query": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
-    "db.query_error": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
+    "db.slow_query": FaultRequirement(
+        bins=frozenset({"iptables", "tc"}), caps=frozenset({"NET_ADMIN"})
+    ),
+    "db.query_error": FaultRequirement(
+        bins=frozenset({"iptables", "tc"}), caps=frozenset({"NET_ADMIN"})
+    ),
     "dns.timeout": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "dns.servfail": FaultRequirement(bins=frozenset({"iptables"}), caps=frozenset({"NET_ADMIN"})),
     "tls.handshake_failure": FaultRequirement(

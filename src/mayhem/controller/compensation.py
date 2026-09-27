@@ -195,7 +195,90 @@ def _payload_expansion_source(fault: PlannedFault, marker: str) -> str:
     )
 
 
-def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
+#: ``fd.exhaust`` modes. ``exhaust`` takes the whole allowance at once;
+#: ``leak`` drips descriptors away without ever releasing one.
+_FD_EXHAUST_MODES = frozenset({"exhaust", "leak"})
+
+#: ``mem.exhaust`` modes. ``allocate`` is the original pressure source; the
+#: other two exist to drive the kernel's reclaim path rather than its
+#: allocator. This set replaces the old "only 'allocate' exists" refusal.
+_MEM_EXHAUST_MODES = frozenset({"allocate", "reclaim", "freeze"})
+
+#: ``fs.io_stress`` selects which of the ``read_mb_s``/``write_mb_s`` rates are
+#: driven, so one fault covers read-only, write-only, and mixed IO stress.
+_IO_STRESS_OPS = frozenset({"read", "write", "both"})
+
+
+def _io_stress_op(fault: PlannedFault) -> str:
+    value = str(_param(fault, "op", "both")).strip().lower()
+    if value not in _IO_STRESS_OPS:
+        raise InvariantViolationError(
+            "fault_error_mode",
+            f"unsupported fs.io_stress op {value!r}; expected one of {sorted(_IO_STRESS_OPS)}",
+        )
+    return value
+
+
+def _mem_goal_expr(amount: float, percent: float) -> str:
+    """Python expression for the byte target of a mem.exhaust payload.
+
+    Kept as one string so ``allocate``, ``reclaim`` and ``freeze`` cannot drift
+    on how the cgroup limit and the 95% safety cap are computed.
+    """
+    return (
+        f"{amount:.0f} if {amount:.0f} > 0 else ("
+        "lim * percent / 100 if 0 < lim < 10 ** 14 else ("
+        "os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') * percent / 100))"
+    )
+
+
+def _mem_churn_source(mode: str, *, goal_expr: str, hold_s: float) -> str:
+    """Payload body for ``mem.exhaust`` in ``reclaim`` or ``freeze`` mode.
+
+    Both reach the same footprint as ``allocate`` but differ in *why* the target
+    suffers, which is the point of the mode:
+
+    * ``freeze`` allocates once and holds every page resident for the window —
+      sustained pressure, no churn.
+    * ``reclaim`` allocates and then returns each block to the allocator with
+      ``MADV_FREE``, so the pages sit in free lists and the kernel reclaims
+      them continuously. The footprint never grows, so a cgroup OOM kill is
+      not the mechanism; thrashing is.
+    """
+    prelude = (
+        "try:\n"
+        "    f = open('/sys/fs/cgroup/memory.max'); lim = int(f.read().strip()); f.close()\n"
+        "except Exception:\n"
+        "    lim = 0\n"
+        f"goal = {goal_expr}\n"
+        "if 0 < lim < 10 ** 14:\n"
+        "    goal = min(goal, lim * 95 // 100)\n"
+    )
+    if mode == "freeze":
+        return (
+            prelude + "blobs = []\n"
+            "while sum(len(b) for b in blobs) < goal:\n"
+            "    blobs.append(bytearray(4096))\n"
+            f"time.sleep({hold_s:g})\n"
+        )
+    return (
+        prelude + "import ctypes\n"
+        "libc = ctypes.CDLL('libc.so.6', use_errno=True)\n"
+        "MADV_FREE = 8\n"
+        "blobs = []\n"
+        "while sum(len(b) for b in blobs) < goal:\n"
+        "    blobs.append(bytearray(4096))\n"
+        "for b in blobs:\n"
+        "    addr = (ctypes.c_char * len(b)).from_buffer(b)\n"
+        "    libc.madvise(ctypes.addressof(addr), len(b), MADV_FREE)\n"
+        "blobs = []\n"
+        "while sum(len(b) for b in blobs) < goal:\n"
+        "    blobs.append(bytearray(4096))\n"
+        f"time.sleep({hold_s:g})\n"
+    )
+
+
+def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911, PLR0912
     """Python payload that produces a *real* effect inside the target container.
 
     The payload is executed with ``python -c <source>`` from a detached engine
@@ -214,9 +297,17 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
         amount = _fparam(fault, "amount", 0.0)
         percent = min(_fparam(fault, "percent", 60.0), 99.0)
         mode = str(_param(fault, "mode", "allocate")).strip().lower()
-        if mode != "allocate":
+        if mode not in _MEM_EXHAUST_MODES:
             raise InvariantViolationError(
-                "fault_mode", f"unsupported memory-exhaust mode {mode!r}; only 'allocate' exists"
+                "fault_error_mode",
+                f"unsupported mem.exhaust mode {mode!r}; expected one of "
+                f"{sorted(_MEM_EXHAUST_MODES)}",
+            )
+        if mode in ("reclaim", "freeze"):
+            return header + _mem_churn_source(
+                mode,
+                goal_expr=_mem_goal_expr(amount, percent),
+                hold_s=min(_fparam(fault, "hold_s", 30.0), 600.0),
             )
         return header + (
             # Balloon anonymous memory to the explicit ``amount`` bytes (e.g.
@@ -285,17 +376,27 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
     if fid == "fs.fill":
         percent = min(_fparam(fault, "percent", 45.0), 99.0)
         capped = 1024**3
+        # The filesystem to fill is a parameter, not a constant: /tmp covers
+        # "temp exhaustion", /var/log covers "log volume ate the disk", and any
+        # other writable path is equally valid. Undo is unchanged — it globs
+        # marker.* siblings — so the target path never widens the cleanup set.
+        fill_path = str(_param(fault, "path", "/tmp"))
+        if not fill_path.startswith("/"):
+            raise InvariantViolationError(
+                "fault_path", f"fs.fill path must be absolute, got {fill_path!r}"
+            )
         return header + (
             # Fill the container's filesystem to ``percent`` of total capacity,
             # but never beyond a 1 GiB absolute cap so an e2e run cannot fill the
             # podman VM's root disk. The damage target is real: the service's own
             # writable layer (and any other process writing to this filesystem)
             # loses exactly the filled space until undo reclaims it.
-            "st = os.statvfs('/tmp')\n"
+            f"target = {fill_path!r}\n"
+            "st = os.statvfs(target)\n"
             "total = st.f_blocks * st.f_frsize\n"
             "free0 = st.f_bavail * st.f_frsize\n"
             "def usage():\n"
-            "    s = os.statvfs('/tmp')\n"
+            "    s = os.statvfs(target)\n"
             "    return 1 - s.f_bavail * s.f_frsize / (s.f_blocks * s.f_frsize)\n"
             f"goal = min({percent} / 100, (free0 + {capped}) / total)\n"
             "i = 0\n"
@@ -334,8 +435,9 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
     if fid == "fs.io_stress":
         workers = max(_iparam(fault, "workers", 1), 1)
         io_bytes = _fparam(fault, "io_bytes", 64.0 * 1024 * 1024)
-        read_mb_s = _iparam(fault, "read_mb_s", 0)
-        write_mb_s = _iparam(fault, "write_mb_s", 0)
+        op = _io_stress_op(fault)
+        read_mb_s = _iparam(fault, "read_mb_s", 0) if op in ("read", "both") else 0
+        write_mb_s = _iparam(fault, "write_mb_s", 0) if op in ("write", "both") else 0
         if read_mb_s or write_mb_s:
             # Spec twin (fs.io_stress): sustained read()/write() throughput on
             # twin marker working files (``marker.rN``/``marker.wN``) paced to
@@ -408,6 +510,29 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911
         )
     if fid == "fd.exhaust":
         limit = max(_iparam(fault, "limit", 64), 1)
+        mode = str(_param(fault, "mode", "exhaust")).strip().lower()
+        if mode not in _FD_EXHAUST_MODES:
+            raise InvariantViolationError(
+                "fault_error_mode",
+                f"unsupported fd.exhaust mode {mode!r}; expected one of "
+                f"{sorted(_FD_EXHAUST_MODES)}",
+            )
+        if mode == "leak":
+            # A leak, not a burst: descriptors are taken at a steady drip and
+            # never released, so the process approaches its rlimit gradually
+            # and the ``.count`` artefact is not written (nothing "completed").
+            return header + (
+                f"limit = {limit}\n"
+                "fds = []\n"
+                "opened = 0\n"
+                "while opened < limit:\n"
+                "    try:\n"
+                "        fds.append(open('/dev/null'))\n"
+                "    except OSError:\n"
+                "        break\n"
+                "    opened += 1\n"
+                "    time.sleep(0.05)\n" + _hold
+            )
         return header + (
             f"opened = 0\n"
             "fds = []\n"
@@ -697,6 +822,44 @@ def _tool_template(
     verify: Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]],
 ) -> CompensationTemplate:
     return CompensationTemplate(undo, verify)
+
+
+def _tc_port_netem_undo(
+    fault: PlannedFault, node: TopologyNode, dport: int, tail: list[str]
+) -> tuple[UndoOp, ...]:
+    """Netem latency scoped to one destination port.
+
+    A root netem qdisc shapes *every* packet leaving the container, which is
+    wrong for a fault that names a specific upstream port: it would degrade
+    unrelated traffic too. A ``prio`` root with netem on band 3 and a u32
+    filter steering only ``dport`` into that band confines the perturbation to
+    the target flow. Undo is a single root delete, which removes the whole
+    prio tree, so no band or filter can survive the drill.
+    """
+    inject = [
+        "sh",
+        "-c",
+        "tc qdisc add dev {dev} root handle 1: prio; "
+        "tc qdisc add dev {dev} parent 1:3 handle 30: {tail}; "
+        "tc filter add dev {dev} parent 1: protocol ip prio 3 u32 "
+        "match ip protocol 6 0xff match ip dport {port} 0xffff flowid 1:3".format(
+            dev=_EGRESS_DEV, tail=" ".join(tail), port=dport
+        ),
+    ]
+    undo = ["sh", "-c", f"tc qdisc del dev {_EGRESS_DEV} root"]
+    return (
+        _tool_op(fault, node, "tc.port_qdisc", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _tc_port_netem_verify(fault: PlannedFault, node: TopologyNode) -> tuple[VerifyProbe, ...]:
+    return (
+        _exec_verify(
+            node,
+            ["sh", "-c", f"! tc qdisc show dev {_EGRESS_DEV} | grep -q netem"],
+            incontainer=True,
+        ),
+    )
 
 
 def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
@@ -1741,21 +1904,54 @@ def _dep_flap_verify(
     return _pulse_verify(fault, nodes, dport=_iparam(fault, "port", 0), marker_suffix="flap")
 
 
+#: ``db.query_error`` SQLSTATE classes mapped to the wire behaviour the client
+#: observes. ``error`` used to be declared in the catalog and then ignored by
+#: this builder, so every value produced the same TCP RST — the param was dead.
+_DB_QUERY_ERROR_MODES: dict[str, str] = {
+    # an immediate connection reset: the server refused the statement outright
+    "deadlock": "reject",
+    # packets are swallowed, so the client's own statement timeout fires
+    "lock_timeout": "drop",
+    # the flow is slowed until the client's statement deadline elapses
+    "serialization_failure": "latency",
+}
+
+
+def _db_query_error_mode(fault: PlannedFault) -> str:
+    value = str(_param(fault, "error", "deadlock")).strip().lower()
+    try:
+        return _DB_QUERY_ERROR_MODES[value]
+    except KeyError:
+        raise InvariantViolationError(
+            "fault_error_mode",
+            f"unsupported db.query_error error {value!r}; expected one of "
+            f"{sorted(_DB_QUERY_ERROR_MODES)}",
+        ) from None
+
+
 def _db_query_error_undo(
     fault: PlannedFault, nodes: tuple[TopologyNode, ...]
 ) -> tuple[UndoOp, ...]:
+    mode = _db_query_error_mode(fault)
+    port = _iparam(fault, "port", 3306)
     prob = _fparam(fault, "probability", 100.0)
-    if prob >= 100.0:
-        return _param_netfilter("port", "tcp", "REJECT", ["--reject-with", "tcp-reset"], 3306)(
-            fault, nodes
+    if mode == "latency":
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return _tc_port_netem_undo(
+            fault, node, port, ["netem", "delay", f"{_iparam(fault, 'timeout_ms', 5000)}ms"]
         )
+    jump, extra = ("REJECT", ["--reject-with", "tcp-reset"]) if mode == "reject" else ("DROP", [])
+    if prob >= 100.0:
+        return _param_netfilter("port", "tcp", jump, extra, port)(fault, nodes)
     return _pulse_undo_op(
         fault,
         nodes,
         proto="tcp",
-        dport=_iparam(fault, "port", 3306),
-        jump="REJECT",
-        extra=["--reject-with", "tcp-reset"],
+        dport=port,
+        jump=jump,
+        extra=extra,
         probability=prob,
         marker_suffix="db",
     )
@@ -1764,9 +1960,61 @@ def _db_query_error_undo(
 def _db_query_error_verify(
     fault: PlannedFault, nodes: tuple[TopologyNode, ...]
 ) -> tuple[VerifyProbe, ...]:
+    mode = _db_query_error_mode(fault)
+    port = _iparam(fault, "port", 3306)
+    if mode == "latency":
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return _tc_port_netem_verify(fault, node)
     if _fparam(fault, "probability", 100.0) >= 100.0:
-        return _param_netfilter_verify("port", 3306)(fault, nodes)
-    return _pulse_verify(fault, nodes, dport=_iparam(fault, "port", 3306), marker_suffix="db")
+        return _param_netfilter_verify("port", port)(fault, nodes)
+    return _pulse_verify(fault, nodes, dport=port, marker_suffix="db")
+
+
+# ── db.slow_query ──────────────────────────────────────────────────────────
+#: ``db.slow_query`` used to advertise latency while shipping an iptables DROP
+#: — a blackhole, i.e. the same wire behaviour as a query timeout under a
+#: misleading name. ``mode`` makes the default honest and keeps the old
+#: behaviour reachable explicitly.
+_DB_SLOW_QUERY_MODES: dict[str, str] = {
+    "latency": "latency",
+    "timeout": "drop",
+}
+
+
+def _db_slow_query_mode(fault: PlannedFault) -> str:
+    value = str(_param(fault, "mode", "latency")).strip().lower()
+    try:
+        return _DB_SLOW_QUERY_MODES[value]
+    except KeyError:
+        raise InvariantViolationError(
+            "fault_error_mode",
+            f"unsupported db.slow_query mode {value!r}; expected one of "
+            f"{sorted(_DB_SLOW_QUERY_MODES)}",
+        ) from None
+
+
+def _db_slow_query_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    if _db_slow_query_mode(fault) == "latency":
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return _tc_port_netem_undo(
+            fault, node, 3306, ["netem", "delay", f"{_iparam(fault, 'seconds', 5) * 1000:.0f}ms"]
+        )
+    return _netfilter_undo("3306")(fault, nodes)
+
+
+def _db_slow_query_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    if _db_slow_query_mode(fault) == "latency":
+        node = _tool_node(fault, nodes)
+        if node is None:
+            raise NO_UNDO
+        return _tc_port_netem_verify(fault, node)
+    return _netfilter_verify("3306")(fault, nodes)
 
 
 def _tls_failure_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
@@ -2244,10 +2492,7 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "net.bandwidth": _tool_template(_net_bandwidth_undo, _net_bandwidth_verify),
         "db.connection_exhaust": _tool_template(_conn_exhaust_undo, _conn_exhaust_verify),
         "db.query_error": _tool_template(_db_query_error_undo, _db_query_error_verify),
-        "db.slow_query": _tool_template(
-            _netfilter_undo("3306"),
-            _netfilter_verify("3306"),
-        ),
+        "db.slow_query": _tool_template(_db_slow_query_undo, _db_slow_query_verify),
         "dns.resolve_delay": _tool_template(
             _file_revert_undo(
                 "/etc/resolv.conf",
