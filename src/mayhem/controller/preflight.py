@@ -136,6 +136,12 @@ def build_preflight(
 
                 deps = _dep_plan(plan, graph, effective_engine)
                 for dp in deps:
+                    for fault_id, reason in dp.unfixable:
+                        warnings.append(
+                            f"blocked fault {fault_id} on {dp.container}: "
+                            f"{reason or 'inert for this engine'} — no package or"
+                            " flag can unblock it"
+                        )
                     if dp.installable or dp.manual or dp.caps_missing:
                         parts = []
                         if dp.packages:

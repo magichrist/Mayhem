@@ -90,6 +90,12 @@ def _render_dependency(dp: ContainerDependencyPlan, *, detailed: bool) -> None:
         click.echo(f"  runtime flag: {item} (not a package — add --cap-add)")
     if dp.need_root:
         click.echo("  runtime: needs uid(0); installs run as --user 0")
+    for fault_id, reason in dp.unfixable:
+        click.echo(
+            f"  {style.yellow('blocked')} {fault_id}: {reason or 'inert for this engine'}"
+            " — no package or flag can unblock it; drop it from the drill or"
+            " run on a privileged engine"
+        )
     if dp.pm is None and dp.manual:
         click.echo(
             "  note: no package manager detected — install tooling into this"
@@ -121,7 +127,9 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
     plan, graph, engine_name = _dependency_context(ctx, compose, experiment)
     deps = _dep_plan(plan, graph, engine_name)
     host_gaps = _host_gaps(plan)
-    if not deps and not host_gaps:
+    blocked = [(dp.container, fid, why) for dp in deps for fid, why in dp.unfixable]
+    installable_gaps = [dp for dp in deps if not dp.gaps_remain]
+    if not installable_gaps and not host_gaps and not blocked:
         click.echo(style.ok("no missing tooling") + " — every planned fault can inject")
         return
     for dp in deps:
@@ -131,6 +139,11 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
             f"  host: {style.yellow('missing')} {name}"
             " — runs on the drill host, not in a container; install it on the"
             " host (mayhem dependency manages containers only)"
+        )
+    if not installable_gaps and not host_gaps:
+        click.echo(
+            style.yellow("no installable tooling missing")
+            + f" — {len(blocked)} planned fault(s) blocked for reasons no package fixes"
         )
 
 

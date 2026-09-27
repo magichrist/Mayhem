@@ -617,6 +617,13 @@ class ContainerDependencyPlan:
     caps_missing: tuple[str, ...] = ()
     #: A gated fault also needs uid(0); package installs are attempted as root.
     need_root: bool = False
+    #: ``(fault_id, reason)`` for faults the gate proved inert with *no*
+    #: installable remedy — e.g. ``clock.skew`` under a rootless engine, where
+    #: CAP_SYS_TIME is namespaced and the host clock is unreachable. These are
+    #: not a tooling gap: no package and no flag can fix them, so reporting them
+    #: as "missing tooling" is what made `dependency check` print an empty
+    #: "ok <container>" line and hide a permanently blocked fault.
+    unfixable: tuple[tuple[str, str], ...] = ()
 
     @property
     def installable(self) -> bool:
@@ -624,6 +631,7 @@ class ContainerDependencyPlan:
 
     @property
     def gaps_remain(self) -> bool:
+        """True when nothing installable is outstanding for this container."""
         return not (self.installable or self.manual or self.caps_missing or self.need_root)
 
     def install_argv(self) -> list[list[str]]:
@@ -650,6 +658,7 @@ def dependency_plan(
     """
     runtimes: dict[str, ContainerRuntime | None] = {}
     missing_by: dict[str, set[str]] = {}
+    unfixable_by: dict[str, dict[str, str]] = {}
     for step in plan.steps:
         fault = step.fault
         if fault is None:
@@ -668,11 +677,18 @@ def dependency_plan(
         verdict = gate_fault(fault.fault_id, container, engine, run)
         if verdict.impact_possible:
             continue
+        if not verdict.missing:
+            # Inert for a reason no package addresses (e.g. clock.skew under a
+            # rootless engine). Keep the fault_id and the gate's own
+            # explanation so the CLI can say *why* it is blocked, instead of
+            # implying a tooling gap that no install can close.
+            unfixable_by.setdefault(container, {})[fault.fault_id] = verdict.note
+            continue
         missing_by.setdefault(container, set()).update(verdict.missing)
     plans: list[ContainerDependencyPlan] = []
-    for container in sorted(missing_by):
+    for container in sorted(set(missing_by) | set(unfixable_by)):
         run = runtimes[container]
-        missing = sorted(missing_by[container])
+        missing = sorted(missing_by.get(container, set()))
         pm = run.package_manager() if run else None
         packages: set[str] = set()
         bin_map: dict[str, str] = {}
@@ -700,6 +716,7 @@ def dependency_plan(
                 manual=tuple(sorted(set(manual))),
                 caps_missing=tuple(caps_missing),
                 need_root=need_root,
+                unfixable=tuple(sorted(unfixable_by.get(container, {}).items())),
             )
         )
     return plans

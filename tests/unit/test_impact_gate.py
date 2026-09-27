@@ -580,6 +580,48 @@ class TestDependencyPlan:
         monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
         assert impact.dependency_plan(_plan("cpu.saturate"), _graph(), "podman") == []
 
+    def test_inert_fault_is_reported_as_blocked_not_as_a_tooling_gap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """clock.skew under a rootless engine: no package can ever fix it.
+
+        The gate returns impact_possible=False with an *empty* missing list.
+        Reporting that as a dependency produced a content-free "ok <container>"
+        line, which read as healthy while the fault was permanently blocked.
+        """
+        run = _runtime(bins={"apk": True, "sh": True, "date": True}, cap_eff=0)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        monkeypatch.setattr(impact, "_engine_is_rootless", lambda eng: True)
+
+        dp = impact.dependency_plan(_plan("clock.skew"), _graph(), "podman")[0]
+
+        assert dp.packages == ()
+        assert dp.manual == ()
+        assert dp.caps_missing == ()
+        assert dp.installable is False
+        assert [fid for fid, _ in dp.unfixable] == ["clock.skew"]
+        assert "rootless" in dict(dp.unfixable)["clock.skew"]
+
+    def test_blocked_fault_alongside_a_real_gap_keeps_both(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _runtime(bins={"apk": True, "sh": True, "date": True, "python3": False})
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        monkeypatch.setattr(impact, "_engine_is_rootless", lambda eng: True)
+
+        plan = _plan_many("clock.skew", "mem.exhaust")
+        dp = impact.dependency_plan(plan, _graph(), "podman")[0]
+
+        assert dp.packages == ("python3",)
+        assert [fid for fid, _ in dp.unfixable] == ["clock.skew"]
+
+    def test_unfixable_is_empty_for_an_ordinary_gap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = _runtime(bins={"apk": True, "python3": False, "sh": True})
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        dp = impact.dependency_plan(_plan("mem.exhaust"), _graph(), "podman")[0]
+        assert dp.unfixable == ()
+        assert dp.gaps_remain is False
+
 
 class TestDependencyCli:
     def test_group_has_check_and_install(self) -> None:
@@ -592,6 +634,35 @@ class TestDependencyCli:
         from mayhem.cli.dependency import dependency
 
         assert "compile" in {cmd.name for cmd in dependency.commands.values()}
+
+    def test_check_does_not_claim_all_faults_can_inject_when_one_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "no missing tooling — every planned fault can inject" was a lie here."""
+        from click.testing import CliRunner
+
+        from mayhem.cli import dependency as dep_cli
+        from mayhem.cli.app import app
+
+        blocked = impact.ContainerDependencyPlan(
+            container="testcase-lb",
+            engine="podman",
+            pm="apk",
+            unfixable=(("clock.skew", "rootless engine: CAP_SYS_TIME is namespaced"),),
+        )
+        monkeypatch.setattr(
+            dep_cli,
+            "_dependency_context",
+            lambda *a, **k: (_plan("clock.skew"), _graph(), "podman"),
+        )
+        monkeypatch.setattr(impact, "dependency_plan", lambda *a, **k: [blocked])
+        monkeypatch.setattr(impact, "host_tooling_gaps", lambda *a, **k: [])
+
+        out = CliRunner().invoke(app, ["prepare", "dependencies", "check"]).output
+
+        assert "every planned fault can inject" not in out
+        assert "clock.skew" in out
+        assert "blocked" in out
 
 
 def _plan_many(*fault_ids: str) -> ExecutionPlan:
