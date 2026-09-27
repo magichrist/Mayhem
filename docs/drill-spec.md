@@ -100,7 +100,7 @@ lifecycle commands.
 | `containers`    | map<string, [DrillContainer](#containers)> | *one of* `containers` / `targets` | — | Docker-family faults per-container, keyed by the stable `container_name:`. |
 | `targets`       | map<string, [DrillTarget](#targets-cross-runtime)> | *one of* `containers` / `targets` | — | Cross-runtime logical targets (`docker` / `kubernetes`), keyed by a stable name the `execution:` steps reference. A spec defines **exactly one** of `containers:` / `targets:` (mixing both or defining neither is a compile error). |
 | `execution`     | list<[ExecutionStep](#execution)>  | yes      | —               | Ordering of fault rounds. At least one step required. |
-| `success`       | [SuccessCriteria](#success)        | no       | —               | Machine verdict criteria. |
+| `success`       | [SuccessCriteria](#success-criteria)        | no       | —               | Machine verdict criteria. |
 | `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record. |
 | `slo`          | list<[SloCriterion](#slo-criteria-v090)> | no | —          | Provider-neutral SLO thresholds with explicit units, windows, and failure semantics (v0.9.0). |
 
@@ -175,7 +175,7 @@ both the spec's `config.maniac.run_level` and the layered-config `maniac:`
 block. `--ctr CONTAINER` confines every draw to one container: the synthesized
 zero-config spec is built from that container alone, and an authored spec's
 plan is filtered down to it (see
-[Scoping a run to one container](#scoping-a-run-to-one-container-ctr)). Every
+[Scoping a run to one container](#scoping-a-run-to-one-container---ctr)). Every
 other contract is unchanged: the risk
 ceiling, blast radius budget and conflict checks still gate each drawn fault;
 each round runs its own compensation (or opts out via `recovery: false`); the
@@ -671,22 +671,28 @@ writing — the catalog implementation is authoritative and is what
 | `db.query_error` | database | high | 300s | container, external_dependency, service | net_admin | `probability` (percent, min 1, max 100, default `100.0`); `error` (`deadlock` / `lock_timeout` / `serialization_failure`, default `deadlock`); `timeout_ms` (integer, min 100, max 120000, default `5000`); `port` (integer, min 1, max 65535, default `3306`) |
 | `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration); `mode` (`latency` / `timeout`, default `latency`) |
 | `dependency.block` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
+| `dependency.circuit_open` | dependency | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `503`); `retry_after_s` (integer, min 0, max 3600, default `30`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `dependency.connection_refuse` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `dependency.flap` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `interval` (duration, default `10.0`); `failure_probability` (percent, default `50.0`); `protocol` (string, default `tcp`) |
 | `dependency.rate_limit` | dependency | medium | 300s | container, external_dependency, service | — | `rate` (integer, **required**); `burst` (integer, default `200`); `code` (integer, min 100, max 599, default `429`); `port` (integer, min 1, max 65535, default `80`) |
+| `dependency.response_truncate` | dependency | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `bytes` (integer, min 0, max 65536, default `64`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `dependency.timeout` | dependency | medium | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `delay_ms` (integer, min 1, max 30000, **required**); `protocol` (string, default `tcp`) |
 | `dns.nxdomain` | dns | high | 300s | host, service | net_admin | `domain` (string) |
 | `dns.resolve_delay` | dns | medium | 300s | host, service | net_admin | `seconds` (duration) |
 | `dns.servfail` | dns | medium | 120s | host, service | net_admin | — |
 | `dns.timeout` | dns | high | 120s | host, service | net_admin | — |
 | `fd.exhaust` | fd | high | 120s | container, host, service | — | `limit` (integer, default `64`); `mode` (`exhaust` / `leak`, default `exhaust`) |
+| `fs.corrupt` | storage | high | 120s | process, container, service | fs_control | `path` (string, **required**, must be absolute); `bytes` (integer, min 16, max 1048576, default `4096`); `seed` (integer, min 1, max 65535, default `1`) |
 | `fs.fill` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99); `path` (string, default `/tmp`) |
 | `fs.inode_exhaust` | storage | medium | 300s | container, host, service | — | `percent` (percent, min 1, max 99) |
 | `fs.io_stress` | storage | medium | 120s | container, host, service | — | `seconds` (duration); `workers` (integer, min 1, max 8, default `1`); `io_bytes` (bytes, default `64M`); `read_mb_s` (integer, min 1, max 512); `write_mb_s` (integer, min 1, max 512); `block_size` (string, default `64k`); `op` (`read` / `write` / `both`, default `both`) |
 | `fs.read_only` | storage | high | 120s | container, host, service | fs_control | `path` (string, default `/`) |
 | `fuzz.protocol_abuse` | fuzz | high | 180s | external_dependency, service | — | — |
 | `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (integer, default `500`); `probability` (percent, min 0, max 100, default `0.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `http.header_inject` | http_api | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `headers` (string, default `""`, **validated not escaped** — see the subsection); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `http.latency` | http_api | medium | 300s | external_dependency, service | — | `delay_ms` (integer, min 1, max 30000); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `http.response_truncate` | http_api | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `bytes` (integer, min 0, max 65536, default `64`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `http.stream_stall` | http_api | medium | 300s | external_dependency, container, service | net_admin | `stall_ms` (integer, min 1, max 30000, default `5000`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `k8s.network_policy` | k8s | high | 300s | k8s_node, pod | kubernetes_engine | `policy_name` (string); `direction` (string, default `ingress`) |
 | `k8s.node_drain` | k8s | critical | 600s | k8s_node | kubernetes_engine | `grace_period` (integer, default `30`) |
 | `k8s.node_pressure` | k8s | high | 300s | k8s_node | kubernetes_engine | `resource` (string, default `cpu`); `target_percent` (percent, min 1, max 100) |
@@ -700,19 +706,25 @@ writing — the catalog implementation is authoritative and is what
 | `mem.exhaust` | memory | high | 120s | container, service | — | `percent` (percent, min 1, max 99); `amount` (bytes); `mode` (`allocate` / `reclaim` / `freeze`, default `allocate`) |
 | `mem.leak` | memory | high | 300s | container, service | — | `rate_mb` (integer, min 1, max 512, default `8`) |
 | `net.bandwidth` | network | medium | 300s | container, service | net_admin | `rate` (string, **required**); `burst` (string, default `10k`); `direction` (string, default `egress`) |
+| `net.conn_exhaust` | network | high | 300s | process, container, service | — | `count` (integer, min 1, max 8192, default `512`); `mode` (`ephemeral` / `accept`, default `ephemeral`); `port` (integer, min 1, max 65535, default `8080`, used by `accept` only) |
 | `net.connection_refuse` | network | high | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `net.connection_reset` | network | medium | 300s | container, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `net.duplicate` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `direction` (string, default `egress`) |
+| `net.interface_down` | network | high | 300s | process, container, service | net_admin | `device` (string, default `eth0`) |
 | `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration); `jitter_ms` (integer, default `0`); `direction` (string, default `egress`) |
 | `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default container `ip:port`); `script` (string) |
+| `net.mtu_mismatch` | network | medium | 300s | process, container, service | net_admin | `device` (string, default `eth0`); `mtu` (integer, min 576, max 9216, default `1400`) |
 | `net.packet_loss` | network | medium | 300s | container, service | net_admin | `percent` (percent, max 100); `direction` (string, default `egress`) |
 | `net.partition` | network | high | 120s | container, service | net_admin | — |
 | `net.reorder` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `delay_ms` (integer, default `50`); `direction` (string, default `egress`) |
+| `net.tcp_half_open` | network | high | 300s | process, container, service | net_admin | `port` (integer, min 1, max 65535, **required**) |
 | `node.service_stop` | node | high | 120s | service | — | — |
 | `proc.pause` | process | low | 600s | container, process, service | process_control | — |
+| `process.child_exhaust` | process | high | 300s | process, container, service | — | `children` (integer, min 1, max 4096, default `256`) |
 | `process.crash_loop` | process | high | 120s | container, service | docker_engine | `restarts` (integer, min 1, max 1000, default `10`); `interval` (string, default `2s`) |
 | `process.kill` | process | high | 60s | container, process, service | process_control | — |
 | `process.stop` | process | medium | 300s | container, process, service | process_control | — |
+| `process.thread_exhaust` | process | high | 300s | process, container, service | — | `threads` (integer, min 1, max 65536, default `512`) |
 | `tls.certificate_expired` | tls | high | 120s | external_dependency, service | — | — |
 | `tls.handshake_failure` | tls | high | 120s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, default `443`) |
 
@@ -723,7 +735,10 @@ the faults require.
 
 Several faults expose a **variant parameter** that selects between mechanisms
 behind one fault id, rather than requiring a separate id per mechanism. The
-sections below document those axes. Every example uses the explicit `params:`
+sections below document those axes, and the faults whose parameter contract is
+load-bearing in its own right — a required parameter, an absolute-path
+constraint, a validated value — so the constraint is stated next to the fault
+rather than only in the catalog. Every example uses the explicit `params:`
 mapping; a param matching a `ParamSpec` name may equally be given as a flat
 sibling key of `fault:` (see [`DrillFault`](#drillfault)).
 
@@ -788,6 +803,65 @@ long the client waits for the two timeout-shaped mechanisms.
     mode: timeout
 ```
 
+### `dependency.circuit_open`
+
+The upstream is never dialled. The proxy answers from its own accept loop, which
+is exactly what a tripped breaker looks like from the caller's side.
+`Retry-After` is emitted alongside the status, because without it the caller sees
+a bare 503 and cannot tell an open circuit from a failing backend.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `status` | integer (100–599) | `503` | The status the caller receives. Any code in range; `503` is the one that reads as "unavailable". |
+| `retry_after_s` | integer (0–3600) | `30` | Seconds written into `Retry-After`. `0` tells the caller to retry immediately, which is how you test a client with no backoff. |
+| `probability` | percent (1–100) | `100.0` | Share of requests answered from the breaker. Requests outside it are relayed to the real upstream untouched, so a partly-degraded upstream is expressible. |
+| `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+
+```yaml
+# The upstream is never contacted; the caller gets 503 with Retry-After: 30.
+- fault: dependency.circuit_open
+  duration: 60s
+  params:
+    status: 503
+    retry_after_s: 30
+
+# A fast retry hint, on one request in four; the rest reach the real upstream.
+- fault: dependency.circuit_open
+  duration: 60s
+  params:
+    retry_after_s: 2
+    probability: 25
+```
+
+### `dependency.response_truncate`
+
+The same short-body mechanism as [`http.response_truncate`](#httpresponse_truncate)
+on the dependency lane: the response declares more bytes than it delivers, then
+the connection is closed.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `status` | integer (100–599) | `200` | Status line of the truncated response. The head is well formed, so the shortfall is the client's to notice. |
+| `bytes` | integer (0–65536) | `64` | Bytes actually delivered. The declared `Content-Length` is 64× this value, so the default promises 4096 and sends 64. `0` declares and delivers nothing, which is a complete response rather than a truncated one. |
+| `probability` | percent (1–100) | `100.0` | Share of responses truncated; the rest are relayed untouched. |
+| `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+
+```yaml
+# A dependency answers 200 with Content-Length: 4096 and 64 bytes of body.
+- fault: dependency.response_truncate
+  duration: 60s
+  params:
+    status: 200
+    bytes: 64
+
+# A JSON response cut off after 8 bytes, on half the calls.
+- fault: dependency.response_truncate
+  duration: 60s
+  params:
+    bytes: 8
+    probability: 50
+```
+
 ### `fd.exhaust`
 
 | Param | Type | Default | Accepted values |
@@ -808,6 +882,31 @@ long the client waits for the two timeout-shaped mechanisms.
   params:
     limit: 256
     mode: leak
+```
+
+### `fs.corrupt`
+
+Overwrites a file with deterministic garbage. This is the one fault in the tree
+that mutates data the target already owns, so it copies the original to
+`<path>.mayhem-orig` first and the undo puts it back: the file is **restored**,
+not reconciled by restarting anything. `path` must be absolute because it is
+resolved inside the target's own filesystem namespace, where a relative path
+would be ambiguous about which working directory was meant.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `path` | string | *none* — **required** | Absolute path of the file to corrupt, resolved inside the fault target. A relative path is refused at plan time (`fs.corrupt path must be absolute`). |
+| `bytes` | integer (16–1048576) | `4096` | How many bytes of garbage to write. The file is truncated to exactly this length, so a `bytes` smaller than the file destroys its tail. |
+| `seed` | integer (1–65535) | `1` | Seed for the generator. The garbage is deterministic — the same `seed` and `bytes` produce the same corrupted content on every run, so a test can assert on it. |
+
+```yaml
+# Corrupt a config file in place; the undo restores the original bytes.
+- fault: fs.corrupt
+  duration: 30s
+  params:
+    path: /etc/app/config.yaml
+    bytes: 8192
+    seed: 7
 ```
 
 ### `fs.fill`
@@ -854,6 +953,127 @@ one is acted on.
     write_mb_s: 100
 ```
 
+### `http.header_inject`
+
+Adds caller-supplied headers to the response. A broken or unexpected header is a
+real production failure a status code cannot express: the response is well
+formed and the client still misbehaves because of a header it did not expect.
+
+`headers` is **validated, not escaped.** Three rules are enforced at plan time,
+before the value ever reaches the target container:
+
+- **No CR.** HTTP heads are CRLF-delimited, so a CR inside a value can end the
+  line early and start a new one. Any CR is rejected outright.
+- **Every line must parse as a `Name: value` pair.** Multiple headers are
+  separated by a single LF, and the lines are rejoined as CRLF when the head is
+  built. This rule is what makes multi-header input safe by construction: a line
+  crafted to split the response would not be a header, so it is refused rather
+  than escaped.
+- **ASCII only.** The head is encoded as ASCII, so a non-ASCII value is refused
+  rather than mangled.
+
+Refusing is the honest outcome — silently stripping characters would produce a
+fault that does not do what the operator wrote.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `headers` | string | `""` | The headers to add, separated by a single LF. Empty injects nothing. Subject to the three rules above. |
+| `status` | integer (100–599) | `200` | Status line of the response the headers are spliced into. |
+| `probability` | percent (1–100) | `100.0` | Share of responses carrying the headers; the rest are relayed untouched. |
+| `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+
+The response is synthesized — your headers, then `Content-Length: 0`, then a
+closed connection — rather than relayed from the upstream, which is what makes
+the fault deterministic. What is under test is the client's reaction to a header
+it did not expect, not its reaction to a short body. Use
+[`http.stream_stall`](#httpstream_stall) when you need the real upstream response.
+
+```yaml
+# One unexpected header, on every response.
+- fault: http.header_inject
+  duration: 60s
+  params:
+    headers: "X-Request-Id: mayhem-drill-42"
+
+# Several headers, separated by a single LF. Every line is a `Name: value` pair.
+- fault: http.header_inject
+  duration: 60s
+  params:
+    status: 200
+    headers: |
+      X-Drill: wave-2
+      X-Upstream-Region: eu-west-1
+    probability: 50
+```
+
+### `http.response_truncate`
+
+The response declares more bytes than it delivers, then closes. This is not a
+reset: the client holds a valid status line and a short body, and it is the
+client's framing logic that has to notice.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `status` | integer (100–599) | `200` | Status line of the truncated response. The head is well formed, so the shortfall is the client's to notice. |
+| `bytes` | integer (0–65536) | `64` | Bytes actually delivered before the connection is closed. The declared `Content-Length` is 64× this value, so the default promises 4096 and sends 64. `0` declares and delivers nothing, which is a complete response rather than a truncated one. |
+| `probability` | percent (1–100) | `100.0` | Share of responses truncated; the rest are relayed untouched. |
+| `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+
+```yaml
+# The default: a 200 promising 4096 bytes and delivering 64.
+- fault: http.response_truncate
+  duration: 60s
+  params:
+    status: 200
+    bytes: 64
+
+# A JSON body cut off after 8 bytes, on a quarter of the calls.
+- fault: http.response_truncate
+  duration: 60s
+  params:
+    bytes: 8
+    probability: 25
+```
+
+### `http.stream_stall`
+
+The response head arrives and the body is then held mid-flight. The relay
+streams in 64 KiB chunks on two threads, so the client-bound direction pauses
+after its first chunk — the status line and headers — and the pause is
+one-sided for free: the request still reaches the upstream and the upstream
+still does its work. Unlike the other proxy-backed faults, the real upstream
+response is relayed, so the body under test is the real body.
+
+`stall_ms` is capped at 30000 because that is the timeout on the upstream socket
+the relay reads from. A longer pause would be cut short by the relay's own read
+timing out, which degrades the fault into a plain close; 30000 is the longest
+stall that is still a stall.
+
+The effect is strongest against streaming or large responses. A small body that
+arrives in a single segment may not visibly stall, because the client has
+nothing left to wait for.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `stall_ms` | integer (1–30000) | `5000` | How long the client waits after the response head, bounded by the upstream socket's 30 s timeout. |
+| `probability` | percent (1–100) | `100.0` | Share of responses stalled; the rest are relayed untouched. |
+| `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+
+```yaml
+# The head arrives, the body waits 5s: a slow upstream that never times out.
+- fault: http.stream_stall
+  duration: 60s
+  params:
+    stall_ms: 5000
+
+# The longest stall that is still a stall, on every third response.
+- fault: http.stream_stall
+  duration: 90s
+  params:
+    stall_ms: 30000
+    probability: 34
+```
+
 ### `mem.exhaust`
 
 `mode` was previously reserved on the schema and rejected every value other
@@ -883,6 +1103,55 @@ than `allocate`; the rejection is gone and each value is a real mechanism.
   duration: 60s
   params:
     mode: freeze
+```
+
+### `net.conn_exhaust`
+
+Two different failures behind one id: running out of **outbound** ports is not
+the same as running out of **accept** capacity, and they fail in different
+places.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `mode` | string | `ephemeral` | `ephemeral` — bind and hold `count` loopback listeners, consuming the container's outbound ephemeral ports so new connections cannot be sourced. `accept` — connect to `port` `count` times and hold each socket without sending anything, filling the listener's accept queue so the server's accept loop stalls. |
+| `count` | integer (1–8192) | `512` | How many sockets to take. Injection stops early when the resource runs out first, so the effective ceiling is the ephemeral port range or the listener backlog, not `count`. |
+| `port` | integer (1–65535) | `8080` | The listener to fill. **Used by `mode: accept` only** — `ephemeral` never connects anywhere and ignores it, so the default is not a statement about your service. |
+
+```yaml
+# The default: eat the outbound ephemeral ports, so nothing new can be sourced.
+- fault: net.conn_exhaust
+  duration: 60s
+  params:
+    count: 512
+    mode: ephemeral
+
+# Fill the accept queue of a specific listener instead.
+- fault: net.conn_exhaust
+  duration: 60s
+  params:
+    mode: accept
+    port: 8080
+    count: 256
+```
+
+### `net.interface_down`
+
+Takes the link down rather than shaping traffic. `net.partition` shapes with a
+qdisc and leaves the link up, so a driver that still sees carrier — or that still
+holds the interface — behaves differently from one whose link is genuinely gone.
+The undo re-links the device and then proves it is usable, so a mistyped
+`device` cannot pass silently.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `device` | string | `eth0` | The interface to take down. Set it to the device the fault target actually has; the undo probe fails if the name does not exist. |
+
+```yaml
+# The link on the target goes down; the undo brings it back and proves it is up.
+- fault: net.interface_down
+  duration: 30s
+  params:
+    device: eth0
 ```
 
 ### `net.load`
@@ -917,6 +1186,87 @@ k6 on the host directly.
     script: k6/script.js         # custom load function (relative to this drill file)
 ```
 
+### `net.mtu_mismatch`
+
+Drops the interface MTU so packets larger than the new value must fragment or
+are dropped. The original MTU is read into a marker file at inject time and
+written back at undo, so the restore is exact even on an interface that was
+never 1500.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `device` | string | `eth0` | The interface whose MTU is changed. |
+| `mtu` | integer (576–9216) | `1400` | The MTU to set. Below 1500, anything that does not path-MTU-discover has to fragment or stall. The 576 floor is what RFC 791 requires an IPv4 host to be able to forward — below it the interface is unusable, which is a different fault from fragmentation. |
+
+```yaml
+# Drop to the classic Ethernet-with-VPN MTU: large packets fragment.
+- fault: net.mtu_mismatch
+  duration: 60s
+  params:
+    device: eth0
+    mtu: 1400
+```
+
+### `net.tcp_half_open`
+
+Drops the SYN-ACK on `port`, so the client's socket is created on both sides
+and then hangs. `net.partition` is a total egress blackhole and
+`net.connection_reset` fails an established flow with an RST; neither produces
+the half-open state a client sees when its SYN is answered by nothing at all.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `port` | integer (1–65535) | *none* — **required** | Destination port whose SYN-ACK is dropped. There is no safe default: a wrong guess installs the rule against a port nobody is using, the fault never fires, and the round still passes because the undo probe only checks the rule is gone. |
+
+```yaml
+# Connections to 5432 open and then hang; nothing is ever established.
+- fault: net.tcp_half_open
+  duration: 60s
+  params:
+    port: 5432
+```
+
+### `process.child_exhaust`
+
+Forks until the container's **pid cgroup** refuses, then holds the survivors
+open. It is the cgroup, not `RLIMIT_NPROC`: a container is bounded by the cgroup
+pid limit, whereas `RLIMIT_NPROC` counts per-uid across the whole host and is
+usually not set at all — so a fault that leaned on it would not reproduce the
+failure a real container hits.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `children` | integer (1–4096) | `256` | How many children to fork before holding. Forking stops when the cgroup refuses, and the count actually reached is reported rather than assumed. |
+
+```yaml
+# Fork until the pid cgroup says no; the survivors sleep and are held.
+- fault: process.child_exhaust
+  duration: 60s
+  params:
+    children: 256
+```
+
+### `process.thread_exhaust`
+
+Spawns worker threads that park on an event until the pool is spent. Threads are
+cheaper than processes and hit a different limit, so this exercises the
+thread/worker-pool exhaustion path a fork bomb cannot: a container that can
+still fork but whose workers refuse new tasks. The threads are daemonised and
+held by a reference so the interpreter stays alive; the undo kills the payload
+process and they all go with it.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `threads` | integer (1–65536) | `512` | How many threads to create. Creation stops when the runtime refuses, and the count actually reached is reported rather than assumed. |
+
+```yaml
+# The default: 512 parked workers, so the thread pool is spent.
+- fault: process.thread_exhaust
+  duration: 60s
+  params:
+    threads: 512
+```
+
 ### Compensation lifecycle
 
 Every compensatable fault resolves to a `CompensationTemplate` (see
@@ -932,15 +1282,16 @@ per-fault template table live in `docs/compensation.md`):
 
 | Mechanism | Representative faults | Undo | Verify |
 |---|---|---|---|
-| Payload marker (pid) | `mem.exhaust`, `mem.leak`, `cpu.saturate`, `fs.fill`, `fs.inode_exhaust`, `fs.io_stress`, `fd.exhaust`, `load.spike`, `fuzz.protocol_abuse` | `kill -9` on marker pid (plus `rm` of marker siblings for the `fs.*` faults) | pidfile absent |
+| Payload marker (pid) | `mem.exhaust`, `mem.leak`, `cpu.saturate`, `fs.fill`, `fs.inode_exhaust`, `fs.io_stress`, `fd.exhaust`, `load.spike`, `fuzz.protocol_abuse`, `process.thread_exhaust`, `process.child_exhaust`, `net.conn_exhaust` | `kill -9` on marker pid (plus `rm` of marker siblings for the `fs.*` faults) | pidfile absent |
 | tc qdisc | `net.latency`, `net.packet_loss`, `net.bandwidth`, `net.reorder`, `net.duplicate`, `net.load`, `dependency.timeout` | `tc qdisc del` | tc chain absent |
-| iptables rule | `db.query_error`, `db.slow_query`, `tls.handshake_failure`, `dependency.block` | `iptables -D` rule removal | rule absent |
+| Link / MTU state | `net.interface_down`, `net.mtu_mismatch` | `ip link set … up`, or the MTU read back from the marker at inject | interface reports `state UP`; saved-MTU marker absent |
+| iptables rule | `db.query_error`, `db.slow_query`, `tls.handshake_failure`, `dependency.block`, `net.tcp_half_open` | `iptables -D` rule removal | rule absent |
 | iptables reject | `net.connection_reset`, `net.connection_refuse`, `dependency.connection_refuse` | `iptables -D` rule removal (`tcp-reset` / `icmp-port-unreachable`) | rule absent |
 | Pulsing rule | `dns.timeout`, `dns.servfail`, `dependency.flap` | Time-gated rule removal (marker-suffixed) | iptables rule absent |
-| In-container proxy | `http.latency`, `http.error_injection` (prob = 100), `dependency.rate_limit`, `db.connection_exhaust` | Kill proxy pid, delete nat REDIRECT, remove markers | pidfile + rule absent |
+| In-container proxy | `http.latency`, `http.error_injection` (prob = 100), `dependency.rate_limit`, `db.connection_exhaust`, `http.response_truncate`, `http.header_inject`, `http.stream_stall`, `dependency.response_truncate`, `dependency.circuit_open` | Kill proxy pid, delete nat REDIRECT, remove markers | pidfile + rule absent |
 | Engine state | `cpu.throttle`, `clock.skew`, `process.crash_loop` | Engine `update --cpus` / clock restore / engine `start` | engine state restored |
 | Filesystem remount | `fs.read_only` | `mount -o remount,rw` restore | write-probe succeeds |
-| File revert | `dns.nxdomain`, `tls.certificate_expired` | Restore original file from backup marker | file content restored |
+| File revert | `dns.nxdomain`, `tls.certificate_expired`, `fs.corrupt` | Restore original file from backup marker | file content restored |
 | Container network | `net.partition` | Engine network disconnect / connect restore | connectivity restored |
 
 `http.error_injection` is a dual personality at plan time (ADR note in

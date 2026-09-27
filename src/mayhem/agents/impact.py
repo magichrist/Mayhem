@@ -175,8 +175,17 @@ _ENGINE_FAULTS = frozenset(
 
 _CATALOG_ONLY_FAULTS = frozenset(
     {
+        "app.deadlock",
+        "app.exception",
+        "clock.freeze",
+        "cpu.interrupt_storm",
+        "cpu.steal",
         "dependency.malformed_response",
         "fs.permission_failure",
+        "fs.read_error",
+        "mem.fragment",
+        "mem.oom_kill",
+        "process.oom_kill",
         "process.startup_delay",
     }
 )

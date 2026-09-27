@@ -2030,9 +2030,140 @@ CATALOG: tuple[FaultDefinition, ...] = (
         target_kinds=frozenset({TargetKind.WORKLOAD, TargetKind.POD, TargetKind.PDB}),
         max_duration_s=300.0,
         params_schema=(
-            ParamSpec(
-                name="unavailable", type=ParamType.INTEGER, default=0, minimum=0, maximum=100
-            ),
+            ParamSpec(name="unavailable", type=ParamType.INTEGER, minimum=0, maximum=100),
+        ),
+    ),
+    # ── Refused requests (wave 3) ───────────────────────────────────────────
+    # These describe real production failure modes mayhem has no primitive for.
+    # They stay in the catalog so `mayhem catalog` names the gap and points at
+    # the closest executable sibling, and they refuse deterministically at plan
+    # time rather than appearing to work. See docs/new-faults/wave-3-no-primitive.md.
+    _define(
+        id="cpu.steal",
+        category=FaultCategory.CPU,
+        risk=RiskLevel.MEDIUM,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST, NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: CPU steal is hypervisor-enforced and nothing in mayhem talks "
+            "to KVM or a host scheduler; cpu.throttle caps the cgroup CPU share, which is "
+            "voluntary CFS throttling rather than involuntary steal"
+        ),
+    ),
+    _define(
+        id="cpu.interrupt_storm",
+        category=FaultCategory.CPU,
+        risk=RiskLevel.MEDIUM,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST, NodeKind.POD}),
+        max_duration_s=300.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: an interrupt storm needs IRQ/softirq control through "
+            "/proc/interrupts or RPS/RFS tuning outside the container; use load.spike for soft "
+            "CPU pressure and cpu.saturate for compute saturation"
+        ),
+    ),
+    _define(
+        id="mem.fragment",
+        category=FaultCategory.MEMORY,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
+        max_duration_s=120.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: fragmenting the heap needs buddy-allocator or "
+            "MADV_FREE/hugepage control that mayhem has no primitive for; use mem.leak for "
+            "unbounded growth and mem.exhaust for allocation pressure"
+        ),
+    ),
+    _define(
+        id="fs.read_error",
+        category=FaultCategory.STORAGE,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: read-side EIO needs a device-mapper error target or a FUSE "
+            "shim requiring SYS_ADMIN and a loop device, neither of which mayhem provisions; "
+            "use fs.read_only which covers write-side failure"
+        ),
+    ),
+    _define(
+        id="clock.freeze",
+        category=FaultCategory.CLOCK,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.HOST, NodeKind.CONTAINER, NodeKind.SERVICE}),
+        max_duration_s=300.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: freezing the clock needs a libfaketime preload or "
+            "CLOCK_REALTIME interception; use clock.skew to set an offset, and container.pause "
+            "to stop execution entirely, which is a different mechanism"
+        ),
+    ),
+    _define(
+        id="app.exception",
+        category=FaultCategory.HTTP_API,
+        risk=RiskLevel.MEDIUM,
+        applicable_node_kinds=_CONTAINER_SERVICE_KINDS,
+        max_duration_s=300.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: raising inside the service needs an in-process fault hook "
+            "(bytecode injection, ptrace, or /proc/<pid>/mem patching) that mayhem does not "
+            "have; use app.response_5xx for a response-side failure"
+        ),
+    ),
+    _define(
+        id="app.deadlock",
+        category=FaultCategory.HTTP_API,
+        risk=RiskLevel.MEDIUM,
+        applicable_node_kinds=_CONTAINER_SERVICE_KINDS,
+        max_duration_s=300.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: a true lock cycle cannot be injected from outside the "
+            "process; use container.pause as the cgroup-freezer approximation, and note it also "
+            "suspends execution rather than deadlocking a thread"
+        ),
+    ),
+    _define(
+        id="process.oom_kill",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=60.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: a container-lane OOM kill destroys the process and "
+            "mem.exhaust deliberately caps at 95% of the cgroup limit; use k8s.pod_oom on "
+            "Kubernetes"
+        ),
+    ),
+    _define(
+        id="mem.oom_kill",
+        category=FaultCategory.MEMORY,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.POD}),
+        max_duration_s=120.0,
+        params_schema=(),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: an OOM kill is irreversible without a supervisor while "
+            "mayhem's compensation contract assumes every injected fault has a working undo; "
+            "use k8s.pod_oom, or mem.exhaust with mode=freeze, which holds the same "
+            "footprint for a bounded window and stops short on purpose at 95% of the "
+            "cgroup limit"
         ),
     ),
 )

@@ -99,14 +99,53 @@ hand-rolled in-container passthrough proxy `_http_proxy_source`
 | `http.header_inject` | `canned()` emits caller-supplied headers | low |
 | `dependency.circuit_open` | short-circuit: answer without dialling upstream | low — `forward(c)` always dials today; add a mode that skips it |
 | `dependency.response_truncate` | same as `http.response_truncate`, `dependency.`-routed | low, once the mode exists |
-| `http.stream_stall` | relay stalls **mid-flight** in one direction | **high** — needs a bidirectional relay with a stall window, not the current one-shot `relay()` pair |
+| `http.stream_stall` | relay stalls **mid-flight** in one direction | ~~**high** — needs a bidirectional relay~~ **CORRECTED: this premise was wrong.** See below. |
 
-`http.stream_stall` should be the last item in this wave and should be
-time-boxed. If the relay rework does not land, ship it as `catalog_only` with
-`refusal_reason = "the in-container proxy relays one-shot; mid-stream stalling
-needs a bidirectional relay"` and revisit. There are only 4 catalog-only
-entries today, so this is a real addition to the refusal surface and must be
-justified — the alternative is a fault that appears to work and does not.
+#### Correction: `http.stream_stall` was never blocked
+
+The table above originally called this fault **high** difficulty on the stated
+ground that "the current one-shot `relay()` pair" could not express a mid-flight
+stall. **That premise is false.** `relay()` is a chunked, bidirectional,
+two-thread pump:
+
+```python
+def relay(a, b):
+    while True:
+        d = a.recv(65536)      # 64 KiB chunks, not read-whole-response
+        if not d: break
+        b.sendall(d)
+```
+
+and `forward()` already spawns one thread per direction. The first chunk of a
+normal HTTP response is the status line and headers, so "headers flushed, then
+silence" is exactly a one-shot sleep on the **client-bound** thread after its
+first `sendall` — about six lines, and the one-sided behaviour falls out of the
+existing two-thread design for free. No new concurrency, no new lifecycle, and
+the undo story is unchanged (SIGTERM on the proxy reaps the parked thread and
+every socket).
+
+**It shipped, and it is verified on the wire.**
+`tests/unit/test_http_proxy_wire.py` runs the generated program against real
+sockets and measures the gap between the head arriving and the body arriving,
+with and without a stall:
+
+```
+  no stall  : head+AAA@ 0.01s   BBB@ 1.02s
+  stall 8s  : head+AAA@ 0.02s   BBB@ 8.03s
+```
+
+Two things this exercise caught that no structural assertion would have:
+
+- `forward()` called `relay()` with three arguments while `relay()` still took
+  two. It compiled, passed every shape assertion, and would have raised
+  `TypeError` inside a container at injection time. **Executing the generated
+  program is the only thing that catches this class of error.**
+- The stall gates the *next* chunk, so a chunk already in flight upstream waits
+  only the remainder of the window. An earlier assertion expected a flat
+  `stall_ms` offset and was simply wrong about the mechanism.
+
+The `catalog_only` fallback below is therefore **not needed** and no
+`refusal_reason` was added.
 
 ## 2.3 Per-fault registry work
 
