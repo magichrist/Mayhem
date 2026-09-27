@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -204,6 +205,11 @@ _FD_EXHAUST_MODES = frozenset({"exhaust", "leak"})
 #: allocator. This set replaces the old "only 'allocate' exists" refusal.
 _MEM_EXHAUST_MODES = frozenset({"allocate", "reclaim", "freeze"})
 
+#: ``net.conn_exhaust`` modes. ``ephemeral`` (default) consumes the container's
+#: outbound ephemeral ports so new connections cannot be sourced; ``accept``
+#: fills the listener's accept queue, stalling the server's accept loop.
+_CONN_EXHAUST_MODES = frozenset({"ephemeral", "accept"})
+
 #: ``fs.io_stress`` selects which of the ``read_mb_s``/``write_mb_s`` rates are
 #: driven, so one fault covers read-only, write-only, and mixed IO stress.
 _IO_STRESS_OPS = frozenset({"read", "write", "both"})
@@ -278,7 +284,7 @@ def _mem_churn_source(mode: str, *, goal_expr: str, hold_s: float) -> str:
     )
 
 
-def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911, PLR0912
+def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911, PLR0912, PLR0915
     """Python payload that produces a *real* effect inside the target container.
 
     The payload is executed with ``python -c <source>`` from a detached engine
@@ -508,6 +514,89 @@ def _payload_source(fault: PlannedFault, marker: str) -> str:  # noqa: PLR0911, 
             f"for w in range({workers}):\n"
             "    threading.Thread(target=writer, args=(w,), daemon=True).start()\n" + _hold
         )
+    if fid == "process.thread_exhaust":
+        threads = max(_iparam(fault, "threads", 512), 1)
+        return header + (
+            # Spawn worker threads and keep them parked. Threads are cheaper
+            # than processes and hit a different rlimit, so this exercises the
+            # thread/worker-pool exhaustion path that a fork bomb cannot.
+            # The threads are daemonised and hold a reference so the interpreter
+            # does not exit; undo SIGKILLs this process and they all go with it.
+            "import threading\n"
+            f"target = {threads}\n"
+            "park = threading.Event()\n"
+            "made = []\n"
+            "def spin():\n"
+            "    park.wait()\n"
+            "while len(made) < target:\n"
+            "    try:\n"
+            "        t = threading.Thread(target=spin, daemon=True)\n"
+            "        t.start()\n"
+            "        made.append(t)\n"
+            "    except (RuntimeError, MemoryError):\n"
+            "        break\n"
+            "print(len(made))\n" + _hold
+        )
+    if fid == "process.child_exhaust":
+        children = max(_iparam(fault, "children", 256), 1)
+        return header + (
+            # Fork until the container's pid cgroup (not RLIMIT_NPROC) refuses
+            # more, then hold the survivors open. The reaped list is kept so the
+            # parent stays alive waiting on them.
+            "import os\n"
+            f"target = {children}\n"
+            "kids = []\n"
+            "while len(kids) < target:\n"
+            "    try:\n"
+            "        pid = os.fork()\n"
+            "    except OSError:\n"
+            "        break\n"
+            "    if pid == 0:\n"
+            "        while True:\n"
+            "            time.sleep(3600)\n"
+            "    kids.append(pid)\n"
+            "print(len(kids))\n" + _hold
+        )
+    if fid == "net.conn_exhaust":
+        count = max(_iparam(fault, "count", 512), 1)
+        mode = str(_param(fault, "mode", "ephemeral")).strip().lower()
+        if mode not in _CONN_EXHAUST_MODES:
+            raise InvariantViolationError(
+                "fault_error_mode",
+                f"unsupported net.conn_exhaust mode {mode!r}; expected one of "
+                f"{sorted(_CONN_EXHAUST_MODES)}",
+            )
+        port = _iparam(fault, "port", 0)
+        if mode == "accept":
+            # Fill the listener's accept queue: connect, send nothing, hold.
+            # The server's accept loop stalls on the backlog, which is a
+            # different failure from having no outbound capacity.
+            return header + (
+                "import socket\n"
+                f"count = {count}\n"
+                f"port = {port}\n"
+                "held = []\n"
+                "while len(held) < count:\n"
+                "    try:\n"
+                "        c = socket.create_connection(('127.0.0.1', port), timeout=5)\n"
+                "    except OSError:\n"
+                "        break\n"
+                "    held.append(c)\n" + _hold
+            )
+        # Consume outbound ephemeral ports so new connections cannot be sourced.
+        return header + (
+            "import socket\n"
+            f"count = {count}\n"
+            "held = []\n"
+            "while len(held) < count:\n"
+            "    try:\n"
+            "        s = socket.socket()\n"
+            "        s.bind(('127.0.0.1', 0))\n"
+            "        s.listen(1)\n"
+            "    except OSError:\n"
+            "        break\n"
+            "    held.append(s)\n" + _hold
+        )
     if fid == "fd.exhaust":
         limit = max(_iparam(fault, "limit", 64), 1)
         mode = str(_param(fault, "mode", "exhaust")).strip().lower()
@@ -706,6 +795,9 @@ _PAYLOAD_FAULTS = frozenset(
         "fs.quota",
         "fs.write_delay",
         "mem.exhaust",
+        "process.thread_exhaust",
+        "process.child_exhaust",
+        "net.conn_exhaust",
         "mem.leak",
         "cpu.saturate",
         "fs.fill",
@@ -2164,6 +2256,63 @@ def _file_revert_verify(
     )
 
 
+def _fs_corrupt_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """Overwrite a file with deterministic garbage; undo restores the original.
+
+    This is the one fault in the tree that mutates data the target already
+    owns, so it cannot use the payload lifecycle (whose undo merely SIGKILLs
+    the burner process). Instead the original is copied aside first and the
+    undo puts it back, which makes the fault genuinely reversible rather than
+    "reconciled".
+
+    ``path`` is quoted with :func:`shlex.quote` because it reaches an ``sh -c``
+    command line. Every other builder that interpolates a user path does not
+    do this (see ``_fs_read_only_undo``), which is a latent shell-injection
+    surface; new code must not extend it.
+    """
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    path = str(_param(fault, "path", ""))
+    if not path.startswith("/"):
+        raise InvariantViolationError(
+            "fault_path", f"fs.corrupt path must be absolute, got {path!r}"
+        )
+    quoted = shlex.quote(path)
+    backup = shlex.quote(path + ".mayhem-orig")
+    nbytes = max(_iparam(fault, "bytes", 4096), 16)
+    seed = max(_iparam(fault, "seed", 1), 1)
+    inject = [
+        "sh",
+        "-c",
+        "set -e; "
+        f"cp -p {quoted} {backup}; "
+        f'python3 -c "import os,sys;'
+        f"n=int(sys.argv[2]);r=random.Random(int(sys.argv[3]));"
+        f"open(sys.argv[1],'wb').write(bytes(r.randrange(256) for _ in range(n)))\" "
+        f"{quoted} {nbytes} {seed}",
+    ]
+    undo = [
+        "sh",
+        "-c",
+        f"test -f {backup} && cp -p {backup} {quoted} && rm -f {backup}; true",
+    ]
+    return (
+        _tool_op(fault, node, "fs.corrupt", _incontainer_argv(inject), _incontainer_argv(undo)),
+    )
+
+
+def _fs_corrupt_verify(
+    fault: PlannedFault, nodes: tuple[TopologyNode, ...]
+) -> tuple[VerifyProbe, ...]:
+    """Pass when the backup is gone, i.e. the original was put back."""
+    node = _tool_node(fault, nodes)
+    if node is None:
+        raise NO_UNDO
+    path = shlex.quote(str(_param(fault, "path", "")) + ".mayhem-orig")
+    return (_exec_verify(node, ["sh", "-c", f"test ! -e {path}"], incontainer=True),)
+
+
 def _fs_read_only_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     """Remount the target filesystem read-only; undo restores read-write.
 
@@ -2538,6 +2687,7 @@ def _tool_compensation_templates() -> dict[str, CompensationTemplate]:
         "net.reorder": _tool_template(_net_reorder_undo, _net_reorder_verify),
         "net.duplicate": _tool_template(_net_duplicate_undo, _net_duplicate_verify),
         "fs.read_only": _tool_template(_fs_read_only_undo, _fs_read_only_verify),
+        "fs.corrupt": _tool_template(_fs_corrupt_undo, _fs_corrupt_verify),
         "process.crash_loop": _tool_template(_process_crash_loop_undo, _process_crash_loop_verify),
         "process.restart_delay": _tool_template(
             _process_restart_delay_undo, _process_restart_delay_verify

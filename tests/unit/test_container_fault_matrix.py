@@ -65,6 +65,11 @@ FAULTS = tuple(
 
 _RATE = {"net.bandwidth": {"rate": "10mbit"}, "dependency.rate_limit": {"rate": 100}}
 
+# Params a generic seed cannot satisfy: fs.corrupt's `path` must be absolute or
+# the compensation refuses at plan time, because a relative path would resolve
+# against the container's working directory and corrupt the wrong file.
+_PATHS = {"fs.corrupt": {"path": "/tmp/mayhem-fs-corrupt-target"}}
+
 
 def seeds_for(fault_id: str) -> dict[str, object]:
     """Valid required-param values so a bare DrillFault compiles per fault."""
@@ -75,6 +80,8 @@ def seeds_for(fault_id: str) -> dict[str, object]:
             continue
         if fault_id in _RATE and spec.name in _RATE[fault_id]:
             seeds[spec.name] = _RATE[fault_id][spec.name]
+        elif fault_id in _PATHS and spec.name in _PATHS[fault_id]:
+            seeds[spec.name] = _PATHS[fault_id][spec.name]
         elif spec.type.value == "integer":
             seeds[spec.name] = 1
         elif spec.type.value == "duration":

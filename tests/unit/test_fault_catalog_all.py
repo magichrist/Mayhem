@@ -72,6 +72,9 @@ _TYPE_SEED: dict[ParamType, int | float | str] = {
 _RATE_SEED: dict[str, dict[str, object]] = {
     "net.bandwidth": {"rate": "10mbit"},
     "dependency.rate_limit": {"rate": 100},
+    # fs.corrupt's `path` must be absolute or the compensation refuses at plan
+    # time; the generic STRING seed ("test") is a relative path.
+    "fs.corrupt": {"path": "/tmp/mayhem-fs-corrupt-target"},
 }
 
 

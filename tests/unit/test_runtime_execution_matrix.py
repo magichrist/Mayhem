@@ -233,6 +233,9 @@ def _valid_seed(spec) -> object:
 _OVERRIDES: dict[str, dict[str, object]] = {
     "net.bandwidth": {"rate": "10mbit"},
     "dependency.rate_limit": {"rate": 100},
+    # fs.corrupt's `path` must be absolute or plan time refuses; the generic
+    # string seed ("mayhem") is a relative path.
+    "fs.corrupt": {"path": "/tmp/mayhem-fs-corrupt-target"},
     "db.connection_exhaust": {"connections": 8, "host": "db.internal"},
     "dependency.timeout": {"port": 5432, "delay_ms": 250},
     "net.connection_reset": {"port": 5432},

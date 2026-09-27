@@ -928,6 +928,61 @@ CATALOG: tuple[FaultDefinition, ...] = (
             ParamSpec(name="mode", type=ParamType.STRING, default="exhaust", min_length=3),
         ),
     ),
+    _define(
+        id="process.thread_exhaust",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(
+                name="threads", type=ParamType.INTEGER, minimum=1, maximum=65536, default=512
+            ),
+        ),
+        observable_effect="the process exhausts its thread or worker pool and stops accepting work",
+    ),
+    _define(
+        id="process.child_exhaust",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(
+                name="children", type=ParamType.INTEGER, minimum=1, maximum=4096, default=256
+            ),
+        ),
+        observable_effect="the container exhausts its pid budget and cannot fork new work",
+    ),
+    _define(
+        id="net.conn_exhaust",
+        category=FaultCategory.NETWORK,
+        risk=RiskLevel.HIGH,
+        applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.SERVICE, NodeKind.PROCESS}),
+        max_duration_s=300.0,
+        params_schema=(
+            ParamSpec(name="count", type=ParamType.INTEGER, minimum=1, maximum=8192, default=512),
+            ParamSpec(name="mode", type=ParamType.STRING, default="ephemeral", min_length=3),
+            ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=8080),
+        ),
+        observable_effect="the target can no longer source or accept new connections",
+    ),
+    _define(
+        id="fs.corrupt",
+        category=FaultCategory.STORAGE,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.FS_CONTROL}),
+        applicable_node_kinds=frozenset({NodeKind.CONTAINER, NodeKind.SERVICE, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(
+            ParamSpec(name="path", type=ParamType.STRING, required=True, min_length=1),
+            ParamSpec(
+                name="bytes", type=ParamType.INTEGER, minimum=16, maximum=1048576, default=4096
+            ),
+            ParamSpec(name="seed", type=ParamType.INTEGER, minimum=1, maximum=65535, default=1),
+        ),
+        observable_effect="the target reads corrupted bytes from the affected file",
+    ),
     # ── Kubernetes archetypes (ADR-M7-3, ADR-M7-4) ──────────────────────────
     # All k8s archetypes are AVAILABLE when the live cluster driver is present;
     # the executor register is the source of truth for executability.  Families

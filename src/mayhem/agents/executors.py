@@ -3857,6 +3857,16 @@ _CONTAINER_EXECUTOR_ALIASES = {
     "process.restart_delay": "tool",
     "http.upstream_timeout": "tool",
     "app.response_5xx": "tool",
+    # Wave 2. Each of these is argv-pair or burner-payload work whose id prefix
+    # is already claimed by a different executor, so prefix matching alone
+    # would route them to ProcPauseExecutor (process.*), ToolExecutor (net.*)
+    # or PayloadExecutor (fs.*) and run the wrong lifecycle.
+    "process.thread_exhaust": "payload",
+    "process.child_exhaust": "payload",
+    "net.conn_exhaust": "payload",
+    # fs.corrupt must run as tool, not payload: its undo has to copy the
+    # original file back, and PayloadExecutor's undo only SIGKILLs the burner.
+    "fs.corrupt": "tool",
 }
 
 
