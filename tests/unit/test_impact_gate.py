@@ -728,3 +728,61 @@ class TestCompileRequirements:
         # yields the same requirement.
         plans = impact.compile_requirements(_plan("net.latency"), _graph())
         assert plans[0].bins == ("tc",)
+
+
+class TestUnreachableContainersAreNotAPass:
+    """An unreachable probe is absence of knowledge, not a clean bill of health.
+
+    ``dependency_plan`` used to ``continue`` past a container it could not
+    probe, which left it with no entry at all -- indistinguishable from a
+    fully-provisioned one. ``prepare dependencies check`` then printed
+    "no missing tooling -- every planned fault can inject" for a stack that was
+    not even running. This is the mirror of the ``unfixable`` bug: there a
+    *blocked* fault read as *ok*, here an *unknown* one does.
+    """
+
+    def test_stopped_container_is_reported_not_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: None)
+        plans = impact.dependency_plan(_plan("net.interface_down"), _graph(), "podman")
+        assert len(plans) == 1, "an unreachable container must still produce an entry"
+        assert plans[0].unreachable == ("net.interface_down",)
+        # and it must not masquerade as installable work
+        assert plans[0].packages == ()
+        assert plans[0].installable is False
+        assert plans[0].gaps_remain is True
+
+    def test_a_probeable_container_reports_real_gaps_instead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With a package manager the new bin is installable, not 'manual'."""
+        run = _runtime(bins={"ip": False, "apk": True}, cap_eff=1 << 12)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        plans = impact.dependency_plan(_plan("net.interface_down"), _graph(), "podman")
+        assert plans[0].unreachable == ()
+        assert plans[0].pm == "apk"
+        assert plans[0].bins == ("ip",)
+        assert plans[0].packages == ("iproute2",)
+        assert plans[0].installable is True
+        assert plans[0].install_argv() == [
+            ["podman", "exec", "testcase-api", "apk", "add", "--no-cache", "iproute2"]
+        ]
+
+    def test_without_a_package_manager_the_bin_is_manual(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _runtime(bins={"ip": False}, cap_eff=1 << 12)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        plans = impact.dependency_plan(_plan("net.interface_down"), _graph(), "podman")
+        assert plans[0].unreachable == ()
+        assert plans[0].pm is None
+        assert plans[0].manual == ("ip",)
+        assert plans[0].installable is False
+
+    def test_a_healthy_container_is_neither_unreachable_nor_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _runtime(bins={"ip": True}, cap_eff=1 << 12)
+        monkeypatch.setattr(impact, "probe_container_runtime", lambda eng, c, timeout_s=10: run)
+        assert impact.dependency_plan(_plan("net.interface_down"), _graph(), "podman") == []

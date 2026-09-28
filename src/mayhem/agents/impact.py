@@ -678,6 +678,12 @@ class ContainerDependencyPlan:
     #: as "missing tooling" is what made `dependency check` print an empty
     #: "ok <container>" line and hide a permanently blocked fault.
     unfixable: tuple[tuple[str, str], ...] = ()
+    #: Faults whose target container could not be probed at all. This is not a
+    #: pass and not a gap: it is an absence of knowledge, and reporting it as
+    #: either is wrong. ``dependency check`` used to skip these entirely, so a
+    #: stopped or renamed container produced "no missing tooling — every
+    #: planned fault can inject", which is a claim mayhem had not verified.
+    unreachable: tuple[str, ...] = ()
 
     @property
     def installable(self) -> bool:
@@ -713,6 +719,7 @@ def dependency_plan(
     runtimes: dict[str, ContainerRuntime | None] = {}
     missing_by: dict[str, set[str]] = {}
     unfixable_by: dict[str, dict[str, str]] = {}
+    unreachable_by: dict[str, set[str]] = {}
     for step in plan.steps:
         fault = step.fault
         if fault is None:
@@ -727,7 +734,10 @@ def dependency_plan(
             runtimes[container] = probe_container_runtime(engine, container)
         run = runtimes[container]
         if run is None:
-            continue  # unreachable — cannot plan tooling for it
+            # Record it rather than skipping. Skipping made an unreachable
+            # container indistinguishable from a fully-provisioned one.
+            unreachable_by.setdefault(container, set()).add(fault.fault_id)
+            continue
         verdict = gate_fault(fault.fault_id, container, engine, run)
         if verdict.impact_possible:
             continue
@@ -740,7 +750,7 @@ def dependency_plan(
             continue
         missing_by.setdefault(container, set()).update(verdict.missing)
     plans: list[ContainerDependencyPlan] = []
-    for container in sorted(set(missing_by) | set(unfixable_by)):
+    for container in sorted(set(missing_by) | set(unfixable_by) | set(unreachable_by)):
         run = runtimes[container]
         missing = sorted(missing_by.get(container, set()))
         pm = run.package_manager() if run else None
@@ -771,6 +781,7 @@ def dependency_plan(
                 caps_missing=tuple(caps_missing),
                 need_root=need_root,
                 unfixable=tuple(sorted(unfixable_by.get(container, {}).items())),
+                unreachable=tuple(sorted(unreachable_by.get(container, set()))),
             )
         )
     return plans

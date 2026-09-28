@@ -79,7 +79,14 @@ def _render_dependency(dp: ContainerDependencyPlan, *, detailed: bool) -> None:
     """One container's dependency outcome (used by check and install)."""
     from mayhem.agents.impact import _MANUAL_BINS
 
-    status = style.state("ok") if dp.gaps_remain else style.yellow("missing")
+    if dp.unreachable:
+        # "ok" would assert we verified this container, which is precisely what
+        # an unreachable probe cannot do.
+        status = style.warn("unknown")
+    elif dp.gaps_remain:
+        status = style.state("ok")
+    else:
+        status = style.yellow("missing")
     click.echo(f"{status} {dp.container}  (pm: {dp.pm or 'none'})")
     if dp.packages:
         click.echo(f"  install: {', '.join(dp.packages)}")
@@ -95,6 +102,12 @@ def _render_dependency(dp: ContainerDependencyPlan, *, detailed: bool) -> None:
             f"  {style.yellow('blocked')} {fault_id}: {reason or 'inert for this engine'}"
             " — no package or flag can unblock it; drop it from the drill or"
             " run on a privileged engine"
+        )
+    for fault_id in dp.unreachable:
+        click.echo(
+            f"  {style.warn('unreachable')} {fault_id}: the target could not be probed"
+            f" ({dp.container}) — its tooling is unknown, not verified; start the"
+            " container and re-run this check"
         )
     if dp.pm is None and dp.manual:
         click.echo(
@@ -128,8 +141,9 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
     deps = _dep_plan(plan, graph, engine_name)
     host_gaps = _host_gaps(plan)
     blocked = [(dp.container, fid, why) for dp in deps for fid, why in dp.unfixable]
+    unreachable = [(dp.container, fid) for dp in deps for fid in dp.unreachable]
     installable_gaps = [dp for dp in deps if not dp.gaps_remain]
-    if not installable_gaps and not host_gaps and not blocked:
+    if not installable_gaps and not host_gaps and not blocked and not unreachable:
         click.echo(style.ok("no missing tooling") + " — every planned fault can inject")
         return
     for dp in deps:
@@ -141,10 +155,16 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
             " host (mayhem dependency manages containers only)"
         )
     if not installable_gaps and not host_gaps:
-        click.echo(
-            style.yellow("no installable tooling missing")
-            + f" — {len(blocked)} planned fault(s) blocked for reasons no package fixes"
-        )
+        parts = []
+        if blocked:
+            parts.append(f"{len(blocked)} blocked for reasons no package fixes")
+        if unreachable:
+            parts.append(
+                f"{len(unreachable)} on containers that could not be probed, so"
+                " their tooling is unverified"
+            )
+        if parts:
+            click.echo(style.yellow("no installable tooling missing") + " — " + "; ".join(parts))
 
 
 @dependency.command("install")
