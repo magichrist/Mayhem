@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -25,10 +25,13 @@ from mayhem.domain.m5_campaign import CampaignExecutionManifest, CampaignManifes
 if TYPE_CHECKING:
     from click import Context
 
+    from mayhem.cli.context import CliContext
+    from mayhem.cli.services import CampaignRunResult
     from mayhem.controller.executor import RunResult
+    from mayhem.infra.store import Store
 
 
-def _ctx(ctx: Context):
+def _ctx(ctx: Context) -> CliContext:
     from mayhem.cli.context import CliContext
 
     obj = ctx.obj
@@ -51,12 +54,12 @@ def _campaign_status(value: str) -> CampaignStatus:
 
 
 def _transition_row(
-    store,
+    store: Store,
     campaign_id: str,
     new_status: CampaignStatus,
     *,
     legacy_start: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     rows = store.query("SELECT status FROM campaigns WHERE id = ?", (campaign_id,))
     if not rows:
         raise FileNotFoundError(f"campaign not found: {campaign_id}")
@@ -690,13 +693,69 @@ def _resolve_engine_from_state() -> str:
     return _resolve_engine(str(_STATE.get("engine", ""))) or "podman"
 
 
-def _record_campaign_resume(store, campaign_id: str, status: str) -> None:
+def _record_campaign_resume(store: Store, campaign_id: str, status: str) -> None:
     if status == "paused":
         store.save_observation(
             "campaign_resume",
             source=campaign_id,
             data={"recovery_status": "resumed", "campaign_id": campaign_id},
         )
+
+
+def _load_campaign(
+    store: Store, ctx: Context, campaign_id: str
+) -> tuple[dict[str, Any], list[str]]:
+    """Load the campaign row and refuse anything not in a runnable state."""
+    rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+    if not rows:
+        click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
+        raise FileNotFoundError(f"campaign not found: {campaign_id}")
+    row = dict(rows[0])
+    experiments = json.loads(row.get("experiments_json") or "[]")
+    if not experiments:
+        click.echo(
+            f"{style.danger('error:')} Campaign has no experiments; add one with"
+            " `mayhem campaign add-experiment`.",
+            err=True,
+        )
+        raise click.UsageError("campaign has no experiments", ctx=ctx)
+    if row["status"] not in ("draft", "scheduled", "running", "paused"):
+        click.echo(
+            "Cannot run campaign in "
+            f"'{row['status']}' status (must be draft/scheduled/running/paused).",
+            err=True,
+        )
+        raise click.UsageError(f"cannot run campaign in '{row['status']}' status")
+    return row, experiments
+
+
+def _report_campaign(campaign_id: str, as_json: bool, outcome: CampaignRunResult) -> None:
+    """Print the per-experiment outcome as JSON or as a human summary."""
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "campaign_id": campaign_id,
+                    "status": outcome.status,
+                    "runs": [
+                        {
+                            "spec_path": e.spec_path,
+                            "run_id": e.run_id,
+                            "status": e.status,
+                        }
+                        for e in outcome.runs
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+    for entry in outcome.runs:
+        mark = style.ok("ok") if entry.status == "completed" else style.danger("FAIL")
+        click.echo(f"  [{mark}] {entry.spec_path} -> {entry.run_id} ({entry.status})")
+    click.echo(
+        f"Campaign {style.cyan(campaign_id)} finished with status {style.state(outcome.status)}."
+    )
 
 
 @campaign.command("run")
@@ -763,26 +822,7 @@ def run_campaign(
     db = db_opt or obj.db
     store = open_store(db)
     try:
-        rows = store.query("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
-        if not rows:
-            click.echo(f"{style.danger('error:')} Campaign {campaign_id!r} not found.", err=True)
-            raise FileNotFoundError(f"campaign not found: {campaign_id}")
-        row = dict(rows[0])
-        experiments = json.loads(row.get("experiments_json") or "[]")
-        if not experiments:
-            click.echo(
-                f"{style.danger('error:')} Campaign has no experiments; add one with"
-                " `mayhem campaign add-experiment`.",
-                err=True,
-            )
-            raise click.UsageError("campaign has no experiments", ctx=ctx)
-        if row["status"] not in ("draft", "scheduled", "running", "paused"):
-            click.echo(
-                "Cannot run campaign in "
-                f"'{row['status']}' status (must be draft/scheduled/running/paused).",
-                err=True,
-            )
-            raise click.UsageError(f"cannot run campaign in '{row['status']}' status")
+        row, experiments = _load_campaign(store, ctx, campaign_id)
 
         if obj.dry_run:
             # Structural: return before the status UPDATE and before any
@@ -874,32 +914,7 @@ def run_campaign(
                 (final_status, now, campaign_id),
             )
 
-        if as_json:
-            click.echo(
-                json.dumps(
-                    {
-                        "campaign_id": campaign_id,
-                        "status": outcome.status,
-                        "runs": [
-                            {
-                                "spec_path": e.spec_path,
-                                "run_id": e.run_id,
-                                "status": e.status,
-                            }
-                            for e in outcome.runs
-                        ],
-                    },
-                    indent=2,
-                )
-            )
-        else:
-            for entry in outcome.runs:
-                mark = style.ok("ok") if entry.status == "completed" else style.danger("FAIL")
-                click.echo(f"  [{mark}] {entry.spec_path} -> {entry.run_id} ({entry.status})")
-            click.echo(
-                f"Campaign {style.cyan(campaign_id)} finished with status"
-                f" {style.state(outcome.status)}."
-            )
+        _report_campaign(campaign_id, as_json, outcome)
 
         if outcome.status != "completed":
             ctx.exit(int(ExitCode.EXPERIMENT_FAILURE))

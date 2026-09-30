@@ -13,17 +13,17 @@ Shape::
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from mayhem.cli import style
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import build_graph, open_store
-from mayhem.domain.coverage import CellFilters, CellState, CoverageCell
+from mayhem.domain.coverage import CellFilters, CellState, CoverageCell, ResilienceCell
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
-from mayhem.infra.ranking import rank_resilience_cells
+from mayhem.infra.ranking import RankedCell, rank_resilience_cells
 
 if TYPE_CHECKING:
     from mayhem.cli.context import CliContext
@@ -96,7 +96,11 @@ def _landscape_cells(
     return tuple(cells), criticality_map, risk_map
 
 
-def _operator_summary(enriched, ranked, suggestions) -> dict[str, object]:
+def _operator_summary(
+    enriched: Sequence[ResilienceCell],
+    ranked: Sequence[RankedCell[ResilienceCell]],
+    suggestions: Sequence[RankedCell[ResilienceCell]],
+) -> dict[str, object]:
     return {
         "coverage_delta": 0,
         "blocked_cells": sum(cell.state is CellState.BLOCKED for cell in enriched),
@@ -107,7 +111,13 @@ def _operator_summary(enriched, ranked, suggestions) -> dict[str, object]:
     }
 
 
-def _render_human(suggestions, ranked, operator_summary, explain: bool) -> str:
+def _render_human(
+    suggestions: Sequence[RankedCell[ResilienceCell]],
+    ranked: Sequence[RankedCell[ResilienceCell]],
+    # The summary dict is heterogeneous by construction (ints, lists, strings).
+    operator_summary: Mapping[str, Any],
+    explain: bool,
+) -> str:
     if not suggestions:
         return "no matching untested cells remain."
     lines = [
@@ -197,7 +207,6 @@ def next_cmd(
         if not quiet:
             click.echo("no testable cells in the landscape.")
         ctx.exit(int(ExitCode.SUCCESS))
-        return
 
     store = open_store(ctx_obj.db)
     try:
@@ -263,7 +272,6 @@ def next_cmd(
             }
             click.echo(json.dumps(output, indent=2, sort_keys=True))
             ctx.exit(int(ExitCode.SUCCESS))
-            return
         if not quiet:
             click.echo(_render_human(suggestions, ranked, operator_summary, explain))
     finally:

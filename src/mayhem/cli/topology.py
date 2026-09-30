@@ -160,8 +160,8 @@ def discover(  # noqa: PLR0912, PLR0915
                 raise click.ClickException(
                     f"Kubernetes {effective_mode.value} mode requires --manifest PATH"
                 )
-            provider = KubernetesManifestProvider(manifest_path)
-            if not provider.manifest_inspection_available():
+            manifest_provider = KubernetesManifestProvider(manifest_path)
+            if not manifest_provider.manifest_inspection_available():
                 raise click.ClickException(
                     f"manifest inspection unavailable: {manifest_path}; provide a Kubernetes manifest"
                 )
@@ -176,7 +176,7 @@ def discover(  # noqa: PLR0912, PLR0915
                 "healthy": False,
                 "note": "manifest inspection succeeded; live execution was not probed",
             }
-            providers = [provider]
+            providers = [manifest_provider]
         else:
             from mayhem.topology.providers.kubernetes import (
                 KUBERNETES_IMPORT_ERROR,
@@ -189,21 +189,26 @@ def discover(  # noqa: PLR0912, PLR0915
                     "Kubernetes live discovery is unavailable: missing SDK. "
                     + KUBERNETES_SDK_MISSING_HINT
                 )
-            provider_kwargs: dict[str, object] = {
+            # ``workload_selector`` is passed only when a selector was
+            # resolved; the key is omitted rather than sent as None, which the
+            # CLI tests pin.
+            provider_kwargs: dict[str, Any] = {
                 "context": resolved_ctx.context,
                 "namespace": resolved_ctx.namespace,
             }
             if resolved_ctx.workload_selector is not None:
                 provider_kwargs["workload_selector"] = resolved_ctx.workload_selector
-            provider = KubernetesProvider("kubernetes", **provider_kwargs)
+            live_provider = KubernetesProvider("kubernetes", **provider_kwargs)
             readiness = (
-                provider.live_readiness_available()
-                if hasattr(provider, "live_readiness_available")
-                else provider.is_available()
+                live_provider.live_readiness_available()
+                if hasattr(live_provider, "live_readiness_available")
+                else live_provider.is_available()
             )
             if not readiness:
                 details = (
-                    provider.readiness_details() if hasattr(provider, "readiness_details") else {}
+                    live_provider.readiness_details()
+                    if hasattr(live_provider, "readiness_details")
+                    else {}
                 )
                 detail = str(details.get("error") or "cluster is not reachable")
                 raise click.ClickException(
@@ -221,7 +226,7 @@ def discover(  # noqa: PLR0912, PLR0915
                 "healthy": True,
                 "note": "live discovery succeeded; execution capabilities remain separately gated",
             }
-            providers = [provider]
+            providers = [live_provider]
 
     # Compose blueprint — scoped runtime match (docker/podman only).
     elif resolved is not None:

@@ -20,6 +20,7 @@ identical handler object.
 from __future__ import annotations
 
 import difflib
+from typing import Any
 
 import click
 
@@ -53,7 +54,10 @@ class CommandResolutionError(click.UsageError):
 class PrefixGroup(click.Group):
     """A Click Group whose subcommands resolve by unique prefix."""
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
+    # Click's Group signature is keyword-heavy and open-ended; `Any` is the
+    # documented way to forward it in a subclass. `object` here was a lie that
+    # cost nine downstream arg-type errors at the super() call.
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.hidden_commands: set[str] = set()
 
@@ -79,4 +83,4 @@ def make_group(name: str, help_text: str, **attrs: object) -> PrefixGroup:
     """Factory so nested groups inherit prefix resolution automatically."""
     attrs.setdefault("help", help_text)
     attrs.setdefault("epilog", PREFIX_HELP)
-    return PrefixGroup(name=name, **attrs)  # type: ignore[arg-type]
+    return PrefixGroup(name=name, **attrs)

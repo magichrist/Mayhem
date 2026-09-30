@@ -31,7 +31,7 @@ discover.add_command(_clone(toolkit.commands["capabilities"], "capabilities"))
 
 @discover.command("engines")
 def engines() -> None:
-    from mayhem.domain.runtime_adapter import detect_available_engines
+    from mayhem.infra.engine_probe import detect_available_engines
 
     detected = detect_available_engines()
     engines_payload = []

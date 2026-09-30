@@ -221,14 +221,12 @@ def coverage_cmd(
             err=True,
         )
         ctx.exit(int(ExitCode.USAGE_ERROR))
-        return
     graph = _graph_from(ctx, compose)
     landscape = _landscape_cells(graph)
     if not landscape:
         if not quiet:
             click.echo("no testable cells in the landscape.")
         ctx.exit(int(ExitCode.SUCCESS))
-        return
     store = open_store(ctx_obj.db)
     try:
         repository = SQLiteCoverageRepository(store)

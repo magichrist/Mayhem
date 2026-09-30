@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import click
 
 from mayhem.cli.explore import explore
 from mayhem.cli.lifecycle import validate as _validate_handler
 from mayhem.cli.resolver import make_group
+
+if TYPE_CHECKING:
+    from mayhem.domain.scenarios import Scenario
 
 experiment = make_group("experiment", "Inspect and validate authored experiments.")
 
@@ -21,19 +27,18 @@ def show(experiment: str) -> None:
     click.echo(loaded.model_dump_json(indent=2))
 
 
-def _load_scenario(path: str):
+def _load_scenario(path: str) -> Scenario:
     import json
 
     from mayhem.domain.scenarios import load_scenario
 
-    with open(path, encoding="utf-8") as handle:
-        text = handle.read()
     if path.endswith((".yaml", ".yml")):
+        text = Path(path).read_text(encoding="utf-8")
         import yaml
 
         payload = yaml.safe_load(text)
     else:
-        payload = json.loads(text)
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return load_scenario(payload or {})
 
 
@@ -94,11 +99,12 @@ def validate_scenario(scenario: str, as_json: bool) -> None:
         if not echo_machine({"valid": False, "error": str(exc)}, as_json=as_json):
             click.echo(f"invalid: {exc}")
         raise SystemExit(1) from exc
+    variables = list(parsed.variable_names())
     payload = {
         "valid": True,
         "name": parsed.name,
         "schema_version": parsed.schema_version,
-        "variables": list(parsed.variable_names()),
+        "variables": variables,
         "defaults": defaults,
         "steps": [step.id for step in parsed.steps],
     }
@@ -107,7 +113,7 @@ def validate_scenario(scenario: str, as_json: bool) -> None:
     if echo_machine(payload, as_json=as_json):
         return
     click.echo(f"valid: {parsed.name}")
-    click.echo(f"variables: {', '.join(payload['variables']) or '-'}")
+    click.echo(f"variables: {', '.join(variables) or '-'}")
     click.echo(f"steps: {len(parsed.steps)}")
 
 

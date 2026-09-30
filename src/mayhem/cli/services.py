@@ -20,6 +20,7 @@ from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
 from mayhem.controller.safety import SafetyContext, environment_fingerprint
 from mayhem.domain.experiments import BlastRadiusBudget, DrillSpec, ExecutionPlan
+from mayhem.domain.quota import DamageQuota
 from mayhem.domain.runtime_context import RuntimeContext, reconcile_engine
 from mayhem.domain.topology import (
     Edge,
@@ -67,7 +68,7 @@ def _engine_version(name: str) -> str | None:
     descriptor) or an unreadable binary yields ``None`` rather than a guess.
     """
     try:
-        from mayhem.domain.runtime_adapter import detect_available_engines
+        from mayhem.infra.engine_probe import detect_available_engines
 
         for candidate in detect_available_engines():
             if candidate.name == name:
@@ -143,7 +144,7 @@ def resolve_runtime_context(
     if selected:
         resolved_engine = selected
     else:
-        from mayhem.domain.runtime_adapter import resolve_engine_selection
+        from mayhem.infra.engine_probe import resolve_engine_selection
 
         try:
             resolved_engine = resolve_engine_selection(None).name
@@ -424,6 +425,7 @@ def prepare(
         safety=SafetyContext(
             policy=cfg.policy,
             budget=budget,
+            damage_quota=budget.damage_quota or DamageQuota(),
             fingerprint=fingerprint,
             allow_critical_cli=allow_critical,
             policy_id=effective_policy,
@@ -437,6 +439,13 @@ def prepare(
 class CompiledPlan:
     run_id: str
     plan: ExecutionPlan
+    #: The authored spec the plan was compiled from, when the plan came from
+    #: one. Carried rather than re-read: the steady-state block lives on the
+    #: spec, not on the frozen plan, so a post-run evaluation that re-read the
+    #: file would be grading whatever the file says *now* rather than what ran.
+    #: ``None`` for a plan loaded from a file or the store — those carry no
+    #: spec at all, and a missing spec renders nothing rather than guessing.
+    spec: DrillSpec | None = None
 
 
 def plan_from_spec(
@@ -478,7 +487,7 @@ def plan_from_spec(
         engine=engine,
         spec_dir=str(Path(spec_path).parent),
     )
-    return CompiledPlan(run_id=run_id, plan=plan)
+    return CompiledPlan(run_id=run_id, plan=plan, spec=spec)
 
 
 def plan_maniac_from_spec(
@@ -534,7 +543,7 @@ def plan_maniac_from_spec(
         spec_dir=str(Path(spec_path).parent if spec_path else Path.cwd()),
         maniac=maniac,
     )
-    return CompiledPlan(run_id=run_id, plan=plan)
+    return CompiledPlan(run_id=run_id, plan=plan, spec=document)
 
 
 def engine_for(

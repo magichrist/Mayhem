@@ -22,6 +22,7 @@ from mayhem.cli.services import build_graph, open_store
 
 if TYPE_CHECKING:
     from mayhem.cli.context import CliContext
+    from mayhem.domain.topology import TopologyGraph
 
 
 def _compose_option[F: Callable[..., object]](fn: F) -> F:
@@ -34,7 +35,7 @@ def _compose_option[F: Callable[..., object]](fn: F) -> F:
     )(fn)
 
 
-def _graph_from(ctx: click.Context, compose: str | None) -> tuple:
+def _graph_from(ctx: click.Context, compose: str | None) -> tuple[TopologyGraph, str | None]:
     from mayhem.cli.topology import _resolve_compose
 
     resolved = _resolve_compose(compose)

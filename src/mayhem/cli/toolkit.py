@@ -31,7 +31,7 @@ toolkit = make_group("toolkit", "Inspect the fault catalog and local tool capabi
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
 def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_json: bool) -> None:
     if explain_id is not None:
-        from mayhem.infra.catalog_report import explain_catalog_fault
+        from mayhem.controller.catalog_report import explain_catalog_fault
 
         try:
             report = explain_catalog_fault(explain_id, engine=(engine_opt or "docker").lower())
@@ -53,7 +53,7 @@ def faults(engine_opt: str | None, coverage: bool, explain_id: str | None, as_js
 
     engine = engine_opt or str(_STATE.get("engine", "")) or ""
     if coverage:
-        from mayhem.infra.catalog_report import build_coverage
+        from mayhem.controller.catalog_report import build_coverage
 
         report = build_coverage(engine=engine or None)
         if as_json:
@@ -153,7 +153,7 @@ def capabilities(
     output_format: str | None,
 ) -> None:
     """Report registered, available, verified, and blocked fault capabilities."""
-    from mayhem.infra.catalog_report import build_capability_dashboard
+    from mayhem.controller.catalog_report import build_capability_dashboard
 
     engine = engine_opt.lower() if engine_opt else None
     dashboard = build_capability_dashboard(

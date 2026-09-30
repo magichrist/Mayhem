@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli import style
+from mayhem.cli.context import CliContext
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.services import (
     build_graph,
@@ -32,7 +33,6 @@ from mayhem.domain.coverage import CellState
 from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 
 if TYPE_CHECKING:
-    from mayhem.cli.context import CliContext
     from mayhem.controller.explore_flow import ExploreDryRun, ExploreRun
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.candidate_gates import CandidateGatePipeline
@@ -78,7 +78,9 @@ def _runtime_gate_pipeline(allow_critical: bool = False) -> CandidateGatePipelin
 
 
 def _ctx(ctx: click.Context) -> CliContext:
-    return ctx.obj  # type: ignore[return-value]
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    return obj
 
 
 def _compose_option[F: Callable[..., object]](fn: F) -> F:
@@ -188,7 +190,8 @@ def _render_dry_run(dry: ExploreDryRun, *, json_mode: bool = False) -> str:
         if entry.gate_decision and entry.gate_decision.rejected:
             lines.append(
                 f"       {style.yellow('rejected:')} "
-                f"{entry.gate_decision.gate.value}: {entry.gate_decision.reason}"
+                f"{entry.gate_decision.gate.value if entry.gate_decision.gate else 'unknown'}"
+                f": {entry.gate_decision.reason}"
             )
     lines.append("")
     lines.append(
@@ -365,7 +368,7 @@ def explore(
         from mayhem.controller.explore_flow import dry_run as explore_dry_run
 
         gates = _runtime_gate_pipeline(allow_critical=allow_critical)
-        result = explore_dry_run(
+        dry_result = explore_dry_run(
             landscape,
             seed=seed,
             covered_keys=coverage.covered_keys(),
@@ -373,9 +376,8 @@ def explore(
             coverage=coverage,
         )
         if not quiet:
-            click.echo(_render_dry_run(result, json_mode=json_output))
+            click.echo(_render_dry_run(dry_result, json_mode=json_output))
         ctx.exit(int(ExitCode.SUCCESS))
-        return
 
     # Live explore: prepare → runner → execute loop.
     try:
@@ -391,11 +393,9 @@ def explore(
     except FileNotFoundError as exc:
         click.echo(style.danger(f"error: {exc}"), err=True)
         ctx.exit(int(ExitCode.CONFIG_ERROR))
-        return
     except Exception as exc:
         click.echo(style.danger(f"error: {exc}"), err=True)
         ctx.exit(int(ExitCode.CONFIG_ERROR))
-        return
 
     runner = CellRunner(
         store=store,

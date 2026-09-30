@@ -137,9 +137,8 @@ def approve(
 
     if echo_machine(stored.to_dict(), as_json=as_json):
         return
-    click.echo(
-        f"approval recorded for {stored.id}: {len(set(stored.gate.approved_by))} distinct approver(s)"
-    )
+    approvers = len(set(stored.gate.approved_by))
+    click.echo(f"approval recorded for {stored.id}: {approvers} distinct approver(s)")
 
 
 @game_day.command("show")
