@@ -125,7 +125,6 @@ apiVersion: mayhem/v1
 name: matrix-drill
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   testcase-api:

@@ -943,6 +943,7 @@ class TestAdditiveSchemaCompat:
             spec.model_dump(exclude_none=True)
         )
 
+    @pytest.mark.filterwarnings("ignore::mayhem.domain.experiments.MaxFaultsNotEnforced")
     def test_a_drill_without_steady_state_round_trips_byte_identically(self) -> None:
         spec = _drill()
         once = _canonical(spec.model_dump(exclude_none=True))
@@ -951,6 +952,7 @@ class TestAdditiveSchemaCompat:
         )
         assert once == twice
 
+    @pytest.mark.filterwarnings("ignore::mayhem.domain.experiments.MaxFaultsNotEnforced")
     def test_a_drill_with_steady_state_round_trips_too(self) -> None:
         payload = yaml.safe_load(PLAN_EXAMPLE_YAML)
         spec = _drill().model_copy(update={"steady_state": SteadyStateSpec.model_validate(payload)})

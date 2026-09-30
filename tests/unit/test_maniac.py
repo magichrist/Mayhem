@@ -14,7 +14,7 @@ from mayhem.spec import parse_drill
 TWO_CONTAINER = {
     "kind": "drill",
     "name": "maniac-spec",
-    "config": {"risk_ceiling": "critical", "max_faults": 1, "timeout": "30m"},
+    "config": {"risk_ceiling": "critical", "timeout": "30m"},
     "containers": {
         "api": {"faults": [{"fault": "proc.pause", "duration": "10s"}]},
         "lb": {"faults": [{"fault": "fuzz.protocol_abuse", "duration": "50s"}]},

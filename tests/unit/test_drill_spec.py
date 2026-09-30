@@ -14,6 +14,7 @@ from mayhem.domain.experiments import (
     DrillFault,
     DrillSpec,
     ExecutionStep,
+    MaxFaultsNotEnforced,
     OnFailure,
 )
 from mayhem.domain.risks import RiskLevel
@@ -85,12 +86,13 @@ class TestDrillConfig:
         assert c.log_level == "INFO"
 
     def test_explicit(self) -> None:
-        c = DrillConfig(
-            risk_ceiling=RiskLevel.CRITICAL,
-            max_faults=3,
-            timeout="1h",
-            log_level="DEBUG",
-        )
+        with pytest.warns(MaxFaultsNotEnforced):
+            c = DrillConfig(
+                risk_ceiling=RiskLevel.CRITICAL,
+                max_faults=3,
+                timeout="1h",
+                log_level="DEBUG",
+            )
         assert c.risk_ceiling == RiskLevel.CRITICAL
         assert c.max_faults == 3
         assert c.timeout == 3600.0  # Duration converts "1h" to 3600.0
@@ -186,16 +188,18 @@ class TestDrillSpec:
         assert len(spec.execution) == 1
 
     def test_full_spec(self) -> None:
-        spec = DrillSpec(
-            kind="drill",
-            name="full-fault-drill",
-            hypothesis="Stack recovers from every implemented fault",
-            config=DrillConfig(
+        with pytest.warns(MaxFaultsNotEnforced):
+            config = DrillConfig(
                 risk_ceiling=RiskLevel.CRITICAL,
                 max_faults=1,
                 timeout="30m",
                 log_level="INFO",
-            ),
+            )
+        spec = DrillSpec(
+            kind="drill",
+            name="full-fault-drill",
+            hypothesis="Stack recovers from every implemented fault",
+            config=config,
             containers={
                 "testcase-api": DrillContainer(
                     faults=(DrillFault(fault="proc.pause", duration="10s"),)
@@ -374,7 +378,8 @@ class TestParseDrill:
             "containers": {"api": {}},
             "execution": [{"wait": "5s"}],
         }
-        spec = parse_drill(data)
+        with pytest.warns(MaxFaultsNotEnforced):
+            spec = parse_drill(data)
         assert spec.config.risk_ceiling == RiskLevel.CRITICAL
         assert spec.config.max_faults == 3
         assert spec.config.timeout == 3600.0  # Duration converts "1h" to 3600.0

@@ -331,7 +331,6 @@ apiVersion: mayhem/v1
 name: ctx-drill
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   api:

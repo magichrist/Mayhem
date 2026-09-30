@@ -25,7 +25,6 @@ name: drill-pause
 hypothesis: brief process pause is survivable
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   testcase-api:
@@ -307,7 +306,6 @@ kind: drill
 name: drill-load
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   testcase-api:
@@ -365,7 +363,6 @@ kind: drill
 name: drill-load-skip
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   testcase-api:

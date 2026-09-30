@@ -61,7 +61,6 @@ apiVersion: mayhem/v1
 name: {name}
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 10m
 containers:
   testcase-api:

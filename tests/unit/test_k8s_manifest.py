@@ -355,7 +355,6 @@ class TestDrawManiacTargetRounds:
                 "execution": [{"sequential": list(targets.keys())}],
                 "config": {
                     "risk_ceiling": "critical",
-                    "max_faults": 1,
                     "timeout": "30m",
                     **({"maniac": maniac} if maniac else {}),
                 },
@@ -496,7 +495,7 @@ class TestPlanManiacRefusesHeterogeneousTargets:
                     },
                 },
                 "execution": [{"sequential": ["docker/web", "Deployment/mayhem/api"]}],
-                "config": {"risk_ceiling": "critical", "max_faults": 1, "timeout": "30m"},
+                "config": {"risk_ceiling": "critical", "timeout": "30m"},
             }
         )
         with pytest.raises(PlanningError, match="kubernetes-scoped"):
