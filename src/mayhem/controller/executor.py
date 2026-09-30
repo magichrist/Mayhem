@@ -280,12 +280,16 @@ def _substitute_pids(
     cont_by_node = {nid: cont for nid, (_pid, cont) in (live_targets or {}).items()}
 
     def _swap(value: object) -> object:
+        """Substitute into a ``VerifyProbe`` arg, which may hold a list."""
         if isinstance(value, (list, tuple)):
-            return type(value)(_swap_leaf(v) for v in value)
-        return _swap_leaf(value)
+            return type(value)(_swap_str(v) if isinstance(v, str) else _swap(v) for v in value)
+        if isinstance(value, str):
+            return _swap_str(value)
+        return value
 
-    def _swap_leaf(value: object) -> object:
-        if not isinstance(value, str) or _LIVE_PID not in value:
+    def _swap_str(value: str) -> str:
+        """Substitute into an ``UndoOp`` arg, whose values are always strings."""
+        if _LIVE_PID not in value:
             return value
         node_id = value.split(":", 1)[0]
         pid = live_pids.get(node_id)
@@ -293,8 +297,8 @@ def _substitute_pids(
             return value
         return str(pid)
 
-    def _address(node_id: str) -> dict[str, str]:
-        if not engine:
+    def _address(node_id: str | None) -> dict[str, str]:
+        if not engine or not node_id:
             return {}
         cont = cont_by_node.get(node_id)
         if not cont:
@@ -328,7 +332,7 @@ def _substitute_pids(
         UndoOp(
             op=op.op,
             args={
-                **{k: _swap(v) for k, v in op.args.items()},
+                **{k: _swap_str(v) for k, v in op.args.items()},
                 **_address(_resolved_node(op)),
                 **_boot_address(
                     {k: _swap(v) for k, v in op.args.items()},
@@ -886,7 +890,7 @@ class RunEngine:
                 fault.target,
                 preferred_pod=preferred_pod_from_graph(self._live_graph, targets),
             )
-            target = outcome.resolved
+            target = outcome.pod_or_none()
             if target is None:
                 raise ResolutionError("resolution.no_target", "resolver returned no pod")
             pid, boot = resolver.read_primary_pid(target)
@@ -1134,9 +1138,18 @@ class RunEngine:
         dirty: list[str] = []
         details: list[str] = []
         for outcome in outcomes:
-            target = outcome.resolved
-            if target is None:
-                continue
+            # Admit against the *untyped* resolution, not the pod-only
+            # projection. `pod_or_none()` returns None for a node resolution,
+            # and skipping on None made this guard unreachable for exactly the
+            # case it exists to catch: a node target was `continue`d past the
+            # admission check and the step then reported
+            # `ok=True, status='ok', detail='no pods mutated'`. That is a
+            # fail-open — a node-scoped resolution silently reported as a
+            # successful pod fault. `admit_resolved_target` already refuses
+            # both None (`target.unresolved`) and a wrong type
+            # (`target.type_mismatch`), so hand it the real target and let it
+            # decide. The pod-only accessors below are for the fields that are
+            # genuinely pod-specific, and are only reached once admitted.
             if outcome.drift:
                 self._emit(
                     Event(
@@ -1153,7 +1166,7 @@ class RunEngine:
 
             admission = admit_resolved_target(
                 fault.fault_id,
-                target,
+                outcome.resolved,
                 required_target_types=("pod",),
                 compensation_complete=True,
             )
@@ -1167,8 +1180,15 @@ class RunEngine:
                     ),
                     [],
                 )
+            # Admitted: the resolution is a pod, so the pod-only accessors are
+            # sound from here on.
+            target = outcome.pod_or_none()
+            assert target is not None  # guaranteed by the admission above
             mutation = k8s_mutation_spec(fault.fault_id, target, params=fault.params)
-            undo_ops = (mutation, *k8s_undo_ops_for(fault.fault_id, target))
+            undo_ops: tuple[UndoOp | dict[str, object], ...] = (
+                mutation,
+                *k8s_undo_ops_for(fault.fault_id, target),
+            )
             lease = self._client.acquire(
                 run_id=plan.run_id,
                 fault_id=fault.fault_id,
@@ -1192,12 +1212,9 @@ class RunEngine:
             )
             active = self._client.activate(lease.id)
             executor = executor_for(fault.fault_id, runtime=RuntimeLabel.KUBERNETES)
-            reason = (
-                executor.can_apply(active)
-                if executor is not None
-                else "k8s.unsupported: no executor registered"
-            )
-            if reason is not None:
+            can_apply_reason = executor.can_apply(active) if executor is not None else None
+            if executor is None or can_apply_reason is not None:
+                reason = can_apply_reason or "k8s.unsupported: no executor registered"
                 self._client.mark_releasing(lease.id)
                 self._client.confirm_release(lease.id, mechanism="failed_to_apply")
                 self._emit(
@@ -1344,22 +1361,23 @@ class RunEngine:
         override = (fault.params or {}).get("recovery_grace")
         if override is not None:
             try:
-                deadline = time.monotonic() + float(override)
+                deadline = time.monotonic() + float(str(override))
             except (TypeError, ValueError):
                 pass
+        scope = fault.target
+        if scope is None:
+            return True  # nothing was ever resolved, so nothing can drift
         while time.monotonic() < deadline:
             if self._abort_requested():
                 return False
             try:
-                news = resolver.resolve_many(
-                    fault.target, pod_action=fault.fault_id.split(".", 1)[-1]
-                )
+                news = resolver.resolve_many(scope, pod_action=fault.fault_id.split(".", 1)[-1])
             except (ResolutionError, SelectionError):
                 news = []
             if any(
-                o.resolved is not None
-                and o.resolved.pod_uid != target.pod_uid
-                and o.resolved.pod != target.pod
+                (fresh := o.pod_or_none()) is not None
+                and fresh.pod_uid != target.pod_uid
+                and fresh.pod != target.pod
                 for o in news
             ):
                 return True
@@ -1411,12 +1429,12 @@ class RunEngine:
         pipeline = routing.get(fault.fault_id, "k8s.node")
         assert pipeline == "k8s.node"
         authority = fault.target.authority
-        node_name = authority.get("name") or authority.get("selector")
-        if isinstance(node_name, dict):
-            # selector dict → resolver does label matching; keep node_name None
-            node_name_arg: str | None = None
-        else:
-            node_name_arg = str(node_name) if node_name else None
+        # `TargetScope.authority` is dict[str, str], so `selector` is a label
+        # selector *string*, not a mapping. An explicit node name wins; when
+        # there is none (or it is the `*` wildcard) the node name stays None so
+        # the resolver does the label matching itself.
+        explicit = str(authority.get("name") or "")
+        node_name_arg: str | None = None if explicit in ("", "*") else explicit
         try:
             outcome = resolver.resolve_node(fault.target, node_name=node_name_arg)
         except (ResolutionError, SelectionError) as exc:
@@ -1428,7 +1446,7 @@ class RunEngine:
                 ),
             )
             return StepReport(step.id, False, str(exc)), []
-        resolved = outcome.resolved
+        resolved = outcome.node_or_none()
         if resolved is None:
             return StepReport(step.id, False, "node resolve returned no target"), []
         params: dict[str, object] = dict(fault.params or {})
@@ -1483,12 +1501,13 @@ class RunEngine:
         )
         active = self._client.activate(lease.id)
         executor = executor_for(fault.fault_id, runtime=RuntimeLabel.KUBERNETES)
-        reason = (
-            executor.can_apply(active)
-            if executor is not None
-            else "k8s.unsupported: no executor registered"
-        )
-        if reason is not None:
+        can_apply_reason = executor.can_apply(active) if executor is not None else None
+        # Spelled as two conditions so the mutation boundary below is visibly
+        # guarded by the same check: reaching `executor.inject` proves both that
+        # an executor exists and that it revalidated its capability (ADR-M2
+        # Phase 2.3). The message is unchanged.
+        if executor is None or can_apply_reason is not None:
+            reason = can_apply_reason or "k8s.unsupported: no executor registered"
             self._client.mark_releasing(lease.id)
             self._client.confirm_release(lease.id, mechanism="failed_to_apply")
             self._emit(
@@ -1729,7 +1748,7 @@ class RunEngine:
                     ),
                 )
                 # Transition tracked resource to DIRTY (cleanup failed)
-                if tracked_resource is not None:
+                if tracked_resource is not None and self._resource_manager is not None:
                     self._resource_manager.start_recovery(tracked_resource.id)
                     self._resource_manager.mark_recovered(tracked_resource.id, False)
                 return (
@@ -1764,7 +1783,7 @@ class RunEngine:
                         },
                     ),
                 )
-                if tracked_resource is not None:
+                if tracked_resource is not None and self._resource_manager is not None:
                     self._resource_manager.start_recovery(tracked_resource.id)
                     self._resource_manager.mark_recovered(tracked_resource.id, False)
                 return (
@@ -2107,10 +2126,12 @@ class RunEngine:
         parts = None
         host = None
         try:
-            parts = urlsplit(url)
-            host = parts.hostname
+            parsed = urlsplit(url)
         except ValueError:
-            parts = None
+            parsed = None
+        if parsed is not None:
+            parts = parsed
+            host = parsed.hostname
         container = False
         if host and self._engine:
             try:
@@ -2118,7 +2139,9 @@ class RunEngine:
                 container = True
             except Exception:
                 container = False
-        if not container:
+        # `container` can only be True when `host` parsed, which means `parts`
+        # is set; the explicit check keeps that invariant visible.
+        if parts is None or not container:
             return VerifyProbe(
                 probe="http",
                 args={"url": url, "expect_status": expected, "timeout_s": "5"},
@@ -2591,8 +2614,8 @@ class _AbortMatrix:
                 token.escalate()  # grace -> term -> kill on repeated presses
                 effective = token.level
             else:
-                effective = token.request(CancellationLevel.KILL)
-                effective = CancellationLevel.KILL
+                token.request(CancellationLevel.KILL)
+                effective = token.level
             with contextlib.suppress(Exception):
                 self._engine._emit(
                     Event(

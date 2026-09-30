@@ -81,6 +81,9 @@ class _ExplodingLeaseClient:
         raise AssertionError("lease must not be created for a refused target")
 
 
+from mayhem.agents.k8s_resolve import ResolutionOutcome  # noqa: E402
+
+
 class _NodeTargetResolver:
     """Resolver stub that hands back a node target for a pod-scoped fault."""
 
@@ -91,13 +94,9 @@ class _NodeTargetResolver:
 
     def resolve_many(self, scope: object, *, pod_action: str = "") -> list[object]:
         self.calls.append("resolve_many")
-
-        class _Outcome:
-            resolved = _node()
-            drift = False
-            note = ""
-
-        return [_Outcome()]
+        # A real ResolutionOutcome; the point of the test is that the pod path
+        # refuses a node target at admission, before any lease is built.
+        return [ResolutionOutcome(resolved=_node(), drift=False, note="stub node target")]
 
     def resolve(self, scope: object, *, preferred_pod: str | None = None) -> object:
         self.calls.append("resolve")

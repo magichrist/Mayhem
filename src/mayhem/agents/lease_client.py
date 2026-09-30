@@ -11,13 +11,13 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.common import utc_now
-from mayhem.domain.leases import FaultLease, LeaseState
-from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
+from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
 
 if TYPE_CHECKING:
     from datetime import datetime
 
     from mayhem.agents.sinks import LeaseSink
+    from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.toolkit.fingerprint import interpreter_marker
 
 
@@ -48,8 +48,8 @@ class LeaseClient:
         run_id: str,
         fault_id: str,
         targets: frozenset[str] | set[str],
-        undo_ops: tuple[dict[str, Any], ...],
-        verify_probes: tuple[dict[str, Any], ...] = (),
+        undo_ops: tuple[UndoOp | dict[str, Any], ...],
+        verify_probes: tuple[VerifyProbe | dict[str, Any], ...] = (),
         ttl_seconds: float = 120.0,
         runtime_identity: str | None = None,
         resolved_target: ResolvedPodTarget | ResolvedNodeTarget | None = None,

@@ -13,7 +13,7 @@ import os
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mayhem.agents.k8s_control import (
     ResourceRef,
@@ -43,6 +43,8 @@ from mayhem.domain.resolution import ResolvedNodeTarget, ResolvedPodTarget
 from mayhem.toolkit.tool_runner import ToolError, ToolResult, run_tool
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from mayhem.domain.leases import FaultLease
 
 os_kill = os.kill
@@ -367,7 +369,17 @@ class K8sExecutor(FaultExecutor):
     contract, and pod-lifecycle faults (``k8s.pod.failure``) park in k-plan-4.
     """
 
-    prefixes = ("k8s", "proc", "process", "mem", "cpu", "fs", "fd", "load", "fuzz")
+    prefixes: tuple[str, ...] = (
+        "k8s",
+        "proc",
+        "process",
+        "mem",
+        "cpu",
+        "fs",
+        "fd",
+        "load",
+        "fuzz",
+    )
 
     _SIGNAL_INJECT = {
         "proc.pause": "STOP",
@@ -392,7 +404,7 @@ class K8sExecutor(FaultExecutor):
         return ("k8s.pod.failure", *sorted(self._SIGNAL_INJECT))
 
     def _target_or_none(self, lease: FaultLease) -> ResolvedPodTarget | None:
-        return lease.resolved_target
+        return _pod_target(lease)
 
     def _unsupported_reason(self, fault_id: str) -> str:
         return k8s_unsupported_reason(fault_id)
@@ -400,15 +412,16 @@ class K8sExecutor(FaultExecutor):
     def can_apply(self, lease: FaultLease) -> str | None:
         if lease.fault_id not in self._SIGNAL_INJECT:
             return self._unsupported_reason(lease.fault_id)
-        if lease.resolved_target is None:
+        if _pod_target(lease) is None:
             return "k8s.unsupported: no resolved pod target on the lease"
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        if lease.fault_id not in self._SIGNAL_INJECT or lease.resolved_target is None:
+        target = _pod_target(lease)
+        if lease.fault_id not in self._SIGNAL_INJECT or target is None:
             return StepOutcome("inject", False, self._unsupported_reason(lease.fault_id))
         signame = self._SIGNAL_INJECT[lease.fault_id]
-        argv = (*lease.resolved_target.exec_argv, "kill", f"-{signame}", "1")
+        argv = (*target.exec_argv, "kill", f"-{signame}", "1")
         result = run_tool(argv)
         if result.exit_code != 0:
             return StepOutcome(
@@ -426,9 +439,10 @@ class K8sExecutor(FaultExecutor):
 
     def undo(self, lease: FaultLease) -> StepOutcome:
         command = self._SIGNAL_UNDO_COMMAND.get(lease.fault_id, "")
-        if not command or lease.resolved_target is None:
+        target = _pod_target(lease)
+        if not command or target is None:
             return StepOutcome("undo", True, f"{lease.fault_id}: nothing live to undo")
-        argv = (*lease.resolved_target.exec_argv, "kill", f"-{command}", "1")
+        argv = (*target.exec_argv, "kill", f"-{command}", "1")
         result = run_tool(argv)
         if result.exit_code != 0:
             return StepOutcome(
@@ -441,7 +455,7 @@ class K8sExecutor(FaultExecutor):
         return StepOutcome(
             "undo",
             True,
-            f"CONT delivered on primary pid 1 (pod {lease.resolved_target.pod})",
+            f"CONT delivered on primary pid 1 (pod {target.pod})",
             tool_result=result,
         )
 
@@ -489,7 +503,11 @@ def _lease_fault_params(lease: FaultLease) -> dict[str, object]:
     import json as _json
 
     for op in lease.undo_ops or ():
-        params = op.args.get("params")
+        # Declared ``object``: ``UndoOp.args`` is ``dict[str, str]`` today, so
+        # the ``dict`` branch below is provably dead to the checker.  The guard
+        # is kept (it costs nothing at runtime and stays correct if the undo
+        # arg bag ever widens), so the local is widened to match.
+        params: object = op.args.get("params")
         if isinstance(params, dict):
             return dict(params)
         if isinstance(params, str):
@@ -502,6 +520,61 @@ def _lease_fault_params(lease: FaultLease) -> dict[str, object]:
     return {}
 
 
+def _param_int(params: Mapping[str, object], key: str, default: int) -> int:
+    """``int(params[key])``, or *default* when the key is absent or falsy.
+
+    The params bag is decoded JSON (see :func:`_lease_fault_params`), so a
+    numeric parameter may arrive as an int, a float, or a numeric string
+    depending on which layer wrote it. :func:`_as_float` accepts all three,
+    matching what the inline ``int(params.get(key) or default)`` this
+    replaces; a value that is not numeric at all still raises, as before.
+    """
+    raw = params.get(key) or default
+    return raw if isinstance(raw, int) else int(_as_float(raw))
+
+
+def _param_float(params: Mapping[str, object], key: str, default: float) -> float:
+    """``float(params[key])``, or *default* when the key is absent or falsy."""
+    raw = params.get(key) or default
+    return _as_float(raw)
+
+
+def _as_float(value: object) -> float:
+    """Coerce a JSON/YAML scalar out of a params bag to ``float``.
+
+    Accepts an ``int``, a ``float``, or a numeric ``str`` — which is the whole
+    range the decoded params bag can carry. A value outside that range raises
+    ``TypeError``/``ValueError`` exactly as an uncoerced ``float(value)`` would,
+    so callers that already guard with ``except (TypeError, ValueError)`` keep
+    their behaviour.
+    """
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(str(value))
+
+
+def _pod_target(lease: FaultLease) -> ResolvedPodTarget | None:
+    """The lease's resolved target, but only when it is a *pod* target.
+
+    ``FaultLease.resolved_target`` is a union of
+    :class:`~mayhem.domain.resolution.ResolvedPodTarget` (container-level
+    faults) and :class:`~mayhem.domain.resolution.ResolvedNodeTarget`
+    (node-scoped faults). Every executor in this module outside the node
+    families needs the pod variant: ``.pod``, ``.container`` and ``.exec_argv``
+    exist only on it.
+
+    Narrowing here — rather than checking ``is None`` at each site — means a
+    node-scoped lease handed to a pod executor is *refused* with the same
+    ``no resolved target`` outcome as an unresolved one, instead of raising
+    ``AttributeError`` at the mutation boundary. The node families already work
+    this way, via their own ``isinstance(target, ResolvedNodeTarget)`` guards.
+    """
+    target = lease.resolved_target
+    return target if isinstance(target, ResolvedPodTarget) else None
+
+
 class K8sPodKillExecutor(K8sExecutor):
     """Execute and undo ``k8s.pod_kill`` (SP-4.4, k-plan-4 §4.4)."""
 
@@ -510,7 +583,9 @@ class K8sPodKillExecutor(K8sExecutor):
     def _grace_period(self, lease: FaultLease) -> str:
         params = _lease_fault_params(lease)
         gp = params.get("grace_period") or params.get("timeout")
-        return str(int(gp)) if gp else "30"
+        if not gp:
+            return "30"
+        return str(int(_as_float(gp)))
 
     def can_apply(self, lease: FaultLease) -> str | None:
         if lease.fault_id != "k8s.pod_kill":
@@ -520,7 +595,7 @@ class K8sPodKillExecutor(K8sExecutor):
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_kill: no resolved target")
         argv: tuple[str, ...] = (
@@ -571,11 +646,16 @@ class K8sPodEvictExecutor(K8sExecutor):
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_evict: no resolved target")
         try:
-            from kubernetes import client as _k8s_client
+            # `kubernetes` (36.x) ships no py.typed marker, so the client is
+            # untyped upstream. The whole block is wrapped in `except
+            # Exception` below, which returns a failed StepOutcome rather than
+            # propagating — an unavailable or wrong-version SDK degrades to
+            # `k8s.unsupported`, never to a silent success.
+            from kubernetes import client as _k8s_client  # type: ignore[import-untyped]
             from kubernetes import config as _k8s_config
 
             _k8s_config.load_kube_config()
@@ -628,7 +708,7 @@ class K8sPodOomExecutor(K8sExecutor):
         params = _lease_fault_params(lease)
         raw = params.get("duration") or lease.ttl_seconds or 120
         try:
-            return max(5, int(float(raw)))
+            return max(5, int(_as_float(raw)))
         except (ValueError, TypeError):
             return 120
 
@@ -640,7 +720,7 @@ class K8sPodOomExecutor(K8sExecutor):
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_oom: no resolved target")
         nbytes = self._bytes_spec(lease)
@@ -684,14 +764,14 @@ class K8sPodPressureExecutor(K8sExecutor):
         params = _lease_fault_params(lease)
         raw = params.get("duration") or lease.ttl_seconds or 300
         try:
-            return max(5, int(float(raw)))
+            return max(5, int(_as_float(raw)))
         except (ValueError, TypeError):
             return 300
 
     def _target_percent(self, lease: FaultLease) -> int:
         params = _lease_fault_params(lease)
         try:
-            return max(1, min(100, int(float(params.get("target_percent") or 50))))
+            return max(1, min(100, int(_param_float(params, "target_percent", 50.0))))
         except (ValueError, TypeError):
             return 50
 
@@ -723,7 +803,7 @@ class K8sPodPressureExecutor(K8sExecutor):
         )
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_pressure: no resolved target")
         resource = self._resource(lease)
@@ -804,7 +884,7 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
         return None
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.network_policy: no resolved target")
         params = _lease_fault_params(lease)
@@ -828,7 +908,7 @@ class K8sNetworkPolicyExecutor(K8sExecutor):
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("undo", True, "k8s.network_policy: nothing to undo")
         params = _lease_fault_params(lease)
@@ -990,7 +1070,7 @@ class K8sNodeDrainExecutor(K8sExecutor):
         if grace is None:
             return "30"
         try:
-            return str(int(grace))
+            return str(int(_as_float(grace)))
         except (TypeError, ValueError):
             return "30"
 
@@ -1091,7 +1171,7 @@ class K8sNodePressureExecutor(K8sExecutor):
     def _target_percent(self, lease: FaultLease) -> int:
         params = _lease_fault_params(lease)
         try:
-            return max(1, min(100, int(float(params.get("target_percent") or 50))))
+            return max(1, min(100, int(_param_float(params, "target_percent", 50.0))))
         except (TypeError, ValueError):
             return 50
 
@@ -1108,6 +1188,10 @@ class K8sNodePressureExecutor(K8sExecutor):
 
         pct = self._target_percent(lease)
         resource = str(_lease_fault_params(lease).get("resource") or "cpu")
+        # A Quantity is a JSON number or a string; ``pids`` is sent as a bare
+        # integer, the rest as strings. Both are valid, so the map is widened
+        # rather than coercing the pid limit to a string.
+        requests: dict[str, object]
         if resource == "memory" or lease.fault_id == "k8s.node_memory_pressure":
             requests = {"memory": f"{pct}Mi"}
         elif lease.fault_id == "k8s.node_disk_pressure":
@@ -1209,11 +1293,11 @@ class K8sPodLatencyExecutor(K8sPodPressureExecutor):
         delay = params.get("delay_ms")
         jitter = params.get("jitter_ms")
         try:
-            delay_ms = str(max(0, int(float(delay)) if delay is not None else 100))
+            delay_ms = str(max(0, int(_as_float(delay))) if delay is not None else 100)
         except (TypeError, ValueError):
             delay_ms = "100"
         try:
-            jitter_ms = str(max(0, int(float(jitter)) if jitter is not None else 0))
+            jitter_ms = str(max(0, int(_as_float(jitter))) if jitter is not None else 0)
         except (TypeError, ValueError):
             jitter_ms = "0"
         return delay_ms, jitter_ms
@@ -1223,7 +1307,7 @@ class K8sPodLatencyExecutor(K8sPodPressureExecutor):
         return f"tc qdisc add dev eth0 root netem delay {delay_ms}ms {jitter_ms}ms 25%"
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("inject", False, "k8s.pod_latency: no resolved target")
         argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", self._tc_struct(lease))
@@ -1245,7 +1329,7 @@ class K8sPodLatencyExecutor(K8sPodPressureExecutor):
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        t = lease.resolved_target
+        t = _pod_target(lease)
         if t is None:
             return StepOutcome("undo", False, "k8s.pod_latency: no resolved target")
         argv: tuple[str, ...] = (*t.exec_argv, "sh", "-c", "tc qdisc del dev eth0 root")
@@ -1318,12 +1402,12 @@ class K8sArgvExecutor(K8sExecutor):
         params = _lease_fault_params(lease)
         raw = params.get("duration") or lease.ttl_seconds or 120
         try:
-            return max(5, int(float(raw)))
+            return max(5, int(_as_float(raw)))
         except (ValueError, TypeError):
             return 120
 
     def _target_or_none(self, lease: FaultLease) -> ResolvedPodTarget | None:
-        return lease.resolved_target
+        return _pod_target(lease)
 
     def can_apply(self, lease: FaultLease) -> str | None:
         verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
@@ -1350,7 +1434,7 @@ class K8sArgvExecutor(K8sExecutor):
             if raw is None:
                 return int(default)
             try:
-                return max(1, min(100, int(float(raw))))
+                return max(1, min(100, int(_as_float(raw))))
             except (TypeError, ValueError):
                 return int(default)
 
@@ -1359,7 +1443,7 @@ class K8sArgvExecutor(K8sExecutor):
             if raw is None:
                 return default
             try:
-                return max(minimum, int(float(raw)))
+                return max(minimum, int(_as_float(raw)))
             except (TypeError, ValueError):
                 return default
 
@@ -1431,7 +1515,7 @@ class K8sArgvExecutor(K8sExecutor):
         def _pct_raw(key: str, default: float = 50.0) -> str:
             raw = params.get(key)
             try:
-                value = max(0.0, min(100.0, float(raw)))
+                value = max(0.0, min(100.0, _as_float(raw)))
             except (TypeError, ValueError):
                 value = default
             return f"{value:g}"
@@ -1442,11 +1526,11 @@ class K8sArgvExecutor(K8sExecutor):
             delay = params.get("delay_ms", 100)
             jitter = params.get("jitter_ms", 0)
             try:
-                delay_s = f"{max(0, int(float(delay)))}"
+                delay_s = f"{max(0, int(_as_float(delay)))}"
             except (TypeError, ValueError):
                 delay_s = "100"
             try:
-                jitter_s = f"{max(0, int(float(jitter)))}"
+                jitter_s = f"{max(0, int(_as_float(jitter)))}"
             except (TypeError, ValueError):
                 jitter_s = "0"
             return (
@@ -1472,7 +1556,7 @@ class K8sArgvExecutor(K8sExecutor):
             pct = _pct_raw("percent")
             delay = params.get("delay_ms", 50)
             try:
-                delay_s = f"{max(0, int(float(delay)))}"
+                delay_s = f"{max(0, int(_as_float(delay)))}"
             except (TypeError, ValueError):
                 delay_s = "50"
             return (
@@ -1514,7 +1598,7 @@ class K8sArgvExecutor(K8sExecutor):
     # -- inject / undo ------------------------------------------------------
 
     def inject(self, lease: FaultLease) -> StepOutcome:
-        target = lease.resolved_target
+        target = _pod_target(lease)
         if target is None:
             return StepOutcome("inject", False, f"{lease.fault_id}: no resolved target")
         verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
@@ -1548,7 +1632,7 @@ class K8sArgvExecutor(K8sExecutor):
             f"/tmp/mayhem-{token}.* /dev/shm/mayhem-{token}.* ) "
             ">/dev/null 2>&1 &"
         )
-        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", sh_cmd)
+        argv = (*target.exec_argv, "sh", "-c", sh_cmd)
         try:
             result = run_tool(argv, timeout_s=duration + 30)
         except ToolError as exc:
@@ -1569,7 +1653,7 @@ class K8sArgvExecutor(K8sExecutor):
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        target = lease.resolved_target
+        target = _pod_target(lease)
         if target is None:
             return StepOutcome("undo", False, f"{lease.fault_id}: no resolved target")
         verb = _K8S_ARGV_UNDO_VERB.get(lease.fault_id)
@@ -1599,7 +1683,7 @@ class K8sArgvExecutor(K8sExecutor):
             "xargs kill 2>/dev/null; fi; rm -f $r; rm -rf "
             f"/tmp/mayhem-{token}.* /dev/shm/mayhem-{token}.* 2>/dev/null"
         )
-        argv: tuple[str, ...] = (*target.exec_argv, "sh", "-c", sh_cmd)
+        argv = (*target.exec_argv, "sh", "-c", sh_cmd)
         try:
             result = run_tool(argv, timeout_s=30)
         except ToolError as exc:
@@ -1631,7 +1715,7 @@ class K8sCrashLoopExecutor(K8sExecutor):
 
     def _restarts(self, lease: FaultLease) -> int:
         try:
-            return max(1, min(50, int(float(self._params(lease).get("restarts") or 5))))
+            return max(1, min(50, int(_param_float(self._params(lease), "restarts", 5.0))))
         except (TypeError, ValueError):
             return 5
 
@@ -1774,7 +1858,7 @@ class K8sSnapshotExecutor(K8sExecutor):
             f"{lease.fault_id}: restored {ref.kind}/{ref.name} from snapshot",
         )
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         raise NotImplementedError
 
     def _ref_kinds_for(self, lease: FaultLease) -> tuple[str, ...]:
@@ -1916,7 +2000,7 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
         self,
         lease: FaultLease,
         workload: ResourceRef,
-        obj: dict[str, object],
+        obj: dict[str, Any],
     ) -> bool:
         params = _lease_fault_params(lease)
         container = self._container_name(obj)
@@ -2029,7 +2113,7 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
             return apply_patch(workload, {"spec": {"template": {"spec": template_spec}}})
 
         if fault in ("k8s.deployment_scale_failure", "k8s.statefulset_scale_failure"):
-            replicas = int(params.get("replicas"))
+            replicas = _param_int(params, "replicas", 0)
             selector = obj.get("spec", {}).get("selector", {}).get("matchLabels", {})
             return apply_patch(
                 workload,
@@ -2167,7 +2251,7 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
                 },
             )
         if fault == "k8s.replica_reduce":
-            replicas = int(params.get("replicas") or 0)
+            replicas = _param_int(params, "replicas", 0)
             return scale(workload, replicas)
         if fault == "k8s.rollout_pause":
             return rollout_control(workload, pause=True)
@@ -2195,7 +2279,7 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
         return False
 
     @staticmethod
-    def _container_name(obj: dict[str, object]) -> str:
+    def _container_name(obj: dict[str, Any]) -> str:
         containers = obj.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
         for container in containers:
             name = container.get("name")
@@ -2203,7 +2287,7 @@ class K8sWorkloadExecutor(K8sSnapshotExecutor):
                 return str(name)
         return "app"
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         if snapshot.get("rollout_paused") == "true":
             rollout_control(ref, pause=False)
         return apply_patch(ref, {"spec": snapshot["spec"]})
@@ -2257,12 +2341,12 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
             f"{lease.fault_id}: kubectl mutation failed on Service {svc.name}",
         )
 
-    def _mutate(self, lease: FaultLease, svc: ResourceRef, obj: dict[str, object]) -> bool:
+    def _mutate(self, lease: FaultLease, svc: ResourceRef, obj: dict[str, Any]) -> bool:
         fault = lease.fault_id
         params = _lease_fault_params(lease)
         if fault == "k8s.service_5xx":
-            status = max(500, min(599, int(params.get("status") or 503)))
-            probability = max(1, min(100, int(params.get("probability") or 100)))
+            status = max(500, min(599, _param_int(params, "status", 503)))
+            probability = max(1, min(100, _param_int(params, "probability", 100)))
             return apply_patch(
                 svc,
                 {
@@ -2284,7 +2368,7 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
                 return False
             first = ports[0]
             port = int(first.get("port") or 0)
-            requested = int(params.get("target_port") or 0)
+            requested = _param_int(params, "target_port", 0)
             old_target = first.get("targetPort") or port
             if requested > 0:
                 broken = requested
@@ -2306,8 +2390,8 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
 
             key = str(params.get("selector_key") or "mayhem.no-endpoints")
             value = str(params.get("selector_value") or "true")
-            cycles = max(1, min(20, int(params.get("cycles") or 3)))
-            interval = max(1, min(120, int(params.get("interval_s") or 5)))
+            cycles = max(1, min(20, _param_int(params, "cycles", 3)))
+            interval = max(1, min(120, _param_int(params, "interval_s", 5)))
             ok = True
             for i in range(cycles):
                 broken = i % 2 == 0
@@ -2319,13 +2403,18 @@ class K8sServiceExecutor(K8sSnapshotExecutor):
                 ok = apply_patch(svc, patch) and ok
                 sleep(interval)
             return ok
+        # Unrecognised fault id: refuse the mutation rather than fall off the
+        # end and hand the caller a ``None`` it would read as "applied".
+        # ``K8sWorkloadExecutor._mutate`` / ``K8sHpaExecutor._mutate`` end the
+        # same way; this one did not.
+        return False
 
     @staticmethod
-    def _original_selector(obj: dict[str, object]) -> dict[str, object]:
+    def _original_selector(obj: dict[str, Any]) -> dict[str, Any]:
         selector = obj.get("spec", {}).get("selector") or {}
         return dict(selector)
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         patch: dict[str, object] = {"spec": snapshot["spec"]}
         if "metadata" in snapshot:
             patch["metadata"] = snapshot["metadata"]
@@ -2404,13 +2493,13 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
         self,
         lease: FaultLease,
         hpa: ResourceRef,
-        obj: dict[str, object],
+        obj: dict[str, Any],
     ) -> bool:
         params = _lease_fault_params(lease)
         if lease.fault_id == "k8s.hpa_oscillation":
-            minimum = max(0, int(params.get("min_replicas") or 1))
-            maximum = max(minimum + 1, int(params.get("max_replicas") or max(minimum + 1, 3)))
-            window = max(1, min(300, int(params.get("window_s") or 30)))
+            minimum = max(0, _param_int(params, "min_replicas", 1))
+            maximum = max(minimum + 1, _param_int(params, "max_replicas", max(minimum + 1, 3)))
+            window = max(1, min(300, _param_int(params, "window_s", 30)))
             return apply_patch(
                 hpa,
                 {
@@ -2443,7 +2532,7 @@ class K8sHpaExecutor(K8sSnapshotExecutor):
             patch = {"spec": {"minReplicas": int(current)}}
         return apply_patch(hpa, patch)
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"spec": snapshot["spec"]})
 
 
@@ -2489,7 +2578,7 @@ class K8sQuotaExecutor(K8sSnapshotExecutor):
                 "inject", False, f"{lease.fault_id}: quota has no hard limit {key!r}"
             )
         try:
-            amount = int(float(params["amount"]))
+            amount = int(_param_float(params, "amount", 0.0))
         except (TypeError, ValueError):
             return StepOutcome("inject", False, f"{lease.fault_id}: amount must be an integer")
         used = (obj.get("status") or {}).get("used") or {}
@@ -2502,7 +2591,7 @@ class K8sQuotaExecutor(K8sSnapshotExecutor):
             return StepOutcome("inject", False, f"{lease.fault_id}: quota patch failed")
         return StepOutcome("inject", True, f"{lease.fault_id}: ResourceQuota {ref.name} exhausted")
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"spec": snapshot["spec"]})
 
 
@@ -2542,7 +2631,7 @@ class K8sPvcExecutor(K8sSnapshotExecutor):
             return StepOutcome("inject", False, f"{lease.fault_id}: PVC patch failed")
         return StepOutcome("inject", True, f"{lease.fault_id}: PVC {ref.name} kept Pending")
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"spec": snapshot["spec"]})
 
 
@@ -2598,10 +2687,10 @@ class K8sPdbExecutor(K8sSnapshotExecutor):
         if lease.fault_id == "k8s.eviction_block":
             patch = {"spec": {"maxUnavailable": 0}}
         elif lease.fault_id == "k8s.pdb_over_eviction":
-            patch = {"spec": {"maxUnavailable": max(0, int(params.get("unavailable") or 0))}}
+            patch = {"spec": {"maxUnavailable": max(0, _param_int(params, "unavailable", 0))}}
         else:
             try:
-                unavailable = max(0, int(float(params["unavailable"])))
+                unavailable = max(0, int(_param_float(params, "unavailable", 0.0)))
             except (TypeError, ValueError):
                 clear_annotation(ref)
                 return StepOutcome(
@@ -2613,7 +2702,7 @@ class K8sPdbExecutor(K8sSnapshotExecutor):
             return StepOutcome("inject", False, f"{lease.fault_id}: PDB patch failed")
         return StepOutcome("inject", True, f"{lease.fault_id}: PDB {ref.name} mutated")
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"spec": snapshot["spec"]})
 
 
@@ -2669,10 +2758,10 @@ class K8sDnsExecutor(K8sSnapshotExecutor):
             mode = str(params.get("mode") or "servfail")
             block = f"template IN ANY {domain} {{\n    rcode {mode}\n}}\n"
         elif fault == "k8s.dns_delay":
-            delay = max(1, min(30000, int(float(params.get("delay_ms") or 500))))
+            delay = max(1, min(30000, int(_param_float(params, "delay_ms", 500.0))))
             block = f"template IN A {domain} {{\n    forward . 10.255.255.1 {{\n        health_check no\n    }}\n    delay {delay}ms\n}}\n"
         elif fault == "k8s.dns_timeout":
-            timeout_ms = max(1, min(30000, int(float(params.get("timeout_ms") or 500))))
+            timeout_ms = max(1, min(30000, int(_param_float(params, "timeout_ms", 500.0))))
             block = f"template IN A {domain} {{\n    forward . 10.255.255.1 {{\n        health_check no\n    }}\n    timeout {timeout_ms}ms\n}}\n"
         else:
             address = str(params.get("address"))
@@ -2706,7 +2795,7 @@ class K8sDnsExecutor(K8sSnapshotExecutor):
             )
         return StepOutcome("undo", True, f"{lease.fault_id}: CoreDNS restored")
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"data": snapshot.get("data", {})})
 
 
@@ -2847,7 +2936,7 @@ class K8sConfigExecutor(K8sSnapshotExecutor):
         clear_annotation(pod_ref)
         return StepOutcome("undo", True, f"{lease.fault_id}: recreated Secret {secret['name']}")
 
-    def _restore(self, ref: ResourceRef, snapshot: dict[str, object]) -> bool:
+    def _restore(self, ref: ResourceRef, snapshot: dict[str, Any]) -> bool:
         return apply_patch(ref, {"data": snapshot["data"]})
 
 
@@ -2921,7 +3010,7 @@ class K8sStorageExecutor(K8sExecutor):
         )
 
     def undo(self, lease: FaultLease) -> StepOutcome:
-        target = lease.resolved_target
+        target = _pod_target(lease)
         if target is None:
             return StepOutcome("undo", False, f"{lease.fault_id}: no resolved target")
         token = self._token(lease)
@@ -3838,7 +3927,10 @@ class ToolExecutor(FaultExecutor):
         argv = self._argv_for(lease, "undo_argv")
         if not argv:
             return StepOutcome("undo", False, f"lease {lease.id} lacks undo_argv")
-        result = run_tool(argv)
+        try:
+            result = run_tool(argv)
+        except ToolError as exc:
+            return StepOutcome("undo", False, f"undo tool failed: {exc}")
         return StepOutcome("undo", result.succeeded, result.stderr[:200], result)
 
 
