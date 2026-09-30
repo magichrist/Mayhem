@@ -130,7 +130,10 @@ class ProcessObservationProvider:
                 stdout = str(getattr(completed, "stdout", completed))
                 returncode = int(getattr(completed, "returncode", 0))
             else:
-                import subprocess
+                # Module scope must stay free of subprocess: the checkpoint
+                # test (test_expansion_checkpoint.py) asserts it, so a provider
+                # never pays for — or exposes — it until a command actually runs.
+                import subprocess  # noqa: PLC0415
 
                 completed = subprocess.run(
                     argv,

@@ -4,6 +4,8 @@ from mayhem.domain.provider import (
     PROVIDER_API_VERSION,
     CapabilityDescriptor,
     EvidenceSchema,
+    ImplementationKind,
+    ImplementationReference,
     ProviderMetadata,
     ProviderPermission,
     ProviderRegistration,
@@ -15,7 +17,7 @@ from mayhem.providers.registry import ProviderRegistry
 # The built-in runtime providers ship with the distribution, so their declared
 # version tracks the release line in pyproject.toml ([tool.hatch.version]
 # fallback-version and the built-in provider metadata stay in lockstep).
-PROVIDER_VERSION = "0.9.0"
+PROVIDER_VERSION = "1.0.0"
 
 
 def _metadata(
@@ -25,7 +27,11 @@ def _metadata(
     permissions: frozenset[ProviderPermission],
     evidence_name: str,
 ) -> ProviderMetadata:
-    return ProviderMetadata(
+    # The four ignores below are one finding, not four: pydantic's mypy plugin
+    # always synthesises the __init__ from the field *alias*, and ignores
+    # `populate_by_name` (verified against a minimal repro on pydantic 2.13).
+    # Runtime validation by field name works, so the field-name kwargs stay.
+    return ProviderMetadata(  # type: ignore[call-arg]
         api_version=PROVIDER_API_VERSION,
         provider_id=provider_id,
         name=name,
@@ -34,7 +40,7 @@ def _metadata(
         permissions=permissions,
         capabilities=capabilities,
         target_locators=(
-            TargetLocator(
+            TargetLocator(  # type: ignore[call-arg]
                 id=f"{provider_id}.target",
                 kind="runtime_target",
                 required_permissions=frozenset({ProviderPermission.TARGET_READ}),
@@ -48,11 +54,11 @@ def _metadata(
 def _registration(metadata: ProviderMetadata) -> ProviderRegistration:
     return ProviderRegistration(
         metadata=metadata,
-        implementation={
-            "kind": "import",
-            "target": f"{metadata.provider_id}:Provider",
-            "factory": True,
-        },
+        implementation=ImplementationReference(
+            kind=ImplementationKind.IMPORT,
+            target=f"{metadata.provider_id}:Provider",
+            factory=True,
+        ),
     )
 
 
@@ -77,7 +83,7 @@ def _kubernetes() -> object:
 def create_builtin_registry() -> ProviderRegistry:
     permissions = frozenset(ProviderPermission)
     registry = ProviderRegistry(allowed_permissions=permissions)
-    runtime_capability = CapabilityDescriptor(
+    runtime_capability = CapabilityDescriptor(  # type: ignore[call-arg]
         id="runtime.control",
         summary="Discover and control runtime-managed targets.",
         required_permissions={
@@ -89,7 +95,7 @@ def create_builtin_registry() -> ProviderRegistry:
         mutates_targets=True,
         compensable=True,
     )
-    discovery_capability = CapabilityDescriptor(
+    discovery_capability = CapabilityDescriptor(  # type: ignore[call-arg]
         id="runtime.discovery",
         summary="Discover runtime-managed targets.",
         required_permissions=frozenset({ProviderPermission.TARGET_READ}),

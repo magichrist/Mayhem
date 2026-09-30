@@ -27,7 +27,7 @@ DANGEROUS_PERMISSIONS: frozenset[ProviderPermission] = frozenset(
 )
 
 
-class SandboxRefusal(Exception):
+class SandboxRefusal(Exception):  # noqa: N818 — public API, not a stdlib error
     """Deterministic refusal: the message is the contract, not a log line."""
 
     def __init__(self, provider_id: str, permission: str, reason: str) -> None:
