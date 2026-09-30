@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mayhem.domain.errors import DomainError
+from mayhem.domain.preflight import plan_hash_for
 
 #: The documented escape hatch that restores the pre-v0.9.0 implicit-execution
 #: behaviour. The *name* lives here (it is part of the documented contract);
@@ -68,7 +69,7 @@ _REMEDIATION = (
 )
 
 
-class ExecutionIntentRefused(DomainError):
+class ExecutionIntentRefused(DomainError):  # noqa: N818 — public API, not a stdlib error
     """A mutating act was attempted without a valid, matching intent.
 
     Attributes:
@@ -310,8 +311,6 @@ def intent_for_plan(
     :func:`mayhem.domain.preflight.plan_hash_for` the preflight uses, so the
     intent and the gate always agree on what "this plan" means.
     """
-    from mayhem.domain.preflight import plan_hash_for
-
     moment = time.time() if approved_at is None else approved_at
     expires = None if ttl_s is None else moment + float(ttl_s)
     return ExecutionIntent(

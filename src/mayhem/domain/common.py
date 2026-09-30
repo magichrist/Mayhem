@@ -59,7 +59,7 @@ def parse_bytes(raw: str) -> float:
         )
     value = float(match.group("value"))
     unit = match.group("unit") or "B"
-    base = 1024.0 if unit.endswith("iB") or unit.endswith("i") or len(unit) == 1 else 1000.0
+    base = 1024.0 if unit.endswith(("iB", "i")) or len(unit) == 1 else 1000.0
     power = {"B": 0, "K": 1, "M": 2, "G": 3, "T": 4}[unit[0]]
     return value * base**power
 

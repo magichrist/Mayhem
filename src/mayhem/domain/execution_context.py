@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.topology import NodeKind
 
 if TYPE_CHECKING:
     from mayhem.domain.execution_loci import ThreeLocusContext
-    from mayhem.domain.topology import NodeKind
 
 
 class ExecutionContext(StrEnum):
@@ -41,8 +41,6 @@ _CONTEXT_COMPATIBILITY: dict[ExecutionContext, frozenset[NodeKind]] = {}
 
 
 def _build_compatibility() -> dict[ExecutionContext, frozenset[NodeKind]]:
-    from mayhem.domain.topology import NodeKind  # local import to break cycles
-
     return {
         ExecutionContext.HOST: frozenset({NodeKind.HOST}),
         ExecutionContext.CONTAINER: frozenset({NodeKind.CONTAINER, NodeKind.SERVICE}),
@@ -92,9 +90,10 @@ class ExecutionContextSpec(BaseModel):
         """Bridge to the three-locus model (ADR-M3-3).
 
         Returns a ``ThreeLocusContext`` derived from this legacy single-locus
-        spec.  Imported lazily to keep this module dependency-light.
+        spec.  Imported lazily because ``execution_loci`` imports this module
+        at module level, so a top-level import here would be a cycle.
         """
-        from mayhem.domain.execution_loci import ThreeLocusContext
+        from mayhem.domain.execution_loci import ThreeLocusContext  # noqa: PLC0415
 
         return ThreeLocusContext.from_single(self.context)
 
@@ -106,15 +105,13 @@ def infer_context_for_node(node_kind: NodeKind) -> ExecutionContext:
     ``execution`` block — it must never be more permissive than the explicit
     path.
     """
-    from mayhem.domain.topology import NodeKind as NK  # local import
-
     mapping: dict[NodeKind, ExecutionContext] = {
-        NK.HOST: ExecutionContext.HOST,
-        NK.CONTAINER: ExecutionContext.CONTAINER,
-        NK.SERVICE: ExecutionContext.CONTAINER,
-        NK.PROCESS: ExecutionContext.PROCESS,
-        NK.EXTERNAL_DEPENDENCY: ExecutionContext.REMOTE_HOST,
-        NK.POD: ExecutionContext.REMOTE_HOST,
-        NK.K8S_NODE: ExecutionContext.REMOTE_HOST,
+        NodeKind.HOST: ExecutionContext.HOST,
+        NodeKind.CONTAINER: ExecutionContext.CONTAINER,
+        NodeKind.SERVICE: ExecutionContext.CONTAINER,
+        NodeKind.PROCESS: ExecutionContext.PROCESS,
+        NodeKind.EXTERNAL_DEPENDENCY: ExecutionContext.REMOTE_HOST,
+        NodeKind.POD: ExecutionContext.REMOTE_HOST,
+        NodeKind.K8S_NODE: ExecutionContext.REMOTE_HOST,
     }
     return mapping.get(node_kind, ExecutionContext.HOST)

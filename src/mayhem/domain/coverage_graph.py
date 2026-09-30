@@ -8,9 +8,11 @@ has exercised. The graph never mutates coverage; it only reads it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 GRAPH_SCHEMA_VERSION = "1.0"
 
@@ -24,7 +26,7 @@ _RANK = {EVIDENCE_NONE: 0, EVIDENCE_ATTEMPTED: 1, EVIDENCE_BLOCKED: 2, EVIDENCE_
 
 @dataclass(frozen=True, slots=True)
 class CoverageNode:
-    """One service × fault × failure-domain × target-type × engine cell."""
+    """One service x fault x failure-domain x target-type x engine cell."""
 
     service: str
     fault_family: str

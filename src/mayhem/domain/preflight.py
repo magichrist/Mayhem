@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from mayhem.toolkit.hashing import canonical_json
+from mayhem.domain.hashing import canonical_json
 
 if TYPE_CHECKING:
     from mayhem.domain.runtime_context import RuntimeContext

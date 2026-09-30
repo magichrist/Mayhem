@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 DASHBOARD_SCHEMA_VERSION = "1.0"
 
