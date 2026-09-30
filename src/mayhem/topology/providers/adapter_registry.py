@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from mayhem.domain.errors import InvariantViolationError
-from mayhem.domain.runtime_adapter import resolve_engine_selection
+from mayhem.infra.engine_probe import resolve_engine_selection
 
 if TYPE_CHECKING:
     from mayhem.domain.runtime_adapter import RuntimeAdapter
@@ -50,7 +50,7 @@ def resolve_or_raise(engine: str | None) -> RuntimeAdapter:
         cls = _REGISTRY.get(engine)
         if cls is None:
             raise InvariantViolationError("engine_unknown", f"unknown engine {engine!r}")
-        adapter = cls(engine)  # type: ignore[call-arg]
+        adapter = cls(engine)
         if not adapter.is_available():
             raise InvariantViolationError(
                 "engine_unavailable",
@@ -61,7 +61,7 @@ def resolve_or_raise(engine: str | None) -> RuntimeAdapter:
     cls = _REGISTRY.get(resolved.name)
     if cls is None:
         raise InvariantViolationError("engine_unknown", f"no adapter for {resolved.name!r}")
-    adapter = cls(resolved.name)  # type: ignore[call-arg]
+    adapter = cls(resolved.name)
     if not adapter.is_available():
         raise InvariantViolationError(
             "engine_unavailable",

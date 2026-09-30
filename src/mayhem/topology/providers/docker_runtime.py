@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from ipaddress import ip_address as _ip_address
 from typing import Any
-
-from pydantic.networks import IPvAnyAddress
 
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.topology import (
@@ -34,6 +33,7 @@ def _inspect_pid(engine: str, container_id: str) -> int | None:
             [engine, "inspect", "--format", "{{.State.Pid}}", container_id],
             capture_output=True,
             text=True,
+            check=False,
             timeout=5,
         )
         pid = int(out.stdout.strip())
@@ -52,6 +52,7 @@ def _inspect_name(engine: str, container_id: str) -> str:
             [engine, "inspect", "--format", "{{.Name}}", container_id],
             capture_output=True,
             text=True,
+            check=False,
             timeout=5,
         )
         raw = out.stdout.strip()
@@ -265,7 +266,7 @@ class ContainerRuntimeProvider:
             short_id = container_id[:12]
             ip_str = container_ips.get(short_id)
 
-            ip_addr = IPvAnyAddress(ip_str) if ip_str else None
+            ip_addr = _ip_address(ip_str) if ip_str else None
 
             nets = row.get("Networks") or []
             net_names = tuple(nets) if isinstance(nets, list) else ()
@@ -342,47 +343,59 @@ def _parse_ports(row: dict[str, Any]) -> tuple[PortBinding, ...]:
     keyed by port number or a list of dicts with *host_port* keys.
     """
     raw = row.get("Ports")
-    bindings: list[PortBinding] = []
-
-    # Podman list-of-dicts: [{"host_port": 8080, "container_port": 80, ...}]
     if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict) and "host_port" in item:
-                bindings.append(
-                    PortBinding(
-                        host_port=int(item["host_port"]),
-                        container_port=int(item.get("container_port", item["host_port"])),
-                        host_address=str(item.get("host_ip", "") or "0.0.0.0"),
-                        protocol=str(item.get("protocol", "tcp")),
-                    )
-                )
-        return tuple(bindings)
-
-    # Podman dict: {"5432/tcp": []} or {"80/tcp": [{"HostPort": "8080"}]}
+        return _podman_port_list(raw)
     if isinstance(raw, dict):
-        for port_key, port_entries in raw.items():
-            parts = str(port_key).split("/")
-            try:
-                cport = int(parts[0])
-            except (ValueError, IndexError):
-                continue
-            proto = parts[1] if len(parts) > 1 else "tcp"
-            if isinstance(port_entries, list) and port_entries:
-                for entry in port_entries:
-                    if isinstance(entry, dict):
-                        bindings.append(
-                            PortBinding(
-                                host_port=int(entry.get("HostPort", cport)),
-                                container_port=cport,
-                                host_address=str(entry.get("HostIp", "") or "0.0.0.0"),
-                                protocol=proto,
-                            )
-                        )
-            else:
-                bindings.append(PortBinding(host_port=cport, container_port=cport, protocol=proto))
-        return tuple(bindings)
+        return _podman_port_dict(raw)
+    return _docker_port_string(raw)
 
-    # Docker string form: "0.0.0.0:5432->5432/tcp,192.168.1.5:8080->8080/tcp"
+
+def _podman_port_list(raw: list[Any]) -> tuple[PortBinding, ...]:
+    """Podman list-of-dicts form: ``[{"host_port": 8080, "container_port": 80}]``."""
+    bindings: list[PortBinding] = []
+    for item in raw:
+        if isinstance(item, dict) and "host_port" in item:
+            host_port = int(item["host_port"])
+            bindings.append(
+                PortBinding(
+                    host_port=host_port,
+                    container_port=int(item.get("container_port", host_port)),
+                    host_address=str(item.get("host_ip", "") or "0.0.0.0"),
+                    protocol=str(item.get("protocol", "tcp")),
+                )
+            )
+    return tuple(bindings)
+
+
+def _podman_port_dict(raw: dict[str, Any]) -> tuple[PortBinding, ...]:
+    """Podman dict form: ``{"5432/tcp": []}`` or ``{"80/tcp": [{"HostPort": "8080"}]}``."""
+    bindings: list[PortBinding] = []
+    for port_key, port_entries in raw.items():
+        parts = str(port_key).split("/")
+        try:
+            cport = int(parts[0])
+        except (ValueError, IndexError):
+            continue
+        proto = parts[1] if len(parts) > 1 else "tcp"
+        if isinstance(port_entries, list) and port_entries:
+            for entry in port_entries:
+                if isinstance(entry, dict):
+                    bindings.append(
+                        PortBinding(
+                            host_port=int(entry.get("HostPort", cport)),
+                            container_port=cport,
+                            host_address=str(entry.get("HostIp", "") or "0.0.0.0"),
+                            protocol=proto,
+                        )
+                    )
+        else:
+            bindings.append(PortBinding(host_port=cport, container_port=cport, protocol=proto))
+    return tuple(bindings)
+
+
+def _docker_port_string(raw: Any) -> tuple[PortBinding, ...]:
+    """Docker string form: ``"0.0.0.0:5432->5432/tcp,192.168.1.5:8080->8080/tcp"``."""
+    bindings: list[PortBinding] = []
     for part in str(raw or "").split(","):
         if "->" in part:
             try:

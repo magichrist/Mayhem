@@ -8,16 +8,23 @@ normalised ``RuntimeAdapter`` and ``TopologyProvider`` interfaces.
 from __future__ import annotations
 
 import shutil
+import signal
 import subprocess
+from ipaddress import ip_address as _ip_address
 from typing import Any
-
-from pydantic.networks import IPvAnyAddress
 
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.runtime_adapter import (
     AdapterCapabilities,
     RuntimeAdapter,
     RuntimeCapability,
+)
+from mayhem.domain.topology import (
+    ContainerNode,
+    Edge,
+    EdgeKind,
+    HostNode,
+    ProcessNode,
 )
 from mayhem.topology.providers.base import PartialGraph, TopologyProvider
 
@@ -121,10 +128,8 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
         return _inspect_pid(self._engine, container_id)
 
     def signal(self, container_id: str, signo: int) -> None:
-        import signal as _signal
-
         try:
-            sig = _signal.Signals(signo)
+            sig = signal.Signals(signo)
             signame = sig.name
         except (ValueError, AttributeError):
             signame = "SIGKILL"
@@ -185,14 +190,6 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
         return result
 
     def discover(self) -> PartialGraph:
-        from mayhem.domain.topology import (
-            ContainerNode,
-            Edge,
-            EdgeKind,
-            HostNode,
-            ProcessNode,
-        )
-
         try:
             rows = _ps(self._engine)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -229,7 +226,7 @@ class DockerAdapter(RuntimeAdapter, TopologyProvider):
             container_id = _container_id(row)
             short_id = container_id[:12]
             ip_str = container_ips.get(short_id)
-            ip_addr = IPvAnyAddress(ip_str) if ip_str else None
+            ip_addr = _ip_address(ip_str) if ip_str else None
 
             nets = row.get("Networks") or []
             net_names = tuple(nets) if isinstance(nets, list) else ()

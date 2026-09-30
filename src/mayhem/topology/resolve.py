@@ -50,7 +50,7 @@ def _inspect(engine: str, container_name: str, fmt: str) -> str:
     """Run ``engine inspect`` with a Go template format string."""
     cmd = [engine, "inspect", "--format", fmt, container_name]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{engine} inspect timed out for {container_name}") from exc
     if result.returncode != 0:

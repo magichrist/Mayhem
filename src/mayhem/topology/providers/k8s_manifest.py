@@ -111,7 +111,7 @@ class KubernetesManifestProvider:
     def resource_kinds(self) -> tuple[str, ...]:
         """Kinds declared by the bundle (empty for a non-k8s YAML file)."""
         return tuple(
-            doc.get("kind")
+            str(doc.get("kind"))
             for doc in self._documents()
             if isinstance(doc, dict) and doc.get("kind") in _SUPPORTED_KINDS
         )

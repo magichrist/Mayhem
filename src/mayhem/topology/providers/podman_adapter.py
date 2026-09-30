@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import signal
 import subprocess
+from ipaddress import ip_address as _ip_address
 from typing import Any
 
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
@@ -17,6 +19,7 @@ from mayhem.domain.runtime_adapter import (
     RuntimeAdapter,
     RuntimeCapability,
 )
+from mayhem.domain.topology import ContainerNode, Edge, EdgeKind, HostNode, ProcessNode
 from mayhem.topology.providers.base import PartialGraph, TopologyProvider
 
 # Module-level helpers from the original provider — unchanged.
@@ -39,6 +42,7 @@ def _detect_rootless(engine: str = "podman") -> bool:
             [engine, "info", "--format", "json"],
             capture_output=True,
             text=True,
+            check=False,
             timeout=5,
         )
         data = json.loads(out.stdout.strip())
@@ -144,10 +148,8 @@ class PodmanAdapter(RuntimeAdapter, TopologyProvider):
         return _inspect_pid(self._engine, container_id)
 
     def signal(self, container_id: str, signo: int) -> None:
-        import signal as _signal
-
         try:
-            sig = _signal.Signals(signo)
+            sig = signal.Signals(signo)
             signame = sig.name
         except (ValueError, AttributeError):
             signame = "SIGKILL"
@@ -212,13 +214,6 @@ class PodmanAdapter(RuntimeAdapter, TopologyProvider):
         return result
 
     def discover(self) -> PartialGraph:
-        from mayhem.domain.topology import (
-            ContainerNode,
-            Edge,
-            EdgeKind,
-            HostNode,
-        )
-
         try:
             rows = _ps(self._engine)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -255,9 +250,7 @@ class PodmanAdapter(RuntimeAdapter, TopologyProvider):
             ip_str = container_ips.get(short_id)
             ip_addr = None
             if ip_str:
-                from pydantic.networks import IPvAnyAddress
-
-                ip_addr = IPvAnyAddress(ip_str)
+                ip_addr = _ip_address(ip_str)
 
             nets = row.get("Networks") or []
             net_names = tuple(nets) if isinstance(nets, list) else ()
@@ -302,8 +295,6 @@ class PodmanAdapter(RuntimeAdapter, TopologyProvider):
             # faults (proc.pause / process.stop / process.kill) resolve a real PID
             # carried with the container's runtime address — the same contract as
             # the docker provider (ADR-0020 / ADR-M1-1).
-            from mayhem.domain.topology import ProcessNode  # noqa: PLC0415
-
             process_name = service_name or _container_name(row)
             pid = _inspect_pid(self._engine, container_id)
             if pid is not None and process_name:
