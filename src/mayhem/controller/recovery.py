@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from mayhem.agents.sinks import LeaseSink
     from mayhem.domain.leases import FaultLease
+    from mayhem.infra.store import Store
 
 
 class RecoveryStatus(StrEnum):
@@ -129,15 +130,15 @@ class RecoveryAuditLog:
     for speed; writes go through the store for durability.
     """
 
-    def __init__(self, store: Store | None = None) -> None:  # noqa: F821
+    def __init__(self, store: Store | None = None) -> None:
         self._store = store
         self._transitions: list[RecoveryTransition] = []
         if store is not None:
-            self._ensure_table()
-            self._load()
+            self._ensure_table(store)
+            self._load(store)
 
-    def _ensure_table(self) -> None:
-        with self._store.write() as conn:  # type: ignore[union-type]
+    def _ensure_table(self, store: Store) -> None:
+        with store.write() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS recovery_audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,8 +161,8 @@ class RecoveryAuditLog:
             if "runtime_identity" not in cols:
                 conn.execute("ALTER TABLE recovery_audit_log ADD COLUMN runtime_identity TEXT")
 
-    def _load(self) -> None:
-        with self._store.write() as conn:  # type: ignore[union-type]
+    def _load(self, store: Store) -> None:
+        with store.write() as conn:
             rows = conn.execute("SELECT * FROM recovery_audit_log ORDER BY id").fetchall()
         for row in rows:
             self._transitions.append(

@@ -1093,6 +1093,36 @@ def _net_device(fault: PlannedFault) -> str:
     return device
 
 
+def _net_protocol(fault: PlannedFault) -> str:
+    """IP protocol name, validated: it reaches an ``iptables`` argv and, via the
+    pulse builders, an ``sh -c`` body."""
+    proto = str(_param(fault, "protocol", "tcp")).strip().lower()
+    if not proto or not all(c.isalnum() for c in proto):
+        raise InvariantViolationError("fault_protocol", f"unsupported protocol name {proto!r}")
+    return proto
+
+
+_SLEEP_DUR_RE = re.compile(r"^[0-9]+(\.[0-9]+)?[smh]?$")
+
+
+def _sleep_duration(fault: PlannedFault, name: str, default: str) -> str:
+    """``sleep`` argument, validated against the duration grammar.
+
+    It is interpolated into an ``sh -c`` body, so it is validated rather than
+    quoted: a number carries no meaning that quoting could preserve, and a
+    value outside the grammar is a spec error worth refusing loudly. The
+    accepted forms are exactly what ``sleep`` takes, so the wire argv for a
+    normal spec (``2s``, ``5s``, ``250ms``-style decimals) is unchanged.
+    """
+    value = str(_param(fault, name, default)).strip()
+    if not _SLEEP_DUR_RE.match(value):
+        raise InvariantViolationError(
+            "fault_duration",
+            f"unsupported sleep duration {value!r}; expected e.g. '2s', '500ms'",
+        )
+    return value
+
+
 def _net_latency_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
     node = _tool_node(fault, nodes)
     if node is None:
@@ -2298,7 +2328,7 @@ def _dep_flap_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tupl
     port = _iparam(fault, "port", 0)
     interval = max(_fparam(fault, "interval", 10.0), 1.0)
     prob = _fparam(fault, "failure_probability", 50.0)
-    proto = str(_param(fault, "protocol", "tcp"))
+    proto = _net_protocol(fault)
     return _pulse_undo_op(
         fault,
         nodes,
@@ -2588,9 +2618,9 @@ def _fs_corrupt_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tu
     "reconciled".
 
     ``path`` is quoted with :func:`shlex.quote` because it reaches an ``sh -c``
-    command line. Every other builder that interpolates a user path does not
-    do this (see ``_fs_read_only_undo``), which is a latent shell-injection
-    surface; new code must not extend it.
+    command line. Every builder that interpolates a user-supplied value into a
+    shell string quotes it the same way; new code must not extend the set of
+    unquoted ones.
     """
     node = _tool_node(fault, nodes)
     if node is None:
@@ -2644,13 +2674,17 @@ def _fs_read_only_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> 
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
-    path = str(_param(fault, "path", "/"))
+    # ``path`` reaches an ``sh -c`` command line, so it is quoted rather than
+    # trusted: a path carrying ``;`` or ``$(...)`` would otherwise be executed
+    # inside the target container. ``shlex.quote`` is a no-op for an ordinary
+    # path (``/`` stays ``/``), so the argv for a normal spec is unchanged.
+    quoted = shlex.quote(str(_param(fault, "path", "/")))
     marker = _tool_marker(fault, node, "rwprobe")
-    inject = ["sh", "-c", f"mount -o remount,ro {path}"]
+    inject = ["sh", "-c", f"mount -o remount,ro {quoted}"]
     undo = [
         "sh",
         "-c",
-        f"mount -o remount,rw {path} && touch {marker} && rm -f {marker}",
+        f"mount -o remount,rw {quoted} && touch {marker} && rm -f {marker}",
     ]
     return (
         _tool_op(
@@ -2694,7 +2728,7 @@ def _process_crash_loop_undo(
     if node is None:
         raise NO_UNDO
     restart_n = max(1, _iparam(fault, "restarts", 10))
-    interval_s = str(_param(fault, "interval", "2s"))
+    interval_s = _sleep_duration(fault, "interval", "2s")
     # Shell loop of stop→start ``restart_n`` times at the engine level; undo
     # just starts the container so the service returns to a running baseline.
     step = (
@@ -2733,16 +2767,6 @@ def _net_corrupt_verify(
         raise NO_UNDO
     return _tc_qdisc_verify(fault, node, "netem")
 
-    node = _tool_node(fault, nodes)
-    if node is None:
-        raise NO_UNDO
-    rate = max(1, _iparam(fault, "rate_kbps", 128))
-    return _tc_qdisc_undo(
-        fault,
-        node,
-        ["tbf", "rate", f"{rate}kbit", "burst", "32kb", "latency", "50ms"],
-    )
-
 
 def _net_congestion_undo(
     fault: PlannedFault, nodes: tuple[TopologyNode, ...]
@@ -2774,7 +2798,7 @@ def _process_restart_delay_undo(
     if node is None:
         raise NO_UNDO
     restarts = max(1, min(20, _iparam(fault, "restarts", 3)))
-    delay = str(_param(fault, "delay", "5s"))
+    delay = _sleep_duration(fault, "delay", "5s")
     step = (
         f"{_ENGINE_TOKEN} stop {_CONTAINER_TOKEN}; sleep {delay}; "
         f"{_ENGINE_TOKEN} start {_CONTAINER_TOKEN}"
@@ -2867,7 +2891,11 @@ def _dns_nxdomain_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> 
     target = "/etc/hosts"
     marker = _tool_marker(fault, node, "orig")
     domain = str(_param(fault, "domain", "example.com"))
-    inject = ["sh", "-c", f"cp {target} {marker}; echo '127.0.0.1 {domain}' >> {target}"]
+    # The hosts line is a single shell word; quoting the whole line keeps the
+    # common case byte-identical while refusing to let a ``domain`` carrying a
+    # quote, ``;`` or ``$(...)`` break out of the echo argument.
+    hosts_line = shlex.quote(f"127.0.0.1 {domain}")
+    inject = ["sh", "-c", f"cp {target} {marker}; echo {hosts_line} >> {target}"]
     undo = ["sh", "-c", f"mv -f {marker} {target}; rm -f {marker}"]
     return (
         _tool_op(
@@ -2885,7 +2913,7 @@ def _dep_block_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tup
     if node is None:
         raise NO_UNDO
     port = _iparam(fault, "port", 0)
-    proto = str(_param(fault, "protocol", "tcp"))
+    proto = _net_protocol(fault)
     inject = ["iptables", "-A", "OUTPUT", "-p", proto, "--dport", str(port), "-j", "DROP"]
     undo = ["iptables", "-D", "OUTPUT", "-p", proto, "--dport", str(port), "-j", "DROP"]
     return (

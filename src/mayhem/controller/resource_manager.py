@@ -116,6 +116,7 @@ class ResourceManager:
 
     def register(
         self,
+        *,
         resource_type: ResourceType,
         run_id: str,
         step_id: str,
@@ -166,6 +167,7 @@ class ResourceManager:
 
     def journal_mutation(
         self,
+        *,
         lease_id: str,
         resource_id: str,
         run_id: str,
@@ -322,12 +324,10 @@ class ResourceManager:
         resource = self._graph.get(resource_id)
         if resource is None:
             return True  # already cleaned
-        if resource.state != ResourceState.RECOVERED:
-            return False
         # The actual probe execution happens through the agent runtime.
         # Here we just check the recorded state — the caller (RunEngine)
         # invokes the verify probe and calls mark_recovered.
-        return True
+        return resource.state == ResourceState.RECOVERED
 
     def list_resources(
         self, run_id: str | None = None, state: ResourceState | None = None
@@ -358,7 +358,7 @@ class ResourceManager:
                 "resource_unknown", f"resource '{resource_id}' not tracked"
             )
         # Build new resource with updated state
-        updated = resource.model_copy(update={"state": target})  # type: ignore[call-arg]
+        updated = resource.model_copy(update={"state": target})
         self._graph.remove(resource_id)
         self._graph.add(updated)
         with self._store.write() as conn:
@@ -436,22 +436,31 @@ class ResourceManager:
         )
 
 
+# Recovery ordering key: network rules unwind before process signals, so a
+# dropped network control is restored while its process still exists. Values
+# are opaque sort keys; the relative order is the contract, not the numbers.
+_RECOVERY_ORDER: dict[ResourceType, int] = {
+    ResourceType.TC_RULE: 0,
+    ResourceType.IPTABLES_RULE: 1,
+    ResourceType.NFTABLES_RULE: 2,
+    ResourceType.TOXIPROXY_TOXIC: 3,
+    ResourceType.LOAD_GENERATOR: 4,
+    ResourceType.CONTAINER_STATE: 5,
+    ResourceType.CGROUP_LIMIT: 6,
+    ResourceType.RESOURCE_LIMIT: 7,
+    ResourceType.PROCESS_SIGNAL: 8,
+    ResourceType.PROCESS_SPAWN: 9,
+    ResourceType.NETWORK_NAMESPACE: 10,
+    ResourceType.FILESYSTEM_MOUNT: 11,
+    ResourceType.TEMPORARY_FILE: 12,
+    ResourceType.GENERIC: 99,
+}
+
+# Sort key for resource types absent from _RECOVERY_ORDER (custom ResourceType
+# members): same "least specific" bucket as ResourceType.GENERIC.
+_UNRANKED_RECOVERY_ORDER = 99
+
+
 def _recovery_order(resource: TrackedResource) -> int:
     """Dependency order for recovery — network rules before process signals."""
-    _ORDER = {
-        ResourceType.TC_RULE: 0,
-        ResourceType.IPTABLES_RULE: 1,
-        ResourceType.NFTABLES_RULE: 2,
-        ResourceType.TOXIPROXY_TOXIC: 3,
-        ResourceType.LOAD_GENERATOR: 4,
-        ResourceType.CONTAINER_STATE: 5,
-        ResourceType.CGROUP_LIMIT: 6,
-        ResourceType.RESOURCE_LIMIT: 7,
-        ResourceType.PROCESS_SIGNAL: 8,
-        ResourceType.PROCESS_SPAWN: 9,
-        ResourceType.NETWORK_NAMESPACE: 10,
-        ResourceType.FILESYSTEM_MOUNT: 11,
-        ResourceType.TEMPORARY_FILE: 12,
-        ResourceType.GENERIC: 99,
-    }
-    return _ORDER.get(resource.resource_type, 99)
+    return _RECOVERY_ORDER.get(resource.resource_type, _UNRANKED_RECOVERY_ORDER)
