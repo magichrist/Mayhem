@@ -80,7 +80,9 @@ def draw_maniac_rounds(
     draws (``level >= 3``) may apply any spec-wide fault to any pool container.
     Durations are jittered at ``level >= 4`` (ADR-M5-1 §semantics).
     """
-    pool = {name: container for name, container in spec.containers.items() if container.faults}
+    pool = {
+        name: container for name, container in (spec.containers or {}).items() if container.faults
+    }
     if not pool:
         raise ManiacError(
             "maniac mode needs at least one container with faults — "

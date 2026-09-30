@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import time as dtime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SCENARIO_SCHEMA_VERSION = "1.0"
 
@@ -69,6 +73,31 @@ class ScenarioVariable(BaseModel):
         return self
 
 
+def _membership(actual: Any, expected: Any) -> bool:
+    return actual in (expected or ())
+
+
+def _contains(actual: Any, expected: Any) -> bool:
+    return expected in (actual or ())
+
+
+# One entry per operator, so `evaluate` stays a single lookup and an explicit
+# "unsupported" refusal. Membership is lenient about the empty case: a missing
+# container reads as an empty one, which never matches.
+_OPERATORS: dict[ConditionOperator, Callable[[Any, Any], bool]] = {
+    ConditionOperator.EQUALS: lambda actual, expected: bool(actual == expected),
+    ConditionOperator.NOT_EQUALS: lambda actual, expected: bool(actual != expected),
+    ConditionOperator.GREATER: lambda actual, expected: bool(float(actual) > float(expected)),
+    ConditionOperator.GREATER_EQUAL: lambda actual, expected: bool(
+        float(actual) >= float(expected)
+    ),
+    ConditionOperator.LESS: lambda actual, expected: bool(float(actual) < float(expected)),
+    ConditionOperator.LESS_EQUAL: lambda actual, expected: bool(float(actual) <= float(expected)),
+    ConditionOperator.IN: _membership,
+    ConditionOperator.CONTAINS: _contains,
+}
+
+
 class Condition(BaseModel):
     """A guard over one variable; all conditions in a step must hold."""
 
@@ -81,25 +110,10 @@ class Condition(BaseModel):
     def evaluate(self, resolved: dict[str, Any]) -> bool:
         if self.variable not in resolved:
             raise ScenarioError(f"condition references unknown variable {self.variable!r}")
-        actual = resolved[self.variable]
-        expected = self.value
-        if self.operator is ConditionOperator.EQUALS:
-            return bool(actual == expected)
-        if self.operator is ConditionOperator.NOT_EQUALS:
-            return bool(actual != expected)
-        if self.operator is ConditionOperator.GREATER:
-            return bool(float(actual) > float(expected))  # type: ignore[arg-type]
-        if self.operator is ConditionOperator.GREATER_EQUAL:
-            return bool(float(actual) >= float(expected))  # type: ignore[arg-type]
-        if self.operator is ConditionOperator.LESS:
-            return bool(float(actual) < float(expected))  # type: ignore[arg-type]
-        if self.operator is ConditionOperator.LESS_EQUAL:
-            return bool(float(actual) <= float(expected))  # type: ignore[arg-type]
-        if self.operator is ConditionOperator.IN:
-            return actual in (expected or ())
-        if self.operator is ConditionOperator.CONTAINS:
-            return expected in (actual or ())
-        raise ScenarioError(f"unsupported operator {self.operator!r}")
+        compare = _OPERATORS.get(self.operator)
+        if compare is None:
+            raise ScenarioError(f"unsupported operator {self.operator!r}")
+        return compare(resolved[self.variable], self.value)
 
 
 class TimeWindow(BaseModel):
@@ -125,7 +139,7 @@ class TimeWindow(BaseModel):
         end = dtime.fromisoformat(self.end)
         if start <= end:
             return start <= current <= end
-        # Window wraps midnight, e.g. 22:00–02:00.
+        # Window wraps midnight, e.g. 22:00-02:00.
         return current >= start or current <= end
 
 
@@ -218,47 +232,82 @@ class CompiledScenario:
         }
 
 
-def _coerce(variable: ScenarioVariable, value: Any) -> Any:
-    if variable.type is VariableType.STRING:
-        return str(value)
-    if variable.type is VariableType.INTEGER:
-        try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ScenarioError(f"variable {variable.name!r} is not an integer: {value!r}") from exc
-    if variable.type is VariableType.NUMBER:
-        try:
-            return float(value)
-        except (TypeError, ValueError) as exc:
-            raise ScenarioError(f"variable {variable.name!r} is not a number: {value!r}") from exc
-    if variable.type is VariableType.BOOLEAN:
-        if isinstance(value, bool):
-            return value
-        lowered = str(value).strip().lower()
-        if lowered in {"true", "yes", "1"}:
-            return True
-        if lowered in {"false", "no", "0"}:
-            return False
-        raise ScenarioError(f"variable {variable.name!r} is not a boolean: {value!r}")
-    if variable.type is VariableType.DURATION:
-        text = str(value).strip()
-        try:
-            if text.endswith("ms"):
-                return float(text[:-2]) / 1000.0
-            if text.endswith("s"):
-                return float(text[:-1])
-            if text.endswith("m"):
-                return float(text[:-1]) * 60.0
-            return float(text)
-        except ValueError as exc:
-            raise ScenarioError(f"variable {variable.name!r} is not a duration: {value!r}") from exc
-    if variable.type is VariableType.ENUM:
-        if value not in variable.choices:
-            raise ScenarioError(
-                f"variable {variable.name!r} must be one of {list(variable.choices)}, got {value!r}"
-            )
+#: Duration suffixes are matched longest-first so ``ms`` is never read as ``s``.
+_MILLIS_PER_SECOND = 1000.0
+_SECONDS_PER_MINUTE = 60.0
+_DURATION_SUFFIXES: tuple[tuple[str, Callable[[str], float]], ...] = (
+    ("ms", lambda text: float(text[:-2]) / _MILLIS_PER_SECOND),
+    ("s", lambda text: float(text[:-1])),
+    ("m", lambda text: float(text[:-1]) * _SECONDS_PER_MINUTE),
+)
+
+_BOOLEAN_TRUE = frozenset({"true", "yes", "1"})
+_BOOLEAN_FALSE = frozenset({"false", "no", "0"})
+
+
+def _coerce_string(variable: ScenarioVariable, value: Any) -> Any:
+    return str(value)
+
+
+def _coerce_integer(variable: ScenarioVariable, value: Any) -> Any:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioError(f"variable {variable.name!r} is not an integer: {value!r}") from exc
+
+
+def _coerce_number(variable: ScenarioVariable, value: Any) -> Any:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioError(f"variable {variable.name!r} is not a number: {value!r}") from exc
+
+
+def _coerce_boolean(variable: ScenarioVariable, value: Any) -> Any:
+    if isinstance(value, bool):
         return value
+    lowered = str(value).strip().lower()
+    if lowered in _BOOLEAN_TRUE:
+        return True
+    if lowered in _BOOLEAN_FALSE:
+        return False
+    raise ScenarioError(f"variable {variable.name!r} is not a boolean: {value!r}")
+
+
+def _coerce_duration(variable: ScenarioVariable, value: Any) -> Any:
+    text = str(value).strip()
+    try:
+        for suffix, convert in _DURATION_SUFFIXES:
+            if text.endswith(suffix):
+                return convert(text)
+        return float(text)
+    except ValueError as exc:
+        raise ScenarioError(f"variable {variable.name!r} is not a duration: {value!r}") from exc
+
+
+def _coerce_enum(variable: ScenarioVariable, value: Any) -> Any:
+    if value not in variable.choices:
+        raise ScenarioError(
+            f"variable {variable.name!r} must be one of {list(variable.choices)}, got {value!r}"
+        )
     return value
+
+
+_COERCERS: dict[VariableType, Callable[[ScenarioVariable, Any], Any]] = {
+    VariableType.STRING: _coerce_string,
+    VariableType.INTEGER: _coerce_integer,
+    VariableType.NUMBER: _coerce_number,
+    VariableType.BOOLEAN: _coerce_boolean,
+    VariableType.DURATION: _coerce_duration,
+    VariableType.ENUM: _coerce_enum,
+}
+
+
+def _coerce(variable: ScenarioVariable, value: Any) -> Any:
+    coerce = _COERCERS.get(variable.type)
+    if coerce is None:
+        return value
+    return coerce(variable, value)
 
 
 def _check_constraints(variable: ScenarioVariable, value: Any) -> None:
@@ -271,13 +320,10 @@ def _check_constraints(variable: ScenarioVariable, value: Any) -> None:
             raise ScenarioError(
                 f"variable {variable.name!r} value {value} is above maximum {variable.maximum}"
             )
-    if variable.pattern and isinstance(value, str):
-        import re
-
-        if not re.search(variable.pattern, value):
-            raise ScenarioError(
-                f"variable {variable.name!r} value {value!r} does not match {variable.pattern!r}"
-            )
+    if variable.pattern and isinstance(value, str) and not re.search(variable.pattern, value):
+        raise ScenarioError(
+            f"variable {variable.name!r} value {value!r} does not match {variable.pattern!r}"
+        )
 
 
 def resolve_variables(scenario: Scenario, supplied: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -170,12 +170,11 @@ def check_approval(session: GameDaySession, *, now: datetime | None = None) -> A
             f"game day {session.id!r} needs {session.gate.required_approvers} approval(s); "
             f"have {len(approvers)}"
         )
-    if session.gate.dual_control_for_critical and session.critical_faults:
-        if len(approvers) < 2:
-            raise GameDayError(
-                f"game day {session.id!r} schedules critical fault(s) "
-                f"{list(session.critical_faults)} and requires dual control: two distinct approvers"
-            )
+    if session.gate.dual_control_for_critical and session.critical_faults and len(approvers) < 2:
+        raise GameDayError(
+            f"game day {session.id!r} schedules critical fault(s) "
+            f"{list(session.critical_faults)} and requires dual control: two distinct approvers"
+        )
     return session.gate
 
 
