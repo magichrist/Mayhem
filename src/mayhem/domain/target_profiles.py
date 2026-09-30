@@ -1,10 +1,15 @@
+"""The target-profile vocabulary: models, inheritance, validation, selection.
+
+Pure over already-parsed documents — no ``pathlib``, no YAML. The filesystem
+readers live in :mod:`mayhem.infra.target_profile_io` so this module keeps the
+domain layer's zero-IO invariant; both share the rules defined here.
+"""
+
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mayhem.domain.errors import SchemaValidationError
@@ -108,7 +113,7 @@ def parse_profiles_mapping(raw: Any, source: str = "target profiles") -> dict[st
     return result
 
 
-def _profile_block(data: dict[str, Any], *, bare_document: bool) -> Any:
+def profile_block(data: dict[str, Any], *, bare_document: bool) -> Any:
     """The raw target-profile mapping of a document, or ``None``.
 
     ``targets:`` wins over the ``profiles:`` alias. A drill spec's own
@@ -116,6 +121,10 @@ def _profile_block(data: dict[str, Any], *, bare_document: bool) -> Any:
     :func:`is_spec_document`. When neither key is present and the caller
     accepts a profile-only document (``load_profiles_from_file`` does,
     ``mayhem.yaml`` does not), the document itself is the mapping.
+
+    Pure over an already-parsed document, so the filesystem readers in
+    :mod:`mayhem.infra.target_profile_io` can share this rule without the
+    domain importing ``pathlib``.
     """
     if is_spec_document(data):
         return None
@@ -124,22 +133,6 @@ def _profile_block(data: dict[str, Any], *, bare_document: bool) -> Any:
     if "profiles" in data:
         return data["profiles"]
     return data if bare_document else None
-
-
-def load_profiles_from_file(path: str | Path) -> dict[str, TargetProfile]:
-    p = Path(path)
-    if not p.exists():
-        raise SchemaValidationError("target_profile", f"profile file not found: {p}")
-    try:
-        data = yaml.safe_load(p.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise SchemaValidationError("target_profile", f"invalid YAML in {p}: {exc}") from None
-    if not isinstance(data, dict):
-        raise SchemaValidationError("target_profile", f"{p} must contain a mapping")
-    raw_profiles = _profile_block(data, bare_document=True)
-    if raw_profiles is None:
-        return {}
-    return parse_profiles_mapping(raw_profiles, source=str(p))
 
 
 _ALLOWED_INHERITANCE_KEYS = frozenset(
@@ -197,28 +190,6 @@ def _resolve_inheritance(profiles: dict[str, TargetProfile]) -> dict[str, Target
                 "target_profile", f"invalid inherited profile {name!r}: {exc}"
             ) from None
     return resolved
-
-
-def load_profiles_from_mayhem_yaml(path: str | Path | None = None) -> dict[str, TargetProfile]:
-    """Target profiles carried by a ``mayhem.yaml`` document.
-
-    Unlike :func:`load_config`, no ``apiVersion`` is required: a
-    profile-only document is a valid input here, which is what the layered
-    configuration and the runtime-context fixtures rely on.
-    """
-    base = Path(path) if path else Path("mayhem.yaml")
-    if not base.exists():
-        return {}
-    try:
-        data = yaml.safe_load(base.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise SchemaValidationError("target_profile", f"invalid YAML in {base}: {exc}") from None
-    if not isinstance(data, dict):
-        return {}
-    raw = _profile_block(data, bare_document=False)
-    if raw is None:
-        return {}
-    return parse_profiles_mapping(raw, source=str(base))
 
 
 def select_profile(profiles: dict[str, TargetProfile], name: str | None) -> TargetProfile | None:

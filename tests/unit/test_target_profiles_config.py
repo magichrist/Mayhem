@@ -17,12 +17,11 @@ import yaml
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.target_profiles import (
     is_spec_document,
-    load_profiles_from_file,
-    load_profiles_from_mayhem_yaml,
     parse_profiles_mapping,
     require_profile,
     select_profile,
 )
+from mayhem.infra.target_profile_io import load_profiles_from_file, load_profiles_from_mayhem_yaml
 
 VALID_RAW: dict[str, dict[str, object]] = {
     "dev": {"engine": "docker", "compose": "docker-compose.yml"},

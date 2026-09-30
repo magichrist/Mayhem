@@ -36,10 +36,10 @@ from mayhem.domain.redaction import redact
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.target_profiles import (
     TargetProfile,
-    load_profiles_from_mayhem_yaml,
     parse_profiles_mapping,
     select_profile,
 )
+from mayhem.infra.target_profile_io import load_profiles_from_mayhem_yaml
 
 
 class SpecFileUsedAsConfig(Warning):
@@ -355,6 +355,99 @@ def _apply_policy_profile(
     sources["blast_radius"] = policy_source
 
 
+class _LayerAccumulator:
+    """The mutable merge state threaded through the configuration layers.
+
+    :func:`load_config` applies a fixed layering order (file → overlay → env →
+    policy profile → CLI), and each layer needs to do two things: merge its
+    plain fields into ``merged``, and fold any target profiles it declares into
+    ``raw_profiles`` (a later layer replaces a same-named profile whole rather
+    than deep-merging). Holding that state here keeps both operations — and
+    their provenance bookkeeping — in one place instead of two closures
+    rebuilt per call.
+    """
+
+    def __init__(self) -> None:
+        self.sources: dict[str, str] = dict.fromkeys(
+            ("policy", "blast_radius", "storage", "toolkit", "log_level", "targets"),
+            "defaults",
+        )
+        self.merged: dict[str, Any] = {"api_version": API_VERSION}
+        # name -> raw profile mapping, accumulated across layers (later wins).
+        self.raw_profiles: dict[str, Any] = {}
+
+    def absorb_profiles(self, layer_data: dict[str, Any], layer_name: str) -> None:
+        declared: set[str] = set()
+        for key in _PROFILE_LAYER_KEYS:
+            if key not in layer_data:
+                continue
+            block = layer_data[key]
+            if block is None:
+                block = {}
+            if not isinstance(block, dict):
+                raise SchemaValidationError(
+                    "config", f"{layer_name}: {key} must be a mapping of name to profile"
+                )
+            for raw_name in block:
+                name = str(raw_name)
+                if name in declared:
+                    raise SchemaValidationError(
+                        "target_profile",
+                        f"{layer_name}: duplicate target name {name!r} declared in both "
+                        f"'targets' and 'profiles'",
+                    )
+                declared.add(name)
+                self.raw_profiles[name] = block[raw_name]
+        if not declared:
+            return
+        self.merged["targets"] = parse_profiles_mapping(
+            self.raw_profiles, source=f"{layer_name} targets:"
+        )
+        self.sources["targets"] = layer_name
+
+    def absorb(self, layer_data: dict[str, Any], layer_name: str) -> None:
+        for key, value in layer_data.items():
+            if key == "apiVersion":
+                continue
+            if key in _PROFILE_LAYER_KEYS:
+                continue
+            field_name = "api_version" if key == "apiVersion" else key
+            existing = self.merged.get(field_name)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                _deep_merge(existing, value)
+            else:
+                self.merged[field_name] = value
+            self.sources[field_name] = layer_name
+        self.absorb_profiles(layer_data, layer_name)
+
+
+def _absorb_base_document(acc: _LayerAccumulator, base_path: Path, *, required: bool) -> None:
+    """Absorb the base ``mayhem.yaml`` (or the explicit ``--config``) layer.
+
+    A drill spec found here contributes only its projected ``config:`` section
+    (k-plan-1 §1.2): its own top-level ``targets:`` block is logical targets,
+    never target profiles.
+    """
+    if not required and not base_path.exists():
+        return
+    document = _read_document(base_path)
+    if is_spec_file(document):
+        layer = _config_layer_from_spec(document)
+        if layer:
+            acc.absorb(layer, "file(spec)")
+            return
+        warnings.warn(
+            f"{base_path}: declares `kind: {document.get('kind')}` — this "
+            "file is a drill spec without an embedded `config:` section, "
+            "so configuration defaults apply. Add a `config:` block to the "
+            "spec to fold configuration into the single mayhem.yaml.",
+            SpecFileUsedAsConfig,
+            stacklevel=2,
+        )
+        return
+    acc.absorb(document, "file")
+
+
 def load_config(
     *,
     config_path: str | Path | None = None,
@@ -394,83 +487,17 @@ def load_config(
             "config",
             f"conflicting policy sources: --policy {policy!r} and {_POLICY_ENV_VAR}={env_policy!r}",
         )
-    sources: dict[str, str] = dict.fromkeys(
-        ("policy", "blast_radius", "storage", "toolkit", "log_level", "targets"),
-        "defaults",
-    )
-    merged: dict[str, Any] = {"api_version": API_VERSION}
-    # name -> raw profile mapping, accumulated across layers (later wins).
-    raw_profiles: dict[str, Any] = {}
-
-    def absorb_profiles(layer_data: dict[str, Any], layer_name: str) -> None:
-        declared: set[str] = set()
-        for key in _PROFILE_LAYER_KEYS:
-            if key not in layer_data:
-                continue
-            block = layer_data[key]
-            if block is None:
-                block = {}
-            if not isinstance(block, dict):
-                raise SchemaValidationError(
-                    "config", f"{layer_name}: {key} must be a mapping of name to profile"
-                )
-            for raw_name in block:
-                name = str(raw_name)
-                if name in declared:
-                    raise SchemaValidationError(
-                        "target_profile",
-                        f"{layer_name}: duplicate target name {name!r} declared in both "
-                        f"'targets' and 'profiles'",
-                    )
-                declared.add(name)
-                raw_profiles[name] = block[raw_name]
-        if not declared:
-            return
-        merged["targets"] = parse_profiles_mapping(raw_profiles, source=f"{layer_name} targets:")
-        sources["targets"] = layer_name
-
-    def absorb(layer_data: dict[str, Any], layer_name: str) -> None:
-        for key, value in layer_data.items():
-            if key == "apiVersion":
-                continue
-            if key in _PROFILE_LAYER_KEYS:
-                continue
-            field_name = "api_version" if key == "apiVersion" else key
-            existing = merged.get(field_name)
-            if isinstance(existing, dict) and isinstance(value, dict):
-                _deep_merge(existing, value)
-            else:
-                merged[field_name] = value
-            sources[field_name] = layer_name
-        absorb_profiles(layer_data, layer_name)
-
+    acc = _LayerAccumulator()
     base_path = Path(config_path) if config_path else Path("mayhem.yaml")
-    if config_path or base_path.exists():
-        document = _read_document(base_path)
-        if is_spec_file(document):
-            # Only the projected `config:` section reaches `absorb`: a drill
-            # spec's own top-level `targets:` block is its logical targets
-            # (k-plan-1 §1.2), never target profiles.
-            layer = _config_layer_from_spec(document)
-            if layer:
-                absorb(layer, "file(spec)")
-            else:
-                warnings.warn(
-                    f"{base_path}: declares `kind: {document.get('kind')}` — this "
-                    "file is a drill spec without an embedded `config:` section, "
-                    "so configuration defaults apply. Add a `config:` block to the "
-                    "spec to fold configuration into the single mayhem.yaml.",
-                    SpecFileUsedAsConfig,
-                    stacklevel=2,
-                )
-        else:
-            absorb(document, "file")
+    _absorb_base_document(acc, base_path, required=bool(config_path))
     if profile:
         overlay = base_path.parent / f"mayhem.{profile}.yaml"
-        absorb(_read_document(overlay), f"profile:{profile}")
-    absorb(_apply_env({}, env), "env")
+        acc.absorb(_read_document(overlay), f"profile:{profile}")
+    acc.absorb(_apply_env({}, env), "env")
     if effective_policy is not None:
-        _apply_policy_profile(merged, sources, effective_policy, "policy:" + effective_policy)
+        _apply_policy_profile(
+            acc.merged, acc.sources, effective_policy, "policy:" + effective_policy
+        )
     if cli_overrides:
         if effective_policy is not None and any(
             key in cli_overrides for key in ("policy", "blast_radius")
@@ -479,10 +506,10 @@ def load_config(
                 "config",
                 "conflicting policy sources: --policy and cli_overrides both set policy fields",
             )
-        absorb({k: v for k, v in cli_overrides.items() if v is not None}, "cli")
+        acc.absorb({k: v for k, v in cli_overrides.items() if v is not None}, "cli")
 
     try:
-        return MayhemConfig.model_validate(merged), sources
+        return MayhemConfig.model_validate(acc.merged), acc.sources
     except ValidationError as exc:
         raise SchemaValidationError("config", f"invalid configuration: {exc}") from None
 

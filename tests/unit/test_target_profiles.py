@@ -5,12 +5,8 @@ import pytest
 import yaml
 
 from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.target_profiles import (
-    load_profiles_from_file,
-    load_profiles_from_mayhem_yaml,
-    require_profile,
-    select_profile,
-)
+from mayhem.domain.target_profiles import require_profile, select_profile
+from mayhem.infra.target_profile_io import load_profiles_from_file, load_profiles_from_mayhem_yaml
 
 
 def _write_yaml(path: Path, data: dict):
