@@ -134,6 +134,79 @@ by conventional-commit type — see the phase map below.
 - **examples**: Install net and shell tooling in the testCase compose
 
 
+## 1.0.0 - 2026-09-29
+
+### ⚠ Breaking changes
+
+- **`db.slow_query` now defaults to `mode: latency` (netem).** It previously
+  shipped an `iptables DROP` as its default behaviour, so a plan that relied on
+  the default was silently injecting packet loss rather than latency. The
+  blackhole behaviour is still available, but it must now be asked for
+  explicitly with `mode: timeout`. Existing specs that want a drop must add the
+  parameter; existing specs that want latency are now correct by default for the
+  first time.
+- **Nine `catalog_only` entries are new refusals** (thirteen in the catalog
+  today). These fault ids parse, plan, and refuse before mutation instead of
+  reaching an executor. A plan that names one is now rejected at compile time;
+  a plan that ran under 0.9.x will not run now. The refusal text names the
+  mechanism mayhem does not have and points at a documented alternative — the
+  refusal is the deliverable, not a placeholder.
+- **`mayhem p` no longer resolves.** The `pack` command made the `p` prefix
+  ambiguous, so a bare `mayhem p` invocation now exits `ambiguous_command`
+  (exit code 10) and names both candidates. Scripts using the `p` prefix must
+  move to `mayhem pre` or `mayhem prep` (both resolve to `prepare`), or spell
+  the command out in full.
+- **`blast_radius.forbidden_fault_pairs` now actually fires.** It was silently
+  inert: the check compared a `frozenset` of *all* faults seen so far against
+  two-element forbidden pairs, so it matched on a two-fault plan by accident and
+  matched nothing on any plan of three or more faults. It is now evaluated
+  against each `{earlier, new}` pair, which makes it complete — a plan
+  containing a forbidden pair is refused no matter where the pair sits in the
+  ordering. **This is the most important item in this release: a safety rule
+  that used to be decorative is now load-bearing, and plans that ran under
+  0.9.x may now be refused.** A safety setting you configured and believed was
+  protecting you was not.
+- **`blast_radius.damage_quota` is a new cumulative gate.** The five existing
+  `blast_radius` limits are per-step. `damage_quota` is the first budget that
+  sees the *sequence*: it charges damage-seconds per target across the whole
+  plan and refuses when the cumulative total exceeds `budget_s`, or when any one
+  target's total exceeds `per_fault_ceiling_s`, within `window_s`. A plan whose
+  every individual step passes the other five limits can now still be refused
+  for its total. It is active by default (14400 s budget, 3600 s per-fault
+  ceiling, 7-day window) rather than opt-in.
+
+### 📚 Documentation
+
+- State plainly in the README that mayhem has **no kernel/BPF fault injection**,
+  and name the thirteen `catalog_only` faults and the mechanism each one lacks.
+- State that **0 of 141** catalog faults are `verified-live`, and that
+  `verified-unit` is a claim about mayhem's own parameter, refusal, and
+  compensation code rather than evidence that a fault works.
+- Correct the two places the documentation called a fault pack *signed*. The
+  pack format declares a `signature: str` with no key, no algorithm, and no
+  trust store; a loader now enforces a SHA-256 *integrity* digest and reports
+  `signature NOT VERIFIED`. Authorship is an unverified claim.
+- Add intra-document **anchor** validation. The documentation-consistency test
+  validated link *paths* only, so a Markdown link with a bare `#fragment`
+  target was invisible to it and a dangling anchor shipped unnoticed.
+- Correct the README claim that `max_faults` caps simultaneous faults. No gate
+  reads it; `blast_radius.max_concurrent_faults` is the control that refuses.
+- Document `blast_radius.damage_quota` in the configuration reference.
+
+### 🛡 Fixed
+
+- `blast_radius.forbidden_fault_pairs` now evaluates each `{earlier, new}` pair
+  instead of the set of all faults so far (see the breaking change above).
+
+### 📦 Documentation index
+
+- The 1.0.0 section above is **hand-written** because the breaking changes are
+  not derivable from commit subjects. `git-cliff` regenerates this file from
+  git history and will not reproduce it; re-add the section after any
+  regeneration.
+
+
+
 ## 0.9.1 - 2026-09-27
 
 
