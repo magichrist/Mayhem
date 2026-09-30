@@ -2013,7 +2013,7 @@ class TestEngineDescriptors:
         assert "pasta" not in describe_engine("docker").network_capabilities
 
     def test_detect_reports_availability_from_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda name: "/usr/bin/docker" if name else None)
         monkeypatch.setattr(
@@ -2027,7 +2027,7 @@ class TestEngineDescriptors:
         assert found["podman"].binary_available is True
 
     def test_detect_reports_a_missing_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
         found = {d.name: d for d in ra.detect_available_engines()}
@@ -2035,7 +2035,7 @@ class TestEngineDescriptors:
         assert all(d.version is None for d in found.values())
 
     def test_detect_survives_a_failing_version_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         def boom(*_a: object, **_k: object) -> None:
             raise OSError("exec format error")
@@ -2047,7 +2047,7 @@ class TestEngineDescriptors:
         assert found["docker"].version is None
 
     def test_explicit_selection_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: "/usr/bin/podman")
         selected = ra.resolve_engine_selection("podman")
@@ -2055,13 +2055,13 @@ class TestEngineDescriptors:
         assert selected.binary_available is True
 
     def test_explicit_selection_is_normalised(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: "/usr/bin/docker")
         assert ra.resolve_engine_selection("  DOCKER  ").name == "docker"
 
     def test_explicit_unknown_selection_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -2071,7 +2071,7 @@ class TestEngineDescriptors:
     def test_explicit_unavailable_selection_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -2080,7 +2080,7 @@ class TestEngineDescriptors:
         assert "docker" in str(excinfo.value)
 
     def test_no_engine_on_path_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -2091,7 +2091,7 @@ class TestEngineDescriptors:
     def test_blank_explicit_selection_falls_back_to_detection(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(
             ra.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None
@@ -2099,7 +2099,7 @@ class TestEngineDescriptors:
         assert ra.resolve_engine_selection("   ").name == "docker"
 
     def test_two_engines_on_path_are_ambiguous(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(ra.shutil, "which", lambda name: f"/usr/bin/{name}" if name else None)
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -2109,7 +2109,7 @@ class TestEngineDescriptors:
         assert "podman" in str(excinfo.value)
 
     def test_single_engine_on_path_is_selected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mayhem.domain import runtime_adapter as ra
+        from mayhem.infra import engine_probe as ra
 
         monkeypatch.setattr(
             ra.shutil, "which", lambda name: "/usr/bin/podman" if name == "podman" else None

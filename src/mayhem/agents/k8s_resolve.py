@@ -32,7 +32,7 @@ import zlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mayhem.domain.errors import InvariantViolationError, ResolutionError, SelectionError
 from mayhem.domain.identity import RuntimeLabel
@@ -41,7 +41,7 @@ from mayhem.domain.target import SelectionMode, SelectionSpec
 from mayhem.toolkit.tool_runner import ToolResult, run_tool
 
 if TYPE_CHECKING:
-    from mayhem.domain.experiments import TargetScope
+    from mayhem.domain.target import TargetScope
 
 
 class K8sEngineMode(StrEnum):
@@ -176,7 +176,7 @@ def discover_k8s_status(
         )
     try:
         if hasattr(client, "nodes"):
-            client.nodes()  # type: ignore[attr-defined]
+            client.nodes()
     except Exception as exc:
         return K8sDiscoveryStatus(
             manifest_available=manifest_available,
@@ -446,7 +446,7 @@ class SdkK8sClient:
         return [self._pod_from_json(document) for document in items]
 
     @staticmethod
-    def _pod_from_json(document: dict[str, object]) -> K8sPod:
+    def _pod_from_json(document: dict[str, Any]) -> K8sPod:
         metadata = document.get("metadata") or {}
         status = document.get("status") or {}
         spec = document.get("spec") or {}
@@ -514,7 +514,7 @@ class SdkK8sClient:
         return [self._node_from_json(document) for document in items]
 
     @staticmethod
-    def _node_from_json(document: dict[str, object]) -> K8sNodeInfo:
+    def _node_from_json(document: dict[str, Any]) -> K8sNodeInfo:
         metadata = document.get("metadata") or {}
         status = document.get("status") or {}
         spec = document.get("spec") or {}
@@ -541,9 +541,17 @@ class SdkK8sClient:
         )
 
     def exec(self, target: ResolvedPodTarget, argv: tuple[str, ...]) -> str:
-        head, _, tail = argv, "--", ()
+        # Split the exec prefix from the in-container command on the "--"
+        # separator, then re-emit it with the request timeout injected between
+        # the two. This is a *tuple* split: ``tuple.partition`` does not exist,
+        # so the previous str-based call raised AttributeError on every
+        # exec that carried a "--" — which is every exec built from
+        # ``ResolvedPodTarget.exec_argv``, since that always ends in "--".
+        head: tuple[str, ...] = argv
+        tail: tuple[str, ...] = ()
         if "--" in argv:
-            head, _, tail = argv.partition("--")
+            index = argv.index("--")
+            head, tail = argv[:index], argv[index + 1 :]
         outcome = self._run((*head, "--request-timeout", f"{self.timeout_s}s", "--", *tail))
         if not outcome.succeeded:
             raise ResolutionError(
@@ -562,9 +570,63 @@ def default_client(context: str | None = None) -> K8sClusterClient | None:
 # ── resolver ────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class ResolutionOutcome:
-    resolved: ResolvedPodTarget | None = None
+    """What one resolution produced.
+
+    ``resolved`` is the union, not :class:`ResolvedPodTarget`: node-scoped
+    faults (``k8s.node_drain`` / ``k8s.node_pressure``, k-plan-5 §5.1) resolve
+    a :class:`ResolvedNodeTarget` through :meth:`resolve_node`, and the node
+    path in :mod:`mayhem.controller.executor` consumes it as such. Declaring it
+    pod-only hid that from the type checker — ``read_primary_pid`` in
+    particular would have been handed a node target and crashed on
+    ``target.pod``. Consumers narrow: ``resolve``/``resolve_many`` always yield
+    a pod target; ``resolve_node`` always yields a node target.
+    """
+
+    resolved: ResolvedPodTarget | ResolvedNodeTarget | None = None
     drift: bool = False  # live pick differs from plan-time preferred pod
     note: str = ""  # human-readable evidence summary
+
+    def pod_or_none(self) -> ResolvedPodTarget | None:
+        """The resolved *pod* target, or ``None`` for a node resolution."""
+        target = self.resolved
+        return target if isinstance(target, ResolvedPodTarget) else None
+
+    def node_or_none(self) -> ResolvedNodeTarget | None:
+        """The resolved *node* target, or ``None`` for a pod resolution."""
+        target = self.resolved
+        return target if isinstance(target, ResolvedNodeTarget) else None
+
+
+def _parse_label_selector(selector: str) -> dict[str, str]:
+    """A Kubernetes label-selector string to a label map.
+
+    Accepts the equality-based grammar kubectl itself uses — ``app=web``,
+    ``app=web,tier=backend``, with surrounding whitespace tolerated. A bare
+    term (``web``) is treated as an existence requirement, whose value is
+    matched by the caller through :meth:`K8sNodeInfo.labels`; it maps to the
+    empty string, which ``_select_node_by_selector`` treats as "label present"
+    rather than "label equals empty".
+    """
+    wanted: dict[str, str] = {}
+    for term in selector.split(","):
+        cleaned = term.strip()
+        if not cleaned:
+            continue
+        key, separator, value = cleaned.partition("=")
+        wanted[key.strip()] = value.strip() if separator else ""
+    return wanted
+
+
+def _node_matches(labels: dict[str, str], wanted: dict[str, str]) -> bool:
+    """Every wanted label is present on the node with the wanted value.
+
+    An empty value means an existence requirement (``tier`` matches a node
+    labelled ``tier=backend``), which is how a bare kubectl selector term
+    behaves.
+    """
+    return all(
+        key in labels and (not value or labels[key] == value) for key, value in wanted.items()
+    )
 
 
 def _workload_from_scope(scope: TargetScope) -> K8sWorkload:
@@ -837,19 +899,22 @@ class KubernetesRuntimeResolver:
         return ResolutionOutcome(resolved=target, drift=False, note=note)
 
     def _select_node_by_selector(self, scope: TargetScope) -> list[str]:
-        """Nodes matching the scope authority's ``selector`` (k-plan-5 §5.1)."""
+        """Nodes matching the scope authority's ``selector`` (k-plan-5 §5.1).
+
+        ``TargetScope.authority`` is ``dict[str, str]``, so the selector
+        arrives as a standard Kubernetes label-selector *string*
+        (``"app=checkout,tier=backend"``), not a mapping. It is parsed here
+        rather than calling ``.items()`` on a string, which raised
+        ``AttributeError`` on every selector-scoped node resolution.
+        """
         selector = scope.authority.get("selector")
         if not selector or self._client is None:
             raise ResolutionError(
                 "resolution.resource_missing",
                 f"scope {scope.logical_id!r} has no concrete node name or selector",
             )
-        wanted = {
-            str(k): str(v) for k, v in selector.items() if isinstance(v, (str, int, float, bool))
-        }
-        matches = [
-            node.name for node in self._client.nodes() if wanted.items() <= node.labels.items()
-        ]
+        wanted = _parse_label_selector(selector)
+        matches = [node.name for node in self._client.nodes() if _node_matches(node.labels, wanted)]
         if not matches:
             label = ",".join(f"{k}={v}" for k, v in sorted(wanted.items()))
             raise SelectionError(

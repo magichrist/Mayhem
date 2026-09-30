@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json as _json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from mayhem.domain.resolution import ResolvedPodTarget
@@ -69,7 +69,9 @@ def kubectl_json(ref: ResourceRef, *, timeout_s: int = 30) -> dict[str, Any] | N
     )
     if result.exit_code != 0:
         return None
-    return _json.loads(result.stdout)
+    # ``-o json`` on a named resource always yields an object; json.loads is
+    # typed Any, so the documented shape is asserted rather than re-derived.
+    return cast("dict[str, Any]", _json.loads(result.stdout))
 
 
 def kubectl_jsonpath(ref: ResourceRef, jsonpath: str) -> str | None:
@@ -267,7 +269,7 @@ def resourcequota_ref(namespace: str) -> ResourceRef | None:
 def _vol_named(obj: dict[str, Any], vol_name: str) -> dict[str, Any]:
     for v in obj.get("spec", {}).get("volumes", []):
         if v.get("name") == vol_name:
-            return v
+            return cast("dict[str, Any]", v)
     return {}
 
 
@@ -349,7 +351,8 @@ def read_snapshot(ref: ResourceRef) -> dict[str, Any] | None:
     raw = (obj.get("metadata", {}).get("annotations") or {}).get(RESTORE_ANNOTATION)
     if not raw:
         return None
-    return _json.loads(str(raw))
+    # The annotation is written by ``write_snapshot`` as a JSON object.
+    return cast("dict[str, Any]", _json.loads(str(raw)))
 
 
 def apply_patch(ref: ResourceRef, patch: dict[str, Any]) -> bool:

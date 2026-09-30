@@ -524,12 +524,13 @@ def k8s_verify_spec(
     * pod_pressure      → ``k8s.pressure_restored`` — the pressure signal's
       undo was applied live; verify is evidence-only.
     """
+    args: dict[str, str]
     if fault_id == "k8s.pod_pressure":
         op = "k8s.pressure_restored"
         args = {"pod": target.pod, "container": target.container, "namespace": target.namespace}
     elif fault_id in K8S_NETWORK_FAULTS:
         op = "k8s.policy_applied"
-        args: dict[str, object] = {"policy_name": target.pod_action}
+        args = {"policy_name": target.pod_action}
     else:
         op = "k8s.replaced"
         args = {
@@ -769,7 +770,9 @@ def k8s_undo_ops_for(fault_id: str, target: ResolvedPodTarget) -> tuple[UndoOp, 
     if fault_id in K8S_MUTATION_FAULTS:
         reversible = fault_id in K8S_REVERSIBLE_FAULTS
         if reversible:
-            args: dict[str, object] = {}
+            # ``UndoOp.args`` is ``dict[str, str]``; every value below is an
+            # f-string, so the bag is genuinely str-valued.
+            args: dict[str, str] = {}
             if fault_id == "k8s.network_policy":
                 args["policy_name"] = f"mayhem-deny-{target.pod}"
             return (
