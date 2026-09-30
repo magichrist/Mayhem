@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,8 +59,6 @@ class PrometheusConnector:
         self._headers = dict(headers or {})
 
     def query(self, query: MetricQuery) -> float | None:
-        import urllib.parse
-
         params = {"query": query.promql}
         if query.time:
             params["time"] = query.time

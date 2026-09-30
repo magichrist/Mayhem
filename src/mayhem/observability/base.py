@@ -6,9 +6,12 @@ timeout and response-size limits are enforced here rather than per connector.
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 from typing import Any
+
+from mayhem.domain.redaction import redact_text
 
 DEFAULT_TIMEOUT_S = 5.0
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -19,8 +22,6 @@ class ConnectorError(RuntimeError):
 
 
 def redacted(text: str) -> str:
-    from mayhem.domain.redaction import redact_text
-
     cleaned, _ = redact_text(text)
     return cleaned
 
@@ -34,8 +35,6 @@ def fetch_json(
     opener: Any = None,
 ) -> dict[str, Any]:
     """GET a JSON document with a timeout and a hard response-size cap."""
-    import json
-
     request = urllib.request.Request(url, headers=headers or {})
     open_fn = opener if opener is not None else urllib.request.urlopen
     try:

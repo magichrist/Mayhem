@@ -6,6 +6,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
+from mayhem.observability.base import redacted
+
 #: The lifecycle spans a run must emit, per the task contract.
 SPAN_NAMES: tuple[str, ...] = (
     "mayhem.plan",
@@ -61,8 +63,6 @@ def record_span(
     """Emit one span, redacting attributes first. No-op without a sink."""
     if sink is None:
         return
-    from mayhem.observability.base import redacted
-
     payload = {key: redacted(str(value)) for key, value in attributes.items()}
     sink.emit(Span(name=name, run_id=run_id, attributes=payload))
 

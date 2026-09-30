@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,8 +55,6 @@ class LokiConnector:
         self._headers = dict(headers or {})
 
     def query_lines(self, query: LogQuery) -> tuple[str, ...]:
-        import urllib.parse
-
         params = {"query": query.selector, "limit": str(query.limit)}
         if query.start:
             params["start"] = query.start
