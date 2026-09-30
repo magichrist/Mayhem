@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from mayhem.controller.safety import SafetyContext, environment_fingerprint, validate_plan
+from mayhem.controller.safety import (
+    SafetyContext,
+    SafetyRefusedError,
+    check_blast_radius,
+    environment_fingerprint,
+    validate_plan,
+)
 from mayhem.domain.preflight import Preflight, plan_hash_for
+from mayhem.domain.quota import RULE_BUDGET, RULE_PER_FAULT_CEILING, DamageLedger
 from mayhem.domain.runtime_context import reconcile_engine
 
 if TYPE_CHECKING:
@@ -49,28 +57,183 @@ def _k8s_guidance(fault_ids: list[str]) -> tuple[str, str, str]:
     return compensation, wait, recovery
 
 
-def _blast_radius_for(plan: Any, graph: Any, safety: SafetyContext) -> dict[str, object]:
-    try:
-        from mayhem.domain.topology import NodeKind
+# A budget with every cap lifted, used *only* to make the authoritative gate
+# return its ``stats`` for a step it would otherwise refuse. The numbers the
+# gate computes do not depend on the budget — only the comparisons do — so a
+# probe through this budget yields exactly the values ``check_blast_radius``
+# would have reported had it not short-circuited on the first violation.
+_UNRESTRICTED_BUDGET_UPDATE: dict[str, object] = {
+    "max_services_pct": 100.0,
+    "max_hosts": 2**31 - 1,
+    "max_concurrent_faults": 2**31 - 1,
+    "max_duration_per_fault_s": float("inf"),
+    "forbidden_fault_pairs": frozenset(),
+}
 
-        total_services = len(graph.of_kind(NodeKind.SERVICE)) if graph is not None else 0
+# Preflight key name -> the budget cap it is checked against, in the order the
+# gate enforces them.
+_BLAST_LIMITS: tuple[tuple[str, str], ...] = (
+    ("services_pct", "max_services_pct"),
+    ("hosts", "max_hosts"),
+    ("concurrent_faults", "max_concurrent_faults"),
+    ("duration_per_fault", "max_duration_per_fault_s"),
+)
+
+# The cumulative-damage rules, which are *not* per-step limits and so are not
+# rendered by the loop above; they get their own block below.
+_DAMAGE_RULES: frozenset[str] = frozenset({RULE_BUDGET, RULE_PER_FAULT_CEILING})
+
+
+def _unknown_blast(reason: str) -> dict[str, object]:
+    """The preflight blast-radius record for a radius that could not be computed.
+
+    Deliberately *not* ``{}``: an empty dict renders as ``blast_radius: unknown``
+    and is indistinguishable from a tool with no opinion. This carries the
+    reason so the operator can tell "not computed" from "computed as zero".
+    """
+    return {"status": "unknown", "error": reason}
+
+
+def _probe_context(safety: SafetyContext, *, unrestricted: bool) -> SafetyContext:
+    """A throwaway clone of ``safety`` so preflight never pollutes the real one.
+
+    ``check_blast_radius`` records a decision on every call; running it against
+    the caller's context would append preflight's own probe decisions to the
+    safety record the run is judged by. The cumulative damage quota is lifted
+    alongside the five per-step caps for the same reason *and* the same
+    necessity: the stats probe has to survive a step the quota would refuse,
+    or the operator never sees the projected total for the steps after it.
+    """
+    budget = safety.budget
+    damage_quota = safety.damage_quota
+    if unrestricted:
+        budget = budget.model_copy(update=_UNRESTRICTED_BUDGET_UPDATE)
+        damage_quota = damage_quota.unrestricted()
+    return dataclass_replace(
+        safety, budget=budget, damage_quota=damage_quota, decisions=[], warnings=[]
+    )
+
+
+def _blast_radius_for(plan: Any, graph: Any, safety: SafetyContext | None) -> dict[str, object]:
+    """The blast radius the real gate will enforce, for every limit it checks.
+
+    This is a *preview* of :func:`mayhem.controller.safety.check_blast_radius`,
+    not a re-derivation of it: the numbers come from calling that function once
+    per fault step, in the same order and with the same ``fault_ids_so_far``
+    accumulation that ``validate_plan`` uses. A step that the gate would refuse
+    is probed a second time through an unrestricted budget so the operator still
+    sees how far over the limit it is.
+
+    Never raises and never returns ``{}`` — a computation failure is reported as
+    an explicit ``unknown`` state carrying the reason.
+
+    Alongside the five per-step limits it reports the **cumulative** damage
+    quota projected over the whole plan, which is the only number here that
+    describes the sequence rather than a step.
+    """
+    if plan is None:
+        return _unknown_blast("no plan to compute a blast radius for")
+    if graph is None:
+        return _unknown_blast("no topology graph: cannot resolve affected nodes")
+    if safety is None or getattr(safety, "budget", None) is None:
+        return _unknown_blast("no safety budget resolved: cannot evaluate limits")
+
+    try:
         fault_steps = [
-            s for s in getattr(plan, "steps", []) if getattr(s, "fault", None) is not None
+            s for s in (getattr(plan, "steps", None) or []) if getattr(s, "fault", None) is not None
         ]
-        affected: set[str] = set()
+        stats_ctx = _probe_context(safety, unrestricted=True)
+        gate_ctx = _probe_context(safety, unrestricted=False)
+
+        # Worst case across steps: the gate refuses a plan as soon as any single
+        # step breaches a limit, so the maximum is the number that decides.
+        worst: dict[str, float] = {}
+        violations: list[dict[str, str]] = []
+        seen_faults: list[str] = []
+        # One ledger per probe, threaded through the steps in plan order, so the
+        # projected damage below is the *whole plan's* total and not a per-step
+        # number the operator has to add up by hand.
+        stats_ledger = DamageLedger()
+        gate_ledger = DamageLedger()
+
         for step in fault_steps:
-            for target in getattr(step.fault, "targets", []):
-                affected.update(getattr(target, "node_ids", []))
-        pct = round(len(affected) / max(total_services, 1) * 100, 1) if total_services else 0.0
-        return {
-            "services_pct": pct,
-            "affected_node_count": len(affected),
+            fault = step.fault
+            target_ids = frozenset().union(*(t.node_ids for t in fault.targets))
+            duration = float(fault.duration)
+            fault_id = fault.fault_id
+            step_stats = check_blast_radius(
+                graph,
+                target_ids,
+                duration,
+                tuple(seen_faults),
+                fault_id,
+                ctx=stats_ctx,
+                ledger=stats_ledger,
+            )
+            for key, value in step_stats.items():
+                if float(value) > float(worst.get(key, float("-inf"))):
+                    worst[key] = float(value)
+            try:
+                check_blast_radius(
+                    graph,
+                    target_ids,
+                    duration,
+                    tuple(seen_faults),
+                    fault_id,
+                    ctx=gate_ctx,
+                    ledger=gate_ledger,
+                )
+            except SafetyRefusedError as exc:
+                dec = exc.decision
+                violations.append(
+                    {
+                        "rule_id": dec.rule_id if dec is not None else exc.reason_code,
+                        "fault_id": fault_id,
+                        "reason": dec.reason if dec is not None else str(exc),
+                        "remediation": dec.remediation if dec is not None else "",
+                    }
+                )
+            seen_faults.append(fault_id)
+
+        budget = safety.budget
+        quota = safety.damage_quota
+        blast: dict[str, object] = {
+            "status": "exceeded" if violations else "within_budget",
             "fault_count": len(fault_steps),
-            "max_services_pct": safety.budget.max_services_pct if hasattr(safety, "budget") else 0,
-            "max_hosts": safety.budget.max_hosts if hasattr(safety, "budget") else 0,
         }
-    except Exception:
-        return {}
+        for key, cap_name in _BLAST_LIMITS:
+            value = worst.get(key, 0.0)
+            cap = float(getattr(budget, cap_name))
+            blast[key] = value
+            blast[cap_name] = cap
+            blast[f"{key}_ok"] = value <= cap
+        blast["forbidden_fault_pairs"] = [
+            sorted(p) for p in sorted(budget.forbidden_fault_pairs, key=sorted)
+        ]
+        blast["forbidden_fault_pairs_ok"] = not any(
+            v["rule_id"] == "blast_radius.forbidden_fault_pairs" for v in violations
+        )
+        # The cumulative budget, projected over the *whole plan*. Per-step limits
+        # are all "is this step small?"; this is the only line on the screen
+        # that answers "is this plan survivable?", and it is the one an operator
+        # cannot compute for themselves by reading five separate maxima.
+        quota_violations = [v for v in violations if v["rule_id"] in _DAMAGE_RULES]
+        blast["damage_total_s"] = round(stats_ledger.total_s, 1)
+        blast["damage_worst_target"] = stats_ledger.worst_node
+        blast["damage_worst_target_s"] = round(stats_ledger.worst_node_s, 1)
+        blast["damage_budget_s"] = quota.budget_s
+        blast["damage_per_fault_ceiling_s"] = quota.per_fault_ceiling_s
+        blast["damage_window_s"] = quota.window_s
+        blast["damage_quota_ok"] = not quota_violations
+        blast["damage_by_target"] = {
+            node: round(value, 1) for node, value in stats_ledger.by_node().items()
+        }
+        blast["violations"] = violations
+        return blast
+    except SafetyRefusedError as exc:
+        return _unknown_blast(f"gate refused while probing: {exc}")
+    except Exception as exc:
+        return _unknown_blast(f"{type(exc).__name__}: {exc}")
 
 
 def build_preflight(
@@ -202,9 +365,7 @@ def build_preflight(
     except Exception:
         target_identity = effective_engine or "default"
 
-    blast = (
-        _blast_radius_for(plan, graph, safety) if safety is not None and plan is not None else {}
-    )
+    blast = _blast_radius_for(plan, graph, safety)
     compensation_status = "compensated" if plan is not None else "unknown"
     fault_ids: list[str] = []
     durations: list[float] = []

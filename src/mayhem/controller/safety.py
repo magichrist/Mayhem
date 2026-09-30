@@ -8,6 +8,7 @@ from mayhem.domain.decisions import SafetyDecision, SafetySeverity
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
 from mayhem.domain.execution_context import ExecutionContext
 from mayhem.domain.identity import RuntimeLabel
+from mayhem.domain.quota import DamageLedger, DamageQuota, QuotaCharge
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.runtime_adapter import (
     CapabilityRequirements,
@@ -64,6 +65,13 @@ class SafetyContext:
     decisions: list[SafetyDecision] = field(default_factory=list)
     environment: str | None = None
     target_profile: str | None = None
+    # Cumulative damage budget. Deliberately *not* on ``BlastRadiusBudget``: the
+    # five per-step caps live there because they are the spec's five caps, and
+    # this is a sixth thing the gate checks. It defaults to an active budget
+    # rather than ``None`` — a quota nobody configures is a quota nobody gets,
+    # and the default is deliberately loose enough that ordinary drills never
+    # meet it.
+    damage_quota: DamageQuota = field(default_factory=DamageQuota)
 
     def record(self, decision: SafetyDecision) -> None:
         self.decisions.append(decision)
@@ -171,7 +179,36 @@ def check_blast_radius(
     new_fault_id: str,
     *,
     ctx: SafetyContext,
+    ledger: DamageLedger | None = None,
 ) -> dict[str, float]:
+    """Enforce every blast-radius limit for one fault step.
+
+    **Six limits, not five.** The first five are the per-step ones
+    (``max_services_pct``, ``max_hosts``, ``max_concurrent_faults``,
+    ``max_duration_per_fault_s``, ``forbidden_fault_pairs``); the sixth is the
+    *cumulative* damage quota, which is the only one that can see the sequence.
+
+    The relationship between them is deliberate and one-directional:
+
+    - **The quota is additional, never a replacement.** The five per-step
+      checks run first, unchanged, in the same order, with the same messages.
+      The quota can only add a refusal; it can never make a plan more
+      acceptable. A step that breaches a per-step cap is still refused on that
+      cap, with the same rule id and the same reason as before.
+    - **Stricter wins.** Both are hard refusals, so there is no value that
+      lets one side outrank the other: whenever the two disagree the plan is
+      refused, by whichever fires, and preflight reports *both*. The only
+      asymmetry is which one gets to speak first when a single step breaks both
+      — the per-step rule does, because a per-step breach is a defect in the
+      step on its own and is the more actionable message.
+    - **It fires before the step runs.** This whole function is the plan-time
+      gate: ``executor.execute`` calls ``validate_plan`` over every step before
+      it opens a run, so a refusal here happens before any injection.
+
+    ``ledger`` is the plan's cumulative damage account. ``validate_plan``
+    creates one and threads it through every step; passing ``None`` gives a
+    single-step ledger, which is the right answer for a one-off call.
+    """
     budget = ctx.budget
     affected = _affected_node_ids(graph, target_node_ids)
     services_total = len(graph.of_kind(_service_kind()))
@@ -228,14 +265,28 @@ def check_blast_radius(
         )
         ctx.record(dec)
         raise SafetyRefusedError("safety.refused", dec.reason, dec)
-    pair = frozenset((*fault_ids_so_far, new_fault_id)) if fault_ids_so_far else None
-    if pair and pair in budget.forbidden_fault_pairs:
+    forbidden = _first_forbidden_pair(fault_ids_so_far, new_fault_id, budget.forbidden_fault_pairs)
+    if forbidden is not None:
         dec = _deny_decision(
             "blast_radius.forbidden_fault_pairs",
-            {"pair": sorted(pair)},
-            f"blast radius: forbidden fault pair {sorted(pair)} [blast_radius.forbidden_fault_pairs]",
+            {"pair": sorted(forbidden)},
+            f"blast radius: forbidden fault pair {sorted(forbidden)} [blast_radius.forbidden_fault_pairs]",
             "remove the forbidden pair from blast_radius or change fault set",
         )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    # Cumulative. The per-step checks above have all passed, so this is the
+    # only way a step that is individually tiny can still be refused — which is
+    # the entire point of a sequence-level limit.
+    charge = (ledger if ledger is not None else DamageLedger()).charge(
+        fault_id=new_fault_id,
+        duration_s=duration_s,
+        node_ids=affected,
+        quota=ctx.damage_quota,
+    )
+    stats.update(_damage_stats(charge))
+    if charge.exceeded:
+        dec = _deny_decision(charge.rule_id, charge.inputs(), charge.reason, charge.remediation)
         ctx.record(dec)
         raise SafetyRefusedError("safety.refused", dec.reason, dec)
     ctx.record(
@@ -249,6 +300,51 @@ def check_blast_radius(
         )
     )
     return stats
+
+
+def _first_forbidden_pair(
+    fault_ids_so_far: tuple[str, ...],
+    new_fault_id: str,
+    forbidden: frozenset[frozenset[str]],
+) -> frozenset[str] | None:
+    """The forbidden pair this step completes, or ``None``.
+
+    A "pair" is two faults. The new step completes one with each *earlier*
+    step, so the candidates are exactly ``{earlier, new}`` — not "every fault
+    so far plus the new one". Building a single set of all of them (the bug
+    this replaces) produced a set of size ``len(fault_ids_so_far) + 1``, which
+    matches a two-element forbidden pair on a two-fault plan and matches
+    *nothing* on a three-fault plan: ``forbidden_fault_pairs`` was silently
+    inert for every plan longer than two steps.
+
+    Checking ``(earlier, new)`` for each earlier step is also *complete*: the
+    pair ``{a, b}`` is caught on whichever of the two comes second, so a plan
+    containing a forbidden pair cannot get past the gate no matter where the
+    pair sits in the ordering. Iteration is over sorted unique earlier ids so
+    the refusal names the same pair on every run.
+    """
+    if not forbidden or not fault_ids_so_far:
+        return None
+    for earlier in sorted({f for f in fault_ids_so_far if f != new_fault_id}):
+        pair = frozenset({earlier, new_fault_id})
+        if pair in forbidden:
+            return pair
+    return None
+
+
+def _damage_stats(charge: QuotaCharge) -> dict[str, float]:
+    """The cumulative numbers ``check_blast_radius`` reports for one step.
+
+    Floats only: the returned mapping is documented as ``dict[str, float]`` and
+    preflight folds every key into a numeric max. The offending *node* is a
+    string, so it travels on the ledger / ``QuotaCharge`` instead.
+    """
+    return {
+        "damage_step_s": charge.step_damage_s,
+        "damage_total_s": charge.total_s,
+        "damage_worst_target_s": charge.worst_node_s,
+        "damage_headroom_s": charge.limit_s - charge.worst_node_s,
+    }
 
 
 def _check_execution_context(fault: PlannedFault, graph: TopologyGraph) -> None:
@@ -401,6 +497,13 @@ def validate_plan(
     if adapter is not None:
         _validate_capability_requirements(plan, adapter, ctx)
     seen_faults: list[str] = []
+    # One ledger per validation pass, not one per context: a context is reused
+    # (preflight validates the same plan it previews, the executor validates a
+    # plan the caller already validated), and a ledger that survived between
+    # passes would charge the same plan twice and refuse it for damage it never
+    # caused. Local state also makes validate_plan deterministic — the same
+    # plan always produces the same verdict.
+    ledger = DamageLedger()
     for step in plan.steps:
         fault = step.fault
         if fault is None:
@@ -415,6 +518,7 @@ def validate_plan(
             tuple(seen_faults),
             fault.fault_id,
             ctx=ctx,
+            ledger=ledger,
         )
         seen_faults.append(fault.fault_id)
         if fault.execution_context is not None:

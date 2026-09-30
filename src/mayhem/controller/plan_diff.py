@@ -24,7 +24,10 @@ def _plan_dict(plan: Any) -> dict[str, Any]:
         except Exception:
             return {"raw": plan}
     try:
-        return json.loads(json.dumps(plan, default=str))
+        loaded = json.loads(json.dumps(plan, default=str))
+        # ``json.dumps(..., default=str)`` can only produce a JSON value; a
+        # bare object round-trips to a dict, which is what callers diff over.
+        return loaded if isinstance(loaded, dict) else {"raw": str(plan)}
     except Exception:
         return {"raw": str(plan)}
 
