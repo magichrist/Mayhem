@@ -4,7 +4,7 @@ import copy
 import json
 import sys
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import click
 
@@ -24,6 +24,9 @@ from mayhem.infra.diagnostics import (
 )
 from mayhem.infra.evidence import load_evidence
 from mayhem.infra.lease_repository import SQLiteLeaseSink
+
+if TYPE_CHECKING:
+    from mayhem.domain.residual_impact import ResidualImpactAssessment
 from mayhem.infra.report import (
     ReportArtifactPolicy,
     compare_reports,
@@ -220,7 +223,7 @@ def replay_export(ctx: click.Context, run_id: str, as_json: bool, out: str | Non
         store.close()
     payload = capsule.model_dump(mode="json")
     if out:
-        with open(out, "w", encoding="utf-8") as handle:
+        with Path(out).open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         click.echo(f"wrote {out} (digest {capsule.digest()[:12]})")
         return
@@ -300,6 +303,66 @@ def replay_validate(
         raise SystemExit(1)
 
 
+def _parse_signal_values(pairs: tuple[str, ...]) -> dict[str, float]:
+    """Parse repeated ``SIGNAL=VALUE`` options into a float map."""
+    values: dict[str, float] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.UsageError(f"expected SIGNAL=VALUE, got {pair!r}")
+        signal, _, raw = pair.partition("=")
+        try:
+            values[signal.strip()] = float(raw)
+        except ValueError as exc:
+            raise click.UsageError(f"signal {signal!r} is not numeric: {raw!r}") from exc
+    return values
+
+
+def _seed_from_observations(
+    ctx: click.Context,
+    run_id: str,
+    before_values: dict[str, float],
+    after_values: dict[str, float],
+) -> str:
+    """Seed both sides from the evidence envelope's own readings.
+
+    Returns the detail note to attach to the emitted payload. Exits when the
+    run has no recorded envelope, since there is then nothing to compare.
+    """
+    obj = ctx.obj
+    assert isinstance(obj, CliContext)
+    store = open_store(obj.db)
+    try:
+        envelope = load_evidence(store, run_id)
+    finally:
+        store.close()
+    if envelope is None:
+        click.echo(f"no evidence recorded for {run_id}", err=True)
+        raise SystemExit(1)
+    for observation in envelope.observations:
+        metric = str(observation.get("metric") or "")
+        value = observation.get("value")
+        if metric and isinstance(value, (int, float)):
+            before_values.setdefault(metric, float(value))
+            after_values.setdefault(metric, float(value))
+    return "signals read from the evidence envelope"
+
+
+def _echo_residual_violations(assessment: ResidualImpactAssessment) -> None:
+    """Print the human-readable residual impact violation list."""
+    click.echo(f"residual impact: {assessment.status}")
+    for violation in assessment.violations:
+        marker = "tolerated" if violation.tolerated else "VIOLATION"
+        click.echo(
+            f"  {marker:<10} {violation.signal}: expected {violation.expected}, "
+            f"observed {violation.observed} (delta {violation.delta})"
+        )
+        if violation.acceptance:
+            click.echo(
+                f"             accepted by {violation.acceptance.accepted_by}: "
+                f"{violation.acceptance.reason}"
+            )
+
+
 @inspect.command("residual")
 @click.argument("run_id")
 @click.option(
@@ -348,64 +411,19 @@ def inspect_residual(
         assess_residual_impact,
     )
 
-    def _parse(pairs: tuple[str, ...]) -> dict[str, float]:
-        values: dict[str, float] = {}
-        for pair in pairs:
-            if "=" not in pair:
-                raise click.UsageError(f"expected SIGNAL=VALUE, got {pair!r}")
-            signal, _, raw = pair.partition("=")
-            try:
-                values[signal.strip()] = float(raw)
-            except ValueError as exc:
-                raise click.UsageError(f"signal {signal!r} is not numeric: {raw!r}") from exc
-        return values
+    def _parse_acceptances(items: tuple[str, ...]) -> tuple[ImpactAcceptance, ...]:
+        models: list[ImpactAcceptance] = []
+        for item in items:
+            if "=" not in item:
+                raise click.UsageError(f"expected SIGNAL=WHO:REASON, got {item!r}")
+            signal, _, rest = item.partition("=")
+            who, _, reason = rest.partition(":")
+            if not who or not reason:
+                raise click.UsageError(f"acceptance needs WHO and REASON, got {item!r}")
+            models.append(ImpactAcceptance(signal=signal.strip(), accepted_by=who, reason=reason))
+        return tuple(models)
 
-    before_values = _parse(expected)
-    after_values = _parse(observed)
-    detail = ""
-    if from_observations:
-        obj = ctx.obj
-        assert isinstance(obj, CliContext)
-        store = open_store(obj.db)
-        try:
-            envelope = load_evidence(store, run_id)
-        finally:
-            store.close()
-        if envelope is None:
-            click.echo(f"no evidence recorded for {run_id}", err=True)
-            raise SystemExit(1)
-        for observation in envelope.observations:
-            metric = str(observation.get("metric") or "")
-            value = observation.get("value")
-            if metric and isinstance(value, (int, float)):
-                before_values.setdefault(metric, float(value))
-                after_values.setdefault(metric, float(value))
-        detail = "signals read from the evidence envelope"
-
-    acceptance_models: list[ImpactAcceptance] = []
-    for item in acceptances:
-        if "=" not in item:
-            raise click.UsageError(f"expected SIGNAL=WHO:REASON, got {item!r}")
-        signal, _, rest = item.partition("=")
-        who, _, reason = rest.partition(":")
-        if not who or not reason:
-            raise click.UsageError(f"acceptance needs WHO and REASON, got {item!r}")
-        acceptance_models.append(
-            ImpactAcceptance(signal=signal.strip(), accepted_by=who, reason=reason)
-        )
-
-    assessment = assess_residual_impact(
-        ImpactSnapshot(label="before", values=before_values, source="cli"),
-        ImpactSnapshot(label="after", values=after_values, source="cli"),
-        tolerance=tolerance,
-        acceptances=tuple(acceptance_models),
-    )
-    payload = assessment.to_dict()
-    if detail:
-        payload["detail"] = detail
-    from mayhem.cli.output import echo_machine
-
-    if not echo_machine(payload, as_json=as_json):
+    def _echo_violations() -> None:
         click.echo(f"residual impact: {assessment.status}")
         for violation in assessment.violations:
             marker = "tolerated" if violation.tolerated else "VIOLATION"
@@ -418,6 +436,29 @@ def inspect_residual(
                     f"             accepted by {violation.acceptance.accepted_by}: "
                     f"{violation.acceptance.reason}"
                 )
+
+    before_values = _parse_signal_values(expected)
+    after_values = _parse_signal_values(observed)
+    detail = (
+        _seed_from_observations(ctx, run_id, before_values, after_values)
+        if from_observations
+        else ""
+    )
+    acceptance_models = _parse_acceptances(acceptances)
+
+    assessment = assess_residual_impact(
+        ImpactSnapshot(label="before", values=before_values, source="cli"),
+        ImpactSnapshot(label="after", values=after_values, source="cli"),
+        tolerance=tolerance,
+        acceptances=acceptance_models,
+    )
+    payload = assessment.to_dict()
+    if detail:
+        payload["detail"] = detail
+    from mayhem.cli.output import echo_machine
+
+    if not echo_machine(payload, as_json=as_json):
+        _echo_residual_violations(assessment)
 
 
 inspect.add_command(replay_group)
