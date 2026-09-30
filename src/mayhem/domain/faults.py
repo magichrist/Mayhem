@@ -128,10 +128,61 @@ class VerificationMethod(StrEnum):
 
 
 class MaturityLevel(StrEnum):
+    """How far a fault definition has actually been exercised.
+
+    These are claims about *evidence*, ordered by how much evidence stands
+    behind them. The order is enforced: a fault can only reach a rung by
+    satisfying every lower rung's criteria first. The executable form of that
+    rule — and the per-criterion evidence each rung requires — lives in
+    ``infra.promotion``; :func:`evaluate_maturity` there is the only thing that
+    decides a fault's *reported* level.
+
+    ``FaultDefinition.maturity`` is the catalog's **declaration**, not the
+    reported value. ``domain.catalog._define()`` stamps
+    ``VERIFIED_UNIT`` (with a fixed ``verification_date``) onto every
+    non-``catalog_only`` entry, so the declared field is a constant that
+    distinguishes nothing. Reports therefore carry the derived level and, beside
+    it, the declaration, so a stale badge stays visible.
+
+    Attributes:
+        EXPERIMENTAL: Not unit-verified. The catalog entry does not satisfy the
+            ``verified-unit`` criteria recomputed at read time, or the fault is
+            ``catalog_only`` and refuses to execute. Only ``catalog_only``
+            entries may declare this.
+        VERIFIED_UNIT: Verified **in isolation only**. The parameter grammar,
+            the deterministic refusal path, and the compensation contract check
+            out in-process. This is a guarantee about mayhem's own code — it is
+            not a claim that the fault perturbs a real system.
+        VERIFIED_LIVE: Injected into a running stack on the required container
+            engines with a recorded evidence bundle; the declared effect was
+            observed and the undo restored the pre-injection baseline within
+            tolerance. Earned only from a recorded live run.
+        STABLE: ``VERIFIED_LIVE`` plus strictly more: the whole declared
+            engine-lane matrix verified, the same verification repeated across
+            distinct days, and a documented deprecation and rollback policy.
+            A single successful run on a subset of engines is not ``STABLE``.
+    """
+
     EXPERIMENTAL = "experimental"
     VERIFIED_UNIT = "verified-unit"
     VERIFIED_LIVE = "verified-live"
     STABLE = "stable"
+
+    @property
+    def requires_evidence(self) -> bool:
+        """True when the rung cannot be reached by catalog declaration alone."""
+        return self in (MaturityLevel.VERIFIED_LIVE, MaturityLevel.STABLE)
+
+    @classmethod
+    def at_or_below(cls, ceiling: MaturityLevel) -> tuple[MaturityLevel, ...]:
+        """Every rung up to and including ``ceiling``, in climb order."""
+        ladder = (
+            MaturityLevel.EXPERIMENTAL,
+            MaturityLevel.VERIFIED_UNIT,
+            MaturityLevel.VERIFIED_LIVE,
+            MaturityLevel.STABLE,
+        )
+        return tuple(level for level in ladder if ladder.index(level) <= ladder.index(ceiling))
 
 
 class ParamType(StrEnum):
