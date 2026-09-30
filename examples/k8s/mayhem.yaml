@@ -21,7 +21,6 @@ config:
     critical_fault_acks:
       - k8s.node_drain
   risk_ceiling: critical
-  max_faults: 1
   timeout: 60m
   log_level: INFO
   recovery: false

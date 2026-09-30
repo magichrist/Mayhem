@@ -61,7 +61,7 @@ def _build_starter_drill(compose_path: Path | None) -> str:
         "kind": "drill",
         "name": "starter-drill",
         "hypothesis": "starter drill verifies the stack recovers",
-        "config": {"risk_ceiling": "medium", "max_faults": 1, "timeout": "5m"},
+        "config": {"risk_ceiling": "medium", "timeout": "5m"},
         "containers": containers,
         "execution": [{"sequential": list(containers.keys())}],
     }

@@ -5,7 +5,6 @@ hypothesis: "testCase stack recovers from every injected fault"
 
 config:
   risk_ceiling: critical
-  max_faults: 1
   timeout: 30m
   log_level: INFO
   # true (default): auto-recover the container after each fault.
