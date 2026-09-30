@@ -366,13 +366,13 @@ class TestMaturityMetadata:
             assert definition_for(replacement).id == replacement
 
     def test_image_pull_slow_declares_a_replacement(self) -> None:
-        from mayhem.infra.catalog_report import deprecation_status
+        from mayhem.controller.catalog_report import deprecation_status
 
         definition = definition_for("k8s.image_pull_slow")
         if definition.replacement_fault_id is None:
             pytest.xfail(
                 "finding: the catalog leaves k8s.image_pull_slow.replacement_fault_id unset "
-                "while infra.catalog_report.deprecation_status hardcodes "
+                "while controller.catalog_report.deprecation_status hardcodes "
                 "k8s.image_pull_failure, so the migration hint is unreachable from the "
                 "catalog definition itself"
             )
@@ -772,7 +772,7 @@ class TestCatalogOnlyRefusals:
 
     @pytest.mark.parametrize("fault_id", CATALOG_ONLY_IDS)
     def test_catalog_only_faults_are_reported_unsupported(self, fault_id: str) -> None:
-        from mayhem.infra.catalog_report import _executor_name, execution_status
+        from mayhem.controller.catalog_report import _executor_name, execution_status
 
         definition = _definition(fault_id)
         for engine in ("docker", "podman", "kubernetes"):
@@ -888,7 +888,7 @@ class TestFamilyCrossSections:
 class TestCoverageMatrixOfTheCatalog:
     @pytest.mark.parametrize("fault_id", ALL_IDS)
     def test_execution_status_is_always_a_known_label(self, fault_id: str) -> None:
-        from mayhem.infra.catalog_report import execution_status
+        from mayhem.controller.catalog_report import execution_status
 
         definition = _definition(fault_id)
         for engine in ("docker", "podman", "kubernetes"):
@@ -902,7 +902,7 @@ class TestCoverageMatrixOfTheCatalog:
     def test_active_container_faults_are_supported_on_docker_and_podman(
         self, fault_id: str
     ) -> None:
-        from mayhem.infra.catalog_report import execution_status
+        from mayhem.controller.catalog_report import execution_status
 
         definition = _definition(fault_id)
         assert execution_status(definition, "docker") == "supported"
@@ -912,13 +912,13 @@ class TestCoverageMatrixOfTheCatalog:
     def test_active_kubernetes_faults_are_supported_on_the_kubernetes_lane(
         self, fault_id: str
     ) -> None:
-        from mayhem.infra.catalog_report import execution_status
+        from mayhem.controller.catalog_report import execution_status
 
         assert execution_status(_definition(fault_id), "kubernetes") == "supported"
 
     @pytest.mark.parametrize("fault_id", ALL_IDS)
     def test_explain_catalog_fault_is_total(self, fault_id: str) -> None:
-        from mayhem.infra.catalog_report import explain_catalog_fault
+        from mayhem.controller.catalog_report import explain_catalog_fault
 
         for engine in ("docker", "podman", "kubernetes"):
             explained = explain_catalog_fault(fault_id, engine=engine)
@@ -929,7 +929,7 @@ class TestCoverageMatrixOfTheCatalog:
 
     @pytest.mark.parametrize("fault_id", ALL_IDS)
     def test_deprecation_status_is_total(self, fault_id: str) -> None:
-        from mayhem.infra.catalog_report import deprecation_status
+        from mayhem.controller.catalog_report import deprecation_status
 
         status = deprecation_status(fault_id)
         assert status["state"] in {"active", "catalog-only"}
@@ -937,7 +937,7 @@ class TestCoverageMatrixOfTheCatalog:
             assert status["replacement"]
 
     def test_build_coverage_counts_the_whole_catalog(self) -> None:
-        from mayhem.infra.catalog_report import build_coverage
+        from mayhem.controller.catalog_report import build_coverage
 
         summary = build_coverage()
         assert summary["total"] == len(CATALOG)

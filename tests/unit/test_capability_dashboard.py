@@ -7,7 +7,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from mayhem.infra.catalog_report import build_capability_dashboard, build_capability_statuses
+from mayhem.controller.catalog_report import build_capability_dashboard, build_capability_statuses
 
 
 def _rows(engine: str | None = None):

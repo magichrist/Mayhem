@@ -8,7 +8,7 @@ from mayhem.domain.catalog import CATALOG, validate_catalog
 from mayhem.domain.errors import SchemaValidationError
 from mayhem.domain.faults import MaturityLevel
 from mayhem.domain.target_profiles import TargetProfile
-from mayhem.infra.catalog_report import (
+from mayhem.controller.catalog_report import (
     build_coverage,
     deprecation_status,
     explain_catalog_fault,
