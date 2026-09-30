@@ -68,7 +68,7 @@ def doctor_cmd(
         records = [r for r in records if r.category.value == category]
     if as_json:
         from mayhem.cli.app import _STATE
-        from mayhem.infra.catalog_report import build_capability_report
+        from mayhem.controller.catalog_report import build_capability_report
 
         payload = {
             "diagnostics": [r.model_dump(mode="json") for r in records],

@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 import click
 
 from mayhem.cli.resolver import make_group
-from mayhem.domain.provider import ProviderPermission
-from mayhem.providers.loader import ProviderError, ProviderLoader
+from mayhem.domain.provider import ProviderError, ProviderPermission
+from mayhem.providers.loader import ProviderLoader
 
 if TYPE_CHECKING:
     from mayhem.providers.loader import ProviderLoadReport
@@ -28,7 +28,7 @@ def _report(
     for provider in report.providers:
         click.echo(
             f"{provider.provider_id:<24} {provider.status:<8} "
-            f"version={provider.metadata.get('version', '?')} source={provider.source}"
+            f"version={(provider.metadata or {}).get('version', '?')} source={provider.source}"
         )
         if provider.error is not None:
             click.echo(f"  {provider.error.code}: {provider.error.message}")

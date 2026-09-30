@@ -23,6 +23,7 @@ COMMAND_HELP: dict[str, str] = {
     "game-day": "Plan and run controlled game-day sessions.",
     "init": "Detect the project and create a safe starting configuration.",
     "inspect": "Inspect runs, coverage, leases, reports, and diagnostics.",
+    "pack": "Validate and load third-party fault packs.",
     "janitor": "Preview or execute stale lease cleanup.",
     "maniac": "Run randomized fault injection from a drill.",
     "prepare": "Prepare configuration, dependencies, and plans.",
@@ -45,6 +46,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("init", "prepare", help_group="preparation"),
     CommandSpec("inspect", "inspect", help_group="inspect"),
     CommandSpec("janitor", "recover", help_group="recover", mutating=True),
+    # `pack` is read-only in 1.0: `validate` and `load` both touch no
+    # campaign, plan, or database, and load registers in-process only. A pack
+    # fault is catalog-only, so loading a pack never mutates a target.
+    CommandSpec("pack", "extend", help_group="extension"),
     CommandSpec("maniac", "run", help_group="experiments", mutating=True),
     CommandSpec("prepare", "prepare", help_group="preparation"),
     CommandSpec("recover", "recover", help_group="recover", mutating=True),
@@ -63,6 +68,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.game_day import game_day
     from mayhem.cli.init import init_cmd
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
+    from mayhem.cli.pack import pack
     from mayhem.cli.verify_bundle import bundle_cmd
     from mayhem.cli.workflows import discover, extend, inspect, prepare
 
@@ -79,6 +85,7 @@ def register_commands(app: Any) -> None:
         "inspect": inspect,
         "janitor": janitor,
         "maniac": maniac,
+        "pack": pack,
         "prepare": prepare,
         "recover": recover,
         "run": run,

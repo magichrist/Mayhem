@@ -20,6 +20,7 @@ ACTIVE_COMMANDS = {
     "inspect",
     "janitor",
     "maniac",
+    "pack",
     "prepare",
     "recover",
     "run",

@@ -18,6 +18,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "inspect",
         "janitor",
         "maniac",
+        "pack",
         "prepare",
         "recover",
         "run",

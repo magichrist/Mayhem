@@ -38,6 +38,7 @@ ACTIVE_ROOTS = {
     "inspect",
     "janitor",
     "maniac",
+    "pack",
     "prepare",
     "recover",
     "run",
@@ -45,7 +46,7 @@ ACTIVE_ROOTS = {
 }
 
 ACTIVE_GROUP_PATHS = {
-    "bundle": ("verify", "show"),
+    "bundle": ("build", "show", "verify"),
     "game-day": (
         "create",
         "approve",
@@ -283,8 +284,14 @@ def test_command_map_has_only_active_rows_and_stable_formats() -> None:
 
 
 def test_unique_prefixes_resolve_at_each_level() -> None:
+    # NOTE: `p` is deliberately absent. Adding the `pack` command made `p`
+    # ambiguous between `pack` and `prepare`, and the resolver refuses to guess:
+    # erroring on an ambiguous prefix is safer than silently binding a user's
+    # script to whichever command happens to sort first. `mayhem p` is therefore
+    # a documented 1.0 breaking change; `test_short_prefix_p_is_ambiguous_since_pack`
+    # locks the new behaviour in.
     prefixes = (
-        ("p", "v", "--help"),
+        ("pre", "v", "--help"),
         ("inspect", "coverage", "--help"),
         ("experi", "s", "--help"),
     )
@@ -486,7 +493,7 @@ def test_discover_engines_and_capabilities_report_truth(monkeypatch: pytest.Monk
         for name in ("podman", "docker")
     ]
     monkeypatch.setattr(
-        "mayhem.domain.runtime_adapter.detect_available_engines",
+        "mayhem.infra.engine_probe.detect_available_engines",
         lambda: descriptors,
     )
     engines = _run("discover", "engines")
@@ -766,3 +773,17 @@ def test_error_mapping_is_stable_for_service_and_domain_refusals(
     assert payload["details"]["token"] == "***redacted***"
     assert payload["details"]["reason"] == "host count"
     assert payload["remediation"] == "reduce scope"
+
+
+def test_short_prefix_p_is_ambiguous_since_pack() -> None:
+    """`mayhem p` stopped resolving to `prepare` when `pack` was added.
+
+    A 1.0 breaking change, asserted so it cannot regress silently: the resolver
+    must refuse with the ambiguity envelope and name both candidates, rather
+    than binding `p` to one of them.
+    """
+    result = _run("p", "v", "--help")
+    assert result.exit_code != 0
+    assert "ambiguous" in result.output.lower()
+    assert "pack" in result.output
+    assert "prepare" in result.output
