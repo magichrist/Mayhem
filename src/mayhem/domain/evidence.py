@@ -64,6 +64,11 @@ class EvidenceEnvelope(BaseModel):
     # v0.9.0 task 19: which observability spans a run emitted. Names only —
     # span attributes are redacted at the sink and never persisted here.
     emitted_spans: tuple[str, ...] = ()
+    # v1.0.0 plan 03: the graded steady-state verdict and its per-signal
+    # detail. Structured and JSON-safe by construction - a zero baseline
+    # serialises as null with a note, never as inf/nan, because this payload
+    # is hash-chained and a reader must be able to interpret every number.
+    steady_state: dict[str, Any] = Field(default_factory=dict)
 
     def completeness_errors(self) -> list[str]:
         missing: list[str] = []

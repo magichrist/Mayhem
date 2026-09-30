@@ -12,9 +12,9 @@ from mayhem.domain.evidence_bundle import (
     BundleManifest,
     BundleVerificationError,
     build_bundle,
-    load_bundle,
     verify_bundle,
 )
+from mayhem.infra.evidence_bundle_io import load_bundle, write_bundle
 
 EVIDENCE = {
     "run_id": "r1",
@@ -173,7 +173,7 @@ def test_verification_dict_is_json_serializable() -> None:
 # ── disk round trip ──────────────────────────────────────────────────────────
 def test_bundle_round_trips_through_disk(tmp_path) -> None:
     bundle = _bundle(signature="sig", signer="acme")
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
     assert (target / "manifest.json").exists()
     reloaded = load_bundle(target)
     assert verify_bundle(reloaded).valid is True

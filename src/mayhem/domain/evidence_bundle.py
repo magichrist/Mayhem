@@ -12,6 +12,10 @@ The rules that make a bundle trustworthy:
 * an unsigned bundle is reported as unsigned, never as verified;
 * a bundle carrying secret-shaped extras is refused outright; and
 * the redaction marker must be present, so a bundle that skipped redaction fails.
+
+Reading and writing a bundle is IO and therefore not here:
+:mod:`mayhem.infra.evidence_bundle_io` owns ``load_bundle`` / ``write_bundle``
+so this module keeps zero filesystem imports.
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 BUNDLE_SCHEMA_VERSION = "1.0"
@@ -97,16 +100,6 @@ class EvidenceBundle:
             "artifacts": dict(self.artifacts),
         }
 
-    def write(self, directory: str | Path) -> Path:
-        target = Path(directory)
-        target.mkdir(parents=True, exist_ok=True)
-        for name, payload in self.artifacts.items():
-            (target / name).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
-        (target / "manifest.json").write_text(
-            json.dumps(self.manifest.to_dict(), indent=2, sort_keys=True)
-        )
-        return target
-
     @property
     def root_digest(self) -> str:
         return self.manifest.root_digest
@@ -175,28 +168,15 @@ def build_bundle(
     return EvidenceBundle(manifest=manifest, artifacts=artifacts)
 
 
-def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
-    """Verify schema, hashes, chain order, signature metadata, and redaction.
-
-    Offline by construction: the only inputs are the bundle's own bytes.
-    """
+def _check_artifact_names(
+    manifest: BundleManifest, present: set[str], declared: set[str]
+) -> list[str]:
+    """Presence/absence of artifacts, plus secret-shaped names."""
     errors: list[str] = []
-    warnings: list[str] = []
-    manifest = bundle.manifest
-
-    if manifest.schema_version != BUNDLE_SCHEMA_VERSION:
-        errors.append(
-            f"unsupported bundle schema {manifest.schema_version!r} "
-            f"(supported: {BUNDLE_SCHEMA_VERSION})"
-        )
-
-    declared = {artifact["name"] for artifact in manifest.artifacts}
-    present = set(bundle.artifacts)
     for name in sorted(present - declared):
         errors.append(f"artifact {name!r} is present but not in the manifest")
     for name in sorted(declared - present):
         errors.append(f"artifact {name!r} is in the manifest but missing from the bundle")
-
     for name in sorted(present):
         lowered = name.lower()
         for fragment in FORBIDDEN_NAME_FRAGMENTS:
@@ -204,13 +184,14 @@ def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
                 errors.append(
                     f"artifact {name!r} has a secret-shaped name ({fragment!r}) and is refused"
                 )
+    return errors
 
-    ordered_names = [artifact["name"] for artifact in manifest.artifacts]
-    if ordered_names != sorted(ordered_names):
-        errors.append("manifest artifacts are not in canonical (sorted) order")
 
-    running = manifest.previous_root
-    for artifact in manifest.artifacts:
+def _check_chain(bundle: EvidenceBundle) -> list[str]:
+    """Per-artifact digests, chain linkage, and the final root digest."""
+    errors: list[str] = []
+    running = bundle.manifest.previous_root
+    for artifact in bundle.manifest.artifacts:
         payload = bundle.artifacts.get(artifact["name"])
         if payload is None:
             continue
@@ -229,30 +210,64 @@ def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
             continue
         running = expected_chain
 
-    if running != manifest.root_digest:
+    if running != bundle.manifest.root_digest:
         errors.append(
-            f"root digest mismatch: declared {manifest.root_digest[:12]}, computed {running[:12]}"
+            f"root digest mismatch: declared {bundle.manifest.root_digest[:12]}, "
+            f"computed {running[:12]}"
         )
+    return errors
+
+
+def _check_redaction_marker(bundle: EvidenceBundle) -> list[str]:
+    """evidence.json must carry a redaction marker matching the manifest."""
+    evidence = bundle.artifacts.get("evidence.json")
+    if not isinstance(evidence, dict):
+        return ["bundle has no evidence.json artifact"]
+    errors: list[str] = []
+    metrics = evidence.get("redaction_metrics") or {}
+    if not metrics:
+        errors.append("evidence carries no redaction marker")
+    elif not bundle.manifest.redaction_policy:
+        errors.append("manifest records no redaction policy version")
+    elif bundle.manifest.redaction_policy != str(metrics.get("policy_version")):
+        errors.append(
+            f"redaction policy mismatch: manifest {bundle.manifest.redaction_policy!r}, "
+            f"evidence {metrics.get('policy_version')!r}"
+        )
+    return errors
+
+
+def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
+    """Verify schema, hashes, chain order, signature metadata, and redaction.
+
+    Offline by construction: the only inputs are the bundle's own bytes.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    manifest = bundle.manifest
+
+    if manifest.schema_version != BUNDLE_SCHEMA_VERSION:
+        errors.append(
+            f"unsupported bundle schema {manifest.schema_version!r} "
+            f"(supported: {BUNDLE_SCHEMA_VERSION})"
+        )
+
+    declared = {artifact["name"] for artifact in manifest.artifacts}
+    present = set(bundle.artifacts)
+    errors.extend(_check_artifact_names(manifest, present, declared))
+
+    ordered_names = [artifact["name"] for artifact in manifest.artifacts]
+    if ordered_names != sorted(ordered_names):
+        errors.append("manifest artifacts are not in canonical (sorted) order")
+
+    errors.extend(_check_chain(bundle))
 
     if not manifest.signed:
         warnings.append("bundle is unsigned: integrity is verified, authorship is not")
     elif not manifest.signer:
         errors.append("bundle carries a signature but names no signer")
 
-    evidence = bundle.artifacts.get("evidence.json")
-    if not isinstance(evidence, dict):
-        errors.append("bundle has no evidence.json artifact")
-    else:
-        metrics = evidence.get("redaction_metrics") or {}
-        if not metrics:
-            errors.append("evidence carries no redaction marker")
-        elif not manifest.redaction_policy:
-            errors.append("manifest records no redaction policy version")
-        elif manifest.redaction_policy != str(metrics.get("policy_version")):
-            errors.append(
-                f"redaction policy mismatch: manifest {manifest.redaction_policy!r}, "
-                f"evidence {metrics.get('policy_version')!r}"
-            )
+    errors.extend(_check_redaction_marker(bundle))
 
     return BundleVerification(
         valid=not errors,
@@ -263,41 +278,3 @@ def verify_bundle(bundle: EvidenceBundle) -> BundleVerification:
         root_digest=manifest.root_digest,
         schema_version=manifest.schema_version,
     )
-
-
-def load_bundle(directory: str | Path) -> EvidenceBundle:
-    """Read a bundle from disk. Raises only when the bundle is unreadable."""
-    base = Path(directory)
-    manifest_path = base / "manifest.json"
-    if not manifest_path.exists():
-        raise BundleVerificationError(f"no manifest.json in {base}")
-    try:
-        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        raise BundleVerificationError(f"manifest.json is not valid JSON: {exc}") from exc
-    artifacts: dict[str, Any] = {}
-    for path in sorted(base.glob("*.json")):
-        if path.name == "manifest.json":
-            continue
-        try:
-            artifacts[path.name] = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError as exc:
-            raise BundleVerificationError(f"{path.name} is not valid JSON: {exc}") from exc
-    manifest = BundleManifest(
-        schema_version=str(manifest_payload.get("schema_version", BUNDLE_SCHEMA_VERSION)),
-        artifacts=tuple(
-            {
-                "name": str(item.get("name", "")),
-                "digest": str(item.get("digest", "")),
-                "chain": str(item.get("chain", "")),
-            }
-            for item in manifest_payload.get("artifacts", [])
-        ),
-        root_digest=str(manifest_payload.get("root_digest", "")),
-        previous_root=str(manifest_payload.get("previous_root", "")),
-        signature=str(manifest_payload.get("signature", "")),
-        signer=str(manifest_payload.get("signer", "")),
-        redaction_policy=str(manifest_payload.get("redaction_policy", "")),
-        created_at=str(manifest_payload.get("created_at", "")),
-    )
-    return EvidenceBundle(manifest=manifest, artifacts=artifacts)
