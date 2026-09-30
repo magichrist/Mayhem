@@ -41,4 +41,14 @@ Update the fault-catalog reliability matrix, the README live-verified count (the
 ## Risks
 Certification explosion across runtime/kernel combinations. Solved with the tiered matrix above, never by promoting a fault to raise a coverage number.
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/certification.py` landed `CertificationState`, `MatrixCell`, `EvidenceBundleRef`, `CertificationRecord` and the pure transition functions/predicates behind them; `infra/promotion.py::evaluate_maturity` now takes an optional `records` mapping and caps the reported level at `verified-unit` when no record still certifies the fault on every required engine; 49 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitation: the gate is **opt-in by argument**. `evaluate_maturity(..., records=None)` — the default — preserves 1.0.0 behaviour exactly, so a caller that never supplies a record store is never gated. The gate is deliberately *not* in `CUMULATIVE_CRITERIA`: the ladder is the run-evidence contract, and adding to it would silently redefine the rungs for callers that do not use certification. Any call site that wants the cap has to pass `records` (an empty mapping is enough to arm it).

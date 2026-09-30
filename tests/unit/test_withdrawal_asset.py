@@ -52,6 +52,18 @@ _BUILD_BUNDLE_MODULES = frozenset(
 #: that actually invokes `build_bundle(`.
 _BUILD_BUNDLE_DEFINITION = frozenset({"domain/evidence_bundle.py"})
 
+#: Modules that *name* the producer in prose without being one. The mention gate
+#: above is a substring check, so a `:func:` cross-reference in a docstring reads
+#: as a producer. Attestation chain links deliberately mirror
+#: ``evidence_bundle.build_bundle``'s digest shape, and say so where a reader
+#: would look for it; that is documentation of an existing producer, not a
+#: second one.
+#:
+#: This allowlist grants permission to *mention* only. The call gate below
+#: (``"build_bundle("``) is untouched and still refuses any module that actually
+#: invokes the producer, so a real second caller still fails the suite.
+_BUILD_BUNDLE_PROSE_REFERENCES = frozenset({"domain/attestation.py"})
+
 
 def _dispatchable_names() -> set[str]:
     """Every command and subcommand the CLI will actually route to."""
@@ -112,6 +124,7 @@ def test_build_bundle_has_a_production_caller() -> None:
         for path in sorted(SRC.rglob("*.py"))
         if "build_bundle" in path.read_text(encoding="utf-8")
         and path.relative_to(SRC).as_posix() not in _BUILD_BUNDLE_MODULES
+        and path.relative_to(SRC).as_posix() not in _BUILD_BUNDLE_PROSE_REFERENCES
     ]
     assert not offenders, f"an unexpected producer appeared: {offenders}"
     callers = [
@@ -121,3 +134,8 @@ def test_build_bundle_has_a_production_caller() -> None:
         and path.relative_to(SRC).as_posix() not in _BUILD_BUNDLE_DEFINITION
     ]
     assert callers, "the producer lost its caller; mayhem cannot build a bundle again"
+    smuggled = sorted(set(callers) & _BUILD_BUNDLE_PROSE_REFERENCES)
+    assert not smuggled, (
+        "a prose-reference module became a real second producer; the allowlist "
+        f"grants permission to name the function, not to call it: {smuggled}"
+    )

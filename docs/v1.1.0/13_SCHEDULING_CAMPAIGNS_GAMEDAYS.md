@@ -44,4 +44,12 @@ Scheduling reference (cron dialect, timezone rules), campaign operations guide, 
 ## Dependencies
 03 (idempotent dispatch), 07 (windows, budgets, locks), 08 (durable state, replication), 09 (approvals for campaigns), 12 (game-day evidence).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/scheduling.py` lands `Schedule` (5-field cron / interval / calendar + business hours, maintenance windows, blackouts, bounded deterministic jitter), `FairnessPolicy` (weighted shares with a provable anti-starvation floor), and `ConcurrencyClass` with a symmetric lock-compatibility matrix over 07's `ResourceLock`; every decision is a pure function of an injected instant
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

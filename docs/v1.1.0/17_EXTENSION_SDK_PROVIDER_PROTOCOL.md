@@ -44,4 +44,12 @@ SDK guides per language, provider security model doc, marketplace-readiness chec
 ## Dependencies
 03 (fabric envelope), 07 (permission/collision policy), 12 (evidence mapping), 18 (distribution), 19 (sandbox primitives, SBOM).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `src/mayhem/domain/provider.py` extended in place as the versioned `mayhem.provider-declaration/v1` wire contract (parameter grammar, capability descriptors, permission set, evidence-schema mapping, explicit compatibility bounds, and the pure gates `ensure_compatibility_bounds` / `ensure_declared_permissions` / `fault_parameter_problems`); every added field carries a default, and `tests/unit/test_provider_declaration.py` pins that with a frozen pre-Phase-1 v1 fixture that still parses, still emits every key it used to, and still registers across core minor releases. **SIGNATURE VERIFICATION IS NOT IMPLEMENTED** — `mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED` remains `False` and this phase does not change it: a declaration carries no signature field at all (a test asserts that structurally), no provider artifact's signature is checked here, and no later-phase SDK signing convenience changes any of that — an SDK-built artifact stays an unverified claim of authorship until that flag is `True`.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

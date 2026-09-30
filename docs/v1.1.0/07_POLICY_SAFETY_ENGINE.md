@@ -54,4 +54,14 @@ Plan digest: abc123
 (environment definitions the policy dimensions reference), 30 (proof
 consumes evaluation).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/policy.py` was extended in place with `PolicyRule`, `PolicyFacts`, `PolicyBundle`, `PolicyDecision`, precedence and inheritance as pure functions (`resolve_precedence`, `inherited_rules`, `effective_rules`, `evaluate_rules`, `evaluate_bundle`), the five-level `BudgetNode` hierarchy (team → environment → service → experiment → fault), `ResourceLock` with `lock_conflicts`/`acquire_lock`/`blocking_locks`, and `CompatibilityEdge`; 57 new tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitation: **nothing reads any of it yet.** `controller/safety.py` still evaluates the older `PolicyCfg` denylist/allowlist/risk-ceiling checks and never imports `mayhem.domain.policy`'s new types. Phase 1 put the rules in the domain; Phase 2 is what wires evaluation to them, so until then this is vocabulary with no call site.

@@ -58,4 +58,16 @@ Document the protocol version (`mayhem/1` successor rules), provider integration
 ## Dependencies
 07 (policy at dispatch), 09 (approvals), 12 (sealed evidence), 19 (mTLS, identities).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/fabric.py` landed the `FabricCommand` envelope (no defaulted field anywhere, so an unsigned command is unrepresentable), `NonceLedger`, `FencingToken`, `StepSemantics` with its well-formedness table, `StepSpec`, `Reservation`, and the refusal vocabulary; 111 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitations:
+- Signature **verification is not implemented** and is not in scope for this phase. `FabricCommand.signing_payload` states *what* was signed; checking it needs the identities, keys and trust roots of plan 19. A `signature` string on the envelope is a claim, not proof, until then.
+- `FABRIC_UNDERSIGNED` is currently **raised nowhere**, by design. The envelope makes an unsigned command unrepresentable at the type level, so the decision function that would raise it has no reachable input; it stays named so the refusal vocabulary is complete and the code that eventually needs it does not have to invent a spelling.

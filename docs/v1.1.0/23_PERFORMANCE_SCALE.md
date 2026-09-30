@@ -47,4 +47,12 @@ Benchmark methodology doc, scale-characterization pages per range (measured numb
 ## Dependencies
 06 (cloud cost estimates), 07 (budget enforcement), 08 (store growth under replication), 22 (cross-release comparison).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/budgets.py` adds ResourceDimension (8 cost dimensions), ResourceBudget/BudgetConsumption with half-open windows, pure estimate-vs-actual comparison, and a digest-pinned BenchmarkSpec whose workload regenerates exactly from the spec
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

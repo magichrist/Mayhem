@@ -55,4 +55,16 @@ Proof-reading guide (what each line means and where its citation lives), residue
 ## Dependencies
 07 (policy evaluation), 09 (approval binding), 11 (stop-condition obligations), 12 (sealing), 14 (prediction inputs), 16 (PR surface).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/safety_proof.py` landed `Obligation`, `ResidueObligation` with its `discharge()` path, and `SafetyProof` whose verdict is stored but re-derived on every read, with the `evaluate`/`is_valid`/`voided` predicates; 45 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitations — two deviations the implementer flagged, both deliberate and both binding on Phase 2:
+- **Gate digests are bound to 64-char lowercase sha256 hex.** `_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")` and every citation goes through `_require_digest`. The rationale is that `hashing.sha256_hex` is the project's single definition of "same input", so a gate output that cannot be named by one of these digests did not actually run. A Phase 2 compiler that emits a citation in any other form (uppercase, a prefix, a different algorithm) is refused, not normalised.
+- **The nine required obligation names are fixed.** `REQUIRED_OBLIGATIONS` is the frozenset of all nine `ObligationName` values — `max_concurrent_faults`, `max_duration`, `damage_budget`, `target_policy`, `capability_requirements`, `compensation`, `recovery_path`, `stop_conditions`, `required_approvals` — and a `PASS`-shaped proof missing any of them is `VOID`, not `PASS`. Phase 2's compiler must emit exactly these spellings; a near-miss is the fail-closed state, so every proof would come out `VOID`. A residue obligation is *additional* to this set, never a substitute.

@@ -55,4 +55,12 @@ Coverage methodology (what counts as tested), journey authoring guide, regressio
 ## Dependencies
 11 (journey probes, business SLOs), 12 (sealed inputs), 14 (graph cells), 16 (gate enforcement), 21 (findings consumer).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/journeys.py` (versioned, per-step-asserted journey programs with citable business-metric criteria, projecting untested coverage cells) and `domain/comparison.py` (pin equivalence predicate, delta report with improved/regressed/unchanged/insufficient-data/incomparable outcomes, two-run-cited regression findings) landed with unit tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

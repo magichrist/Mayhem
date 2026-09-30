@@ -56,4 +56,12 @@ Statistics interpretation guide (what "no material effect" does and does not mea
 ## Dependencies
 07 (budgets per step), 11 (observations, tolerances), 14 (topology edges for causal paths), 21 (advisor inputs), 22 (trend storage).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/analytics.py` (distribution summaries, effect size, 95% CIs, sufficiency, warm-up/cooldown) and `domain/search.py` (`SearchPolicy`, pure step planning with stop conditions, untrusted AI drafts) landed with unit and negative-control tests
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

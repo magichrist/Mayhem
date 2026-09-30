@@ -57,4 +57,12 @@ Stop runbook, preflight-check catalogue with per-check meaning, postflight inter
 ## Dependencies
 03 (fabric dispatch/fencing), 08 (replication/standby), 09 (emergency role), 11 (condition definitions), 12 (sealed stop evidence).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/stop.py` lands `StopReason`/`StopSignal` (total one-to-one path→reason mapping), `StopTrigger` (reason bound to condition id + observed values), `StopCommand` (run vs. environment scope, principal, issued-at, injectable-`now` staleness), `PostflightReport`/`PostflightCheck` (per-check pass/fail, evidence refs required on a pass), and the pure escalation ladder over run state that reuses `cancellation.CancellationLevel` by reference.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

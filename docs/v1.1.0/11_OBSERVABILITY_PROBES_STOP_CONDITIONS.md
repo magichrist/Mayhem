@@ -53,4 +53,12 @@ Probe catalogue, tolerance-type reference, condition authoring guide. Rollout: m
 ## Dependencies
 10 (stop enforcement), 12 (sealed observations), 14 (topology-linked probes), 30 (proof cites conditions).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/stop_conditions.py`: the `Condition` expression tree (AND/OR over metric references, per-node hysteresis, consecutive-sample count, debounce, cooldown, max observation duration), `Firing` with mandatory cited samples, and tolerance types that delegate to the steady-state verdict core, all covered by `tests/unit/test_stop_conditions.py`; `domain/probes.py` is a separate file in this phase and has not landed.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

@@ -49,4 +49,16 @@ Attestation format spec, trust-root management guide, retention-policy reference
 ## Dependencies
 07 (sealed decisions), 09 (sealed approvals), 29 (redaction rules), 08 (object-store wiring), 19 (key custody, SBOM of signing path).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/attestation.py` landed `AttestedEvent` with hash-chain links (`seal_events`, `chain_root`, `verify_chain`), `AttestedTimestamp` with uncertainty arithmetic (`accumulated_uncertainty`, `wall_clock_offset`, `monotonic_span_ns`), the `ProvenanceEdge`/`ProvenancePath` ladder, and `Manifest` with `build_manifest`/`verify_manifest`; canonicalization NFC-normalizes and refuses NaN/inf and any non-JSON-native value rather than stringifying it; 79 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitations:
+- **No signing is implemented.** `Manifest` carries `signer_identity` and `trust_root_ref` as the Phase 6 honesty gate only: `Manifest.signed` is true when a signer is *named*, and `_check_signer_honesty` turns "signed without a trust root" (or the reverse) into an error and "unsigned" into a warning — never into verified authorship. No key material, no signature bytes, no verification. `verify_manifest` verifies *integrity*, not *authorship*, and says so in the warning it emits.
+- This module is **not a second bundle producer**. It names `mayhem.domain.evidence_bundle.build_bundle` in prose only, to say the two chain identically. Bundles remain built by that one function.

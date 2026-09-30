@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Any, Final
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mayhem.domain.catalog import definition_for
+from mayhem.domain.certification import certified_engines
 from mayhem.domain.common import utc_now
 from mayhem.domain.faults import (
     EngineLane,
@@ -66,10 +67,13 @@ from mayhem.domain.faults import (
 from mayhem.domain.risks import RiskLevel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
+
+    from mayhem.domain.certification import CertificationRecord
 
 __all__ = [
     "BUNDLE_HASH_RE",
+    "CERTIFICATION_RECORDED",
     "CUMULATIVE_CRITERIA",
     "LIVE_STAGES",
     "MATURITY_MEANING",
@@ -124,6 +128,14 @@ REQUIRED_BUNDLE_DIGESTS: Final[tuple[str, ...]] = (
 #: this distinction, which is exactly why ``verified-live`` used to be
 #: unearnable.
 LIVE_STAGES: Final[tuple[str, ...]] = ("injected", "undo", "residue")
+
+#: The certification gate, consulted only when a caller supplies a record store.
+#: It is deliberately *not* in :data:`CUMULATIVE_CRITERIA`: the ladder is the
+#: run-evidence contract, and adding to it would silently redefine the rungs for
+#: callers that do not use certification. Instead it caps the ladder's result,
+#: so once the record store is in play a live rung is unreachable without a
+#: certified record — and when it is not supplied, nothing changes.
+CERTIFICATION_RECORDED: Final[str] = "every required engine has a certified certification record"
 
 
 # ── criteria ────────────────────────────────────────────────────────────────
@@ -947,11 +959,49 @@ _LADDER: Final[tuple[MaturityLevel, ...]] = (
 )
 
 
+def _certification_outcome(
+    definition: FaultDefinition,
+    records: Mapping[str, Sequence[CertificationRecord]] | None,
+) -> CriterionOutcome | None:
+    """The record-store gate: does a live claim exist for this fault at all?
+
+    ``None`` means the caller did not supply a record store, and the run
+    evidence alone decides — the v1.0.0 contract, unchanged. An empty mapping is
+    not the same thing: it is an assertion that no fault holds a certification,
+    and it therefore caps every fault at ``verified-unit``.
+
+    Only records that still *grant* live verification count, so a record that
+    went stale, failed, or was invalidated by runtime drift withdraws the claim
+    without anybody editing this function.
+    """
+    if records is None:
+        return None
+    certified = certified_engines(records.get(definition.id, ()))
+    missing = tuple(lane.value for lane in REQUIRED_LIVE_ENGINES if lane not in certified)
+    covered = ", ".join(sorted(lane.value for lane in certified)) or "none"
+    return CriterionOutcome(
+        name=CERTIFICATION_RECORDED,
+        text=CERTIFICATION_RECORDED,
+        met=not missing,
+        observed=(
+            f"no certified certification record for {definition.id} on "
+            f"{', '.join(missing)}; certified engines: {covered}"
+            if missing
+            else f"certified certification records for {definition.id} on {covered}"
+        ),
+        required=(
+            "a certified certification record on "
+            f"{', '.join(lane.value for lane in REQUIRED_LIVE_ENGINES)}"
+        ),
+    )
+
+
 def evaluate_maturity(
     definition: FaultDefinition,
     *,
     probe: CatalogProbe,
     store: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> PromotionDecision:
     """Evaluate the promotion criteria for ``definition`` and return a decision.
 
@@ -959,11 +1009,20 @@ def evaluate_maturity(
     maturity. It is a pure function of its arguments: no clock, no filesystem,
     no ambient registry, and no default that grants a rung. Feed it an empty
     store and every fault stops at whatever its own facts earn.
+
+    ``records`` is the optional certification store, keyed by fault id, holding
+    that fault's :class:`~mayhem.domain.certification.CertificationRecord`
+    entries across cells. Pass ``None`` (the default) and the run evidence
+    decides exactly as before. Pass a mapping — including an empty one — and
+    certification is in charge: no rung above ``verified-unit`` survives unless
+    a record still certifies the fault on every required engine. Deleting the
+    record therefore drops the reported level, which is the whole point of
+    referencing evidence rather than copying it into a badge.
     """
-    records = (store if store is not None else EvidenceStore()).for_fault(definition.id)
+    run_records = (store if store is not None else EvidenceStore()).for_fault(definition.id)
     outcomes = _unit_outcomes(probe)
 
-    passing = _passing_records(records, probe)
+    passing = _passing_records(run_records, probe)
     by_engine: dict[str, list[LiveRunRecord]] = {}
     for entry in passing:
         by_engine.setdefault(entry.engine, []).append(entry)
@@ -1019,6 +1078,18 @@ def evaluate_maturity(
         evaluated.extend(
             outcomes[criterion] for criterion in CUMULATIVE_CRITERIA[MaturityLevel.STABLE]
         )
+
+    # The certification gate caps the ladder rather than joining it, so a caller
+    # that never supplies a record store sees exactly the behaviour it saw
+    # before certification existed.
+    certification = _certification_outcome(definition, records)
+    if certification is not None and not certification.met:
+        evaluated.append(certification)
+        refusals.append(certification.reason())
+        # ``MaturityLevel`` is a ``StrEnum``, so ordering it by value would rank
+        # the rungs alphabetically; the cap is an explicit membership test.
+        if maturity not in (MaturityLevel.EXPERIMENTAL, MaturityLevel.VERIFIED_UNIT):
+            maturity = MaturityLevel.VERIFIED_UNIT
 
     return PromotionDecision(
         fault_id=definition.id,

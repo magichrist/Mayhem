@@ -46,4 +46,14 @@ Secrets configuration guide per provider, grant-model reference, rotation runboo
 ## Dependencies
 06 (cloud IAM roles), 09 (principals, grants as authorization data), 12 (classification plus redaction enforcement), 19 (credential custody, rotation).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/secrets.py` landed `CredentialRef`, `SecretGrant`, `DataClassification`, the `grant_refusals`/`find_grant`/`reference_is_granted`/`validate_reference`/`require_reference` access decision, the literal-credential scanner (`find_literal_credentials`, `has_literal_credential`, `require_no_literal_credentials`), and classification ordering (`classification_rank`, `most_restrictive`, `must_not_persist`); 79 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitation: **nothing resolves a reference yet.** Phase 1 decides whether a reference *may* be used — that is all `grant_refusals` and friends answer, and they answer it from the data in front of them. No `SecretProvider` in this module talks to Vault, a cloud secret manager, or a Kubernetes Secret; there is no fetch, no caching, and no rotation. Phase 2 is what makes a granted reference actually yield a value. Until then a `CredentialRef` is an authorization record, not a handle to anything.
