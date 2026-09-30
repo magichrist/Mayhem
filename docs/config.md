@@ -49,6 +49,10 @@ blast_radius:
   max_concurrent_faults: 3
   max_duration_per_fault_s: 300.0
   forbidden_fault_pairs: []
+  damage_quota:
+    budget_s: 14400.0
+    per_fault_ceiling_s: 3600.0
+    window_s: 604800.0
 storage:
   path: mayhem.db
   artifacts_dir: .mayhem/artifacts
@@ -186,13 +190,32 @@ the matching `policy.critical_fault_acks` entry, and root
 
 ### `blast_radius`
 
+The five limits above are **per-step**. `damage_quota` is the only budget that
+sees the *sequence*.
+
 | Field | Type | Default | Constraints |
 |-------|------|---------|-------------|
 | `max_services_pct` | float | `50.0` | Greater than 0 and at most 100. |
 | `max_hosts` | integer | `2` | At least 1. |
 | `max_concurrent_faults` | integer | `3` | At least 1. |
 | `max_duration_per_fault_s` | float | `300.0` | Duration budget in seconds. |
-| `forbidden_fault_pairs` | list of two-item string lists | `[]` | Fault pairs that cannot overlap. |
+| `forbidden_fault_pairs` | list of two-item string lists | `[]` | Fault pairs that must not both appear in a plan. **Enforced**: a plan containing a configured pair is refused. This rule was silently inert in 0.9.x on any plan of three or more faults; it now fires. |
+| `damage_quota` | object or `null` | `null` | Cumulative damage budget across the whole plan. `null` means "use the default quota", which is **active, not absent**. |
+
+`damage_quota` charges damage-seconds per target, weighted by the fault's
+catalog risk and reversibility:
+
+| Field | Type | Default | Constraints |
+|-------|------|---------|-------------|
+| `budget_s` | float | `14400.0` | Greater than 0. Total damage across the plan. |
+| `per_fault_ceiling_s` | float | `3600.0` | Greater than 0. Total damage charged to any single target. |
+| `window_s` | float | `604800.0` | Greater than 0. The rolling window the totals accumulate over. |
+
+A plan whose every individual step satisfies the five per-step limits can
+still be refused, because the cumulative total is a different question. The
+refusal names the rule id (`damage_quota.budget`,
+`damage_quota.per_fault_ceiling`), the observed value, and the value that
+would have been required.
 
 ### `storage`, `toolkit`, `target`, and `kubernetes`
 

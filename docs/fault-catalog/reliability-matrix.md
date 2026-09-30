@@ -45,7 +45,9 @@ The prioritized batch uses existing IDs where the repository already has a truth
 | Container expansion | `cpu.burst`, `mem.freeze`, `mem.swap_pressure`, `fs.quota`, `fs.write_delay`, `net.corrupt`, `net.congestion`, `process.restart_delay`, `http.upstream_timeout`, `app.response_5xx` |
 | Kubernetes expansion | `k8s.pod_restart_churn`, `k8s.sidecar_termination`, `k8s.workload_stall`, `k8s.service_5xx`, `k8s.dns_timeout`, `k8s.node_disk_pressure`, `k8s.node_memory_pressure`, `k8s.node_pid_pressure`, `k8s.hpa_oscillation`, `k8s.pdb_over_eviction` |
 
-`fs.permission_failure`, `process.startup_delay`, and `dependency.malformed_response` are catalog-only entries. They have complete metadata and deterministic planner refusal; Mayhem does not claim an executor for them until a capability-aware implementation exists. `k8s.image_pull_slow` follows the same catalog-only policy. The 20 expansion IDs are executable and carry typed refusal and compensation contracts, but their maturity remains unit-verified rather than live-verified.
+`app.deadlock`, `app.exception`, `clock.freeze`, `cpu.interrupt_storm`, `cpu.steal`, `dependency.malformed_response`, `fs.permission_failure`, `fs.read_error`, `k8s.image_pull_slow`, `mem.fragment`, `mem.oom_kill`, `process.oom_kill`, and `process.startup_delay` are the **thirteen** catalog-only entries. They have complete metadata and deterministic planner refusal, and mayhem claims no executor for them. Their `refusal_reason` names the specific mechanism that is missing — an IRQ control path, a hypervisor, a device-mapper error target, a FUSE shim requiring `SYS_ADMIN`, an in-process bytecode-injection or `ptrace` hook, a `libfaketime` preload, a buddy-allocator or `MADV_FREE` control, a protocol-aware response proxy, an application-aware readiness hook, or a registry-pacing runtime — and points at a documented alternative. The refusal is the deliverable; a weaker substitute fault is deliberately not offered in its place. The 20 expansion IDs are executable and carry typed refusal and compensation contracts, but their maturity remains unit-verified rather than live-verified.
+
+Every one of those thirteen needs a primitive mayhem's substrate does not have. Most of them need a kernel-level, in-process, or hypervisor-level control. **Mayhem has no eBPF injection, no kernel module, and no in-kernel fault primitive of its own**; the substrate is `tc`/netem, `toxiproxy`, container-engine cgroup knobs, userspace allocators and writers, and the Kubernetes API. See the README's "What mayhem cannot do" for the full account.
 
 The container-lane and proxy-backed ids added since — the response-shaping, link, connection-exhaustion, storage-corruption and thread/pid-exhaustion rows above — are executable on the same terms: each resolves to an undo operation **and** a verification probe, and each is `verified-unit`. None of them is `verified-live` or `stable`, because no recorded runtime evidence exists for any of them. Per-fault parameter contracts are in [`drill-spec.md`](../drill-spec.md#fault-catalog).
 
@@ -69,7 +71,39 @@ Maturity levels are `experimental`, `verified-unit`, `verified-live`, and `stabl
 - `verified-live`: a supported live runtime completed injection and recovery with recorded evidence.
 - `stable`: the supported engine and platform matrix is verified and rollback/deprecation policy is documented.
 
-Only non-catalog-only definitions with unit coverage are currently marked `verified-unit`; the catalog does not claim live or stable verification without recorded runtime evidence.
+**The level is derived at read time, not stamped onto the catalog entry.**
+`mayhem.infra.promotion.evaluate_maturity` is a pure function of
+`(definition, probe, evidence_store)`. It reads no registry, no clock of its
+own, and no filesystem, and it grants no rung by default. Every criterion it
+checks — catalog completeness, an executable parameter grammar, a deterministic
+refusal path, a registered compensation contract, recorded unit coverage, a
+recorded verification date — can fail, and a failure is reported as a refusal
+naming the criterion, the observed value, and the value that would have been
+required. Delete a fault's evidence and its reported level drops with it.
+
+Two consequences that a reader of a report should hold onto:
+
+- **`verified-unit` is a claim about mayhem's own code.** It means the
+  parameter grammar, refusal path, and compensation contract for that fault id
+  are deterministic and covered by recorded unit evidence. It is not evidence
+  that the fault has ever perturbed a running system.
+- **The live rungs are unreachable without a record.** `verified-live` and
+  `stable` require a `LiveRunRecord`, which cannot be constructed without an
+  injected effect that moved a signal, an undo that ran, and a probe that
+  confirmed the pre-injection baseline was restored within tolerance, on the
+  required engines. An observation that moved nothing, or an undo that did not
+  restore the baseline, is rejected at construction rather than recorded as
+  passing evidence.
+
+**Current counts: 141 catalog faults — 128 `verified-unit`, 13 `experimental`,
+0 `verified-live`, 0 `stable`.** The zero is a *missing* verification program,
+not a *failed* one: no fault here has been shown to work against a real
+system, and none has been shown not to. The `experimental` and `verified-unit`
+populations together are a catalogue of contracts, not a reliability claim.
+
+`mayhem discover faults --coverage` groups by maturity, and
+`mayhem discover faults -e FAULT_ID` shows the level for one fault together
+with the criteria that were evaluated.
 
 ## Recommendations
 

@@ -24,11 +24,12 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
                                                 SQLite evidence + decision trace
 ```
 
+- [What mayhem cannot do](#what-mayhem-cannot-do)
 - [Quickstart](#quickstart)
 - [A Run in One Screen](#a-run-in-one-screen)
 - [Authoring a Drill](#authoring-a-drill)
 - [Configuration](#configuration)
-- [CLI Reference](#cli-reference)
+- [CLI surface](#cli-surface)
 - [Campaigns](#campaigns)
 - [What's new in v0.9.0](#whats-new-in-v090)
 - [Safety Model](#safety-model)
@@ -36,6 +37,120 @@ compose blueprint ─▶ topology graph ─▶ compile drill spec ─▶ frozen 
 - [Architecture](#architecture)
 - [Status](#status)
 - [Development](#development)
+
+---
+
+## What mayhem cannot do
+
+Read this before you evaluate mayhem against a kernel-level chaos tool. The
+three limits below are structural: no configuration reaches them, and none is a
+roadmap item pretending to be a setting.
+
+### There is no kernel or eBPF fault injection
+
+Mayhem has **no eBPF injection, no kernel module, and no in-kernel fault
+primitive of its own**. There is no `bcc`, no `libbpf`, and no eBPF program
+type anywhere under `src/`. Mayhem loads no code into the kernel and depends on
+no kernel feature that a stock install does not already provide.
+
+The whole injection substrate is userspace plus already-compiled kernel
+configuration:
+
+| Mechanism | Used for |
+|-----------|----------|
+| `tc qdisc … netem` | `net.*` latency / loss / duplication / reordering, and `db.slow_query` |
+| `toxiproxy` | `dependency.*` and `http.*` request and response shaping |
+| container-engine cgroup knobs (`docker` / `podman update`) | `cpu.throttle`, `mem.exhaust` |
+| userspace allocators, writers, and file manipulation | `cpu.saturate`, `mem.*`, `fs.*`, `fd.exhaust` |
+| the Kubernetes API | every `k8s.*` fault |
+| `nsenter` into an existing network namespace | node- and pod-scoped `tc` |
+
+`tc`/netem configures a qdisc that is **already compiled into the kernel**. It
+is a traffic-shaping control, not an instrumentation program. That is the
+closest mayhem comes to the kernel, and it is a category away from Chaos Mesh's
+eBPF layer, which attaches a program to a running process and can block one
+syscall, corrupt one page, or stall one `write` while everything else in the
+process keeps running.
+
+**If your failure model lives below the syscall boundary, mayhem cannot inject
+it.** A fault that must be a specific `write` returning a specific `errno`, a
+specific page corrupted in a specific process, or a specific syscall blocked
+while the rest of the process stays healthy, is out of scope for mayhem's
+substrate — not unimplemented, *unsupported*.
+
+Thirteen catalog entries are `catalog_only` for exactly this reason. Mayhem has
+no primitive to inject them, and their refusal text is the feature: it names the
+missing mechanism instead of quietly substituting a weaker fault.
+
+| Fault | The mechanism mayhem does not have |
+|-------|------------------------------------|
+| `app.deadlock` | a true lock cycle cannot be imposed from outside the process |
+| `app.exception` | in-process bytecode injection, `ptrace`, or `/proc/<pid>/mem` patching |
+| `clock.freeze` | a `libfaketime` preload or `CLOCK_REALTIME` interception |
+| `cpu.interrupt_storm` | IRQ/softirq control via `/proc/interrupts` or RPS/RFS tuning |
+| `cpu.steal` | hypervisor / host-scheduler control (KVM) |
+| `fs.permission_failure` | a permission-preserving executor |
+| `fs.read_error` | a device-mapper error target, or a FUSE shim needing `SYS_ADMIN` and a loop device |
+| `mem.fragment` | buddy-allocator, `MADV_FREE`, or hugepage control |
+| `mem.oom_kill` | an irreversible kill with no supervisor, which the compensation contract forbids |
+| `process.oom_kill` | likewise; `mem.exhaust` deliberately caps at 95% of the cgroup limit |
+| `process.startup_delay` | an application-aware readiness hook |
+| `dependency.malformed_response` | a protocol-aware response proxy |
+| `k8s.image_pull_slow` | a registry-pacing runtime |
+
+Every one of these is discoverable rather than hidden: `mayhem discover faults
+-e FAULT_ID` prints the refusal and the suggested alternative. Note that
+`k8s.*` faults have a separate, independent limitation — the Kubernetes
+executor and resolver seams exist in source but no live cluster acceptance is
+claimed anywhere. See [Kubernetes status](#kubernetes-status).
+
+### No fault in this repository is `verified-live`
+
+`verified-unit` is a claim about **mayhem's own code**, not about the fault
+working. It means that fault id's parameter grammar, refusal path, and
+compensation contract are deterministic and covered by recorded unit evidence.
+It says nothing about whether the fault has ever perturbed a running system.
+Of the **141** catalog faults, **128** are `verified-unit` and **13** are
+`experimental`. **0 of 141 are `verified-live`**, and none is `stable`.
+Reading `verified-unit` as "this works" is a misreading, and this README
+previously invited it.
+
+`verified-live` is earned only from a recorded live-run record: an injected
+effect that moved a signal, an undo that actually ran, and a probe that
+confirmed the pre-injection baseline was restored within tolerance, on the
+required engines. An empty evidence store yields zero live-verified faults —
+there is no "presumed live" default, no flag, and no code path that grants the
+level without a record. None of them is reachable in this repository today.
+
+The reported maturity level is **derived at read time** from the evidence
+store, not stamped onto the catalog entry. Delete the evidence for a fault and
+its reported level drops with it. Two consequences follow, and both are
+statements about what mayhem has *not* done. The absence of
+`verified-live` across the whole catalog — 0 of 141 — is a **missing**
+verification program, not a **failed** one: nothing here has been shown to work
+against a real system, and nothing has been shown not to. And because the
+derived level is only ever a function of recorded evidence, a fault that drops
+to `verified-unit` is saying that mayhem's own parameter, refusal, and
+compensation code is still deterministic — **not** that the fault works. The
+`experimental` and `verified-unit` populations together are a catalogue of
+contracts, not a reliability claim.
+
+### Fault packs are integrity-checked, not signed
+
+The pack format carries a `signature: str` and a `signer: str` with **no public
+key, no key id, no algorithm identifier, and no trust store**, and no
+signature-verification dependency is in the build. Mayhem therefore **cannot
+verify a pack signature**. What the field holds is an assertion of authorship by
+whoever wrote the file — the same trust a comment carries. Every pack fault's
+refusal names its signer as an unverified *claim*, and every pack verdict
+reports `signature NOT VERIFIED`.
+
+What a pack can prove is **integrity**: `declared_digest` is a SHA-256 over the
+canonical pack document and the loader checks it against the bytes on disk.
+That detects tampering. It says nothing about who wrote the pack, and the two
+axes are never collapsed into one "verified" flag. Because authorship is an
+unverified claim, do not describe a mayhem fault pack as signed, verified, or
+trusted.
 
 ---
 
@@ -143,6 +258,8 @@ hypothesis: "checkout stays available while cart writes are throttled"
 
 config:
   risk_ceiling: high
+  # Declared but not enforced — no gate reads it. The real budget is
+  # blast_radius.max_concurrent_faults in mayhem.yaml.
   max_faults: 1
   timeout: 30m
   recovery: true
@@ -205,6 +322,10 @@ blast_radius:
   max_concurrent_faults: 3
   max_duration_per_fault_s: 300.0
   forbidden_fault_pairs: []  # pairs such as [net.packet_loss, net.bandwidth]
+  damage_quota:               # cumulative damage-seconds across the whole plan
+    budget_s: 14400.0
+    per_fault_ceiling_s: 3600.0
+    window_s: 604800.0
 storage:
   path: mayhem.db
   artifacts_dir: .mayhem/artifacts
@@ -254,9 +375,10 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | Command group | Purpose |
 |---------------|---------|
 | `mayhem discover` | Discover topology, engines, faults, and capabilities. |
+| `mayhem pack` | Validate and load a fault pack. **Integrity-checked only — the pack format declares no key, no algorithm, and no trust store, so authorship is an unverified claim and every verdict reports `signature NOT VERIFIED`.** See [Fault packs are integrity-checked, not signed](#fault-packs-are-integrity-checked-not-signed). |
 | `mayhem prepare` | Validate configuration, prepare dependencies, and compile plans. |
 | `mayhem experiment` | Show, validate, and explore authored experiments. |
-| `mayhem run`, `mayhem maniac` | Execute authored or randomized drills. |
+| `mayhem run`, `mayhem maniac` | Execute authored or randomized drills. A drill's `steady_state:` block is graded against a previous run's captured baseline with `--baseline-from RUN_ID`; the report names the reference it was measured against, and a run id with nothing recorded is refused rather than silently re-baselined. |
 | `mayhem inspect` | Inspect runs, history, coverage, next actions, leases, and diagnostics. |
 | `mayhem recover`, `mayhem janitor` | Recover runs and clean leases. |
 | `mayhem extend` | Inspect and extend faults, capabilities, dependencies, and providers. |
@@ -313,11 +435,11 @@ plan-only until explicitly executed, and every claim is recorded in evidence.
 | Campaign resume | Durable checkpoints; a verified experiment is never repeated without `--retry-verified`. | `mayhem campaign resume-plan` |
 | Residual impact | Before/after comparison proving the system came back; an unavailable source reads `unavailable`, never `clean`. | `mayhem inspect residual` |
 | Game days | Sessions with a freeze window, named approvers, and dual control for critical faults. | `mayhem game-day` |
-| Provider sandbox | Default grant is read-only; signed fault packs; unsigned is development-only. | `src/mayhem/providers/`(docs/provider-sdk.md) |
+| Provider sandbox | Default grant is read-only. Fault packs are integrity-checked against a SHA-256 digest; a pack's declared signature is an unverified claim of authorship, not authentication. | `src/mayhem/providers/` |
 | Observability | Read-only Prometheus/Loki connectors (bounded timeout, response-size cap, redacted errors) plus local OpenTelemetry spans. | `src/mayhem/observability/` |
 | Evidence bundles | Hash-chained, offline-verifiable bundles of a run's evidence. | `mayhem bundle verify PATH` |
 
-Two honesty rules are worth stating plainly, because they change what output
+Three honesty rules are worth stating plainly, because they change what output
 means:
 
 - **No backend means no effect.** `start_load`, `stop_load`, and `notify` have
@@ -326,6 +448,10 @@ means:
 - **No live verification is claimed without a live run.** The capability
   dashboard reports `live=false` for every row in this repository; `live=true`
   can only come from a recorded live run.
+- **No fault is live-verified in this repository either.** 0 of 141 catalog
+  faults hold `verified-live`. `verified-unit` is a statement about mayhem's own
+  parameter, refusal, and compensation code — not evidence that a fault works.
+  See [No fault in this repository is `verified-live`](#no-fault-in-this-repository-is-verified-live).
 
 ### Shell completion
 
@@ -347,8 +473,8 @@ bash script says so in its header.
 ```bash
 mayhem --version                     # installed version, or 0.0.0+source in a checkout
 mayhem discover capabilities --explain k8s.pod_kill
-mayhem inspect replay export RUN_ID --out bundle/
-mayhem bundle verify bundle/
+mayhem bundle build RUN_ID --out bundle/   # assemble a portable, hash-chained bundle
+mayhem bundle verify bundle/                # re-derive every hash from the bytes
 ```
 
 ### v0.9.0 status
@@ -375,8 +501,12 @@ it described is what is implemented and documented above. What remains verified:
   `critical`-risk faults (e.g. `k8s.node_drain`) need a **triple opt-in**:
   `policy.allow_critical: true`, a per-fault ack in `policy.critical_fault_acks`,
   and the `--allow-critical` CLI flag.
-- **Concurrency budget.** `max_faults` caps simultaneously-injected faults;
-  a wider `parallel:` step queues into rounds.
+- **Concurrency budget.** `blast_radius.max_concurrent_faults` in the layered
+  `mayhem.yaml` is the control that actually refuses a plan; it counts the
+  prefix of fault *steps* seen so far and is never reset. The drill spec's
+  `config.max_faults` is a declared field that **no gate reads** — it bounds
+  nothing, and a wider `parallel:` step queues into rounds rather than escaping
+  the budget. See [Fault budgets](docs/drill-spec.md#fault-budgets).
 - **Duration caps.** Per-fault `duration` beyond the catalog maximum is a
   compile error.
 - **Capability gating.** Faults declare the capabilities they need
@@ -431,8 +561,8 @@ is as small as possible:
 | [`docs/drill-spec.md`](docs/drill-spec.md) | Drill DSL reference. |
 | [`docs/config.md`](docs/config.md) | Current layered configuration contract. |
 | `src/mayhem/cli/command_registry.py` | Current commands, options, and stable exit codes. |
-| `src/mayhem/schemas/output_v1.json`(docs/reference/output-schema.md) | Versioned machine-output envelope and the v0.9.0 compatibility boundary. |
-| [`docs/fault-catalog/`](docs/fault-catalog/README.md)(docs/reference/fault-catalog.md) | Checked Kubernetes fault catalog status snapshot and capability gates. |
+| [`src/mayhem/schemas/output_v1.json`](src/mayhem/schemas/output_v1.json) | The versioned machine-output envelope; there is no rendered prose reference for it in this repository. |
+| [`docs/fault-catalog/`](docs/fault-catalog/README.md) | Checked Kubernetes fault catalog status snapshot and capability gates. |
 | [`docs/compensation.md`](docs/compensation.md) | Compensation lifecycle and verification contracts. |
 
 ---
@@ -449,6 +579,11 @@ is as small as possible:
 | Legacy `KubernetesAdapter` | Compatibility seam only; reports unavailable |
 | Live Kubernetes cluster acceptance | Not claimed by repository documentation |
 | Catalog-only Kubernetes faults | `k8s.image_pull_slow`; excluded from the available-fault register and refused before mutation |
+| **Kernel / eBPF / BPF fault injection** | **Not implemented and not planned for 1.0.0.** No eBPF program, no kernel module, no in-kernel primitive. See [What mayhem cannot do](#what-mayhem-cannot-do) |
+| **`verified-live` faults** | **0 of 141.** The rung is derivable from recorded live-run evidence and no such evidence exists. See [No fault in this repository is `verified-live`](#no-fault-in-this-repository-is-verified-live) |
+| **`verified-unit` faults** | 128 of 141 — a claim about mayhem's own parameter/refusal/compensation code, not about the fault working |
+| **`catalog_only` faults** | 13, all refused before mutation. Refusal text names the missing mechanism; it is not a weaker substitute |
+| **Fault-pack signatures** | **Cannot be verified.** Integrity (SHA-256) only; authorship is an unverified claim |
 | v0.9.0 core truth work (intent, admission, capability truth, replay, redaction) | Implemented; unit + integration tested |
 | v0.9.0 expansion work (coverage graph, SLOs, scenarios, resume, residual, game day, sandbox, connectors, bundles) | Implemented; plan-only until executed |
 | Web UI / REST API | Planned |

@@ -165,6 +165,42 @@ looser re-derivation than the real gate: it omits the dependents closure and
 never surfaces `max_concurrent_faults` or `max_duration_per_fault_s`. The
 displayed values are indicative only.
 
+### The two gates that were not gates before 1.0
+
+Two `blast_radius` settings existed in 0.9.x and did not do what their names
+said. Both are recorded here because a plan that ran under 0.9.x may now be
+refused.
+
+**`blast_radius.forbidden_fault_pairs` was silently inert.** The check
+compared a `frozenset` of *every* fault seen so far against two-element
+forbidden pairs. On a two-fault plan that coincidentally matched the single
+pair; on a plan of **three or more faults** the set was larger than any
+two-element pair, so it matched nothing and the rule never fired. It is now
+evaluated against each `{earlier, new}` pair, which is complete: a plan
+containing a configured pair is refused no matter where the pair sits in the
+step ordering. If you configured a pair and believed it was protecting you,
+it was not. Plans that relied on a pair co-occurring are now refused.
+
+**`blast_radius.damage_quota` is new, and active by default.** The five
+per-step limits above each look at one step. `damage_quota` is the only budget
+that sees the sequence: it charges damage-seconds per target across the whole
+plan, weighted by the fault's catalog risk and reversibility, and refuses when
+the total exceeds `budget_s` or when any single target's total exceeds
+`per_fault_ceiling_s` within `window_s`. Defaults are 14400 s, 3600 s, and
+7 days. Setting the field to `null` does **not** disable it — `null` means
+"use the default quota", because a quota nobody configures is a quota nobody
+gets. Lift it by raising the numbers or by shortening the plan.
+
+A refusal names the rule id and both values:
+
+```
+blocked:
+  - [safety.refused] blast radius: forbidden fault pair
+    ['net.bandwidth', 'net.packet_loss'] [blast_radius.forbidden_fault_pairs]
+```
+
+See [`config.md`](config.md#blast_radius) for the field reference.
+
 ### Maniac mode
 
 `mayhem maniac` compiles a spec exactly like `mayhem run`, but replaces the
