@@ -9,84 +9,287 @@ by conventional-commit type — see the phase map below.
 
 ## [unreleased]
 
+
+
+### 🚀 Features
+
+- **faults**: Wire the db.query_error error param and widen six param sets
+
+- **faults**: Add four container-lane faults (thread/child/conn exhaustion, fs corruption)
+
+- **faults**: Add three net and five proxy-backed faults
+
+- **faults**: Wave 3 refusals, outcome record, and docs for the new faults
+
+- **catalog**: Add maturity promotion reporting
+
+- **evidence**: Add canonical hashing utilities
+
+- **evidence**: Harden portable bundle contract
+
+- **evidence**: Add bundle persistence and verification
+
+- **config**: Add steady-state and damage-quota drill fields
+
+- **observability**: Add steady-state metric measurement
+
+- **steady-state**: Add baseline capture and phase evaluation
+
+- **cli**: Add steady-state and preflight reporting
+
+- **preflight**: Add blast-radius quota and safety gates
+
+- **controller**: Harden compensation and recovery flows
+
+- **providers**: Harden pack loading and registration
+
+- **cli**: Add pack and bundle producer commands
+
+- **cli**: Register command and extension surfaces
+
+- **runtime**: Centralize engine detection and selection
+
+- **cli**: Refine campaign, coverage, and scenario commands
+
+- **cli**: Harden residual impact inspection
+
+- **config**: Add layered target-profile configuration
+
+- **domain**: Expand scenario and game-day models
+
+- **catalog**: Define maturity evidence levels
+
+
+
+### 🐛 Bug Fixes
+
+- **dependency**: Stop reporting an inert fault as a tooling gap
+
+- **dependency**: Report unreachable containers instead of calling them clean
+
+- **k8s**: Harden pod and node resolution at runtime
+
+- **executor**: Enforce admission and undo contracts
+
+- **topology**: Harden container engine providers
+
+
+
+### 💼 Other
+
+- Delete .github/workflows/ci.yml
+
+
+
+### 🚜 Refactor
+
+- Ruff fix and format
+
+- **domain**: Tighten execution and safety model types
+
+- **infra**: Tighten persistence and reporting types
+
+- **controller**: Type the explore approval gate
+
+- **cli**: Sync command help with the grouped CLI paths
+
+- **init**: Stop emitting the unenforced max_faults cap
+
+
+
+### 📚 Documentation
+
+- **new-faults**: Implementation plan for the 72 requested fault ids
+
+- Document wave-1 fault params and correct the max_faults claim
+
+- Publish v1.0.0 product and release documentation
+
+
+
+### 🎨 Styling
+
+- **tests**: Apply formatter output to test suite
+
+
+
+### 🧪 Testing
+
+- Ci removed and some fixes
+
+- Add typing baseline and release contract coverage
+
+- **spec**: Cover the max_faults deprecation warning
+
+
+
+### ⚙️ Miscellaneous Tasks
+
+- **examples**: Cover every executable podman/docker fault in testCase drill
+
+- **release**: Update v1.0.0 changelog and metadata
+
+- **examples**: Drop the unreferenced safe-docker-podman drill
+
+- **examples**: Install net and shell tooling in the testCase compose
+
+
+## 0.9.1 - 2026-09-27
+
+
+
+### 🚀 Features
+
+- **cli**: Add mayhem completion to print bash/zsh/fish completion scripts
+
+
+
+### 🐛 Bug Fixes
+
+- **cli**: Emit Click's real completion script instead of a broken wrapper
+
+
+
+### 💼 Other
+
+- Old hanging docs >/dev/null
+
+
+
+### 📚 Documentation
+
+- Prune superseded doc packages and their now-dangling links
+
+
+## 0.9.0 - 2026-09-26
+
+
+
+### 🚀 Features
+
+- Resolve one runtime context per plan
+
+- Require explicit execution intent
+
+- Integrate target profiles into configuration
+
+- Expose capability truth for every fault
+
+- Persist replayable run capsules
+
+- Enforce one evidence redaction boundary
+
+- Render action outcomes in human evidence output
+
+- Close v0.9.0 core gaps (redaction metrics, admission ordering, replay CLI)
+
+- Add capability truth dashboard
+
+- Add resilience coverage graph
+
+- Add provider-neutral SLO observations
+
+- Compile variable-driven scenarios
+
+- Add resumable campaign checkpoints
+
+- Verify residual impact after compensation
+
+- Add controlled game-day sessions
+
+- Sandbox providers and fault packs
+
+- Add observability connectors
+
+- Add mayhem --version and a module entry point
+
+- Add portable evidence bundle verification
+
+
+
+### 🐛 Bug Fixes
+
+- Close release truth drift
+
+- Close runtime context propagation gaps
+
+- Harden runtime context compatibility
+
+- Close execution intent safety gaps
+
+- Enforce dry-run precedence for mutations
+
+- Make implicit intent evidence honest
+
+- Unify target profile overlay resolution
+
+- Align config and intent test contracts
+
+- Admit typed targets before mutation
+
+- Make unsupported actions honest
+
+- Enforce redaction at the artifact write boundary
+
+- Repair CI gates (duplicate import, e2e capability contract, format fallback)
+
+
+
 ### 📚 Documentation
 
 - Add v0.9.0 roadmap and implementation plans
 
-- Establish the v0.9.0 release truth baseline: checked command inventory, install
-  dependency contract, version metadata, and Justfile recipe paths
+- Establish v0.9.0 release truth baseline
+
+- Mark v0.9.0 task 1 complete
+
+- Mark v0.9.0 task 2 complete
+
+- Mark v0.9.0 task 3 implemented
+
+- Mark v0.9.0 task 4 complete
+
+- Mark v0.9.0 task 5 complete
+
+- Mark v0.9.0 task 6 implemented
+
+- Mark v0.9.0 task 7 implemented
+
+- Mark v0.9.0 task 8 complete
+
+- Mark v0.9.0 task 9 implemented
+
+- Mark v0.9.0 task 10 implemented
+
+- Record v0.9.0 core gate results
+
+- Close the v0.9.0 core checkpoint
+
+- Record final v0.9.0 gate results
+
+- Record the green CI run and the wheel smoke result
 
 
-## 1.0.0 - 2026-09-29
 
-### ⚠ Breaking changes
+### 🧪 Testing
 
-- **`db.slow_query` now defaults to `mode: latency` (netem).** It previously
-  shipped an `iptables DROP` as its default behaviour, so a plan that relied on
-  the default was silently injecting packet loss rather than latency. The
-  blackhole behaviour is still available, but it must now be asked for
-  explicitly with `mode: timeout`. Existing specs that want a drop must add the
-  parameter; existing specs that want latency are now correct by default for the
-  first time.
-- **Nine `catalog_only` entries are new refusals** (thirteen in the catalog
-  today). These fault ids parse, plan, and refuse before mutation instead of
-  reaching an executor. A plan that names one is now rejected at compile time;
-  a plan that ran under 0.9.x will not run now. The refusal text names the
-  mechanism mayhem does not have and points at a documented alternative — the
-  refusal is the deliverable, not a placeholder.
-- **`mayhem p` no longer resolves.** The `pack` command made the `p` prefix
-  ambiguous, so a bare `mayhem p` invocation now exits `ambiguous_command`
-  (exit code 10) and names both candidates. Scripts using the `p` prefix must
-  move to `mayhem pre` or `mayhem prep` (both resolve to `prepare`), or spell
-  the command out in full.
-- **`blast_radius.forbidden_fault_pairs` now actually fires.** It was silently
-  inert: the check compared a `frozenset` of *all* faults seen so far against
-  two-element forbidden pairs, so it matched on a two-fault plan by accident and
-  matched nothing on any plan of three or more faults. It is now evaluated
-  against each `{earlier, new}` pair, which makes it complete — a plan
-  containing a forbidden pair is refused no matter where the pair sits in the
-  ordering. **This is the most important item in this release: a safety rule
-  that used to be decorative is now load-bearing, and plans that ran under
-  0.9.x may now be refused.** A safety setting you configured and believed was
-  protecting you was not.
-- **`blast_radius.damage_quota` is a new cumulative gate.** The five existing
-  `blast_radius` limits are per-step. `damage_quota` is the first budget that
-  sees the *sequence*: it charges damage-seconds per target across the whole
-  plan and refuses when the cumulative total exceeds `budget_s`, or when any one
-  target's total exceeds `per_fault_ceiling_s`, within `window_s`. A plan whose
-  every individual step passes the other five limits can now still be refused
-  for its total. It is active by default (14400 s budget, 3600 s per-fault
-  ceiling, 7-day window) rather than opt-in.
+- Verify the v0.9.0 expansion checkpoint
 
-### 📚 Documentation
+- Make e2e topology discovery deterministic across hosts
 
-- State plainly in the README that mayhem has **no kernel/BPF fault injection**,
-  and name the thirteen `catalog_only` faults and the mechanism each one lacks.
-- State that **0 of 141** catalog faults are `verified-live`, and that
-  `verified-unit` is a claim about mayhem's own parameter, refusal, and
-  compensation code rather than evidence that a fault works.
-- Correct the two places the documentation called a fault pack *signed*. The
-  pack format declares a `signature: str` with no key, no algorithm, and no
-  trust store; a loader now enforces a SHA-256 *integrity* digest and reports
-  `signature NOT VERIFIED`. Authorship is an unverified claim.
-- Add intra-document **anchor** validation. The documentation-consistency test
-  validated link *paths* only, so a Markdown link with a bare `#fragment`
-  target was invisible to it and a dangling anchor shipped unnoticed.
-- Correct the README claim that `max_faults` caps simultaneous faults. No gate
-  reads it; `blast_radius.max_concurrent_faults` is the control that refuses.
-- Document `blast_radius.damage_quota` in the configuration reference.
+- Cover v0.9.0 edge cases and pin the docs to the schema
 
-### 🛡 Fixed
 
-- `blast_radius.forbidden_fault_pairs` now evaluates each `{earlier, new}` pair
-  instead of the set of all faults so far (see the breaking change above).
 
-### 📦 Documentation index
+### ⚙️ Miscellaneous Tasks
 
-- The 1.0.0 section above is **hand-written** because the breaking changes are
-  not derivable from commit subjects. `git-cliff` regenerates this file from
-  git history and will not reproduce it; re-add the section after any
-  regeneration.
+- Simplify runtime engine typing
+
+- Add v0.9.0 quality gates
+
+- Add schema and manual conformance gates
+
+- Install uv in the wheel smoke job and assert --version from the wheel
 
 
 ## 0.8.0 - 2026-09-25
