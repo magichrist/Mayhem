@@ -6,20 +6,25 @@ services:
     expose:
     - '8080'
     restart: unless-stopped
+    cap_add:
+    - NET_ADMIN
     entrypoint:
     - /bin/sh
     - -c
     - "mayhem_install() {\n  command -v apt-get >/dev/null 2>&1 && { apt-get update\
-      \ && apt-get install -y procps python3; return; }\n  command -v apk >/dev/null\
-      \ 2>&1 && { apk add --no-cache procps python3; return; }\n  command -v dnf >/dev/null\
-      \ 2>&1 && { dnf install -y procps-ng python3; return; }\n  command -v yum >/dev/null\
-      \ 2>&1 && { yum install -y procps-ng python3; return; }\n  command -v microdnf\
-      \ >/dev/null 2>&1 && { microdnf install -y procps-ng python3; return; }\n  command\
-      \ -v zypper >/dev/null 2>&1 && { zypper --non-interactive install procps python3;\
-      \ return; }\n}\nif ! ( command -v kill >/dev/null 2>&1) || ! ( command -v python\
-      \ >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1); then mayhem_install;\
-      \ fi\nif [ -n \"$0\" ]; then exec \"$0\" \"$@\"; fi\necho \"mayhem: no command\
-      \ to run after dependency bootstrap\" >&2\nexit 1"
+      \ && apt-get install -y iproute2 iptables procps python3; return; }\n  command\
+      \ -v apk >/dev/null 2>&1 && { apk add --no-cache iproute2 iptables procps python3;\
+      \ return; }\n  command -v dnf >/dev/null 2>&1 && { dnf install -y iproute iptables\
+      \ procps-ng python3; return; }\n  command -v yum >/dev/null 2>&1 && { yum install\
+      \ -y iproute iptables procps-ng python3; return; }\n  command -v microdnf >/dev/null\
+      \ 2>&1 && { microdnf install -y iproute iptables procps-ng python3; return;\
+      \ }\n  command -v zypper >/dev/null 2>&1 && { zypper --non-interactive install\
+      \ iproute2 iptables procps python3; return; }\n}\nif ! ( command -v iptables\
+      \ >/dev/null 2>&1) || ! ( command -v kill >/dev/null 2>&1) || ! ( command -v\
+      \ python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1) || ! ( command\
+      \ -v tc >/dev/null 2>&1); then mayhem_install; fi\nif [ -n \"$0\" ]; then exec\
+      \ \"$0\" \"$@\"; fi\necho \"mayhem: no command to run after dependency bootstrap\"\
+      \ >&2\nexit 1"
   web:
     container_name: testcase-web
     image: docker.io/library/python:3.13-alpine
@@ -52,15 +57,16 @@ services:
     - /bin/sh
     - -c
     - "mayhem_install() {\n  command -v apt-get >/dev/null 2>&1 && { apt-get update\
-      \ && apt-get install -y procps; return; }\n  command -v apk >/dev/null 2>&1\
-      \ && { apk add --no-cache procps; return; }\n  command -v dnf >/dev/null 2>&1\
-      \ && { dnf install -y procps-ng; return; }\n  command -v yum >/dev/null 2>&1\
-      \ && { yum install -y procps-ng; return; }\n  command -v microdnf >/dev/null\
-      \ 2>&1 && { microdnf install -y procps-ng; return; }\n  command -v zypper >/dev/null\
-      \ 2>&1 && { zypper --non-interactive install procps; return; }\n}\nif ! ( command\
-      \ -v kill >/dev/null 2>&1); then mayhem_install; fi\nif [ -n \"$0\" ]; then\
-      \ exec \"$0\" \"$@\"; fi\necho \"mayhem: no command to run after dependency\
-      \ bootstrap\" >&2\nexit 1"
+      \ && apt-get install -y dash procps; return; }\n  command -v apk >/dev/null\
+      \ 2>&1 && { apk add --no-cache busybox procps; return; }\n  command -v dnf >/dev/null\
+      \ 2>&1 && { dnf install -y bash procps-ng; return; }\n  command -v yum >/dev/null\
+      \ 2>&1 && { yum install -y bash procps-ng; return; }\n  command -v microdnf\
+      \ >/dev/null 2>&1 && { microdnf install -y bash procps-ng; return; }\n  command\
+      \ -v zypper >/dev/null 2>&1 && { zypper --non-interactive install bash procps;\
+      \ return; }\n}\nif ! ( command -v kill >/dev/null 2>&1) || ! ( command -v sh\
+      \ >/dev/null 2>&1); then mayhem_install; fi\nif [ -n \"$0\" ]; then exec \"\
+      $0\" \"$@\"; fi\necho \"mayhem: no command to run after dependency bootstrap\"\
+      \ >&2\nexit 1"
   download-2:
     container_name: testcase-download-2
     image: docker.io/library/python:3.13-alpine
