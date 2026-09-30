@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from mayhem.domain.evidence_bundle import build_bundle, verify_bundle
 from mayhem.infra.evidence import build_evidence
+from mayhem.infra.evidence_bundle_io import load_bundle, write_bundle
 
 
 def _real_evidence() -> dict:
@@ -39,8 +40,7 @@ def test_a_bundle_built_from_real_evidence_verifies(tmp_path) -> None:
         signature="sig",
         signer="acme",
     )
-    target = bundle.write(tmp_path / "bundle")
-    from mayhem.domain.evidence_bundle import load_bundle
+    target = write_bundle(bundle, tmp_path / "bundle")
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is True, result.errors
@@ -55,14 +55,13 @@ def test_bundle_never_carries_a_secret_from_real_evidence(tmp_path) -> None:
 
 def test_tampering_with_a_written_bundle_is_detected(tmp_path) -> None:
     bundle = build_bundle(evidence=_real_evidence(), signature="sig", signer="acme")
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
 
     evidence_path = target / "evidence.json"
     payload = json.loads(evidence_path.read_text())
     payload["verdict"] = "fail"
     evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
-    from mayhem.domain.evidence_bundle import load_bundle
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is False
@@ -71,10 +70,9 @@ def test_tampering_with_a_written_bundle_is_detected(tmp_path) -> None:
 
 def test_deleting_an_artifact_is_detected(tmp_path) -> None:
     bundle = build_bundle(evidence=_real_evidence(), replay={"run_id": "bundle-run"})
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
     (target / "replay.json").unlink()
 
-    from mayhem.domain.evidence_bundle import load_bundle
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is False
@@ -83,7 +81,7 @@ def test_deleting_an_artifact_is_detected(tmp_path) -> None:
 
 def test_swapping_an_artifact_is_detected(tmp_path) -> None:
     bundle = build_bundle(evidence=_real_evidence(), replay={"run_id": "bundle-run"})
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
     evidence = json.loads((target / "evidence.json").read_text())
     replay = json.loads((target / "replay.json").read_text())
     (target / "evidence.json").write_text(json.dumps(replay, indent=2, sort_keys=True))
@@ -93,26 +91,24 @@ def test_swapping_an_artifact_is_detected(tmp_path) -> None:
         json.dumps(json.loads((target / "replay.json").read_text()), indent=2, sort_keys=True)
     )
 
-    from mayhem.domain.evidence_bundle import load_bundle
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is False
 
 
 def test_chained_bundles_verify_against_their_predecessor(tmp_path) -> None:
-    from mayhem.domain.evidence_bundle import load_bundle
 
     evidence = _real_evidence()
     first = build_bundle(evidence=evidence)
     second = build_bundle(evidence=evidence, previous_root=first.root_digest)
-    assert verify_bundle(load_bundle(second.write(tmp_path / "b2"))).valid is True
+    assert verify_bundle(load_bundle(write_bundle(second, tmp_path / "b2"))).valid is True
 
 
 def test_verifier_command_needs_no_database_or_runtime(tmp_path) -> None:
     from mayhem.cli.verify_bundle import verify as check
 
     bundle = build_bundle(evidence=_real_evidence(), signature="sig", signer="acme")
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
 
     def explode(*args: object, **kwargs: object) -> object:
         raise AssertionError("bundle verification must not touch a runtime or database")
@@ -136,7 +132,7 @@ def test_verifier_command_fails_on_a_tampered_bundle(tmp_path) -> None:
     from mayhem.cli.verify_bundle import verify as check
 
     bundle = build_bundle(evidence=_real_evidence())
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
     payload = json.loads((target / "evidence.json").read_text())
     payload["verdict"] = "fail"
     (target / "evidence.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
@@ -159,7 +155,7 @@ def test_verifier_show_prints_the_manifest(tmp_path) -> None:
     from mayhem.cli.verify_bundle import show
 
     bundle = build_bundle(evidence=_real_evidence(), signature="sig", signer="acme")
-    target = bundle.write(tmp_path / "bundle")
+    target = write_bundle(bundle, tmp_path / "bundle")
     result = CliRunner().invoke(show, [str(target), "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["signed"] is True

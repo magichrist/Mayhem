@@ -26,6 +26,7 @@ def build_evidence(
     step_reports: tuple[dict[str, Any], ...],
     lease_timeline: tuple[dict[str, Any], ...],
     observations: tuple[dict[str, Any], ...],
+    steady_state: dict[str, Any] | None = None,
     verdict: str,
     recovery_state: str,
     remediation: tuple[str, ...],
@@ -70,6 +71,7 @@ def build_evidence(
     sanitized_leases = tuple(_redact_into(dict(r)) for r in lease_timeline)
     sanitized_obs = tuple(_redact_into(dict(r)) for r in observations)
     sanitized_blast = _redact_into(dict(blast_radius or {}))
+    sanitized_steady = _redact_into(dict(steady_state or {}))
     redaction_metrics = {
         "policy_version": RULE_VERSION,
         "redacted_path_count": len(redaction_paths),
@@ -90,7 +92,7 @@ def build_evidence(
             engine_version = None
         if engine_version is None:
             try:
-                from mayhem.domain.runtime_adapter import detect_available_engines
+                from mayhem.infra.engine_probe import detect_available_engines
 
                 for cand in detect_available_engines():
                     if cand.name == engine:
@@ -140,6 +142,7 @@ def build_evidence(
         slo_outcomes=tuple(slo_outcomes),
         residual_impact=dict(residual_impact or {}),
         emitted_spans=tuple(emitted_spans),
+        steady_state=dict(sanitized_steady),
         verification_basis="live" if engine and verdict not in ("", "planned") else "unit_tested",
     )
 
@@ -216,7 +219,9 @@ def list_evidence(store: Any, limit: int = 20) -> list[EvidenceEnvelope]:
 
 
 def write_evidence_file(envelope: EvidenceEnvelope, evidence_dir: str | Path) -> Path:
-    from mayhem.cli.execution import artifact_name
+    # Local so this module and mayhem.infra.report can reference each other
+    # without a circular import; the dependency is one-directional at call time.
+    from mayhem.infra.report import artifact_name, write_report_artifacts
 
     stable = redact_envelope(envelope).model_copy(
         update={"report_id": envelope.report_id or report_id_for_run(envelope.run_id)}
@@ -226,8 +231,6 @@ def write_evidence_file(envelope: EvidenceEnvelope, evidence_dir: str | Path) ->
     name = artifact_name(stable.run_id, "evidence")
     target = directory / name
     target.write_text(stable.model_dump_json(indent=2))
-    from mayhem.infra.report import write_report_artifacts
-
     write_report_artifacts(stable, artifact_dir=directory)
     return target
 
