@@ -8,9 +8,10 @@ import json
 import json as _json
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from math import isfinite
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -69,9 +70,13 @@ from mayhem.infra.report import report_id_for_run
 if TYPE_CHECKING:
     from mayhem.controller.executor import RunResult
     from mayhem.controller.janitor import SweepResult
+    from mayhem.controller.steady_state import SteadyStateReport
     from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.domain.experiments import DrillSpec
+    from mayhem.domain.observations import ObservationProvider, ObservationQuery, SloCriterion
+    from mayhem.domain.preflight import Preflight
     from mayhem.domain.runtime_context import RuntimeContext
+    from mayhem.domain.steady_state import SteadyStateSpec
     from mayhem.domain.topology import TopologyGraph
     from mayhem.infra.store import Store
 
@@ -127,7 +132,10 @@ def _project_run_liveness(row: dict[str, object]) -> dict[str, object]:
         projected["controller_alive"] = None
         return projected
     try:
-        alive = _pid_alive(int(raw_pid))
+        # ``controller_pid`` is a SQLite scalar (int | str | None); the
+        # surrounding except clause is the real guard against a driver that
+        # hands back something ``int()`` will not take.
+        alive = _pid_alive(int(cast("int | str | bytes | bytearray", raw_pid)))
     except (TypeError, ValueError):
         alive = False
     projected["liveness_status"] = "running" if alive else "stale"
@@ -561,7 +569,7 @@ def _preflight_for_run(
     config_path: str | None = None,
     profile: str | None = None,
     runtime: RuntimeContext | None = None,
-) -> object:
+) -> Preflight:
     """Build the run's preflight.
 
     ``profile`` is the configuration overlay and is forwarded, so preflight
@@ -645,15 +653,201 @@ def _execution_intent(
     )
 
 
+def _require_baseline_reference(
+    store: Store,
+    baseline_from: str,
+    spec: SteadyStateSpec | None,
+    ctx: click.Context,
+) -> None:
+    """Refuse a ``--baseline-from`` that cannot serve as a reference.
+
+    Plan 03 step 6. The first run establishes what "healthy" means for a
+    stack; every later fault is judged against *that*, which is the composable
+    property neither CNCF project has. Naming an earlier run as the reference
+    is therefore a claim about provenance, and this is where the claim is
+    checked — before the fault is injected, not after.
+
+    Two reasons it cannot be deferred to the post-run evaluation:
+
+    * the evaluation runs inside :func:`_write_evidence_after_run`, which
+      degrades to "steady-state evaluation unavailable" on any failure, so a bad
+      reference there is discovered *after* the drill has already hit the
+      target; and
+    * the only alternative to a real reference is a fresh capture, which is
+      exactly the silent substitution this feature exists to remove. A user
+      who asked to compare against run A and was handed run B's own baseline
+      has been handed a comparison against nothing while believing otherwise —
+      the same class of false assurance the whole plan exists to eliminate.
+
+    The read is the *same* read the reuse path performs
+    (:func:`baseline_from_run` against the named signals), so the guard cannot
+    pass a reference the evaluation would then reject.
+
+    A drill with no ``steady_state:`` block returns immediately: the option has
+    nothing to thread into there, and such a drill must render byte-identically
+    with and without the flag.
+    """
+    if not baseline_from:
+        return
+    if spec is None or spec.empty:
+        return
+    from mayhem.controller.steady_state import (
+        BaselineUnavailableError,
+        SteadyStateEvaluationRepository,
+        baseline_from_run,
+    )
+
+    signal_names = [str(signal.name) for signal in spec.signals]
+    if not SteadyStateEvaluationRepository(store).load(baseline_from):
+        raise click.UsageError(
+            f"--baseline-from {baseline_from!r}: no steady-state evaluations are "
+            f"recorded for run {baseline_from!r}. A run only becomes a reference "
+            f"once it has been graded at least once; run it first, then pass its "
+            f"run id to --baseline-from",
+            ctx=ctx,
+        )
+    try:
+        baseline_from_run(store, baseline_from, signal_names)
+    except BaselineUnavailableError as exc:
+        raise click.UsageError(f"--baseline-from {baseline_from!r}: {exc}", ctx=ctx) from None
+
+
+def _steady_readings_from(observations: tuple[dict[str, object], ...]) -> dict[str, float | None]:
+    """The ``during``-phase reading per signal, lifted from executor observations.
+
+    Plan 03 step 3: a hypothesis needs an observation, not an inference. The
+    executor already collected observability while the fault was in force, so
+    this reuses those records rather than re-reading the target.
+
+    Last finite reading per signal wins: the executor records a series, and the
+    one nearest the end of the fault window is the observation closest to the
+    perturbation actually in place. Non-finite and non-numeric values are
+    skipped rather than coerced — ``delta_pct`` returns ``None`` rather than
+    ``inf`` for exactly this reason, and a bundle must never carry either.
+    """
+    if not observations:
+        return {}
+    readings: dict[str, float | None] = {}
+    for obs in observations:
+        # The caller has already normalised the executor's untyped
+        # `observability` attribute into dicts, so there is nothing to
+        # re-check here; a str/other would be a caller bug, and the enclosing
+        # helper degrades it to an ungraded report rather than a crash.
+        name = obs.get("signal") or obs.get("metric_name") or obs.get("source_id")
+        if not isinstance(name, str) or not name:
+            continue
+        value = obs.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = float(value)
+        if not isfinite(number):
+            continue
+        readings[name] = number
+    return readings
+
+
+def _steady_state_for_run(
+    preflight: object,
+    run_id: str,
+    *,
+    store: Store,
+    bypasses: Mapping[tuple[str, str], str] | None = None,
+    baseline_from: str = "",
+    spec: SteadyStateSpec | None = None,
+    config: object | None = None,
+    during: Mapping[str, float | None] | None = None,
+) -> tuple[SteadyStateReport | None, str]:
+    """Evaluate a run's ``steady_state:`` block, never raising into the run.
+
+    Returns ``(report, display)``. A drill with no ``steady_state`` block, or a
+    capture that could not be taken, must not change the run's outcome — the
+    steady-state verdict is *evidence about the fault*, not a gate on the run.
+    Any failure here degrades to ``(None, "")`` with the reason surfaced by the
+    caller rather than an exception escaping mid-drill.
+
+    ``spec`` and ``config`` are the authored ``SteadyStateSpec`` and the
+    drill's observability config, carried from the compiled spec: both live on
+    the spec, not on the preflight, so a caller that has the spec passes it
+    rather than having this module go looking for a file that may since have
+    been edited. Both fall back to the preflight lookup for callers that
+    attach them there.
+    """
+    try:
+        from mayhem.cli.execution import evaluate_steady_state, steady_state_display
+
+        report = evaluate_steady_state(
+            spec if spec is not None else _steady_spec_from(preflight),
+            run_id=run_id,
+            config=_steady_config(preflight) if config is None else config,
+            store=_steady_store(store),
+            engine=str(getattr(preflight, "engine", "") or "podman"),
+            bypasses=bypasses,
+            baseline_from=baseline_from or None,
+            during=during,
+        )
+        return report, steady_state_display(report)
+    except Exception as exc:
+        return None, f"steady-state evaluation unavailable: {exc}"
+
+
+def _steady_spec_from(source: object) -> SteadyStateSpec | None:
+    """The authored ``SteadyStateSpec``, or None when there is none.
+
+    Accepts either the compiled ``DrillSpec`` itself or any object that carries
+    one under ``spec``/``drill_spec``. Nothing is inferred: a source with no
+    ``steady_state`` block yields None, and the caller then renders nothing.
+    """
+    from mayhem.domain.steady_state import SteadyStateSpec
+
+    for candidate in (
+        source,
+        getattr(source, "spec", None),
+        getattr(source, "drill_spec", None),
+    ):
+        value = getattr(candidate, "steady_state", None)
+        if isinstance(value, SteadyStateSpec):
+            return value
+    return None
+
+
+def _steady_config(preflight: object) -> object:
+    """The run's observability config, which declares the sources to read.
+
+    Never ``None`` when a spec is graded: the capture loop takes a config, and
+    an empty one produces a fully *ungraded* report — every assertion marked
+    insufficient, with the reason on screen — which is an honest report of
+    "nothing could be measured". Raising on a missing config instead would
+    lose that distinction and report an unavailable evaluation, which reads as
+    a broken tool rather than an undeclared source.
+    """
+    from mayhem.domain.observability import ObservabilityConfig
+
+    config = getattr(preflight, "config", None) or getattr(preflight, "observability", None)
+    return ObservabilityConfig() if config is None else config
+
+
+def _steady_store(store: Store) -> Store:
+    """The evidence store the verdict persists into.
+
+    Taken from the caller: this module never reaches for a global store, and a
+    steady-state verdict must land in the *same* store as the run it describes
+    or the evidence bundle and the evaluations table disagree.
+    """
+    return store
+
+
 def _write_evidence_after_run(
     *,
-    store: object,
+    store: Store,
     preflight: object,
     result: object,
     engine: str,
     evidence_dir: str | None,
     skip_gate: bool = False,
     intent: ExecutionIntent | None = None,
+    baseline_from: str = "",
+    steady_spec: SteadyStateSpec | None = None,
+    steady_config: object | None = None,
 ) -> EvidenceEnvelope | None:
 
     try:
@@ -691,15 +885,18 @@ def _write_evidence_after_run(
                     resolved_targets.append(
                         f"{target_data.get('namespace', '?')}/{target_data.get('pod') or target_data.get('node') or '?'}"
                     )
-        observations: tuple[dict[str, object], ...] = tuple(
-            getattr(result, "observability", []) or []
-        )
+        # The executor's ``observability`` is an untyped attribute, so the raw
+        # sequence is genuinely unknown-element; declaring it as a tuple of
+        # dicts would make the isinstance/else normalisation below provably
+        # dead code to the checker even though it is the live path.
+        raw_observations: tuple[object, ...] = tuple(getattr(result, "observability", []) or [])
+        observations: tuple[dict[str, object], ...]
         try:
             obs_list: list[dict[str, object]] = []
-            for item in observations:
+            for item in raw_observations:
                 if hasattr(item, "model_dump"):
                     try:
-                        obs_list.append(item.model_dump(mode="json"))  # type: ignore[call-arg]
+                        obs_list.append(item.model_dump(mode="json"))
                     except Exception:
                         obs_list.append({"raw": str(item)})
                 elif isinstance(item, dict):
@@ -714,7 +911,7 @@ def _write_evidence_after_run(
             v = getattr(result, "verdict", None)
             if v is not None and hasattr(v, "value"):
                 try:
-                    verdict = str(v.value)  # type: ignore[attr-defined]
+                    verdict = str(v.value)
                 except Exception:
                     verdict = str(v)
             else:
@@ -729,6 +926,24 @@ def _write_evidence_after_run(
             remediation = tuple(str(x) for x in raw_rem)
         except Exception:
             remediation = ()
+        # Plan 03: grade the authored steady-state hypothesis now that the run
+        # is finished. Evidence about the fault, never a gate on the run.
+        # ``baseline_from`` has already been proven usable by
+        # ``_require_baseline_reference`` before anything was injected, so the
+        # reuse below cannot degrade into a silent fresh capture.
+        _ss_report, _ss_display = _steady_state_for_run(
+            preflight,
+            run_id,
+            store=store,
+            baseline_from=baseline_from,
+            spec=steady_spec,
+            config=steady_config,
+            during=_steady_readings_from(observations),
+        )
+        _ss_payload = _ss_report.to_dict() if _ss_report is not None else None
+        if _ss_display:
+            for _line in _ss_display.splitlines():
+                click.echo(_line)
         envelope = build_evidence(
             run_id=run_id,
             plan=plan,
@@ -740,6 +955,7 @@ def _write_evidence_after_run(
             step_reports=step_reports,
             lease_timeline=leases,
             observations=observations,
+            steady_state=_ss_payload,
             verdict=str(verdict),
             recovery_state=str(recovery_state),
             remediation=remediation,
@@ -940,7 +1156,7 @@ def _suggest_next_cell(
         store.close()
 
 
-def _observation_provider_for(engine: str) -> object | None:
+def _observation_provider_for(engine: str) -> ObservationProvider | None:
     """Provider for read-only observation collection; ``None`` disables it."""
     from mayhem.providers.observation import StaticObservationProvider
 
@@ -949,7 +1165,9 @@ def _observation_provider_for(engine: str) -> object | None:
     return StaticObservationProvider()
 
 
-def _slo_from_plan(plan: object) -> tuple[tuple[object, ...], tuple[object, ...]]:
+def _slo_from_plan(
+    plan: object,
+) -> tuple[tuple[ObservationQuery, ...], tuple[SloCriterion, ...]]:
     """Extract observation queries and SLO criteria declared by the plan."""
     from mayhem.domain.observations import (
         CriterionKind,
@@ -1180,6 +1398,20 @@ def plan(
 @click.option(
     "--evidence-dir", type=click.Path(), default=None, help="Directory to write evidence artifacts."
 )
+@click.option(
+    "--baseline-from",
+    "baseline_from",
+    type=str,
+    default=None,
+    metavar="RUN_ID",
+    help=(
+        "Grade this run's steady_state block against a previous run's captured "
+        "baseline instead of capturing a fresh one (plan 03 step 6). The named "
+        "run must already have recorded steady-state evaluations; if it does "
+        "not, the run is refused rather than silently re-baselined. Omit the "
+        "flag for today's behaviour: capture a fresh baseline."
+    ),
+)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output preflight as JSON.")
 @click.argument("experiment", type=click.Path(), required=False, default=None)
 @click.pass_context
@@ -1196,6 +1428,7 @@ def run(
     plan_id: str | None,
     diff_path: str | None,
     evidence_dir: str | None,
+    baseline_from: str | None,
     as_json: bool,
 ) -> None:
     obj = _ctx(ctx)
@@ -1222,7 +1455,22 @@ def run(
                 "--ctr is not a Kubernetes target selector; use --target", ctx=ctx
             )
         _require_container(ctr, graph, ctx)
+    if baseline_from is not None and not (baseline_from or "").strip():
+        # `--baseline-from "$REF"` with an unset REF is the common way to reach
+        # here, and treating it as "no reference" would hand back a fresh
+        # capture to someone who believes they named a run. An empty value is
+        # named-but-nothing, so it is a usage error rather than an absence.
+        raise click.UsageError(
+            "--baseline-from needs a run id, but was given an empty value. "
+            "Quote it in scripts: an unset variable must fail loudly here "
+            "rather than degrade into a fresh capture",
+            ctx=ctx,
+        )
     store = open_store(obj.db)
+    # One spelling of the reference for the whole command: the guard, the
+    # evidence write, and the report all read this, so a whitespace-only value
+    # cannot pass the guard as "set" and then be dropped as "" on the way down.
+    reference = (baseline_from or "").strip()
     try:
         _sweep_before_run(store)
         if from_plan is not None or plan_id is not None:
@@ -1299,6 +1547,12 @@ def run(
                         preflight=preflight,
                         break_glass=not _gate_enabled(),
                     )
+                    # Before the engine exists: a reference that cannot be read
+                    # is refused here, not discovered after the fault is in.
+                    # A plan file carries no ``steady_state:`` block — it lives
+                    # on the spec, which a stored plan does not — so there is
+                    # nothing for the reference to grade.
+                    _require_baseline_reference(store, reference, None, ctx)
                     eng = engine_for(
                         store,
                         engine_name,
@@ -1336,6 +1590,7 @@ def run(
                         engine=engine_name,
                         evidence_dir=evidence_dir,
                         intent=plan_intent,
+                        baseline_from=reference,
                     )
                     click.echo(result.summary_md())
                     return
@@ -1403,6 +1658,9 @@ def run(
                     target=target_name,
                     preflight=preflight,
                 )
+                # A stored plan carries no ``steady_state:`` block, so the flag
+                # has nothing to grade here — same reason as --from-plan above.
+                _require_baseline_reference(store, reference, None, ctx)
                 eng = engine_for(
                     store,
                     engine_name,
@@ -1429,6 +1687,7 @@ def run(
                     engine=engine_name,
                     evidence_dir=evidence_dir,
                     intent=stored_intent,
+                    baseline_from=reference,
                 )
                 click.echo(result.summary_md())
                 return
@@ -1457,6 +1716,15 @@ def run(
                 style.info("info:") + f" --ctr scoped the plan to container {style.cyan(ctr)}",
                 err=True,
             )
+        # Resolved once, from the compiled spec, and threaded to both the guard
+        # and the post-run evaluation: the two must read the same block, or the
+        # reference could be validated against one spec and graded against
+        # another. Read defensively: a compiled plan handed in without the spec
+        # it was compiled from has no steady-state block to grade, and says so
+        # by rendering nothing.
+        authored = getattr(compiled, "spec", None)
+        steady_spec = _steady_spec_from(authored)
+        steady_config = getattr(authored, "observability", None)
         preflight = _preflight_for_run(
             graph=graph,
             store=store,
@@ -1526,6 +1794,10 @@ def run(
             for d in decisions:
                 click.echo(f"dry-run {d.rule_id}: {d.outcome} {d.reason} -> {d.remediation}")
             return
+        # After the dry-run return, before the engine: a preview must not be
+        # refused over a reference it never needed, and an executing run must
+        # not reach the target with an unusable one.
+        _require_baseline_reference(store, reference, steady_spec, ctx)
         skip_gate_used = not _gate_enabled()
         override = (
             os.getenv("MAYHEM_ALLOW_SKIP_GATE") == "1" or os.getenv("MAYHEM_BREAK_GLASS") == "1"
@@ -1571,6 +1843,9 @@ def run(
             evidence_dir=evidence_dir,
             skip_gate=skip_gate_used,
             intent=run_intent,
+            baseline_from=reference,
+            steady_spec=steady_spec,
+            steady_config=steady_config,
         )
         if obj.debug:
             trailer = [
@@ -1754,10 +2029,14 @@ def maniac(
                     err=True,
                 )
             else:
+                # ``DrillSpec``'s validator guarantees ``containers`` is
+                # non-empty whenever ``targets`` is absent; the ``or {}`` only
+                # keeps a statically-unprovable ``None`` from becoming a
+                # TypeError inside an f-string.
                 click.echo(
                     style.info("info:") + " maniac mode — no drill spec; synthesized config "
                     f"from compose topology "
-                    f"({len(synthesized.containers)} container(s)), "
+                    f"({len(synthesized.containers or {})} container(s)), "
                     f"{draws} random fault round(s) drawn",
                     err=True,
                 )
@@ -2208,9 +2487,12 @@ def janitor(ctx: click.Context, execute: bool, as_json: bool) -> None:
     try:
         janitor_service = Janitor(SQLiteLeaseSink(store))
         liveness = _run_liveness_resolver(store)
+        sweep: SweepResult | None
         if execute:
-            sweep: SweepResult = janitor_service.sweep(run_liveness=liveness, execute=True)
-            payload = {
+            sweep = janitor_service.sweep(run_liveness=liveness, execute=True)
+            # The rendered JSON carries the "execute" flag alongside the id
+            # lists, so the value type is genuinely heterogeneous.
+            payload: dict[str, Any] = {
                 "execute": True,
                 "expired": list(sweep.expired),
                 "recovered": list(sweep.recovered),
