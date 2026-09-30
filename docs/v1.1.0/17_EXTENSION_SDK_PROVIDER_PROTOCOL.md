@@ -1,0 +1,47 @@
+# Plan 17 — Extension SDK and Provider Protocol
+
+**Priority:** P1. Gap items 34, 35, 37, 74, 75.
+
+## Objective
+Allow Mayhem's execution ecosystem to grow without expanding the core codebase for every specialized injector.
+
+## Builds on
+- `providers/registry.py` plus `permissions.py` (default posture nothing), `protocols.py` (`ProviderRuntime`), `domain/provider.py` (permissions, capability descriptors, fault declarations, evidence schemas, API compatibility) stay the sandbox core — the SDK is a nicer authoring path onto this exact contract, not a second contract.
+- `providers/pack.py` validation (digest match, no shadowing, no path traversal, compensation required, unsigned-is-local-only) stays the loading gate; SDK-built providers pass through it unchanged.
+- Honesty note: SDK signing conveniences change nothing about verification — a built artifact's signature is NOT verified in this build, and any document discussing SDK signing must say so in the same breath.
+
+## Provider contract
+A provider declares: provider identity/version, fault types, targets,
+required capabilities, risk class, parameters/schema, execute function,
+compensation, verification, permissions, evidence mapping.
+
+## SDK languages
+Rust, Python, Go.
+
+## Security
+Extensions are untrusted by default. Require: signed artifacts (with
+the honesty note above), declared permissions, sandboxing where
+possible, capability dropping, network egress restrictions, SBOM.
+
+## Phase 1 — Domain model: declaration schema
+Stabilize `domain/provider.py` declarations as the versioned wire contract (`mayhem.provider/v1` family): fault declarations with parameter grammars, capability descriptors, permission sets, evidence-schema mappings, compatibility bounds. Pure data with schema tests. Acceptance: a provider built against v1 loads unchanged after core minor releases (compat test with a frozen fixture provider).
+
+## Phase 2 — Engine: loader and sandbox enforcement
+Harden `providers/loader.py` checks as the single enforcement point (digest, shadowing, traversal, declaration/definition agreement, compensation presence); add sandbox profiles (seccomp/AppArmor/SELinux, container isolation, filesystem and egress restrictions per gap 75) selected by declared permissions. The 37 "Mayhem-compatible provider" protocol is this declaration schema plus the 03 fabric command envelope — one protocol, two documents referencing it. Acceptance: a provider requesting undeclared capabilities is refused at load; a sandboxed provider attempting egress outside policy is denied with the denial in evidence.
+
+## Phase 3 — Surface: SDKs and permission UX
+Ship Rust/Python/Go SDKs generating declaration schemas from code (derive macros / decorators), plus the extension permission display (gap 74: what this extension CAN and CANNOT do, requiring explicit approval before install or execution). Acceptance: the examples/providers TestProvider reimplemented via each SDK with identical loaded registrations.
+
+## Phase 4 — Safety and evidence integration
+Provider actions participate in admission, blast accounting, damage quota, leases, and evidence exactly like native actions (the acceptance criterion that matters); provider faults enter the 01 certification pipeline with their provider version pinned in the matrix cell. Acceptance: a provider fault without compensation is refused at load (existing rule, new test per SDK).
+
+## Phase 5 — Tests, regression guards, negative controls
+SDK conformance suite (same provider, three SDKs, identical behavior), loader refusal tests (20+ refusal paths extended), sandbox escape-attempt tests, permission-display accuracy tests. Negative controls: a provider whose loaded behavior differs from its declarations is revoked; shadowing a built-in id fails loudly. Acceptance: full matrix green.
+
+## Phase 6 — Docs, honesty gates, rollout
+SDK guides per language, provider security model doc, marketplace-readiness checklist (feeds 18). Rollout: Python SDK first (closest to core), Rust and Go second, sandbox profiles third. Acceptance: no doc calls an SDK-built artifact trusted, verified, or signed without the same-breath disclaimer.
+
+## Dependencies
+03 (fabric envelope), 07 (permission/collision policy), 12 (evidence mapping), 18 (distribution), 19 (sandbox primitives, SBOM).
+
+## STATUS — planning only, 0%
