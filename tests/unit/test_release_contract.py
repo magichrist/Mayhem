@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).parents[2]
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-RELEASE_LINE = "0.9.0"
+RELEASE_LINE = "1.0.0"
 
 #: Oldest released version the checked-in changelog must still describe. Bump
 #: this floor when a release is tagged so a regeneration that silently drops
