@@ -46,7 +46,9 @@ dev = [
 # 0.8.0). A tag-push release always ships a clean version. Untagged local
 # builds fall back to the in-development release line below.
 source = "vcs"
-fallback-version = "0.9.0.dev0"
+# Only used when no git tag is reachable (exported tarballs, vendored copies).
+# It does NOT make a 1.0.0 release: the release version comes from the tag.
+fallback-version = "1.0.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mayhem"]
@@ -165,6 +167,11 @@ markers = [
 ]
 
 # --- import-linter -------------------------------------------------------------
+# Requires: `uv sync --group dev` (or `pip install import-linter`). The package
+# exposes `lint-imports`; run it from the repo root so it picks up this table:
+#     .venv/bin/lint-imports --config pyproject.toml
+# Nothing in the test suite shells out to it, so an environment without
+# import-linter installed is a gap here, not a collection failure.
 [tool.importlinter]
 root_packages = ["mayhem"]
 include_external_packages = true
