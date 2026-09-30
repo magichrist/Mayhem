@@ -1,11 +1,11 @@
-"""``mayhem explore`` — §3.1 command implementation.
+"""``mayhem experiment explore`` — §3.1 command implementation.
 
 Turn a window into highest-value, safety-gated, evidence-recorded chaos
 experiments across the stack, and report the coverage delta gained.
 
 Shape::
 
-    mayhem explore [drill.yaml] [--compose PATH] [--budget N] [--deadline DUR]
+    mayhem experiment explore [drill.yaml] [--compose PATH] [--budget N] [--deadline DUR]
                    [--seed N] [--supervised] [--dry-run] [--allow-critical]
                    [--json] [--quiet] [--no-color] [--db PATH] [--profile NAME]
 """
@@ -317,10 +317,10 @@ def explore(
 
     \b
     Examples:
-      mayhem explore --compose docker-compose.yml --execute
-      mayhem explore --dry-run --budget 5
-      mayhem explore --supervised --deadline 30m --execute
-      mayhem explore --json --quiet --execute
+      mayhem experiment explore --compose docker-compose.yml --execute
+      mayhem experiment explore --dry-run --budget 5
+      mayhem experiment explore --supervised --deadline 30m --execute
+      mayhem experiment explore --json --quiet --execute
     """
     if plan_only and execute:
         raise click.UsageError("--plan-only and --execute are mutually exclusive")

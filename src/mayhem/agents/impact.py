@@ -13,7 +13,7 @@ This module probes the live container once (read-only), decides per family
 whether the injection can physically take effect, and lets the planner gate
 refuse definitively inert faults before they ever execute. Requirements marked
 ``host=True`` are resolved against the drill host instead of the container —
-the container-tooling probe and ``mayhem dependency install`` never see them.
+the container-tooling probe and ``mayhem prepare dependencies install`` never see them.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class FaultRequirement:
 
     ``host=True`` moves the ``bins`` check to the drill host (e.g. ``k6`` for
     ``net.load`` — host-side load generator, not container tooling). The
-    container probe and ``mayhem dependency install`` ignore host requirements.
+    container probe and ``mayhem prepare dependencies install`` ignore host requirements.
     """
 
     bins: frozenset[str] = frozenset()
@@ -222,7 +222,7 @@ _PROBE_BINS: tuple[str, ...] = (
 )
 
 #: Host-side tooling required by some fault family, checked once via
-#: ``shutil.which`` (cached). Container ``mayhem dependency`` only reports these,
+#: ``shutil.which`` (cached). Container ``mayhem prepare dependencies`` only reports these,
 #: never installs them.
 _HOST_TOOL_BINS: tuple[str, ...] = ("k6",)
 
@@ -314,7 +314,7 @@ def _host_bin_present(name: str) -> bool:
 def host_tooling_gaps(plan: ExecutionPlan) -> list[str]:
     """Host-side binaries the plan needs but the drill host lacks (e.g. k6).
 
-    Container ``mayhem dependency`` reports these but never installs them —
+    Container ``mayhem prepare dependencies`` reports these but never installs them —
     the load generator lives on the host, not in a distro package.
     """
     needed: set[str] = set()

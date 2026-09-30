@@ -324,7 +324,7 @@ def _kubernetes_discovery_graph(
 ) -> TopologyGraph:
     """Discover the topology from the live cluster (``--kubernetes`` engine).
 
-    Mirrors the kubernetes branch of ``mayhem topology discover``: the graph
+    Mirrors the kubernetes branch of ``mayhem discover topology``: the graph
     is kubeconfig/context driven and needs no compose blueprint. Raises
     ``ValueError`` so callers that wrap it (``_graph_from``) surface a usable
     usage error when the SDK is missing or the cluster is unreachable.

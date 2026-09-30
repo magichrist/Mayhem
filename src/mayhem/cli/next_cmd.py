@@ -1,11 +1,11 @@
-"""``mayhem next`` — §3.2 command implementation.
+"""``mayhem inspect next`` — §3.2 command implementation.
 
 Answer the one question a solo user asks before every session:
 *what should I test next?*
 
 Shape::
 
-    mayhem next [drill.yaml] [--compose PATH] [--limit N] [--seed N]
+    mayhem inspect next [drill.yaml] [--compose PATH] [--limit N] [--seed N]
                 [--explain] [--json] [--quiet] [--no-color]
                 [--db PATH] [--profile NAME]
 """

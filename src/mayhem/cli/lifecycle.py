@@ -226,9 +226,10 @@ def _echo_install_hints(engine_name: str, plan: object, graph: object) -> None:
 
     Detects each container's package manager from the live probe (apt-get /
     apk / dnf / yum / microdnf / zypper), prints the concrete ``engine exec``
-    command that restores the tooling, and points at ``mayhem dependency
-    install`` — which runs the same commands automatically. Probe or detection
-    hiccups must never fail the run: the whole helper degrades to a no-op.
+    command that restores the tooling, and points at ``mayhem prepare
+    dependencies install`` — which runs the same commands automatically. Probe
+    or detection hiccups must never fail the run: the whole helper degrades to
+    a no-op.
     """
     from mayhem.agents.impact import dependency_plan as _dep_plan
     from mayhem.agents.impact import host_tooling_gaps as _host_gaps
@@ -279,7 +280,7 @@ def _echo_install_hints(engine_name: str, plan: object, graph: object) -> None:
                 err=True,
             )
     click.echo(
-        f"  {style.cyan('mayhem dependency install')} applies the above automatically.",
+        f"  {style.cyan('mayhem prepare dependencies install')} applies the above automatically.",
         err=True,
     )
 

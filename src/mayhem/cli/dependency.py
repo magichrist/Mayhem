@@ -1,4 +1,4 @@
-"""``mayhem dependency`` — inspect and install fault-tooling dependencies.
+"""``mayhem prepare dependencies`` — inspect and install fault-tooling dependencies.
 
 The impact gate ([bypass] ``... missing bin:python``) refuses faults whose
 in-image tooling is proven absent. This command group closes that gap:
@@ -11,7 +11,7 @@ in-image tooling is proven absent. This command group closes that gap:
 Capabilities (``cap:NET_ADMIN``) and uid(0) requirements are *not* packages —
 they are runtime flags (``--cap-add``, root exec) and are reported as guidance,
 never installed. Host-side tooling (``net.load`` → k6 on the drill host) is
-reported by ``check`` but never installed: ``mayhem dependency`` manages
+reported by ``check`` but never installed: ``mayhem prepare dependencies`` manages
 container compatibility only.
 """
 
@@ -152,7 +152,7 @@ def check(ctx: click.Context, experiment: str | None, compose: str | None) -> No
         click.echo(
             f"  host: {style.yellow('missing')} {name}"
             " — runs on the drill host, not in a container; install it on the"
-            " host (mayhem dependency manages containers only)"
+            " host (mayhem prepare dependencies manages containers only)"
         )
     if not installable_gaps and not host_gaps:
         parts = []

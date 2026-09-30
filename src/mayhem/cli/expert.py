@@ -1,10 +1,10 @@
-"""``mayhem expert`` — diagnostic expert system command.
+"""``mayhem inspect expert`` — diagnostic expert system command.
 
 Runs config probes, analyzes failed runs, and suggests next actions.
 
 Shape::
 
-    mayhem expert [--compose PATH] [--run RUN_ID] [--json] [--quiet] [--no-color]
+    mayhem inspect expert [--compose PATH] [--run RUN_ID] [--json] [--quiet] [--no-color]
                   [--db PATH] [--profile NAME]
 """
 

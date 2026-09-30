@@ -1,4 +1,4 @@
-"""``mayhem coverage`` — one coverage vocabulary for humans and JSON."""
+"""``mayhem inspect coverage`` — one coverage vocabulary for humans and JSON."""
 
 from __future__ import annotations
 
