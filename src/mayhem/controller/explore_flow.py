@@ -25,6 +25,8 @@ from mayhem.infra.maniac import coverage_cell_for_candidate
 from mayhem.infra.ranking import rank_resilience_cells
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mayhem.controller.cell_runner import CellRunner, CellRunResult
     from mayhem.domain.candidates import ExperimentCandidate
     from mayhem.domain.coverage import CoverageCell, ResilienceCell
@@ -170,7 +172,7 @@ def run_explore(
     deadline_epoch: float | None = None,
     supervised: bool = False,
     gate_pipeline: object | None = None,
-    approve_fn: object | None = None,
+    approve_fn: Callable[[ExperimentCandidate], bool] | None = None,
 ) -> ExploreRun:
     """Execute the explore loop: generate → gate → (approve) → execute.
 
@@ -233,7 +235,11 @@ def run_explore(
             denied.append(decision)
             result = runner.record_blocked(
                 candidate,
-                reason=f"{decision.gate.value}: {decision.reason}",
+                # ``gate`` is optional on the model; every producer of a
+                # REJECTED decision sets it, so the fallback is unreachable
+                # and only keeps a representable-but-absent gate from
+                # raising AttributeError mid-queue.
+                reason=f"{decision.gate.value if decision.gate else 'unknown'}: {decision.reason}",
             )
             blocked.append(result)
             continue
