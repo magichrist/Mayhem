@@ -57,10 +57,12 @@ def test_plan_only_commands_never_build_an_engine(tmp_path, monkeypatch) -> None
         json.dumps({"name": "s", "variables": [], "steps": [{"id": "a", "action": {}}]})
     )
     from mayhem.domain.evidence_bundle import build_bundle
+    from mayhem.infra.evidence_bundle_io import write_bundle
 
-    bundle_dir = build_bundle(
-        evidence={"run_id": "r1", "redaction_metrics": {"policy_version": "1"}}
-    ).write(tmp_path / "bundle")
+    bundle_dir = write_bundle(
+        build_bundle(evidence={"run_id": "r1", "redaction_metrics": {"policy_version": "1"}}),
+        tmp_path / "bundle",
+    )
     substitutions = {"SCENARIO": str(scenario), "BUNDLE": str(bundle_dir)}
     app = _app()
     for group, command, positionals, extra in PLAN_ONLY_COMMANDS:

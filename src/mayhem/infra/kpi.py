@@ -15,7 +15,10 @@ run / outcome / coverage rows.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +56,7 @@ def probability_critical_evidence(
     for row in covered_rows:
         level = row.get("risk_level")
         if level is None and risk_of is not None:
-            level = risk_of(row.get("fault_kind", ""))  # type: ignore[call-arg]
+            level = risk_of(row.get("fault_kind", ""))
         if str(level).strip().lower() in {"critical", "catastrophic"}:
             critical += 1
     return critical / len(covered_rows)
@@ -93,8 +96,6 @@ def kpis_from_store(db: str | Path) -> dict[str, Any]:
     adding tables. Kept thin so the pure functions above stay the source of
     truth.
     """
-    import sqlite3
-
     path = Path(db)
     if not path.exists():
         raise FileNotFoundError(f"store does not exist: {path}")
@@ -146,9 +147,6 @@ def kpis_from_store(db: str | Path) -> dict[str, Any]:
 
 def _main(argv: list[str] | None = None) -> int:
     """``python -m mayhem.infra.kpi [--db PATH]`` — self-serve one-liner."""
-    import argparse
-    import sys
-
     parser = argparse.ArgumentParser(prog="python -m mayhem.infra.kpi")
     parser.add_argument("--db", default="mayhem.db", help="store path (default: mayhem.db)")
     parser.add_argument("--json", action="store_true", help="emit JSON lines")

@@ -12,13 +12,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.target_profiles import TargetProfile
 from mayhem.infra.migrations import ALL_MIGRATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mayhem.domain.leases import FaultLease
+    from mayhem.domain.target_profiles import TargetProfile
 
 
 class DiagnosticSeverity(StrEnum):

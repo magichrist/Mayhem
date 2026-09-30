@@ -267,6 +267,19 @@ def report_id_for_run(run_id: str) -> str:
     return f"report-{safe}"
 
 
+def artifact_name(run_id: str, kind: str) -> str:
+    """The on-disk file name for a run's evidence artifact.
+
+    Lives here rather than in ``mayhem.cli.execution`` because both the CLI and
+    :func:`mayhem.infra.evidence.write_evidence_file` need it, and ``infra`` must
+    not reach upward into ``cli`` to get it (layered-architecture contract).
+    """
+    safe = "".join(
+        character if character.isalnum() or character in "-_" else "_" for character in run_id
+    )
+    return f"{safe}__{kind}.json"
+
+
 def redact_report_data(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -486,7 +499,10 @@ def write_report_artifacts(
     # v0.9.0: the artifact writers are the last gate before bytes hit disk, so
     # redaction is enforced here too — a directly-constructed envelope must not
     # be able to smuggle a secret into a report file.
-    from mayhem.infra.evidence import redact_envelope
+    # Lazy: mayhem.infra.evidence imports report_id_for_run from this module at
+    # import time, so a top-level import here would be a circular import. The
+    # dependency is genuinely one-directional at call time.
+    from mayhem.infra.evidence import redact_envelope  # noqa: PLC0415
 
     envelope = redact_envelope(envelope)
     report_id = _report_id(envelope)
@@ -516,7 +532,7 @@ def compare_reports(
     after: EvidenceEnvelope,
 ) -> dict[str, Any]:
     def changed(left: Any, right: Any) -> bool:
-        return left != right
+        return bool(left != right)
 
     return {
         "before_report_id": _report_id(before),

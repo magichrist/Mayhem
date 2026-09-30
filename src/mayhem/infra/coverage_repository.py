@@ -17,7 +17,8 @@ read them back; ``summary`` counts per state.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.catalog import all_definitions
 from mayhem.domain.common import utc_now
@@ -417,8 +418,6 @@ class CoverageGraphRepository:
         self._store = store
 
     def record_node(self, node: CoverageNode) -> None:
-        from datetime import UTC, datetime
-
         with self._store.write() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO coverage_graph_nodes (node_id, service, fault_family, "
@@ -449,7 +448,7 @@ class CoverageGraphRepository:
             written += 1
         return written
 
-    def records_from_coverage(self) -> list[dict]:
+    def records_from_coverage(self) -> list[dict[str, Any]]:
         """Project the existing ``m5_coverage`` rows into graph records.
 
         Read-only: the five-state coverage table is never written here, so its
@@ -459,7 +458,7 @@ class CoverageGraphRepository:
             "SELECT target, fault_kind, execution_context, parameter_band, covered, "
             "state, block_reason FROM m5_coverage"
         )
-        records: list[dict] = []
+        records: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             state = str(item.get("state") or "")
@@ -545,7 +544,7 @@ class CoverageGraphRepository:
         return CoverageDelta.between(before, self.graph())
 
 
-def _node_kwargs(payload: dict) -> dict:
+def _node_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "service",
         "fault_family",

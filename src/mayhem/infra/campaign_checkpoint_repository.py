@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
 from mayhem.domain.campaign_checkpoint import CampaignCheckpoint, CheckpointState
-from mayhem.infra.store import Store
+
+if TYPE_CHECKING:
+    from mayhem.infra.store import Store
 
 
 class CampaignCheckpointRepository:
@@ -68,6 +73,4 @@ class CampaignCheckpointRepository:
 
 
 def _now() -> str:
-    from datetime import UTC, datetime
-
     return datetime.now(UTC).isoformat()

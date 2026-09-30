@@ -16,7 +16,7 @@ from mayhem.domain.faults import FaultCategory
 from mayhem.domain.risks import RiskLevel
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 
 # §7.2 weights.
@@ -39,10 +39,16 @@ class RankInputs:
 
 
 @dataclass(frozen=True)
-class RankedCell:
-    """A cell with its deterministic score and the --explain factors."""
+class RankedCell[CellT]:
+    """A cell with its deterministic score and the --explain factors.
 
-    cell: CoverageCell | ResilienceCell
+    Generic over the cell type so ``rank_resilience_cells`` can promise it
+    yields :class:`ResilienceCell` payloads, not the union: it is only ever
+    handed resilience cells, and callers (``next_cells``) read ``.cell`` as
+    one.
+    """
+
+    cell: CellT
     score: float
     factors: dict[str, float] = field(default_factory=dict)
     next_rationale: str = ""
@@ -65,8 +71,8 @@ def score(inputs: RankInputs) -> float:
 
 
 def _information_value(
-    cell: CoverageCell,
-    cells: tuple[CoverageCell, ...],
+    cell: CoverageCell | ResilienceCell,
+    cells: Sequence[CoverageCell | ResilienceCell],
     division_map: Mapping[str, int],
 ) -> float:
     """§7.2 I(cell): 1.0 baseline for never-tested cells, adjusted by the
@@ -81,18 +87,20 @@ def _information_value(
     return baseline + variety_bonus - sibling_penalty
 
 
-def _diversity(cell: CoverageCell, division_map: Mapping[str, int]) -> float:
+def _diversity(cell: CoverageCell | ResilienceCell, division_map: Mapping[str, int]) -> float:
     """§7.2 D(cell): 1/(1+covered cells in the same fault category)."""
     category = FaultCategory.from_fault_id(cell.fault_kind).value
     return 1.0 / (1.0 + division_map.get(category, 0))
 
 
-def _default_risk_rank(cell: CoverageCell, risk_map: Mapping[str, RiskLevel]) -> int:
+def _default_risk_rank(
+    cell: CoverageCell | ResilienceCell, risk_map: Mapping[str, RiskLevel]
+) -> int:
     return risk_map.get(cell.fault_kind, RiskLevel.MEDIUM).rank
 
 
 def _recall_bonus(
-    cell: CoverageCell,
+    cell: CoverageCell | ResilienceCell,
     failed_targets: frozenset[str],
     failed_faults: frozenset[str],
 ) -> float:
@@ -114,8 +122,8 @@ def _recall_bonus(
     return 0.0
 
 
-def rank(
-    cells: tuple[CoverageCell, ...] | list[CoverageCell],
+def rank[CellT: CoverageCell | ResilienceCell](
+    cells: Sequence[CellT],
     *,
     state_map: Mapping[str, CellState],
     division_map: Mapping[str, int],
@@ -123,7 +131,7 @@ def rank(
     risk_map: Mapping[str, RiskLevel],
     failed_targets: frozenset[str] = frozenset(),
     failed_faults: frozenset[str] = frozenset(),
-) -> tuple[RankedCell, ...]:
+) -> tuple[RankedCell[CellT], ...]:
     """Rank ``cells`` deterministically, unknown cells only.
 
     A cell ranks iff its key is absent from ``state_map`` (missing = unknown
@@ -135,7 +143,7 @@ def rank(
     a target or fault_kind with recent failures receive a small recall bonus
     (session memory, feat-2 §5).
     """
-    ranked: list[RankedCell] = []
+    ranked: list[RankedCell[CellT]] = []
     for cell in cells:
         if state_map.get(cell.key) is not None:
             continue
@@ -171,7 +179,7 @@ def rank_resilience_cells(
     risk_map: Mapping[str, RiskLevel] | None = None,
     failed_targets: frozenset[str] = frozenset(),
     failed_faults: frozenset[str] = frozenset(),
-) -> tuple[RankedCell, ...]:
+) -> tuple[RankedCell[ResilienceCell], ...]:
     """Rank enriched cells while preserving the original cell records."""
     effective_risk_map = dict(risk_map or {})
     for cell in cells:

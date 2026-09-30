@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mayhem.domain.candidates import CandidateGate
 from mayhem.domain.coverage import CoverageCell
@@ -136,7 +136,9 @@ class M5CampaignEngine:
         self.recovery_status = "resumed"
 
     def plan(self) -> CampaignExecutionManifest:
-        source_candidates = getattr(self._source, "candidates", None)
+        # ``_source`` is duck-typed (a candidate provider or a plain sequence),
+        # so the resolved candidate list is genuinely untyped here.
+        source_candidates: Any = getattr(self._source, "candidates", None)
         if source_candidates is None:
             source_candidates = getattr(self._source, "_items", ())
         entries = tuple(

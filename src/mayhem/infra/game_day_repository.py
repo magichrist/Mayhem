@@ -7,8 +7,13 @@ a campaign status imply a session approval.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
 from mayhem.domain.game_day import GameDaySession
-from mayhem.infra.store import Store
+
+if TYPE_CHECKING:
+    from mayhem.infra.store import Store
 
 
 class GameDayRepository:
@@ -55,6 +60,4 @@ class GameDayRepository:
 
 
 def _now() -> str:
-    from datetime import UTC, datetime
-
     return datetime.now(UTC).isoformat()
