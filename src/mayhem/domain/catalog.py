@@ -611,9 +611,19 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.NET_ADMIN}),
         applicable_node_kinds=frozenset({NodeKind.EXTERNAL_DEPENDENCY, NodeKind.SERVICE}),
         max_duration_s=300.0,
+        # ``port`` was absent until v1.1.0 Phase 3: the compensation hardcoded
+        # 3306, so the family could not be aimed at Postgres (5432) or SQL
+        # Server (1433) at all. It mirrors ``db.query_error``'s schema exactly.
         params_schema=(
             _S,
             ParamSpec(name="mode", type=ParamType.STRING, default="latency", min_length=3),
+            ParamSpec(
+                name="port",
+                type=ParamType.INTEGER,
+                minimum=1,
+                maximum=65535,
+                default=3306,
+            ),
         ),
         observable_effect="the database dependency answers slowly instead of failing fast",
     ),
@@ -731,7 +741,16 @@ CATALOG: tuple[FaultDefinition, ...] = (
         required_caps=frozenset({Capability.NET_ADMIN}),
         applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.HOST}),
         max_duration_s=300.0,
-        params_schema=(ParamSpec(name="domain", type=ParamType.STRING),),
+        # RENAME HONESTY: the id says NXDOMAIN but the mechanism writes
+        # ``<address> <domain>`` into /etc/hosts, so the resolver answers from
+        # the hosts file rather than returning RCODE 3. ``address`` makes the
+        # answer's target explicit (a hosts-file NXDOMAIN substitute has to
+        # point somewhere); 127.0.0.1 is the original hardcoded value, so the
+        # common case is byte-identical to what shipped.
+        params_schema=(
+            ParamSpec(name="domain", type=ParamType.STRING),
+            ParamSpec(name="address", type=ParamType.STRING, default="127.0.0.1", min_length=1),
+        ),
     ),
     _define(
         id="tls.certificate_expired",
@@ -1042,6 +1061,12 @@ CATALOG: tuple[FaultDefinition, ...] = (
                 default=100.0,
             ),
             ParamSpec(name="port", type=ParamType.INTEGER, minimum=1, maximum=65535, default=80),
+            # Operator-chosen body for the truncated response. ``ParamSpec`` has
+            # no max_length and no pattern, so the byte-safety rules live in
+            # ``controller.compensation._http_body`` and are enforced at plan
+            # time; absent or empty, the axis is inert and the emitted proxy is
+            # byte-identical to the pre-existing one.
+            ParamSpec(name="body", type=ParamType.STRING, min_length=1),
         ),
         observable_effect="the response declares more bytes than it delivers, then closes",
     ),

@@ -57,4 +57,14 @@ Update the Kubernetes status vocabulary in docs/README.md (a new "live execution
 ## Dependencies
 01 (live cells), 03 (fabric/agents), 07 (policy dimensions), 08 (API backing the plugin), 09 (RBAC/approvals).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/k8s_targets.py` landed `K8sSelector` (name, namespace, labels, annotations, workload kind/name, node, zone/region, and `one`/`all`/`count`/`percentage`/`random` selection with an *injected* seed), `WorkloadFacts` (replicas, PDB `minAvailable`/`maxUnavailable`, readiness/liveness, workload-kind semantics, anti-affinity, topology spread, cluster health), `K8sAdmissionVerdict`, and the six pure refusal rules — the PDB rule shows its arithmetic ("replicas=10, PDB minAvailable=8, requested kill 4 → DENY, expected availability after fault = 6, PDB requires >= 8"); unresolved candidates land as drift, manifest blueprint placeholders are never live-eligible, and an empty selection is explicit; 74 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.
+
+Known limitation: **nothing reads any of it yet.** `agents/k8s_resolve.py` still owns the live 5-step flow unchanged and `controller/safety.py` has no Kubernetes admission check, so these types are vocabulary with no call site until Phase 2 wires them. The live resolution flow is deliberately *not* duplicated here — the selector consumes `ResolvedPodTarget` records rather than re-implementing discovery. Node-scoped selection (`k8s.node_drain` / `k8s.node_pressure`) is not modelled: it stays with `resolve_node` and `ResolvedNodeTarget`.

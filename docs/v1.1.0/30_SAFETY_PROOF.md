@@ -57,13 +57,13 @@ Proof-reading guide (what each line means and where its citation lives), residue
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/safety_proof.py` landed `Obligation`, `ResidueObligation` with its `discharge()` path, and `SafetyProof` whose verdict is stored but re-derived on every read, with the `evaluate`/`is_valid`/`voided` predicates; 45 tests.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/safety_proof.py` landed `compile_safety_proof`, which runs the real `validate_plan`, `check_fault_admission`, `check_blast_radius`, `pre_exec_assertion`, the plan-07 policy gate, the capability derivation plus the adapter, `require_execution_intent`, and the plan-14 prediction against the frozen plan, and cites each gate output's digest on its line; the never-more-permissive rule is structural (every refusable rule id is mapped to an owning line by `OBLIGATION_FOR_RULE`, and an unmapped one voids the proof); 58 tests.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
 Known limitations — two deviations the implementer flagged, both deliberate and both binding on Phase 2:
 - **Gate digests are bound to 64-char lowercase sha256 hex.** `_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")` and every citation goes through `_require_digest`. The rationale is that `hashing.sha256_hex` is the project's single definition of "same input", so a gate output that cannot be named by one of these digests did not actually run. A Phase 2 compiler that emits a citation in any other form (uppercase, a prefix, a different algorithm) is refused, not normalised.

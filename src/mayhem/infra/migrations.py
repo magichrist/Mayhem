@@ -723,6 +723,157 @@ M0021_GAME_DAY_SESSIONS = Migration(
 )
 
 
+# Plan 12 Phase 2 — attestation sealing + retention.
+#
+# Id note: several agents append migrations during the v1.1.0 wave and the
+# migrator keys on ``version`` alone, so ids collided here and were handed back
+# and forth. Resolution: 22 is M0022_SECRET_GRANTS (earlier claimant), 23 is
+# this one. Ordering in ALL_MIGRATIONS below and contiguity 1..23 are what
+# ``test_migrations_run_once`` (schema_version == len(ALL_MIGRATIONS)) requires;
+# re-check both if a third migration lands alongside.
+M0023_ATTESTATION_RETENTION = Migration(
+    version=23,
+    name="attestation_retention",
+    statements=(
+        """
+        CREATE TABLE attestation_chains (
+            run_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL,
+            chain_root TEXT NOT NULL,
+            event_count INTEGER NOT NULL,
+            first_event_id TEXT NOT NULL DEFAULT '',
+            last_event_id TEXT NOT NULL DEFAULT '',
+            sealed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_attestation_chains_created ON attestation_chains(created_at)",
+        """
+        CREATE TABLE attestation_events (
+            run_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            chain_link TEXT NOT NULL,
+            previous_digest TEXT NOT NULL DEFAULT '',
+            recorded_at TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, sequence)
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_attestation_events_identity"
+        " ON attestation_events(run_id, event_id)",
+        "CREATE INDEX idx_attestation_events_digest ON attestation_events(digest)",
+        """
+        CREATE TABLE attestation_manifests (
+            manifest_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            manifest_digest TEXT NOT NULL,
+            signature_state TEXT NOT NULL,
+            signature_reason TEXT NOT NULL DEFAULT '',
+            signer_identity TEXT NOT NULL DEFAULT '',
+            trust_root_ref TEXT NOT NULL DEFAULT '',
+            retention_class TEXT NOT NULL,
+            event_count INTEGER NOT NULL,
+            previous_manifest_digest TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            manifest_json TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_attestation_manifests_run"
+        " ON attestation_manifests(run_id, created_at)",
+        """
+        CREATE TABLE evidence_retention (
+            manifest_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            retention_class TEXT NOT NULL,
+            state TEXT NOT NULL,
+            legal_hold INTEGER NOT NULL DEFAULT 0,
+            hold_reason TEXT NOT NULL DEFAULT '',
+            expires_at TEXT,
+            manifest_digest TEXT NOT NULL DEFAULT '',
+            policy_version TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_evidence_retention_due ON evidence_retention(state, expires_at)",
+        """
+        CREATE TABLE retention_tombstones (
+            tombstone_id TEXT PRIMARY KEY,
+            manifest_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            manifest_digest TEXT NOT NULL,
+            retention_class TEXT NOT NULL,
+            requester TEXT NOT NULL,
+            approver TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            backend TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_retention_tombstones_manifest"
+        " ON retention_tombstones(manifest_id)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_retention_tombstones_manifest",
+        "DROP TABLE retention_tombstones",
+        "DROP INDEX idx_evidence_retention_due",
+        "DROP TABLE evidence_retention",
+        "DROP INDEX idx_attestation_manifests_run",
+        "DROP TABLE attestation_manifests",
+        "DROP INDEX idx_attestation_events_digest",
+        "DROP INDEX idx_attestation_events_identity",
+        "DROP TABLE attestation_events",
+        "DROP INDEX idx_attestation_chains_created",
+        "DROP TABLE attestation_chains",
+    ),
+)
+
+
+# Plan 29 Phase 2 — late secret resolution: grant records only.
+#
+# This table holds *permissions*, never values. That is not an oversight to be
+# fixed later, it is the schema's central claim: there is no column a credential
+# value could occupy, so no code path can persist one through this repository
+# even if a future author tries. `environments_json` and `scopes_json` are
+# globs evaluated by `domain.secrets`; expiry is enforced against an explicit
+# clock rather than by a WHERE clause, so an expired grant stays readable as
+# evidence that a permission once existed.
+#
+# Id note: 21 is the committed head, so 22 is the lowest free id above it and
+# the only one that keeps ``test_migration_versions_are_contiguous_ascending``
+# green. A concurrent v1.1.0 agent is oscillating its own attestation migration
+# between 22 and 23 while this file is open; if it settles back on 22 the two
+# must be renumbered together at integration time. The migrator keys on
+# ``version`` alone and refuses duplicates outright ("migrations must be
+# strictly increasing"), so a collision is a loud startup failure rather than a
+# silent overwrite.
+M0022_SECRET_GRANTS = Migration(
+    version=22,
+    name="secret_grants",
+    statements=(
+        """
+        CREATE TABLE secret_grants (
+            principal TEXT NOT NULL,
+            credential_pattern TEXT NOT NULL,
+            environments_json TEXT NOT NULL DEFAULT '[]',
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            expires_at TEXT NOT NULL,
+            issued_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (principal, credential_pattern)
+        )
+        """,
+        "CREATE INDEX idx_secret_grants_expiry ON secret_grants(expires_at)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_secret_grants_expiry",
+        "DROP TABLE secret_grants",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -745,4 +896,6 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0019_COVERAGE_GRAPH,
     M0020_CAMPAIGN_CHECKPOINTS,
     M0021_GAME_DAY_SESSIONS,
+    M0022_SECRET_GRANTS,
+    M0023_ATTESTATION_RETENTION,
 )

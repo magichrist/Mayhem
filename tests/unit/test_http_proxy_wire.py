@@ -150,6 +150,45 @@ class TestCannedResponsesOnTheWire:
         assert b"Retry-After: 45" in head
 
 
+class TestOperatorBodyOnTheWire:
+    """``http.response_truncate{body: ...}`` — the operator's bytes, actually
+    delivered, with a Content-Length that agrees with them.
+
+    Everything about this axis is decided at plan time, which is exactly the
+    "green tests, broken behaviour" shape: a Content-Length that is off by the
+    difference between characters and bytes does not truncate, it hangs, and the
+    request below times out rather than returning a wrong-but-plausible body.
+    """
+
+    def test_the_body_is_delivered_and_still_truncated(self, proxy_factory) -> None:
+        body = b'{"items": [1, 2, 3], "partial": tr'
+        out = proxy_factory(
+            status=200, declared=len(body) + 4096, send_bytes=len(body), body=body
+        ).request()
+        head, _, delivered = out.partition(b"\r\n\r\n")
+        assert f"Content-Length: {len(body) + 4096}".encode() in head
+        assert delivered == body
+
+    def test_a_binary_body_survives_intact(self, proxy_factory) -> None:
+        """Every non-printable byte class, so an escaping bug in the literal
+        would show up as changed bytes rather than as a compile error."""
+        body = bytes(range(32)) + b"tail"
+        out = proxy_factory(
+            status=200, declared=len(body) + 64, send_bytes=len(body), body=body
+        ).request()
+        assert out.partition(b"\r\n\r\n")[2] == body
+
+    def test_the_declared_length_is_exactly_the_body_length(self, proxy_factory) -> None:
+        """A response that declares what it delivers is not a truncation, so the
+        declared length has to be checked against the body the client receives."""
+        body = b"12345"
+        out = proxy_factory(
+            status=200, declared=len(body), send_bytes=len(body), body=body
+        ).request()
+        head, _, delivered = out.partition(b"\r\n\r\n")
+        assert int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0]) == len(delivered)
+
+
 class TestStreamStallOnTheWire:
     """Stall the client after the response head, prove the body is held back."""
 

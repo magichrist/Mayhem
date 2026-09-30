@@ -57,4 +57,12 @@ Identity configuration guide, RBAC role reference, approval policy examples. Rol
 ## Dependencies
 08 (API/CLI surfaces), 12 (sealed audit trail), 16 (ticket linking), 19 (agent identities, mTLS).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `Principal`/`TeamMembership`/`EnvironmentScope`/`Role`/`RoleGrant` in `domain/identity.py`, plus `domain/approval.py` (`Approval`, `ApprovalState`, `InvalidationReason`) and the pure `evaluate_approvals` predicate that enumerates every invalidation trigger
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

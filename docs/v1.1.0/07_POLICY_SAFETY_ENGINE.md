@@ -56,12 +56,12 @@ consumes evaluation).
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/policy.py` was extended in place with `PolicyRule`, `PolicyFacts`, `PolicyBundle`, `PolicyDecision`, precedence and inheritance as pure functions (`resolve_precedence`, `inherited_rules`, `effective_rules`, `evaluate_rules`, `evaluate_bundle`), the five-level `BudgetNode` hierarchy (team → environment → service → experiment → fault), `ResourceLock` with `lock_conflicts`/`acquire_lock`/`blocking_locks`, and `CompatibilityEdge`; 57 new tests.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/policy_gate.py` evaluates a `PolicyBundle` against plan-derived `PolicyFacts` inside `validate_plan` (one optional `SafetyContext.policy_gate` field; a DENY refuses naming the rule, an ALLOW records a decision); resource locks, hierarchical budget charges, and the fault-pair compatibility graph are consulted at admission, approval requirements are surfaced without being enforced, and `simulate_gate` returns the same decision with provably zero mutation; 36 tests.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
-Known limitation: **nothing reads any of it yet.** `controller/safety.py` still evaluates the older `PolicyCfg` denylist/allowlist/risk-ceiling checks and never imports `mayhem.domain.policy`'s new types. Phase 1 put the rules in the domain; Phase 2 is what wires evaluation to them, so until then this is vocabulary with no call site.
+Known limitation: **the gate reads bundles but nothing authors, stores, or selects one yet.** There is no policy store, no bundle loader, and no CLI surface: a `SafetyContext` gets a `PolicyGateInputs` only if a caller constructs one, so in production today every run still reaches the gate with `policy_gate=None` and the config-policy path alone decides. Two further gaps Phase 2 deliberately left: the `OPA/Rego` delegate is not wired (native model only), and budget charges are *computed* but never *posted* — `probe_budget` returns what a commit would write and spends nothing, because posting to the ledger hierarchically is Phase 4. Phase 3 owns authoring and the `explain` output; Phase 4 owns committing.

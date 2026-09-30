@@ -138,4 +138,6 @@ def test_name_snapshot_is_stable() -> None:
         "coverage_graph",
         "campaign_checkpoints",
         "game_day_sessions",
+        "secret_grants",
+        "attestation_retention",
     ), "migration name sequence drifted from the snapshot — append-only."

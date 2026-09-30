@@ -705,7 +705,7 @@ writing — the catalog implementation is authoritative and is what
 | `cpu.throttle` | cpu | medium | 300s | container, service | docker_engine | `percent` (percent, min 1, max 100) |
 | `db.connection_exhaust` | database | high | 120s | container, external_dependency, service | — | `connections` (integer, min 1, max 256, **required**); `host` (string, **required**); `port` (integer, min 1, max 65535, default `3306`) |
 | `db.query_error` | database | high | 300s | container, external_dependency, service | net_admin | `probability` (percent, min 1, max 100, default `100.0`); `error` (`deadlock` / `lock_timeout` / `serialization_failure`, default `deadlock`); `timeout_ms` (integer, min 100, max 120000, default `5000`); `port` (integer, min 1, max 65535, default `3306`) |
-| `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration); `mode` (`latency` / `timeout`, default `latency`) |
+| `db.slow_query` | database | medium | 300s | external_dependency, service | — | `seconds` (duration); `mode` (`latency` / `timeout`, default `latency`); `port` (integer, min 1, max 65535, default `3306`) |
 | `dependency.block` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
 | `dependency.circuit_open` | dependency | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `503`); `retry_after_s` (integer, min 0, max 3600, default `30`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `dependency.connection_refuse` | dependency | high | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `protocol` (string, default `tcp`) |
@@ -713,7 +713,7 @@ writing — the catalog implementation is authoritative and is what
 | `dependency.rate_limit` | dependency | medium | 300s | container, external_dependency, service | — | `rate` (integer, **required**); `burst` (integer, default `200`); `code` (integer, min 100, max 599, default `429`); `port` (integer, min 1, max 65535, default `80`) |
 | `dependency.response_truncate` | dependency | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `bytes` (integer, min 0, max 65536, default `64`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `dependency.timeout` | dependency | medium | 300s | container, external_dependency, service | net_admin | `port` (integer, min 1, max 65535, **required**); `delay_ms` (integer, min 1, max 30000, **required**); `protocol` (string, default `tcp`) |
-| `dns.nxdomain` | dns | high | 300s | host, service | net_admin | `domain` (string) |
+| `dns.nxdomain` | dns | high | 300s | host, service | net_admin | `domain` (string); `address` (string, default `127.0.0.1`, must be an IPv4 or IPv6 literal — see [`dns.nxdomain`](#dnsnxdomain)) |
 | `dns.resolve_delay` | dns | medium | 300s | host, service | net_admin | `seconds` (duration) |
 | `dns.servfail` | dns | medium | 120s | host, service | net_admin | — |
 | `dns.timeout` | dns | high | 120s | host, service | net_admin | — |
@@ -727,7 +727,7 @@ writing — the catalog implementation is authoritative and is what
 | `http.error_injection` | http_api | medium | 300s | external_dependency, service | — | `status` (integer, default `500`); `probability` (percent, min 0, max 100, default `0.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `http.header_inject` | http_api | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `headers` (string, default `""`, **validated not escaped** — see the subsection); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `http.latency` | http_api | medium | 300s | external_dependency, service | — | `delay_ms` (integer, min 1, max 30000); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
-| `http.response_truncate` | http_api | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `bytes` (integer, min 0, max 65536, default `64`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
+| `http.response_truncate` | http_api | medium | 300s | external_dependency, container, service | net_admin | `status` (integer, min 100, max 599, default `200`); `bytes` (integer, min 0, max 65536, default `64`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`); `body` (string, optional, ASCII, max 4096 bytes — see [`http.response_truncate`](#httpresponse_truncate)) |
 | `http.stream_stall` | http_api | medium | 300s | external_dependency, container, service | net_admin | `stall_ms` (integer, min 1, max 30000, default `5000`); `probability` (percent, min 1, max 100, default `100.0`); `port` (integer, min 1, max 65535, default `80`) |
 | `k8s.network_policy` | k8s | high | 300s | k8s_node, pod | kubernetes_engine | `policy_name` (string); `direction` (string, default `ingress`) |
 | `k8s.node_drain` | k8s | critical | 600s | k8s_node | kubernetes_engine | `grace_period` (integer, default `30`) |
@@ -813,17 +813,25 @@ long the client waits for the two timeout-shaped mechanisms.
 
 ### `db.slow_query`
 
-`mode` decides whether the fault is actually slow or actually times out.
+`mode` decides whether the fault is actually slow or actually times out, and
+`port` decides which database it is aimed at.
 
 | Param | Type | Default | Accepted values |
 |-------|------|---------|-----------------|
 | `mode` | string | `latency` | `latency` — real added latency on the DB flow. `timeout` — packets are dropped, so the client blocks until its own timeout. |
+| `port` | integer (1–65535) | `3306` | Destination port the fault is scoped to. `5432` for Postgres, `1433` for SQL Server. The `latency` mode steers only this dport into a shaped qdisc band, so unrelated container egress is untouched. |
 
 > **Breaking change.** The default is `latency`, which is **not** the
 > behaviour this fault had before the `mode` parameter existed. The previous
 > build always blackholed the DB flow — that is now `mode: timeout`. Any drill
 > that relied on the old blackhole must now say so explicitly, or it will
 > silently become a latency fault instead of a hang.
+
+> **Fixed defect.** Until `port` existed, this fault hardcoded `3306` in three
+> places and ignored the target's database entirely: a drill aimed at a Postgres
+> was injecting against MySQL's port while reporting success. The default is
+> still `3306`, so existing drills are unchanged, but a non-MySQL target now has
+> to be named.
 
 ```yaml
 # The default: the query really does get slower.
@@ -837,6 +845,45 @@ long the client waits for the two timeout-shaped mechanisms.
   duration: 30s
   params:
     mode: timeout
+
+# Aimed at Postgres rather than MySQL.
+- fault: db.slow_query
+  duration: 30s
+  params:
+    port: 5432
+    seconds: 5s
+```
+
+### `dns.nxdomain`
+
+> **The id overstates the mechanism, and that is worth knowing before you aim
+> it.** This fault appends `<address> <domain>` to the container's `/etc/hosts`
+> and restores the file on undo. It does **not** return DNS `RCODE 3`. A client
+> that asks a real nameserver still gets a normal answer, and a client whose
+> resolver skips the hosts file — or that is answering from cache — sees no fault
+> at all. What it reproduces reliably is the production shape *"the name
+> resolves, to the wrong place"*, with loopback standing in for a dependency
+> that is genuinely down. `dns.servfail` and `dns.timeout` are the ids that fail
+> a lookup on the wire; a true NXDOMAIN answer is not among the shipped ids.
+
+| Param | Type | Default | Accepted values |
+|-------|------|---------|-----------------|
+| `domain` | string | — | The name to divert. |
+| `address` | string | `127.0.0.1` | IPv4 or IPv6 literal the name resolves to instead. Anything else is refused at plan time: a newline in this value would otherwise append a *second* hosts line of the operator's choosing. |
+
+```yaml
+# Loopback, the historical behaviour.
+- fault: dns.nxdomain
+  duration: 60s
+  params:
+    domain: payments.internal
+
+# A well-formed answer to the wrong place — the stale-split-horizon case.
+- fault: dns.nxdomain
+  duration: 60s
+  params:
+    domain: payments.internal
+    address: 10.0.0.7
 ```
 
 ### `dependency.circuit_open`
@@ -1054,6 +1101,7 @@ client's framing logic that has to notice.
 | `bytes` | integer (0–65536) | `64` | Bytes actually delivered before the connection is closed. The declared `Content-Length` is 64× this value, so the default promises 4096 and sends 64. `0` declares and delivers nothing, which is a complete response rather than a truncated one. |
 | `probability` | percent (1–100) | `100.0` | Share of responses truncated; the rest are relayed untouched. |
 | `port` | integer (1–65535) | `80` | Port whose traffic is redirected to the fault. |
+| `body` | string, ≤ 4096 bytes | *(absent)* | ASCII body to deliver instead of the `b'x'` filler. The declared `Content-Length` becomes `len(body) + bytes × 64`, so the fault is still a truncation and not a well-formed response with unusual content. Refused at plan time if it is non-ASCII, oversized, or paired with `bytes: 0` (which would declare exactly what it delivers). A body is *not* parsed or policed: a body that breaks a JSON document or a length-prefixed frame is the fault, not a mistake. |
 
 ```yaml
 # The default: a 200 promising 4096 bytes and delivering 64.
@@ -1069,6 +1117,15 @@ client's framing logic that has to notice.
   params:
     bytes: 8
     probability: 25
+
+# A specific truncated body: the client gets 30 bytes of a response that
+# promises 30 + 8*64, so its JSON parse fails on the cut rather than on
+# a missing field.
+- fault: http.response_truncate
+  duration: 60s
+  params:
+    bytes: 8
+    body: '{"items": [1, 2, 3], "total": '
 ```
 
 ### `http.stream_stall`

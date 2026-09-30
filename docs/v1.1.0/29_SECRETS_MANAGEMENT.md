@@ -48,12 +48,12 @@ Secrets configuration guide per provider, grant-model reference, rotation runboo
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/secrets.py` landed `CredentialRef`, `SecretGrant`, `DataClassification`, the `grant_refusals`/`find_grant`/`reference_is_granted`/`validate_reference`/`require_reference` access decision, the literal-credential scanner (`find_literal_credentials`, `has_literal_credential`, `require_no_literal_credentials`), and classification ordering (`classification_rank`, `most_restrictive`, `must_not_persist`); 79 tests.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `infra/secret_resolver.py` landed `SecretResolverPort`/`SecretProviderPort`/`GrantSourcePort` seams over injectable callables (no provider SDK), the real `EnvironmentSecretProvider` plus a filesystem fixture provider, `ResolvedSecret` with in-place zero-after-use and a non-picklable value, `ResolutionReceipt` (metadata, never a value), `SecretLeakGuard`/`require_clean_bundle` for the byte-scan over sealed bundles, and `SecretGrantRepository` on migration `M0022_SECRET_GRANTS`; 58 tests.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
-Known limitation: **nothing resolves a reference yet.** Phase 1 decides whether a reference *may* be used — that is all `grant_refusals` and friends answer, and they answer it from the data in front of them. No `SecretProvider` in this module talks to Vault, a cloud secret manager, or a Kubernetes Secret; there is no fetch, no caching, and no rotation. Phase 2 is what makes a granted reference actually yield a value. Until then a `CredentialRef` is an authorization record, not a handle to anything.
+Known limitation: **no provider adapter but the environment one is real.** `infra/secret_resolver.py` adds no third-party dependency, so Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, Kubernetes Secrets, and OIDC exist as *seams*: `CallableSecretProvider(provider, fn)` takes whatever callable a deployment injects, and the resolver refuses a reference whose provider has no registered adapter rather than guessing. `EnvironmentSecretProvider` and `FilesystemFixtureProvider` are the two implementations that need no library. Also: `SecretLeakGuard.require_clean_envelope` / `require_clean_bundle` are provided as gates but are **not yet called from `infra/evidence.py` or `build_evidence`** — wiring them into the write path is Phase 4's job, so today a caller must invoke the guard explicitly. Finally, zeroing a `bytearray` is the strongest custody Python offers; any `str` or `bytes` copy taken inside `ResolvedSecret.use()` is the caller's to zero, and this module cannot reach it.

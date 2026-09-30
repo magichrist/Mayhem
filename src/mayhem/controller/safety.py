@@ -4,9 +4,17 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from mayhem.controller.policy_gate import (
+    RULE_APPROVAL_REQUIRED,
+    RULE_BUNDLE_ALLOW,
+    PolicyGateInputs,
+    _risk_of,
+    capability_requirements_for,
+    evaluate_gate,
+    simulate_gate,
+)
 from mayhem.domain.decisions import SafetyDecision, SafetySeverity
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
-from mayhem.domain.execution_context import ExecutionContext
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.quota import DamageLedger, DamageQuota, QuotaCharge
 from mayhem.domain.risks import RiskLevel
@@ -21,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mayhem.config import PolicyCfg
+    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
@@ -72,6 +81,15 @@ class SafetyContext:
     # and the default is deliberately loose enough that ordinary drills never
     # meet it.
     damage_quota: DamageQuota = field(default_factory=DamageQuota)
+    # Plan 07 Phase 2: the versioned policy bundle, plus the locks, budgets,
+    # and collision graph it is evaluated against. ``None`` — the default —
+    # means this context knows nothing about policy bundles, and every gate
+    # below behaves exactly as it did before the field existed. Bundles are
+    # additive to ``policy``/``budget``, never a replacement for them: with a
+    # bundle configured the gate speaks *in addition*, so configuring one can
+    # add a refusal but can never lose a refusal the config-policy half would
+    # have made.
+    policy_gate: PolicyGateInputs | None = None
 
     def record(self, decision: SafetyDecision) -> None:
         self.decisions.append(decision)
@@ -496,6 +514,20 @@ def validate_plan(
     _check_remote_targets(plan, graph)
     if adapter is not None:
         _validate_capability_requirements(plan, adapter, ctx)
+    # Plan 07 Phase 2. Placed after the identity/environment/unsupported-target
+    # checks and *before* the per-step admission loop, so the existing refusals
+    # keep their precedence and the bundle still gets to speak before any
+    # injection: locks, budgets, and the collision graph are all plan-level
+    # questions that "before admission" answers in one pass.
+    #
+    # One optional field is the entire integration surface. With no bundle
+    # configured this is a single ``is not None`` test and the function below
+    # is never reached, so every existing gate, refusal, message, and decision
+    # ordering is untouched.
+    if ctx.policy_gate is not None:
+        _apply_policy_result(
+            evaluate_gate(plan, ctx.policy_gate, environment=ctx.environment), ctx
+        )
     seen_faults: list[str] = []
     # One ledger per validation pass, not one per context: a context is reused
     # (preflight validates the same plan it previews, the executor validates a
@@ -525,44 +557,84 @@ def validate_plan(
             _check_execution_context(fault, graph)
 
 
+def _apply_policy_result(result: PolicyGateResult, ctx: SafetyContext) -> None:
+    """Record a policy verdict on ``ctx`` and refuse the plan if it denied.
+
+    Approvals are recorded as warnings, never as refusals: Phase 2 surfaces
+    what a decision requires and plan 09 is what requests, binds, and checks
+    it. Surfacing a requirement as a hard refusal here would be implementing
+    approvals badly and early — a plan whose policy merely *asks* for an
+    approval would be refused, which is not what the decision said.
+    """
+    for approval in result.required_approvals:
+        ctx.record(
+            SafetyDecision(
+                rule_id=RULE_APPROVAL_REQUIRED,
+                inputs={
+                    "approval_level": approval.approval_level,
+                    "policy_rule_id": approval.rule_id,
+                    "bundle": result.decision.describe(),
+                },
+                outcome="warn",
+                reason=f"policy requires {approval.approval_level} approval: {approval.reason}",
+                remediation=approval.remediation,
+                severity=SafetySeverity.warning,
+            )
+        )
+    if result.refusal is not None:
+        dec = _deny_decision(
+            result.refusal.rule_id,
+            result.refusal.inputs,
+            result.refusal.reason,
+            result.refusal.remediation,
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    ctx.record(
+        SafetyDecision(
+            rule_id=RULE_BUNDLE_ALLOW,
+            inputs=result.inputs(),
+            outcome="allow",
+            reason=f"policy {result.decision.describe()} permits this plan",
+            remediation="",
+            severity=SafetySeverity.info,
+        )
+    )
+
+
+def simulate_plan_policy(plan: ExecutionPlan, ctx: SafetyContext) -> PolicyGateResult | None:
+    """Evaluate a frozen plan's policy bundle, mutating nothing — Phase 2 preview.
+
+    Returns ``None`` when the context carries no bundle, which is the same
+    "no policy bundle configured" answer :func:`validate_plan` gives.
+
+    Purity is structural. The gate is a pure function (see
+    :mod:`mayhem.controller.policy_gate`) and this helper is the only thing
+    that could have recorded into ``ctx`` — it does not. The caller's
+    ``ctx.decisions`` and ``ctx.warnings`` are therefore byte-for-byte
+    unchanged, which is exactly the property plan 14's preview and the 30 proof
+    depend on.
+    """
+    if ctx.policy_gate is None:
+        return None
+    return simulate_gate(plan, ctx.policy_gate, environment=ctx.environment)
+
+
 def _validate_capability_requirements(
     plan: ExecutionPlan,
     adapter: RuntimeAdapter,
     ctx: SafetyContext,
 ) -> None:
-    namespaces: set[str] = set()
-    tools: set[str] = set()
-    permissions: set[str] = set()
-    for step in plan.steps:
-        fault = step.fault
-        if fault is None:
-            continue
-        if fault.execution_loci is not None:
-            target = fault.execution_loci.get("target")
-            if isinstance(target, str) and target.startswith("network_namespace"):
-                namespaces.add(target)
-        if fault.execution_context is not None and (
-            fault.execution_context.context
-            in (ExecutionContext.NETWORK_NAMESPACE, ExecutionContext.PROCESS)
-        ):
-            namespaces.add(fault.execution_context.context.value)
-        for target in fault.targets:
-            for node_id in target.node_ids:
-                if node_id.startswith("net"):
-                    namespaces.add(node_id)
-                if node_id.startswith(("p-", "proc")):
-                    permissions.add("limit")
-    reqs = CapabilityRequirements(
-        namespaces=frozenset(namespaces),
-        tools=frozenset(tools),
-        permissions=frozenset(permissions),
-    )
+    # The derivation moved to ``controller.policy_gate`` unchanged so the
+    # adapter gate and the policy facts read the same requirement off the same
+    # plan; two copies of this shape would eventually disagree.
+    reqs = capability_requirements_for(plan)
     fallback = CapabilityRequirements(
         namespaces=frozenset({"network"}),
         tools=frozenset({"tool"}),
         permissions=frozenset({"limit"}),
     )
-    if not (namespaces or tools or permissions):
+    if not (reqs.namespaces or reqs.tools or reqs.permissions):
         result = adapter.evaluate(fallback)
     else:
         result = adapter.evaluate(reqs)
@@ -659,15 +731,16 @@ def explain_fault_refusal(exc: SafetyRefusedError) -> dict[str, str]:
     }
 
 
-def _risk_of(fault_id: str) -> RiskLevel:
-    from mayhem.domain.catalog import definition_for
-
-    try:
-        return definition_for(fault_id).risk
-    except Exception:
-        return RiskLevel.LOW
-
-
+# ``_risk_of`` is re-exported from :mod:`mayhem.controller.policy_gate` (see the
+# import at the top of this module) rather than reimplemented here. Admission and
+# the policy facts both resolve a fault's risk through it, including the ``LOW``
+# floor for an unresolvable fault id, and those two answers must never disagree:
+# a fact priced above admission's answer would refuse a plan the gate admits.
+# ``policy_gate`` is the lower module — this one already imports from it — so it
+# is the only direction a shared implementation can travel. Consumers that want
+# the helper should import it from ``policy_gate``: this module is not an
+# explicit re-export (``no_implicit_reexport`` is on under ``strict``), and
+# ``controller.safety_proof`` does exactly that.
 def _service_kind() -> NodeKind:
     from mayhem.domain.topology import NodeKind
 

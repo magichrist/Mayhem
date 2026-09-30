@@ -11,7 +11,7 @@ Turn Mayhem into a multi-user product without weakening the CLI-first workflow â
 - `RunEngine` ordering, evidence envelope, graded verdicts: the UI explains them; it never reimplements them.
 
 ## Decided: SQLite plus replication
-Per program decision, the control plane keeps SQLite as the store (single-writer discipline, existing 21-migration chain intact) and adds durability and scale through replication: WAL archiving, snapshot shipping to standbys, standby promotion fenced by the 03 fencing tokens so two primaries can never own the same run, plus object-store evidence offload per 12. No second database engine, no migration-chain fork.
+Per program decision, the control plane keeps SQLite as the store (single-writer discipline, existing 23-migration chain intact) and adds durability and scale through replication: WAL archiving, snapshot shipping to standbys, standby promotion fenced by the 03 fencing tokens so two primaries can never own the same run, plus object-store evidence offload per 12. No second database engine, no migration-chain fork.
 
 ## Services
 API gateway, authentication (09), authorization (09), planner service,

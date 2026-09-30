@@ -64,7 +64,7 @@ the ask), **PARAM-EXTENSION** (add one axis to an existing id, no new id),
 | gRPC delay | ALREADY-EXISTS | `http.latency` | Same pump, same `delay_ms` axis. |
 | gRPC timeout | ALREADY-EXISTS | `http.upstream_timeout` | Same pump, same `timeout_ms` axis. |
 | gRPC message fault (per-message) | GENUINELY-NEW | `grpc.message_fault` | Needs length-prefix-aware framing. `http.response_truncate` truncates a byte stream; it cannot corrupt one framed message while leaving the rest of the stream well-formed. |
-| DNS NXDOMAIN | ALREADY-EXISTS | `dns.nxdomain` | The `domain` axis. |
+| DNS NXDOMAIN | ALREADY-EXISTS | `dns.nxdomain` | The `domain` axis. Note the id overstates the mechanism — it writes a hosts-file answer, not `RCODE 3`. Recorded in the Phase 2/3 outcome below. |
 | DNS SERVFAIL | ALREADY-EXISTS | `dns.servfail` | — |
 | DNS timeout | ALREADY-EXISTS | `dns.timeout` | — |
 | DNS wrong IP | GENUINELY-NEW | `dns.wrong_answer` | Every shipped DNS fault *fails* the lookup. None returns a well-formed answer pointing at the wrong address, which is the only way to exercise a client's stale-cache or split-horizon assumption. |
@@ -174,21 +174,147 @@ neighbouring `db.query_error` *does* have a `port` param and reads it via
 This is the **same defect class wave 1 found in `db.query_error.error`** — a
 parameter the surface promises that the mechanism does not honour. It is a live
 lie: a fault that reports injecting against a Postgres is not injecting against a
-Postgres. It is **to be fixed by Phase 3 explicit dependency targeting, not
-routed around** — the fix is a `port` param on `db.slow_query` plus three
-replacements of the literal, and the `db.replication_delay` id above is
-unbuildable until it lands, because a lag fault aimed at a replica needs to name
-a port at all.
+Postgres. It is **fixed in Phase 3 explicit dependency targeting, not routed
+around** — the fix is a `port` param on `db.slow_query` plus three replacements
+of the literal, and the `db.replication_delay` id above is unbuildable until it
+lands, because a lag fault aimed at a replica needs to name a port at all. See
+"Phase 2/3 outcome" below for what shipped.
+
+## Phase 2/3 outcome — param extensions and the incident defect
+
+This lane builds the **only** two PARAM-EXTENSION verdicts from the table above
+plus the live defect the audit surfaced. It adds **no new fault ids**: the 12
+GENUINELY-NEW rows stay unbuilt, and the messaging and gRPC groups were not
+touched (substrate ADR). Every change is a `params_schema` entry plus the
+compensation builder that honours it, which is the wave-1 shape.
+
+| item | fault id | axis | default | what it does |
+| --- | --- | --- | --- | --- |
+| param extension | `http.response_truncate` | `body: str` | *(absent = inert)* | the operator's bytes become the response body instead of the `b'x' * send_bytes` filler |
+| param extension | `dns.nxdomain` | `address: str` | `127.0.0.1` | the address the hosts-file answer points the domain at |
+| **defect fix** | `db.slow_query` | `port: int [1, 65535]` | `3306` | the family can finally be aimed at a non-MySQL target |
+
+### `http.response_truncate{body}` — a byte-safety validator of its own
+
+Open question 2 asked for one and warned against reusing `_http_headers`' rules.
+They do not transfer, and the reason is structural rather than a matter of taste:
+
+- **The header rules are too strict here.** `_http_headers` refuses CR because a
+  CR terminates a *header line*. A CR inside a body is written after the head,
+  where it cannot terminate anything, and a body with a stray CRLF is a
+  legitimate production corruption. Refusing it would neuter the fault.
+- **The header rules are silent about the real hazard.** `_http_headers` writes
+  no body, so it never has to keep a `Content-Length` honest. A body does, and a
+  drill spec gives us a `str` — where `len()` counts characters and the wire
+  counts bytes. That mismatch does not truncate, it *hangs*, while the catalog
+  still describes the fault as `http.response_truncate`.
+
+So `_http_body` is a separate validator with four rules, and none of them is
+"parse it as `Name: value`":
+
+1. **Content-Length coherence.** The declared length is derived from the same
+   `bytes` object that is embedded in the generated program, so the two cannot
+   drift. The program also carries `assert len(body) == <n>` as a tripwire for a
+   future edit that re-encodes or truncates the value.
+2. **ASCII only.** This is what makes characters and bytes the same number, and
+   it is the one rule the header validator also has — for a different reason
+   (`.encode('ascii')` raising `UnicodeEncodeError`, an exception the proxy's
+   `except OSError` does not catch). Widening the body to a declared encoding is
+   a product decision about what a body byte *is*, and it was not made here.
+3. **A 4 KiB bound.** The header path has no equivalent cap. The body value rides
+   through the JSON-encoded argv, the container exec command line, the
+   `<<'MAYHEM_PY_EOF'` heredoc *and* the wire, and `ParamSpec` has `min_length`
+   but no `max_length`.
+4. **Source and heredoc safety.** The value is embedded as `repr` of a `bytes`
+   object, which escapes quotes, backslashes, newlines and non-printables, so no
+   byte of it can terminate the python string literal or start a line. That is
+   asserted, not assumed: the hostile cases are in the test file, and the
+   assertion is that the shell *around* the heredoc is byte-identical to the
+   benign case.
+
+What it deliberately does **not** police is the body's *semantics*. A body that
+breaks a JSON document, a length-prefixed frame or a client's own parse is the
+fault, not a bug; refusing that would leave only well-formed responses, which is
+not a fault at all.
+
+The emitted program keeps the repo's kwarg-defaults-to-inert discipline: without
+a `body`, all four pre-existing proxy modes render a **byte-identical** program
+and a byte-identical response, and the body branch does not exist in the source
+at all. Three distinct bodies are asserted to produce three distinct argv *and*
+three distinct generated programs, and the axis is additionally executed against
+real sockets in `tests/unit/test_http_proxy_wire.py`, because a Content-Length
+bug does not show up in a source assertion — it shows up as a client that hangs.
+
+**Scope note.** `dependency.response_truncate` shares the builder and therefore
+inherits the code path, but its `params_schema` does not declare the axis, so
+`validate_params` refuses `body` there. One axis, one id; the asymmetry is
+asserted by a test so it stays a decision rather than an accident.
+
+### `dns.nxdomain{address}` — and the id/behaviour mismatch
+
+**Rename honesty, recorded because the id overstates the mechanism.** The
+mechanism appends `<address> <domain>` to `/etc/hosts` and restores the file on
+undo. That is a **hosts-file answer**, not DNS `RCODE 3`: a client asking a real
+nameserver still gets a normal answer, and a client whose resolver skips the
+hosts file — or that is serving from cache — sees no fault at all. What it
+reliably reproduces is the common production shape *"the name resolves, to the
+wrong place"*, with loopback standing in for a dependency that is genuinely
+down. `dns.servfail` and `dns.timeout` are the ids that fail a lookup on the
+wire; a true NXDOMAIN answer is not among the shipped ids, and the audit's
+`dns.wrong_answer` id is the honest forward path. The id is not renamed here
+because it is public surface in drill specs; the mismatch is stated instead, in
+the catalog comment, in the builder docstring, and by a test that fails if the
+mechanism ever changes.
+
+`address` defaults to the value that was hardcoded, so every existing drill emits
+byte-identical argv. It is validated with `ipaddress.ip_address` — a *different*
+discipline from the `domain`, which is free-form text and gets `shlex.quote`.
+Quoting is enough for the shell but not for the file: a newline inside a
+single-quoted word survives as data to `echo`, which then writes **two** hosts
+lines, the second one attacker-chosen. `ip_address` accepts an IPv4 or IPv6
+literal and nothing else, so that surface does not exist.
+
+### `db.slow_query{port}` — the incident defect, fixed
+
+`port` now exists on the schema, with the same bounds and the same 3306 default
+as `db.query_error`, and all three literals are gone: the `netem` delay, the
+`iptables DROP` and the verify probe now read `_iparam(fault, "port", 3306)`. The
+`timeout` mode moved to the `_param_netfilter` / `_param_netfilter_verify` pair —
+the exact pattern `db.query_error` already used — which is what made the omission
+a defect rather than a house style. Defaulting to 3306 keeps every existing drill
+byte-identical.
+
+`db.slow_query` was the last caller of the literal-dport `_netfilter_undo` /
+`_netfilter_verify` pair, so that pair is deleted. Every netfilter builder now
+goes through the param-reading variant, which means **a builder can no longer pin
+a port its own schema does not expose** — the defect class is structurally gone
+from this file, not just from this fault. `db.replication_delay` (a GENUINELY-NEW
+row, still unbuilt) is no longer blocked on a port that could not be named.
+
+### Regression guards added
+
+- Three-distinct-argv guards for all three axes, plus three-distinct-*source* for
+  the body axis, plus execution against real sockets for the body axis. All three
+  were verified to fail under a deliberate mutation of the implementation (the
+  axis ignored; the port re-hardcoded; the address ignored).
+- A source-level guard that greps the `db.slow_query` builders for a port
+  literal, because an argv-only test still passes if a fourth code path
+  reintroduces `3306`.
+- Hostile-body cases asserting the shell around the heredoc is byte-identical to
+  the benign case.
+- A test that fails if `docs/05` stops stating the `dns.nxdomain` mismatch.
 
 ## STATUS
-- Phase 1 (domain model): DONE — the 38-candidate collision audit is checked in above (24 already-exists, 2 param-extensions, 12 genuinely-new), the messaging substrate ruling is recorded, three open questions are logged, and one live defect (`db.slow_query`'s hardcoded 3306) is found and assigned to Phase 3.
-- Phase 2: not started
-- Phase 3: not started
+- Phase 1 (domain model): DONE — the 38-candidate collision audit is checked in above (24 already-exists, 2 param-extensions, 12 genuinely-new), the messaging substrate ruling is recorded, three open questions are logged, and one live defect (`db.slow_query`'s hardcoded 3306) was found and assigned to Phase 3.
+- Phase 2 (proxy and tool mechanisms): DONE for this lane — both param-extension mechanisms landed (the `body` branch on the proxy's canned path, the validated hosts-file line). **The 12 genuinely-new ids are not built**, so this phase is complete only for the two verdicts that were parameter work.
+- Phase 3 (params, targeting, probes): DONE for this lane — three param axes ship, `db.slow_query` can be aimed at Postgres or SQL Server, and each axis has a three-distinct-output guard. Explicit `target.dependency` selectors and the matching business-level probe definitions are **not** done.
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 3 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
+param extensions and the one defect. The 12 genuinely-new ids, the 8 unblocked
+new ids among them, and everything in Phases 4-6 remain.
 
 Known limitation: Phase 2 is gated on the messaging ADR **for the messaging group
 only**. The HTTP, gRPC, DNS, TCP and database rows of the audit table are not

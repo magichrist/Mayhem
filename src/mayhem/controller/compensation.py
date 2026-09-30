@@ -7,6 +7,7 @@ fault prefix and may inspect resolved nodes.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import shlex
@@ -1575,49 +1576,12 @@ def _engine_restart_verify(
     return (_exec_verify(node, ["true"], incontainer=False),)
 
 
-def _netfilter_undo(
-    dport: str,
-    *,
-    proto: str = "tcp",
-    jump: str = "DROP",
-    extra: list[str] | None = None,
-) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[UndoOp, ...]]:
-    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
-        node = _tool_node(fault, nodes)
-        if node is None:
-            raise NO_UNDO
-        body = ["-p", proto, "--dport", dport]
-        inject = ["iptables", "-I", "OUTPUT", *body, "-j", jump, *(extra or [])]
-        undo = ["iptables", "-D", "OUTPUT", *body, "-j", jump, *(extra or [])]
-        return (
-            _tool_op(
-                fault,
-                node,
-                "iptables.sync",
-                _incontainer_argv(inject),
-                _incontainer_argv(undo),
-            ),
-        )
-
-    return build
-
-
-def _netfilter_verify(
-    dport: str,
-) -> Callable[[PlannedFault, tuple[TopologyNode, ...]], tuple[VerifyProbe, ...]]:
-    def build(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[VerifyProbe, ...]:
-        node = _tool_node(fault, nodes)
-        if node is None:
-            raise NO_UNDO
-        return (
-            _exec_verify(
-                node,
-                ["sh", "-c", f"! iptables -S OUTPUT | grep -q -- '--dport {dport}'"],
-                incontainer=True,
-            ),
-        )
-
-    return build
+# The literal-dport ``_netfilter_undo``/``_netfilter_verify`` pair was removed in
+# v1.1.0 Phase 3: ``db.slow_query`` was its last caller, and it hardcoded
+# ``3306`` in both. Every netfilter builder now goes through the
+# ``_param_netfilter``/``_param_netfilter_verify`` pair below, which reads the
+# port from the fault's params, so a builder can no longer pin a port its own
+# schema does not expose.
 
 
 def _port_rule(
@@ -1873,6 +1837,81 @@ def _http_headers(fault: PlannedFault) -> str | None:
     return "\r\n".join(lines)
 
 
+#: Upper bound on an operator-supplied response body, in bytes. A drill spec is
+#: a YAML document, so an unbounded body would ride through the JSON-encoded
+#: argv, the container-exec command line, the ``cat > src <<EOF`` heredoc and
+#: then the wire. ``ParamSpec`` has ``min_length`` but no ``max_length``, so the
+#: cap is enforced here. 4 KiB is well under a typical container exec ARG_MAX
+#: slice and covers a realistic truncated API response.
+_HTTP_BODY_MAX_BYTES = 4096
+
+
+def _http_body(fault: PlannedFault) -> bytes | None:
+    """Validate the operator-supplied body and return the exact bytes to write.
+
+    This is the body-path counterpart to :func:`_http_headers`, and it is **not**
+    the same set of rules. ``headers`` writes into a CRLF-delimited head where
+    a value is only safe if every line parses as ``Name: value``; a body is
+    written *after* the head, so those rules would be both too strict (a CR in a
+    body is a legitimate corruption, and refusing it would neuter the fault) and
+    silent about the hazards that are actually specific to a body. Those are:
+
+    1. **Content-Length coherence.** The canned path declares
+       ``Content-Length: {declared}`` and then writes the body. A
+       plan-time string length that disagreed with the wire would leave the
+       client waiting on bytes that never come — a *different* fault from the
+       truncation the operator asked for, and one the catalog would still
+       describe as ``http.response_truncate``. The declared length is therefore
+       derived from the same ``bytes`` object that is embedded in the program,
+       and the emitted program asserts the two agree (see
+       :func:`_http_proxy_source`).
+    2. **Encoding.** A YAML scalar is a ``str``. ``len()`` of a ``str`` is a
+       character count, not a byte count, so any non-ASCII body would silently
+       over- or under-declare its length depending on the encoding. Refusing
+       non-ASCII keeps characters and bytes the same number; the value is then
+       embedded as a *bytes* literal, so the generated program has no encoding
+       question to answer either. (Widening this to a declared encoding is a
+       product decision about what a body byte *is*, not something to decide
+       inside a fault builder.)
+    3. **A bound.** See :data:`_HTTP_BODY_MAX_BYTES`. The header path has no
+       equivalent cap, which is one of the concrete ways the two validators
+       differ.
+    4. **Source/heredoc safety.** The value is embedded with ``repr`` of a
+       ``bytes`` object, so no byte can terminate the python string literal
+       *or* the surrounding ``<<'MAYHEM_PY_EOF'`` heredoc by starting a line.
+       That is a property of ``repr``, and it is asserted by a test rather than
+       assumed, because the alternative is a spec value that runs as shell.
+
+    What this validator deliberately does **not** do is police the body's
+    *semantics*. A body that breaks a JSON document, a length-prefixed frame or
+    a client's own parse is the entire point of the fault; refusing that would
+    leave nothing but well-formed responses, which is not a fault at all.
+
+    ``None`` means "axis not used" and is the only value the pre-existing modes
+    ever see, so their emitted program is unchanged.
+    """
+    raw = _param(fault, "body", "")
+    if raw is None or str(raw) == "":
+        return None
+    text = str(raw)
+    try:
+        encoded = text.encode("ascii")
+    except UnicodeEncodeError:
+        raise InvariantViolationError(
+            "fault_body",
+            "http.response_truncate body must be ASCII; a multi-byte body would "
+            "make the declared Content-Length disagree with the bytes on the wire",
+        ) from None
+    if len(encoded) > _HTTP_BODY_MAX_BYTES:
+        raise InvariantViolationError(
+            "fault_body",
+            f"http.response_truncate body is {len(encoded)} bytes; the limit is "
+            f"{_HTTP_BODY_MAX_BYTES} because the value rides through the exec "
+            "argv and a heredoc as well as the wire",
+        )
+    return encoded
+
+
 def _http_proxy_source(
     *,
     target: int,
@@ -1887,6 +1926,7 @@ def _http_proxy_source(
     send_bytes: int = 0,
     headers: str | None = None,
     stall_ms: int | None = None,
+    body: bytes | None = None,
 ) -> str:
     """In-container python passthrough proxy serving a fault mode.
 
@@ -1901,8 +1941,14 @@ def _http_proxy_source(
       * headers — extra response headers spliced into the canned response
       * stall  — the client-bound relay pauses ``stall_ms`` after the first
                  upstream chunk, which is the response head
+      * body   — the operator's bytes are the response body instead of the
+                 ``b'x' * send_bytes`` filler; ``declared`` must already account
+                 for them (see :func:`_http_body`)
     Unresponded calls (outside ``prob``) relay through untouched. The accept
     loop blocks, keeping the interpreter alive for the whole lease.
+
+    ``body`` and every other optional mode are emitted only when asked for, so
+    the four pre-existing modes still render a byte-identical program.
     """
     lines = [
         "import socket, threading, time, random",
@@ -1956,6 +2002,45 @@ def _http_proxy_source(
         lines.append(f"extra = {headers!r}")
     if stall_ms is not None and int(stall_ms) > 0:
         lines.append(f"stall_s = {max(int(stall_ms), 1) / 1000.0:.3f}")
+    if body is not None:
+        # A *bytes* literal, so ``len(body)`` in the generated program is the
+        # wire byte count and cannot drift from the ``Content-Length`` the
+        # caller derived from this same object. ``repr`` of bytes escapes
+        # quotes, backslashes and non-printables, and cannot emit a newline --
+        # which is what keeps the value from closing either the string literal
+        # or the surrounding heredoc. The assert is the tripwire for a future
+        # edit that re-encodes or truncates the value: a wrong Content-Length
+        # would otherwise hang the client in a way that looks like the fault
+        # working.
+        lines.append(f"body = {body!r}")
+        lines.append(
+            f"assert len(body) == {len(body)}, 'mayhem: body length drifted from Content-Length'"
+        )
+    # Two tails, so the four pre-existing modes render a byte-identical program:
+    # without a body the original ``if send_bytes:`` block is emitted verbatim
+    # and the body branch does not exist in the source at all.
+    canned_tail = (
+        [
+            "    if body:",
+            "        c.sendall(body)",
+            "    elif send_bytes:",
+            "        c.sendall(b'x' * send_bytes)",
+            "    if body or send_bytes:",
+            "        try:",
+            "            c.shutdown(socket.SHUT_WR)",
+            "        except OSError:",
+            "            pass",
+        ]
+        if body is not None
+        else [
+            "    if send_bytes:",
+            "        c.sendall(b'x' * send_bytes)",
+            "        try:",
+            "            c.shutdown(socket.SHUT_WR)",
+            "        except OSError:",
+            "            pass",
+        ]
+    )
     lines += [
         "def relay(a, b, stall=0.0):",
         "    stalled = False",
@@ -1987,12 +2072,7 @@ def _http_proxy_source(
         "        head += extra + '\\r\\n'",
         "    head += f'Content-Length: {declared}\\r\\nConnection: close\\r\\n\\r\\n'",
         "    c.sendall(head.encode('ascii'))",
-        "    if send_bytes:",
-        "        c.sendall(b'x' * send_bytes)",
-        "        try:",
-        "            c.shutdown(socket.SHUT_WR)",
-        "        except OSError:",
-        "            pass",
+        *canned_tail,
         "def handle(c):",
         "    try:",
         "        if random.random() >= PROB:",
@@ -2036,6 +2116,9 @@ class _HttpEffect:
     headers: str | None = None
     #: Pause the client-bound relay this long after the first upstream chunk.
     stall_ms: int | None = None
+    #: Operator-supplied response body, already validated by :func:`_http_body`.
+    #: ``declared``/``send_bytes`` must already account for it.
+    body: bytes | None = None
 
 
 def _http_proxy_ops(
@@ -2075,6 +2158,7 @@ def _http_proxy_ops(
         send_bytes=effect.send_bytes,
         headers=effect.headers,
         stall_ms=effect.stall_ms,
+        body=effect.body,
     )
     inject = (
         f"cat > {srcf} <<'MAYHEM_PY_EOF'\n{source}MAYHEM_PY_EOF\n"
@@ -2138,14 +2222,49 @@ def _http_response_truncate_undo(
     status line and a short body, and it is the client's framing logic that has
     to notice. ``http.connection_close`` drops the connection, and
     ``fuzz.protocol_abuse`` attacks the request side.
+
+    With no ``body`` the wire is unchanged: ``bytes`` filler characters are sent
+    against a ``bytes * 64`` declaration. With a ``body`` the operator's bytes
+    *are* the delivered body — that is the "replace/patch" axis — and ``bytes``
+    still governs the shortfall, so ``declared`` becomes
+    ``len(body) + bytes * 64`` and the fault is still a truncation rather than a
+    well-formed response with unusual content.
+
+    ``body`` is declared by ``http.response_truncate`` only.
+    ``dependency.response_truncate`` shares this builder and therefore inherits
+    the code path, but its schema does not carry the axis, so
+    ``validate_params`` refuses ``body`` there. That asymmetry is deliberate
+    (one axis, one id) and is recorded in the plan rather than papered over.
     """
+    body = _http_body(fault)
+    bytes_param = _iparam(fault, "bytes", 64)
+    if body is not None and bytes_param < 1:
+        # declared == len(body) would leave nothing outstanding, so the fault
+        # would report injecting a truncation and deliver a complete response.
+        raise InvariantViolationError(
+            "fault_body",
+            "http.response_truncate body requires bytes >= 1; with bytes=0 the "
+            "declared length would equal the delivered one and the response "
+            "would not be truncated",
+        )
+    if body is None:
+        return _http_proxy_ops(
+            fault,
+            nodes,
+            effect=_HttpEffect(
+                status=_iparam(fault, "status", 200),
+                declared=bytes_param * 64,
+                send_bytes=bytes_param,
+            ),
+        )
     return _http_proxy_ops(
         fault,
         nodes,
         effect=_HttpEffect(
             status=_iparam(fault, "status", 200),
-            declared=_iparam(fault, "bytes", 64) * 64,
-            send_bytes=_iparam(fault, "bytes", 64),
+            declared=len(body) + bytes_param * 64,
+            send_bytes=len(body),
+            body=body,
         ),
     )
 
@@ -2440,14 +2559,15 @@ def _db_slow_query_mode(fault: PlannedFault) -> str:
 
 
 def _db_slow_query_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    port = _iparam(fault, "port", 3306)
     if _db_slow_query_mode(fault) == "latency":
         node = _tool_node(fault, nodes)
         if node is None:
             raise NO_UNDO
         return _tc_port_netem_undo(
-            fault, node, 3306, ["netem", "delay", f"{_iparam(fault, 'seconds', 5) * 1000:.0f}ms"]
+            fault, node, port, ["netem", "delay", f"{_iparam(fault, 'seconds', 5) * 1000:.0f}ms"]
         )
-    return _netfilter_undo("3306")(fault, nodes)
+    return _param_netfilter("port", "tcp", "DROP", [], 3306)(fault, nodes)
 
 
 def _db_slow_query_verify(
@@ -2458,7 +2578,7 @@ def _db_slow_query_verify(
         if node is None:
             raise NO_UNDO
         return _tc_port_netem_verify(fault, node)
-    return _netfilter_verify("3306")(fault, nodes)
+    return _param_netfilter_verify("port", 3306)(fault, nodes)
 
 
 def _tls_failure_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
@@ -2884,7 +3004,58 @@ def _clock_skew_verify(
     )
 
 
+def _dns_hosts_address(fault: PlannedFault) -> str:
+    """Validate the address ``dns.nxdomain`` points the domain at.
+
+    ``ParamSpec`` cannot constrain this: no pattern, no max_length, only a lower
+    length bound, so the value is arbitrary text from a drill spec. It is
+    interpolated into a line appended to ``/etc/hosts``, so an unvalidated value
+    is a second, attacker-chosen hosts entry: ``shlex.quote`` on the assembled
+    line keeps the *shell* safe (the newline survives as data inside one
+    single-quoted word) but ``echo`` still writes both lines to the file, which
+    is a routing change nobody asked for.
+
+    ``ipaddress.ip_address`` closes that by construction — it accepts an IPv4 or
+    IPv6 literal and nothing else, so no space, newline, ``#`` comment or
+    second-column value can appear. Refusing is the honest outcome: silently
+    stripping would produce a fault that does not do what the operator wrote.
+
+    Note this is a *different* rule from the one ``domain`` gets
+    (``shlex.quote``). The domain is free-form text with no grammar to check;
+    the address is a value with an exact grammar, and quoting a value whose
+    grammar is knowable would turn a spec error into a silently wrong answer.
+    """
+    raw = _param(fault, "address", "127.0.0.1")
+    text = str(raw).strip()
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        raise InvariantViolationError(
+            "fault_dns_address",
+            f"dns.nxdomain address {text!r} is not an IPv4 or IPv6 literal; a "
+            "hosts-file answer has to point somewhere concrete",
+        ) from None
+
+
 def _dns_nxdomain_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> tuple[UndoOp, ...]:
+    """Point a domain at an address by appending a line to /etc/hosts.
+
+    RENAME HONESTY, recorded because the id overstates the mechanism: this does
+    **not** produce DNS ``RCODE 3`` (NXDOMAIN). It writes
+    ``<address> <domain>`` into the container's hosts file and restores the
+    original on undo, so a resolver that consults the hosts file answers from
+    it. A client asking a *real* nameserver for the domain still gets a normal
+    answer, and a client that caches, or that resolves through a stub that skips
+    the hosts file, sees no fault at all. What it reliably reproduces is the
+    common production shape "the name resolves, to the wrong place" — a
+    loopback substitute for a dependency that is genuinely down.
+
+    ``dns.servfail`` and ``dns.timeout`` are the ids that fail a lookup on the
+    wire; a true NXDOMAIN answer is not among the shipped ids. This is recorded
+    in ``docs/v1.1.0/05_APP_AND_DEPENDENCY_FAULTS.md`` rather than renamed,
+    because the id is public surface in drill specs and the audit's
+    ``dns.wrong_answer`` id is the honest forward path.
+    """
     node = _tool_node(fault, nodes)
     if node is None:
         raise NO_UNDO
@@ -2894,7 +3065,7 @@ def _dns_nxdomain_undo(fault: PlannedFault, nodes: tuple[TopologyNode, ...]) -> 
     # The hosts line is a single shell word; quoting the whole line keeps the
     # common case byte-identical while refusing to let a ``domain`` carrying a
     # quote, ``;`` or ``$(...)`` break out of the echo argument.
-    hosts_line = shlex.quote(f"127.0.0.1 {domain}")
+    hosts_line = shlex.quote(f"{_dns_hosts_address(fault)} {domain}")
     inject = ["sh", "-c", f"cp {target} {marker}; echo {hosts_line} >> {target}"]
     undo = ["sh", "-c", f"mv -f {marker} {target}; rm -f {marker}"]
     return (

@@ -51,4 +51,12 @@ CI cookbook per provider, GitOps reference architecture, ChatOps command referen
 ## Dependencies
 07 (policy evaluation in checks), 08 (API backing), 09 (identities, approvals, ticket refs), 12 (evidence links), 22 (coverage deltas), 30 (proof in PR).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/pipeline.py` landed `PipelineVerdict` (pass/fail with a required non-empty `evidence_refs` and a construction-time refusal of a pass over any non-passing check), `ChangeLink` + `PipelinePins` (ticket/incident/deployment/git SHA plus the five plan/policy/catalog/agent/runtime axes, blank-able so the gate refusal is testable), `PRCheck` (name/scope/outcome/coverage delta/structured finding, fail-closed — an unreachable control plane may only report `UNKNOWN`), `CoverageDelta` over `CoverageCell`, `PlanApproval`/`PlanMerge` for invalidation on plan change, and the pure predicates `gates_release`/`blocking_reasons`/`comparable_across_release`; 80 tests.
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

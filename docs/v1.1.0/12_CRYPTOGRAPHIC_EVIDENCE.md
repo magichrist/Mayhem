@@ -51,14 +51,19 @@ Attestation format spec, trust-root management guide, retention-policy reference
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/attestation.py` landed `AttestedEvent` with hash-chain links (`seal_events`, `chain_root`, `verify_chain`), `AttestedTimestamp` with uncertainty arithmetic (`accumulated_uncertainty`, `wall_clock_offset`, `monotonic_span_ns`), the `ProvenanceEdge`/`ProvenancePath` ladder, and `Manifest` with `build_manifest`/`verify_manifest`; canonicalization NFC-normalizes and refuses NaN/inf and any non-JSON-native value rather than stringifying it; 79 tests.
-- Phase 2: not started
+- Phase 2 (engine): DONE — sealing at run close (`infra/attestation_store.py`: `seal_run_evidence` derives `evidence.recorded` + `run.closed` events that *reference* the envelope by digest, seals the chain, builds the manifest, and persists both behind migration M0023 `attestation_retention` with a down path; re-verification goes through the Phase 1 verifier, never a re-implemented check) plus `infra/retention.py` (`RetentionEngine`: hot → cold → archive → deleted, per-class expiry, legal hold that outranks the clock, deletion refused without two distinct named approvers, tombstones written in the same transaction as the deletion); 48 tests.
+- **SIGNING IS STILL NOT IMPLEMENTED.** Phase 2 built the sealing and retention engine only. No key material, no signature bytes, no KMS/HSM custody, no Sigstore/Cosign, no `mayhem bundle sign` — those remain later phases (rollout order in Phase 6: local keys → KMS/HSM → Sigstore).
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
 Known limitations:
-- **No signing is implemented.** `Manifest` carries `signer_identity` and `trust_root_ref` as the Phase 6 honesty gate only: `Manifest.signed` is true when a signer is *named*, and `_check_signer_honesty` turns "signed without a trust root" (or the reverse) into an error and "unsigned" into a warning — never into verified authorship. No key material, no signature bytes, no verification. `verify_manifest` verifies *integrity*, not *authorship*, and says so in the warning it emits.
-- This module is **not a second bundle producer**. It names `mayhem.domain.evidence_bundle.build_bundle` in prose only, to say the two chain identically. Bundles remain built by that one function.
+- **No signing is implemented.** `Manifest` carries `signer_identity` and `trust_root_ref` as the Phase 6 honesty gate only: `Manifest.signed` is true when a signer is *named*, and `_check_signer_honesty` turns "signed without a trust root" (or the reverse) into an error and "unsigned" into a warning — never into verified authorship. No key material, no signature bytes, no verification. `verify_manifest` verifies *integrity*, not *authorship*, and says so in the warning it emits. Phase 2 makes that concrete rather than theoretical: `seal_run_evidence` **refuses** an `AttestationSigner` with `SigningNotImplementedError` instead of naming a signer it cannot honour, and every stored manifest row records `signature_state = unsigned_no_signing` together with the reason. Integrity is verified; authorship is not claimed anywhere.
+- **No external immutable storage is implemented.** `RetentionBackend` is a seam with no production implementation. Archive and delete therefore fail closed with `RetentionBackendUnavailableError` when no backend is configured — the Phase 2 default. Deletion additionally refuses unless the external copy exists first, so the ladder cannot skip ahead and destroy the only copy (gap 101 remains open until a WORM/object-lock backend lands).
+- **Retention deletion is not yet wired to the audit log.** The tombstone is a durable row, not yet a tombstone *attestation* appended to a chain; that is Phase 4 ("retention deletions require dual control and leave a tombstone attestation").
+- **Sealing is not yet called by the executor.** `seal_run_evidence` is the run-close seam and takes the run status and criteria verdict the close path computes, but `controller/executor.py` is unchanged; the call site lands with Phase 3's surface work.
+- This module is **not a second bundle producer**. It names `mayhem.domain.evidence_bundle.build_bundle` in prose only, to say the two chain identically. Bundles remain built by that one function. Phase 2's `infra/attestation_store.py` does not even name it: its events reference the evidence envelope by digest, and the portable bundle stays the one container the one existing producer builds.
+
