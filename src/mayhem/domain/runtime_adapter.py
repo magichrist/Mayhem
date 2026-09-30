@@ -5,14 +5,17 @@ future runtimes implement.  ``AdapterCapabilities`` provides a static
 snapshot of what the adapter supports; ``CapabilityRequirements`` captures
 what a fault plan needs; and ``evaluate`` produces a verdict that the
 planner uses to accept or refuse execution.
+
+Probing the host for installed engines is IO and therefore not here:
+:mod:`mayhem.infra.engine_probe` owns ``detect_available_engines`` (PATH lookup
+plus ``--version``) and delegates the selection *rule* back to this module's
+pure :func:`select_engine`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -67,38 +70,26 @@ def describe_engine(name: str) -> EngineDescriptor:
     return desc
 
 
-def detect_available_engines() -> list[EngineDescriptor]:
-    result: list[EngineDescriptor] = []
-    for _key, base in _ENGINE_DESCRIPTORS.items():
-        binary_available = shutil.which(base.binary) is not None
-        version: str | None = None
-        if binary_available:
-            try:
-                out = subprocess.run(
-                    [base.binary, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                raw = (out.stdout or out.stderr or "").strip()
-                version = raw.splitlines()[0][:120] if raw else None
-            except Exception:
-                version = None
-        result.append(
-            base.model_copy(update={"binary_available": binary_available, "version": version})
-        )
-    return result
+def known_engines() -> tuple[str, ...]:
+    """The engine names this build knows about, in declaration order."""
+    return tuple(_ENGINE_DESCRIPTORS)
 
 
-def resolve_engine_selection(explicit: str | None) -> EngineDescriptor:
+def select_engine(explicit: str | None, detected: list[EngineDescriptor]) -> EngineDescriptor:
+    """The engine to run on, from an explicit request and a host probe.
+
+    Pure: *detected* carries the host facts (``binary_available``, ``version``)
+    that :func:`mayhem.infra.engine_probe.detect_available_engines` gathered, so
+    the selection rule — an explicit request wins, a blank request falls back to
+    detection, zero or multiple available engines are refused rather than
+    guessed — stays testable without touching the host.
+    """
     if explicit is not None and explicit.strip():
         name = explicit.strip().lower()
         desc = _ENGINE_DESCRIPTORS.get(name)
         if desc is None:
             raise InvariantViolationError("engine_unknown", f"unknown engine {explicit!r}")
-        available = detect_available_engines()
-        match = next((d for d in available if d.name == name), None)
+        match = next((d for d in detected if d.name == name), None)
         if match is not None and not match.binary_available:
             raise InvariantViolationError(
                 "engine_unavailable",
@@ -107,7 +98,7 @@ def resolve_engine_selection(explicit: str | None) -> EngineDescriptor:
         if match is not None:
             return match
         return desc.model_copy(update={"binary_available": False})
-    available = [d for d in detect_available_engines() if d.binary_available]
+    available = [d for d in detected if d.binary_available]
     if len(available) == 0:
         raise InvariantViolationError(
             "engine_unavailable",
@@ -265,6 +256,16 @@ class RuntimeAdapter(ABC):
     Docker and Podman are concrete implementations.  Remote and Kubernetes
     are stubs that return UNSUPPORTED verdicts (ADR-M3-5, ADR-M3-6).
     """
+
+    def __init__(self, engine: str = "") -> None:
+        # The adapter registry constructs adapters both as ``cls(engine_name)``
+        # and as bare ``cls()`` (see ``topology/providers/adapter_registry``).
+        # Declaring the constructor contract here — rather than leaving it
+        # implicit on ``object.__init__`` — is what makes those calls
+        # type-check.  An empty ``engine`` means "use the concrete adapter's
+        # own default", which is the same convention DockerAdapter applies
+        # internally.  Concrete adapters override this with their filters.
+        self._engine = engine
 
     # -- identity ------------------------------------------------------------
 

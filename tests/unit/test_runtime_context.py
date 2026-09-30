@@ -141,7 +141,7 @@ def test_runtime_context_defaults_are_optional() -> None:
 def test_ambiguous_automatic_engine_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     monkeypatch.setattr(ra.shutil, "which", _both_engines)
     from mayhem.cli.services import resolve_runtime_context
@@ -156,7 +156,7 @@ def test_ambiguous_automatic_engine_is_refused(
 
 def test_explicit_engine_is_never_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
     from mayhem.cli.services import resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     monkeypatch.setattr(ra.shutil, "which", _both_engines)
     assert resolve_runtime_context(engine="docker").engine == "docker"
@@ -167,7 +167,7 @@ def test_unavailable_engine_keeps_the_legacy_podman_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mayhem.cli.services import resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
     assert resolve_runtime_context(engine=None).engine == "podman"
@@ -178,7 +178,7 @@ def test_unavailable_engine_keeps_the_legacy_podman_fallback(
 
 def test_single_available_engine_is_auto_selected(monkeypatch: pytest.MonkeyPatch) -> None:
     from mayhem.cli.services import resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     monkeypatch.setattr(
         ra.shutil, "which", lambda name: "/usr/bin/podman" if name == "podman" else None
@@ -195,7 +195,7 @@ def test_kubernetes_resolution_never_probes_container_engines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from mayhem.cli.services import resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     config = tmp_path / "mayhem.yaml"
     config.write_text(K8S_CONFIG)
@@ -222,7 +222,7 @@ def test_explicit_engine_survives_preflight_and_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mayhem.cli.services import engine_for, resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
     from mayhem.infra.store import Store
 
     monkeypatch.setattr(ra.shutil, "which", _both_engines)
@@ -267,7 +267,8 @@ def test_context_and_fingerprint_are_preserved_into_the_execution_handoff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from mayhem.cli.services import engine_for, resolve_runtime_context, with_topology_fingerprint
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.domain.runtime_adapter import topology_fingerprint_for_engine
+    from mayhem.infra import engine_probe as ra
     from mayhem.infra.store import Store
 
     config = tmp_path / "mayhem.yaml"
@@ -279,7 +280,7 @@ def test_context_and_fingerprint_are_preserved_into_the_execution_handoff(
 
     graph = _graph()
     runtime = with_topology_fingerprint(runtime, graph)
-    assert runtime.topology_fingerprint == ra.topology_fingerprint_for_engine("kubernetes", graph)
+    assert runtime.topology_fingerprint == topology_fingerprint_for_engine("kubernetes", graph)
 
     preflight = _preflight(engine="kubernetes", runtime=runtime)
     assert preflight.engine == "kubernetes"
@@ -302,7 +303,7 @@ def test_fingerprint_attached_to_preflight_reaches_the_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from mayhem.cli.services import resolve_runtime_context, with_topology_fingerprint
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     monkeypatch.setattr(ra.shutil, "which", lambda _name: None)
     runtime = resolve_runtime_context(engine="podman")
@@ -619,7 +620,7 @@ def test_resolution_does_not_probe_engine_versions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mayhem.cli.services import resolve_runtime_context
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     seen: list[str] = []
 
@@ -637,7 +638,7 @@ def test_with_runtime_version_probes_on_demand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mayhem.cli.services import resolve_runtime_context, with_runtime_version
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     seen: list[str] = []
 
@@ -671,7 +672,7 @@ def test_cli_discover_refuses_an_ambiguous_engine(
     from click.testing import CliRunner
 
     from mayhem.cli.topology import discover
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     compose = tmp_path / "docker-compose.yml"
     compose.write_text("services:\n  api:\n    image: nginx\n")
@@ -697,7 +698,7 @@ def test_cli_run_without_an_engine_flag_keeps_the_podman_default(
 
     from mayhem.cli import lifecycle
     from mayhem.cli.app import app
-    from mayhem.domain import runtime_adapter as ra
+    from mayhem.infra import engine_probe as ra
 
     spec = tmp_path / "spec.yaml"
     spec.write_text(DRILL)
