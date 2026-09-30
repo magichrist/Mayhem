@@ -9,6 +9,7 @@ committed. Since the clean break (ADR-0021) the only supported kind is
 
 from __future__ import annotations
 
+import warnings
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -30,7 +31,9 @@ from mayhem.domain.faults import FaultCategory
 from mayhem.domain.identity import RuntimeIdentity, RuntimeLabel
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.observability import ObservabilityConfig
+from mayhem.domain.quota import DamageQuota
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.steady_state import SteadyStateSpec
 from mayhem.domain.success import SuccessCriteria
 from mayhem.domain.target import (
     ResourceKind,
@@ -62,6 +65,12 @@ class BlastRadiusBudget(BaseModel):
     max_concurrent_faults: int = Field(default=3, ge=1)
     max_duration_per_fault_s: float = 300.0
     forbidden_fault_pairs: frozenset[frozenset[str]] = Field(default_factory=frozenset)
+    # Cumulative damage across the whole plan, charged per target in
+    # damage-seconds. The five limits above are per-step; this is the only
+    # budget that sees the *sequence*. None means "use the default quota",
+    # which is active rather than absent - a quota nobody configures is a
+    # quota nobody gets.
+    damage_quota: DamageQuota | None = None
 
 
 class Constraints(BaseModel):
@@ -162,7 +171,9 @@ class ManiacCfg(BaseModel):
 
     Jitter is clamped to the fault's catalog maximum duration and never drops
     below 1 second; the spec's own safety gates (risk ceiling, blast radius,
-    ``max_faults``, timeout) still apply to every round.
+    timeout) still apply to every round. (``config.max_faults`` used to be
+    listed here too; it is deprecated and never enforced — see
+    :class:`DrillConfig`.)
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -172,12 +183,45 @@ class ManiacCfg(BaseModel):
     seed: int | None = Field(default=None, ge=0)  # reproducible draws
 
 
+class MaxFaultsNotEnforced(Warning):
+    """``config.max_faults`` was authored but is not enforced.
+
+    The field has been declared, parsed, and stored since the drill-spec
+    format landed, and **no code path under ``src/`` has ever read it** — not
+    the planner, not the scheduler, not the safety gate. A spec author who
+    writes ``max_faults: 1`` reasonably believes the run is capped at one
+    fault; it is not capped at all, and the type signature is the only place
+    that says so. That is a documentation lie shaped like a safety control,
+    which is the most expensive kind.
+
+    v1 keeps the field parseable — removing it would break every existing
+    spec, and quietly rejecting it would break them at *run* time — and makes
+    it loudly deprecated instead. It deliberately does **not** start
+    enforcing: turning a no-op into a hard cap mid-release would silently
+    change what existing drills do, which is a breaking change wearing a
+    bugfix's clothes. The budget that is actually enforced is
+    ``blast_radius.max_concurrent_faults``, gated in
+    :mod:`mayhem.controller.safety`.
+
+    A plain :class:`Warning` rather than :class:`DeprecationWarning`, matching
+    ``mayhem.config.SpecFileUsedAsConfig``: ``DeprecationWarning`` is filtered
+    out of default displays outside ``__main__``, and the operator who needs
+    this told is the one running ``mayhem run``. A dedicated subclass keeps it
+    individually suppressible via ``warnings.filterwarnings``.
+    """
+
+
 class DrillConfig(BaseModel):
     """Configuration for a drill spec — replaces the separate mayhem.yml."""
 
     model_config = ConfigDict(frozen=True)
 
     risk_ceiling: RiskLevel = RiskLevel.HIGH
+    # DEPRECATED (1.0.0) and NOT enforced. Parsed and stored for backward
+    # compatibility; read by nothing. Setting it emits
+    # :class:`MaxFaultsNotEnforced` once per config load. The real cap is
+    # ``blast_radius.max_concurrent_faults`` (see :class:`BlastRadiusBudget`
+    # and :mod:`mayhem.controller.safety`) — do not "fix" this into a limit.
     max_faults: int = Field(default=1, ge=0)
     timeout: Duration = "30m"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -194,6 +238,37 @@ class DrillConfig(BaseModel):
     # `maniac.run_level` random (container, fault) rounds dialed by `maniac.level`.
     # Leave unset to keep `mayhem run` fully deterministic.
     maniac: ManiacCfg | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_max_faults_is_unenforced(cls, data: Any) -> Any:
+        """Warn once per load if — and only if — ``max_faults`` was authored.
+
+        A ``mode="before"`` validator sees the raw input mapping, which is the
+        only place the authored keys are still distinguishable from the
+        defaults. Key *presence* is the trigger, not the value: ``max_faults:
+        1`` is the field default and is exactly what ``mayhem init``
+        scaffolds, so keying on "differs from the default" would leave the one
+        case this deprecation exists to catch completely silent. Omitting the
+        key is silent by construction.
+
+        Runs once per ``DrillConfig`` construction — a model validator is not
+        re-entered on attribute access, ``model_dump``, or
+        ``model_copy`` — so the warning is one-per-load, not one-per-read.
+        """
+        if not isinstance(data, dict) or "max_faults" not in data:
+            return data
+        warnings.warn(
+            f"config.max_faults={data['max_faults']!r} is deprecated and is NOT "
+            "enforced: no scheduler, planner, or executor reads it, so it caps "
+            "nothing. The enforced concurrent-fault budget is "
+            "blast_radius.max_concurrent_faults (the safety gate in "
+            "mayhem.controller.safety) — set it under `blast_radius:` and drop "
+            "`max_faults` to silence this warning.",
+            MaxFaultsNotEnforced,
+            stacklevel=2,
+        )
+        return data
 
 
 class DrillFault(BaseModel):
@@ -384,6 +459,12 @@ class DrillSpec(BaseModel):
     # Typed as plain dicts so the criterion vocabulary owns the values while
     # the domain model owns the shape (see mayhem.domain.observations).
     slo: tuple[dict[str, Any], ...] = ()
+    # v1.0.0 (plan 03): the tolerance field the CNCF probes do not have. Purely
+    # additive and entirely optional — a spec without `steady_state:` parses,
+    # validates, and dumps exactly as it did before the block existed, and
+    # `model_dump(exclude_none=True)` still omits the key, so every digest path
+    # (toolkit.hashing.canonical_json, plan_diff) is byte-identical.
+    steady_state: SteadyStateSpec | None = None
 
     @field_validator("containers")
     @classmethod
