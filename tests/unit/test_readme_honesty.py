@@ -247,8 +247,7 @@ def test_readme_states_there_is_no_kernel_or_bpf_fault_injection() -> None:
         "Chaos Mesh is undocumented"
     )
     assert re.search(r"\bkernel\b", text, re.IGNORECASE), (
-        "the README never mentions the kernel; the injection substrate is "
-        "undescribed"
+        "the README never mentions the kernel; the injection substrate is undescribed"
     )
     overclaims = _kernel_bpf_overclaims(text)
     assert not overclaims, (
@@ -264,8 +263,7 @@ def test_kernel_bpf_check_fails_when_the_honesty_text_is_removed() -> None:
     without = text.replace(_section(text, HONESTY_HEADING), "")
     assert without != text, "the honesty section is empty; nothing was removed"
     assert len(_blocks(without)) < len(_blocks(text)), (
-        "removing the honesty section removed no prose; the control is not "
-        "exercising itself"
+        "removing the honesty section removed no prose; the control is not exercising itself"
     )
     claiming = without + (
         "\n\n## Injection substrate\n\n"
@@ -402,9 +400,7 @@ def _pack_signing_overclaims(text: str) -> list[str]:
     return overclaims
 
 
-@pytest.mark.parametrize(
-    "path", PUBLISHED_DOCUMENTS, ids=lambda path: str(path.relative_to(ROOT))
-)
+@pytest.mark.parametrize("path", PUBLISHED_DOCUMENTS, ids=lambda path: str(path.relative_to(ROOT)))
 def test_no_document_describes_fault_packs_as_signed(path: Path) -> None:
     """Gate 4: a placeholder ``signature: str`` is not a signature.
 
@@ -421,8 +417,7 @@ def test_no_document_describes_fault_packs_as_signed(path: Path) -> None:
     )
     assertion = _SIGNATURE_OVERCLAIM.search(text)
     assert assertion is None, (
-        f"{path.relative_to(ROOT)} asserts a verified pack signature: "
-        f"{assertion.group(0)!r}"
+        f"{path.relative_to(ROOT)} asserts a verified pack signature: {assertion.group(0)!r}"
         if assertion
         else ""
     )
@@ -511,9 +506,7 @@ def _missing_facts(notes: str) -> dict[str, list[str]]:
     missing: dict[str, list[str]] = {}
     for change, facts in BREAKING_CHANGE_FACTS.items():
         absent = [
-            name
-            for name, pattern in facts.items()
-            if not re.search(pattern, notes, re.IGNORECASE)
+            name for name, pattern in facts.items() if not re.search(pattern, notes, re.IGNORECASE)
         ]
         if absent:
             missing[change] = absent

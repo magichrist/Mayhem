@@ -4,16 +4,16 @@ from datetime import date
 
 import pytest
 
-from mayhem.domain.catalog import CATALOG, validate_catalog
-from mayhem.domain.errors import SchemaValidationError
-from mayhem.domain.faults import MaturityLevel
-from mayhem.domain.target_profiles import TargetProfile
 from mayhem.controller.catalog_report import (
     build_coverage,
     deprecation_status,
     explain_catalog_fault,
     recommend_faults,
 )
+from mayhem.domain.catalog import CATALOG, validate_catalog
+from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.faults import MaturityLevel
+from mayhem.domain.target_profiles import TargetProfile
 
 REQUESTED_FAMILIES = frozenset(
     {

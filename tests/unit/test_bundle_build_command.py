@@ -43,7 +43,7 @@ def _seeded_db(tmp_path: Path, run_id: str = "run-bundle-1") -> Path:
 
 class TestBundleGroupAdvertisesWhatItOffers:
     def test_group_help_mentions_build_only_because_build_exists(self) -> None:
-        """"Build and verify" is honest only while `build` is a real verb."""
+        """ "Build and verify" is honest only while `build` is a real verb."""
         result = CliRunner().invoke(bundle_cmd, ["--help"])
         assert result.exit_code == 0
         assert "Build and verify" in result.output
@@ -56,9 +56,7 @@ class TestBundleBuild:
         db = _seeded_db(tmp_path)
         out = tmp_path / "bundle"
 
-        result = CliRunner().invoke(
-            build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)]
-        )
+        result = CliRunner().invoke(build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)])
         assert result.exit_code == 0, result.output
         assert out.is_dir()
         assert (out / "manifest.json").exists()
@@ -69,9 +67,7 @@ class TestBundleBuild:
 
         db = _seeded_db(tmp_path)
         out = tmp_path / "bundle"
-        built = CliRunner().invoke(
-            build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)]
-        )
+        built = CliRunner().invoke(build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)])
         assert built.exit_code == 0, built.output
 
         verified = CliRunner().invoke(verify_cmd, [str(out)])
@@ -100,9 +96,7 @@ class TestBundleBuild:
         """Plan 03: the graded verdict must reach the portable artifact."""
         db = _seeded_db(tmp_path)
         out = tmp_path / "bundle"
-        result = CliRunner().invoke(
-            build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)]
-        )
+        result = CliRunner().invoke(build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)])
         assert result.exit_code == 0, result.output
         evidence = json.loads((out / "evidence.json").read_text())
         assert evidence["steady_state"]["verdict"] == "degraded-within-tolerance"
@@ -124,9 +118,7 @@ class TestBundleBuild:
     def test_manifest_chain_is_present(self, tmp_path: Path) -> None:
         db = _seeded_db(tmp_path)
         out = tmp_path / "bundle"
-        result = CliRunner().invoke(
-            build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)]
-        )
+        result = CliRunner().invoke(build_cmd, ["run-bundle-1", "--out", str(out), "--db", str(db)])
         assert result.exit_code == 0, result.output
         manifest = json.loads((out / "manifest.json").read_text())
         assert manifest["root_digest"]
@@ -159,9 +151,9 @@ def test_verify_reports_authorship_honestly() -> None:
     Same honesty rule the fault-pack loader follows: a real digest, no real
     signature. A verifier that reported `signed=true` here would be lying.
     """
-    from mayhem.infra.evidence import redact_envelope
     from mayhem.domain.evidence import EvidenceEnvelope
     from mayhem.domain.evidence_bundle import build_bundle, verify_bundle
+    from mayhem.infra.evidence import redact_envelope
 
     # Through `redact_envelope`, the same transform `write_evidence` applies
     # before storage: `verify` refuses a payload carrying no redaction marker,

@@ -173,9 +173,7 @@ def test_weight_is_the_catalog_risk_times_the_catalog_reversibility():
         definition = definition_for(fault_id)
         assert definition.reversibility is not None, fault_id
         assert damage_weight(fault_id) == damage_weight_for(definition)
-        assert damage_weight(fault_id) == pytest.approx(
-            damage_weight_for(definition), rel=1e-12
-        )
+        assert damage_weight(fault_id) == pytest.approx(damage_weight_for(definition), rel=1e-12)
         # ...and the weight really is a function of the two catalog fields.
         assert damage_weight(fault_id) != 1.0 or definition.risk in (
             RiskLevel.LOW,
@@ -185,9 +183,7 @@ def test_weight_is_the_catalog_risk_times_the_catalog_reversibility():
 
 def test_weight_rises_with_the_real_catalog_risk_ladder():
     """Ordering is taken from ``domain/risks.py``, not asserted per fault id."""
-    low = damage_weight_for(
-        definition_for("proc.pause")
-    )  # LOW, REVERSIBLE
+    low = damage_weight_for(definition_for("proc.pause"))  # LOW, REVERSIBLE
     high = damage_weight_for(definition_for("process.kill"))  # HIGH, RECONCILED
     critical = damage_weight_for(definition_for("k8s.node_drain"))  # CRITICAL
     assert low < high < critical
@@ -209,8 +205,9 @@ def test_unresolvable_fault_is_priced_at_the_top_of_the_ladder():
     """Fail-safe: a fault the catalog cannot price is never the cheap one."""
     assert not is_catalog_fault("not.a.real.fault")
     assert damage_weight("not.a.real.fault") == UNRESOLVED_FAULT_WEIGHT
-    assert UNRESOLVED_FAULT_WEIGHT > max(
-        damage_weight(f) for f in ("proc.pause", "net.latency", "k8s.node_drain")
+    assert (
+        max(damage_weight(f) for f in ("proc.pause", "net.latency", "k8s.node_drain"))
+        < UNRESOLVED_FAULT_WEIGHT
     )
 
 
@@ -222,8 +219,9 @@ def test_ledger_accumulates_per_target_and_reports_the_worst():
     ledger = DamageLedger()
     quota = DamageQuota(budget_s=10_000.0)
     for _ in range(5):
-        ledger.charge(fault_id="net.latency", duration_s=100.0, node_ids=["n-a", "n-b"],
-                      quota=quota)
+        ledger.charge(
+            fault_id="net.latency", duration_s=100.0, node_ids=["n-a", "n-b"], quota=quota
+        )
     # 100s x MEDIUM(1.0) x REVERSIBLE(1.0) = 100 damage-seconds per node.
     assert ledger.damage_for("n-a") == pytest.approx(500.0)
     assert ledger.damage_for("n-b") == pytest.approx(500.0)
@@ -244,9 +242,7 @@ def test_ledger_refuses_the_step_that_takes_the_total_over():
         )
         assert not charge.exceeded
         assert charge.step_index == i
-    charge = ledger.charge(
-        fault_id="net.latency", duration_s=100.0, node_ids=["n-a"], quota=quota
-    )
+    charge = ledger.charge(fault_id="net.latency", duration_s=100.0, node_ids=["n-a"], quota=quota)
     assert charge.exceeded
     assert charge.rule_id == RULE_BUDGET
     assert charge.worst_node_s == pytest.approx(300.0)
@@ -285,7 +281,12 @@ def test_cumulative_budget_refuses_a_plan_whose_every_step_is_legal():
     # The five per-step limits genuinely pass, one at a time, on the real gate.
     for i in range(10):
         stats = check_blast_radius(
-            graph, {"n-a"}, durations[i], fault_ids[:i], fault_ids[i], ctx=safety,
+            graph,
+            {"n-a"},
+            durations[i],
+            fault_ids[:i],
+            fault_ids[i],
+            ctx=safety,
             ledger=DamageLedger(),
         )
         assert stats["services_pct"] == pytest.approx(33.3, abs=0.1)
@@ -345,11 +346,7 @@ def test_refusal_happens_before_the_offending_step_executes():
         _run(plan, graph, safety)
 
     # The steps before the breach were admitted, the breaching step was not.
-    allowed = [
-        d.inputs["fault_id"]
-        for d in safety.decisions
-        if d.rule_id == "blast_radius.allow"
-    ]
+    allowed = [d.inputs["fault_id"] for d in safety.decisions if d.rule_id == "blast_radius.allow"]
     assert allowed == ["net.latency", "net.packet_loss", "dns.servfail"]
     refused = [d.inputs["fault_id"] for d in safety.decisions if d.rule_id == RULE_BUDGET]
     assert refused == ["http.latency"]
@@ -369,8 +366,13 @@ def test_step_by_step_gating_also_stops_before_the_offending_step():
     with pytest.raises(SafetyRefusedError) as caught:
         for i, fault_id in enumerate(fault_ids):
             check_blast_radius(
-                graph, {"n-a"}, durations[i], tuple(fault_ids[:i]), fault_id,
-                ctx=safety, ledger=ledger,
+                graph,
+                {"n-a"},
+                durations[i],
+                tuple(fault_ids[:i]),
+                fault_id,
+                ctx=safety,
+                ledger=ledger,
             )
             executed.append(fault_id)
 
@@ -433,8 +435,13 @@ def test_per_step_limits_still_fire_when_the_quota_is_wide_open():
     quota = DamageQuota(budget_s=10_000_000.0, per_fault_ceiling_s=1_000_000.0)
 
     services = _ctx(
-        BlastRadiusBudget(max_services_pct=10.0, max_hosts=99, max_concurrent_faults=99,
-                          max_duration_per_fault_s=float("inf"), forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=10.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
+            max_duration_per_fault_s=float("inf"),
+            forbidden_fault_pairs=frozenset(),
+        ),
         quota,
     )
     with pytest.raises(SafetyRefusedError) as caught:
@@ -443,31 +450,43 @@ def test_per_step_limits_still_fire_when_the_quota_is_wide_open():
     assert caught.value.decision.rule_id == "blast_radius.max_services_pct"
 
     hosts = _ctx(
-        BlastRadiusBudget(max_services_pct=100.0, max_hosts=1, max_concurrent_faults=99,
-                          max_duration_per_fault_s=float("inf"), forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=100.0,
+            max_hosts=1,
+            max_concurrent_faults=99,
+            max_duration_per_fault_s=float("inf"),
+            forbidden_fault_pairs=frozenset(),
+        ),
         quota,
     )
     with pytest.raises(SafetyRefusedError) as caught:
-        check_blast_radius(
-            graph, {"h-local", "h-remote"}, 5.0, (), "net.latency", ctx=hosts
-        )
+        check_blast_radius(graph, {"h-local", "h-remote"}, 5.0, (), "net.latency", ctx=hosts)
     assert caught.value.decision is not None
     assert caught.value.decision.rule_id == "blast_radius.max_hosts"
 
     concurrent = _ctx(
-        BlastRadiusBudget(max_services_pct=100.0, max_hosts=99, max_concurrent_faults=1,
-                          max_duration_per_fault_s=float("inf"), forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=100.0,
+            max_hosts=99,
+            max_concurrent_faults=1,
+            max_duration_per_fault_s=float("inf"),
+            forbidden_fault_pairs=frozenset(),
+        ),
         quota,
     )
     with pytest.raises(SafetyRefusedError) as caught:
-        check_blast_radius(graph, {"n-a"}, 5.0, ("net.latency",), "dns.servfail",
-                           ctx=concurrent)
+        check_blast_radius(graph, {"n-a"}, 5.0, ("net.latency",), "dns.servfail", ctx=concurrent)
     assert caught.value.decision is not None
     assert caught.value.decision.rule_id == "blast_radius.max_concurrent_faults"
 
     duration = _ctx(
-        BlastRadiusBudget(max_services_pct=100.0, max_hosts=99, max_concurrent_faults=99,
-                          max_duration_per_fault_s=1.0, forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=100.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
+            max_duration_per_fault_s=1.0,
+            forbidden_fault_pairs=frozenset(),
+        ),
         quota,
     )
     with pytest.raises(SafetyRefusedError) as caught:
@@ -480,8 +499,13 @@ def test_stricter_wins_when_the_quota_is_looser_than_a_per_step_limit():
     """Per-step breach, quota has room: the per-step rule refuses, unchanged."""
     graph = _graph()
     safety = _ctx(
-        BlastRadiusBudget(max_services_pct=10.0, max_hosts=99, max_concurrent_faults=99,
-                          max_duration_per_fault_s=float("inf"), forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=10.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
+            max_duration_per_fault_s=float("inf"),
+            forbidden_fault_pairs=frozenset(),
+        ),
         DamageQuota(budget_s=10_000_000.0),
     )
     with pytest.raises(SafetyRefusedError) as caught:
@@ -508,8 +532,13 @@ def test_a_step_breaching_both_is_refused_once_and_names_the_per_step_rule():
     that fails on its own, and the plan is still refused either way."""
     graph = _graph()
     safety = _ctx(
-        BlastRadiusBudget(max_services_pct=10.0, max_hosts=99, max_concurrent_faults=99,
-                          max_duration_per_fault_s=float("inf"), forbidden_fault_pairs=frozenset()),
+        BlastRadiusBudget(
+            max_services_pct=10.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
+            max_duration_per_fault_s=float("inf"),
+            forbidden_fault_pairs=frozenset(),
+        ),
         DamageQuota(budget_s=1.0),
     )
     with pytest.raises(SafetyRefusedError) as caught:
@@ -555,9 +584,7 @@ def test_forbidden_fault_pair_is_enforced_on_a_three_fault_plan():
             max_hosts=99,
             max_concurrent_faults=99,
             max_duration_per_fault_s=float("inf"),
-            forbidden_fault_pairs=frozenset(
-                {frozenset({"net.latency", "net.packet_loss"})}
-            ),
+            forbidden_fault_pairs=frozenset({frozenset({"net.latency", "net.packet_loss"})}),
         ),
         DamageQuota(budget_s=10_000_000.0),
     )
@@ -565,9 +592,7 @@ def test_forbidden_fault_pair_is_enforced_on_a_three_fault_plan():
 
     with pytest.raises(SafetyRefusedError) as caught:
         for i, fault_id in enumerate(fault_ids):
-            check_blast_radius(
-                graph, {"n-a"}, 1.0, tuple(fault_ids[:i]), fault_id, ctx=safety
-            )
+            check_blast_radius(graph, {"n-a"}, 1.0, tuple(fault_ids[:i]), fault_id, ctx=safety)
     dec = caught.value.decision
     assert dec is not None
     assert dec.rule_id == "blast_radius.forbidden_fault_pairs"
@@ -579,7 +604,9 @@ def test_forbidden_pair_still_refuses_a_two_fault_plan():
     graph = _graph()
     safety = _ctx(
         BlastRadiusBudget(
-            max_services_pct=100.0, max_hosts=99, max_concurrent_faults=99,
+            max_services_pct=100.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
             max_duration_per_fault_s=float("inf"),
             forbidden_fault_pairs=frozenset({frozenset({"net.latency", "dns.servfail"})}),
         )
@@ -598,34 +625,33 @@ def test_forbidden_pair_is_caught_wherever_it_sits_in_the_plan():
     ):
         safety = _ctx(
             BlastRadiusBudget(
-                max_services_pct=100.0, max_hosts=99, max_concurrent_faults=99,
+                max_services_pct=100.0,
+                max_hosts=99,
+                max_concurrent_faults=99,
                 max_duration_per_fault_s=float("inf"),
-                forbidden_fault_pairs=frozenset(
-                    {frozenset({"net.latency", "net.packet_loss"})}
-                ),
+                forbidden_fault_pairs=frozenset({frozenset({"net.latency", "net.packet_loss"})}),
             )
         )
         with pytest.raises(SafetyRefusedError, match="forbidden"):
             for i, fault_id in enumerate(fault_ids):
-                check_blast_radius(
-                    graph, {"n-a"}, 1.0, tuple(fault_ids[:i]), fault_id, ctx=safety
-                )
+                check_blast_radius(graph, {"n-a"}, 1.0, tuple(fault_ids[:i]), fault_id, ctx=safety)
 
 
 def test_a_plan_without_the_forbidden_pair_is_unaffected():
     graph = _graph()
     safety = _ctx(
         BlastRadiusBudget(
-            max_services_pct=100.0, max_hosts=99, max_concurrent_faults=99,
+            max_services_pct=100.0,
+            max_hosts=99,
+            max_concurrent_faults=99,
             max_duration_per_fault_s=float("inf"),
-            forbidden_fault_pairs=frozenset(
-                {frozenset({"net.latency", "net.packet_loss"})}
-            ),
+            forbidden_fault_pairs=frozenset({frozenset({"net.latency", "net.packet_loss"})}),
         )
     )
     for i, fault_id in enumerate(("net.latency", "dns.servfail", "net.load")):
-        check_blast_radius(graph, {"n-a"}, 1.0, ("net.latency", "dns.servfail")[:i],
-                           fault_id, ctx=safety)
+        check_blast_radius(
+            graph, {"n-a"}, 1.0, ("net.latency", "dns.servfail")[:i], fault_id, ctx=safety
+        )
 
 
 # -- preflight shows the sequence risk before the run ------------------------------

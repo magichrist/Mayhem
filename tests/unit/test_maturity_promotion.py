@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from mayhem.controller import catalog_report
 from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.domain.faults import FaultDefinition, MaturityLevel
-from mayhem.controller import catalog_report
 from mayhem.infra.promotion import (
     CUMULATIVE_CRITERIA,
     MIN_LIVE_OBSERVATION_DAYS,

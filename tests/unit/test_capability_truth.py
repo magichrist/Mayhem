@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from mayhem.cli.app import main
-from mayhem.domain.catalog import all_definitions, definition_for
 from mayhem.controller import catalog_report
+from mayhem.domain.catalog import all_definitions, definition_for
 
 ROOT = Path(__file__).resolve().parents[2]
 

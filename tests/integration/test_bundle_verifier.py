@@ -62,7 +62,6 @@ def test_tampering_with_a_written_bundle_is_detected(tmp_path) -> None:
     payload["verdict"] = "fail"
     evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
-
     result = verify_bundle(load_bundle(target))
     assert result.valid is False
     assert any("digest mismatch" in error for error in result.errors)
@@ -72,7 +71,6 @@ def test_deleting_an_artifact_is_detected(tmp_path) -> None:
     bundle = build_bundle(evidence=_real_evidence(), replay={"run_id": "bundle-run"})
     target = write_bundle(bundle, tmp_path / "bundle")
     (target / "replay.json").unlink()
-
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is False
@@ -90,7 +88,6 @@ def test_swapping_an_artifact_is_detected(tmp_path) -> None:
     evidence_path.write_text(
         json.dumps(json.loads((target / "replay.json").read_text()), indent=2, sort_keys=True)
     )
-
 
     result = verify_bundle(load_bundle(target))
     assert result.valid is False

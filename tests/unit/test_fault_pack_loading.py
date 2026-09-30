@@ -527,7 +527,11 @@ def test_an_irreversible_fault_claiming_target_mutate_is_refused(tmp_path: Path)
         _stamped(
             _document(
                 faults=[
-                    _fault(reversible=False, compensation="reconcile later", permissions=["target:mutate"])
+                    _fault(
+                        reversible=False,
+                        compensation="reconcile later",
+                        permissions=["target:mutate"],
+                    )
                 ]
             )
         ),
