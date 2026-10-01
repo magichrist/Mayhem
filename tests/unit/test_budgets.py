@@ -858,3 +858,59 @@ def test_a_naive_datetime_is_refused_rather_than_assumed_utc() -> None:
         BudgetWindow(start=naive, end=ANCHOR)
     with pytest.raises(InvariantViolationError):
         ConsumptionSample(dimension=ResourceDimension.CPU, measured=1.0, at=naive)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The two ledgers keep separate rule ids
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ``mayhem.domain.policy.BudgetNode`` is the hierarchical *damage* budget
+# (team → environment → service → experiment → fault, in accumulated damage
+# seconds). ``ResourceBudget`` here is an authored limit on a *resource*
+# dimension over a window. ``ResourceScope``'s docstring is explicit that these
+# are not the same ledger, so a single rule id covering "this limit is
+# negative" in both would make an evidence record ambiguous about which one was
+# authored badly. These tests pin the separation, and pin that the two
+# thresholds really do differ — a shared id would be defensible only if the
+# refusals were the same refusal.
+
+
+def _resource_budget(limit: float) -> ResourceBudget:
+    return ResourceBudget(
+        dimension=ResourceDimension.CPU,
+        scope=ResourceScope.ORGANISATION,
+        scope_key="platform",
+        limit=limit,
+        window_s=3600.0,
+    )
+
+
+def test_the_two_budget_ledgers_refuse_under_different_rule_ids() -> None:
+    from mayhem.domain.policy import BudgetNode, BudgetScope
+
+    with pytest.raises(InvariantViolationError) as resource_excinfo:
+        _resource_budget(-1.0)
+    with pytest.raises(InvariantViolationError) as damage_excinfo:
+        BudgetNode(scope=BudgetScope.TEAM, key="platform", limit_s=-1.0)
+
+    assert resource_excinfo.value.rule == RULE_NEGATIVE_LIMIT
+    assert damage_excinfo.value.rule == "budget.damage_negative_limit"
+    # The decisive property: one id would name two different subjects.
+    assert resource_excinfo.value.rule != damage_excinfo.value.rule
+
+
+def test_a_zero_limit_is_a_typo_for_a_resource_budget_and_a_ceiling_for_a_damage_node() -> None:
+    """Why one id could not have served both, stated as an executable claim.
+
+    ``ResourceBudget`` refuses ``limit <= 0`` — a zero budget is unspendable, so
+    it is a typo. ``BudgetNode`` accepts ``limit_s == 0``, because ``None`` is
+    "no ceiling" but an explicit ``0`` at one scope is a real authored ceiling
+    that a positive damage charge will breach later. Same word, opposite intent.
+    """
+    from mayhem.domain.policy import BudgetNode, BudgetScope
+
+    with pytest.raises(InvariantViolationError) as excinfo:
+        _resource_budget(0.0)
+    assert excinfo.value.rule == RULE_NEGATIVE_LIMIT
+
+    assert BudgetNode(scope=BudgetScope.TEAM, key="platform", limit_s=0.0).limit_s == 0.0

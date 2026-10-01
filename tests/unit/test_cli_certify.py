@@ -232,7 +232,12 @@ def test_the_database_is_migrated_to_the_head_before_anything_is_reported(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["faults"][0]["fault_id"] == FAULT_ID
-    assert ALL_MIGRATIONS[-1].version == 25
+    # The head is asserted as "the last migration in the list", never as a
+    # literal. Migrations are appended by every lane, so a pinned number here
+    # fails the next time one lands and proves nothing in the meantime:
+    # contiguity is ``test_migrations_run_once``'s job, and the count itself is
+    # the next line.
+    assert ALL_MIGRATIONS[-1].version == len(ALL_MIGRATIONS)
     store = Store(_db(tmp_path))
     try:
         assert store.schema_version == len(ALL_MIGRATIONS)

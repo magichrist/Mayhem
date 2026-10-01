@@ -142,4 +142,11 @@ def test_name_snapshot_is_stable() -> None:
         "attestation_retention",
         "certification_records",
         "agent_identity_backups",
+        # APPEND-ONLY procedure: new migration names are added at the end, in
+        # version order, and nothing above this line is ever edited or removed.
+        # ``schedules`` (version 26) landed in ``migrations.py`` concurrently
+        # with ``coverage_findings`` (version 27); both are appended here in
+        # version order because the gate compares the whole ordered sequence.
+        "schedules",
+        "coverage_findings",
     ), "migration name sequence drifted from the snapshot — append-only."

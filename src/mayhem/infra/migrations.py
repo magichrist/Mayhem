@@ -1069,6 +1069,328 @@ M0025_AGENT_IDENTITY_BACKUPS = Migration(
 )
 
 
+# Plan 13 Phase 2 — durable schedule state.
+#
+# Id note: 25 is ``M0025_AGENT_IDENTITY_BACKUPS`` (a concurrent v1.1.0 lane), so
+# ``M0026_SCHEDULES`` is the id reserved for this migration and the chain stays
+# contiguous 1..26. Same rule as 22/23/24/25 above: take the next free id rather
+# than renumbering, because the migrator keys on ``version`` alone and refuses
+# duplicates outright.
+#
+# What these tables hold, and what they deliberately do not:
+#
+# * **``schedule_runs.idempotency_key`` is the primary key, and that is the
+#   whole no-double-fire mechanism.** A recurring schedule re-derives the same
+#   key for the same slot after a controller restart, so a second attempt to
+#   fire an already-fired slot is a *primary-key violation* rather than a race
+#   the application has to remember to prevent. The column is deliberately
+#   un-normalised (a digest, not a surrogate id) for that reason: uniqueness is
+#   enforced over the value the caller recomputes, not over a row counter.
+# * **``state`` is a claim lifecycle, not a run lifecycle.** ``claimed`` means
+#   a controller wrote the intent to fire and may or may not have executed it;
+#   ``dispatched`` means the pipeline returned a run id. A ``claimed`` row left
+#   behind by a controller that died mid-dispatch is *not* retried, because
+#   retrying it is exactly the double-fire this table exists to prevent. An
+#   operator resolves it, which is an incident, not a guess.
+# * **No "this fired successfully" boolean and no outcome column.** Whether a
+#   dispatched run passed is the run's own record (``m5_runs`` /
+#   ``m5_run_outcomes``), joined by ``run_id``; duplicating it here would be a
+#   second answer to the same question that can drift from the first.
+# * **Non-fires are not rows.** A refusal that never reached the claim stage (a
+#   blackout, a closed window, an active incident) is evidence about an
+#   evaluation, and those go to ``observations`` via
+#   :meth:`mayhem.infra.store.Store.save_observation` rather than to a table
+#   whose primary key means "this slot ran".
+# * ``schedules`` holds the *binding* (which campaign, which experiment, which
+#   team) alongside the schedule body, and the body itself as JSON. The digest
+#   column is over the body, so an edited schedule is recognisable as a
+#   different body rather than silently continuing a recurrence its author
+#   changed underneath it.
+# * ``game_day_dispatch_steps`` hangs off ``game_day_sessions`` by reference, so
+#   a dispatch step cannot exist for a session nobody approved. Its hold state
+#   is the game-day half of the scheduler: ``held`` is a *gate* the scheduler
+#   reads at fire time, not a delay it waits out, and ``released`` records the
+#   named facilitator who released it.
+M0026_SCHEDULES = Migration(
+    version=26,
+    name="schedules",
+    statements=(
+        """
+        CREATE TABLE schedules (
+            schedule_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            team TEXT NOT NULL DEFAULT '',
+            campaign_id TEXT NOT NULL,
+            experiment_id TEXT NOT NULL,
+            concurrency_class TEXT NOT NULL DEFAULT 'exclusive' CHECK (concurrency_class IN
+                ('parallel', 'exclusive', 'shared_resource', 'conflicting', 'preemptible')),
+            resources_json TEXT NOT NULL DEFAULT '[]',
+            lock_window_s REAL NOT NULL DEFAULT 3600.0,
+            kind TEXT NOT NULL CHECK (kind IN ('cron', 'interval', 'calendar')),
+            timezone_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+            window_index INTEGER NOT NULL DEFAULT 0,
+            run_count INTEGER NOT NULL DEFAULT 0,
+            last_slot_start TEXT,
+            last_dispatch_at TEXT,
+            next_fire_at TEXT,
+            schedule_digest TEXT NOT NULL,
+            schedule_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_schedules_team ON schedules(team)",
+        "CREATE INDEX idx_schedules_campaign ON schedules(campaign_id)",
+        "CREATE INDEX idx_schedules_due ON schedules(enabled, next_fire_at)",
+        "CREATE INDEX idx_schedules_class ON schedules(concurrency_class)",
+        """
+        CREATE TABLE schedule_runs (
+            idempotency_key TEXT PRIMARY KEY,
+            schedule_id TEXT NOT NULL REFERENCES schedules(schedule_id),
+            team TEXT NOT NULL DEFAULT '',
+            campaign_id TEXT NOT NULL DEFAULT '',
+            experiment_id TEXT NOT NULL DEFAULT '',
+            window_index INTEGER NOT NULL,
+            slot_start TEXT NOT NULL,
+            effective_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('claimed', 'dispatched', 'failed')),
+            code TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            run_id TEXT NOT NULL DEFAULT '',
+            controller_id TEXT NOT NULL DEFAULT '',
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            recorded_at TEXT NOT NULL,
+            settled_at TEXT
+        )
+        """,
+        "CREATE INDEX idx_schedule_runs_schedule ON schedule_runs(schedule_id, slot_start)",
+        "CREATE INDEX idx_schedule_runs_window ON schedule_runs(window_index, team)",
+        "CREATE INDEX idx_schedule_runs_state ON schedule_runs(state)",
+        """
+        CREATE TABLE game_day_dispatch_steps (
+            session_id TEXT NOT NULL REFERENCES game_day_sessions(id),
+            step_id TEXT NOT NULL,
+            step_seq INTEGER NOT NULL,
+            scenario TEXT NOT NULL DEFAULT '',
+            schedule_id TEXT NOT NULL,
+            hold_state TEXT NOT NULL CHECK (hold_state IN ('held', 'released', 'dispatched')),
+            hold_reason TEXT NOT NULL DEFAULT '',
+            released_by TEXT NOT NULL DEFAULT '',
+            released_at TEXT,
+            dispatched_at TEXT,
+            step_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, step_id)
+        )
+        """,
+        "CREATE INDEX idx_game_day_steps_session "
+        "ON game_day_dispatch_steps(session_id, step_seq)",
+        "CREATE INDEX idx_game_day_steps_schedule ON game_day_dispatch_steps(schedule_id)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_game_day_steps_schedule",
+        "DROP INDEX idx_game_day_steps_session",
+        "DROP TABLE game_day_dispatch_steps",
+        "DROP INDEX idx_schedule_runs_state",
+        "DROP INDEX idx_schedule_runs_window",
+        "DROP INDEX idx_schedule_runs_schedule",
+        "DROP TABLE schedule_runs",
+        "DROP INDEX idx_schedules_due",
+        "DROP INDEX idx_schedules_campaign",
+        "DROP INDEX idx_schedules_class",
+        "DROP INDEX idx_schedules_team",
+        "DROP TABLE schedules",
+    ),
+)
+
+
+# M0027 — plan 22 phase 2: coverage over the new cell dimensions, run
+# comparison, and advisory suite suggestions.
+#
+# Version note: this migration was authored while the head was M0025 and was
+# provisionally numbered 26; M0026_SCHEDULES landed in this file concurrently, so
+# this one sits at 27 to keep the chain strictly increasing. Nothing about the
+# schema depends on the number.
+#
+# Additive only. ``m5_coverage`` is neither altered nor rebuilt: the plan-22
+# dimensions table stores the decomposition and a pointer at the legacy
+# ``cell_key``, and the coverage *state* stays where it already was. There is
+# therefore exactly one place a cell's state lives and nothing to drift.
+#
+# Three constraints in this migration are load-bearing rather than tidy:
+#
+# * ``coverage_dimension_sightings`` refuses a sighting that cites nothing. An
+#   ``executed``/``certified`` row must name a run and a 64-char lowercase-hex
+#   evidence digest (and, when certified, a certification reference); a
+#   ``catalog`` row must name neither. This is plan 22's "coverage counts
+#   executed/certified evidence, never catalog presence" enforced in the place
+#   that survives a refactor of the Python that writes it.
+# * ``regression_findings`` admits no outcome but ``regressed`` and refuses a
+#   row whose baseline and candidate runs are the same id. "A regression
+#   finding without two cited runs" is unrepresentable here as well as in
+#   ``mayhem.domain.comparison``.
+# * ``suite_suggestions`` has CHECKs admitting no value but 1 for ``advisory``
+#   and ``requires_approval``, and has no ``run_id``, ``status``, or
+#   ``started_at`` column at all. There is nowhere for a suggestion to record
+#   that it ran, because a suggestion never does.
+M0027_COVERAGE_FINDINGS = Migration(
+    version=27,
+    name="coverage_findings",
+    statements=(
+        """
+        CREATE TABLE coverage_dimension_cells (
+            service TEXT NOT NULL,
+            dependency TEXT NOT NULL,
+            fault TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            version TEXT NOT NULL,
+            probe_class TEXT NOT NULL,
+            certification_state TEXT NOT NULL CHECK (certification_state IN (
+                'uncertified', 'pending', 'certified', 'expiring', 'stale',
+                'failed', 'incompatible')),
+            cell_key TEXT NOT NULL,
+            declared_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (service, dependency, fault, environment, version),
+            CHECK (instr(service, char(31)) = 0),
+            CHECK (instr(dependency, char(31)) = 0),
+            CHECK (instr(fault, char(31)) = 0),
+            CHECK (instr(environment, char(31)) = 0),
+            CHECK (instr(version, char(31)) = 0)
+        )
+        """,
+        "CREATE INDEX idx_coverage_dimension_cells_cell_key "
+        "ON coverage_dimension_cells(cell_key)",
+        "CREATE INDEX idx_coverage_dimension_cells_certification "
+        "ON coverage_dimension_cells(certification_state)",
+        """
+        CREATE TABLE coverage_dimension_sightings (
+            sighting_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service TEXT NOT NULL,
+            dependency TEXT NOT NULL,
+            fault TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            version TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('executed', 'certified', 'catalog')),
+            run_id TEXT NOT NULL DEFAULT '',
+            evidence_digest TEXT NOT NULL DEFAULT '',
+            certification_ref TEXT NOT NULL DEFAULT '',
+            recorded_at TEXT NOT NULL,
+            CHECK (
+                (
+                    kind IN ('executed', 'certified')
+                    AND run_id <> ''
+                    AND length(evidence_digest) = 64
+                    AND evidence_digest NOT GLOB '*[^0-9a-f]*'
+                    AND (kind <> 'certified' OR certification_ref <> '')
+                )
+                OR (
+                    kind = 'catalog'
+                    AND run_id = ''
+                    AND evidence_digest = ''
+                    AND certification_ref = ''
+                )
+            )
+        )
+        """,
+        # Partial: catalog sightings accumulate (they count), evidence sightings
+        # are idempotent per (cell, kind, run, digest).
+        "CREATE UNIQUE INDEX idx_coverage_dimension_sightings_evidence "
+        "ON coverage_dimension_sightings("
+        "service, dependency, fault, environment, version, kind, run_id, evidence_digest) "
+        "WHERE kind IN ('executed', 'certified')",
+        "CREATE INDEX idx_coverage_dimension_sightings_kind "
+        "ON coverage_dimension_sightings(kind, recorded_at)",
+        """
+        CREATE TABLE comparison_runs (
+            run_id TEXT PRIMARY KEY,
+            experiment TEXT NOT NULL,
+            release TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            equivalence_key TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            report_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            CHECK (length(evidence_digest) = 64),
+            CHECK (evidence_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (run_id <> '')
+        )
+        """,
+        "CREATE INDEX idx_comparison_runs_equivalence "
+        "ON comparison_runs(equivalence_key, release)",
+        "CREATE INDEX idx_comparison_runs_experiment ON comparison_runs(experiment, release)",
+        """
+        CREATE TABLE regression_findings (
+            finding_id TEXT PRIMARY KEY,
+            experiment TEXT NOT NULL,
+            baseline_release TEXT NOT NULL,
+            candidate_release TEXT NOT NULL,
+            baseline_run TEXT NOT NULL,
+            candidate_run TEXT NOT NULL,
+            baseline_evidence_digest TEXT NOT NULL,
+            candidate_evidence_digest TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome = 'regressed'),
+            regressed_metrics TEXT NOT NULL,
+            finding_json TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            CHECK (finding_id <> ''),
+            CHECK (baseline_run <> '' AND candidate_run <> ''),
+            CHECK (baseline_run <> candidate_run),
+            CHECK (length(baseline_evidence_digest) = 64),
+            CHECK (length(candidate_evidence_digest) = 64),
+            CHECK (baseline_evidence_digest <> candidate_evidence_digest),
+            CHECK (regressed_metrics <> '[]')
+        )
+        """,
+        "CREATE INDEX idx_regression_findings_experiment "
+        "ON regression_findings(experiment, opened_at DESC)",
+        """
+        CREATE TABLE suite_suggestions (
+            suggestion_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK (event_kind IN (
+                'nightly', 'post_deploy', 'post_infra_change', 'post_incident',
+                'dependency_version_change', 'cache_topology_change',
+                'database_upgrade')),
+            event_subject TEXT NOT NULL,
+            event_fingerprint TEXT NOT NULL,
+            suites_json TEXT NOT NULL,
+            fault_kinds_json TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            advisory INTEGER NOT NULL DEFAULT 1 CHECK (advisory = 1),
+            requires_approval INTEGER NOT NULL DEFAULT 1 CHECK (requires_approval = 1),
+            suggested_at TEXT NOT NULL,
+            PRIMARY KEY (suggestion_id, event_kind, event_fingerprint),
+            CHECK (suggestion_id <> ''),
+            CHECK (event_subject <> ''),
+            CHECK (length(event_fingerprint) = 64),
+            CHECK (suites_json <> '[]'),
+            CHECK (fault_kinds_json <> '[]'),
+            CHECK (rationale <> '')
+        )
+        """,
+        "CREATE INDEX idx_suite_suggestions_kind "
+        "ON suite_suggestions(event_kind, suggested_at DESC)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_suite_suggestions_kind",
+        "DROP TABLE suite_suggestions",
+        "DROP INDEX idx_regression_findings_experiment",
+        "DROP TABLE regression_findings",
+        "DROP INDEX idx_comparison_runs_experiment",
+        "DROP INDEX idx_comparison_runs_equivalence",
+        "DROP TABLE comparison_runs",
+        "DROP INDEX idx_coverage_dimension_sightings_kind",
+        "DROP INDEX idx_coverage_dimension_sightings_evidence",
+        "DROP TABLE coverage_dimension_sightings",
+        "DROP INDEX idx_coverage_dimension_cells_certification",
+        "DROP INDEX idx_coverage_dimension_cells_cell_key",
+        "DROP TABLE coverage_dimension_cells",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -1095,4 +1417,6 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0023_ATTESTATION_RETENTION,
     M0024_CERTIFICATION_RECORDS,
     M0025_AGENT_IDENTITY_BACKUPS,
+    M0026_SCHEDULES,
+    M0027_COVERAGE_FINDINGS,
 )

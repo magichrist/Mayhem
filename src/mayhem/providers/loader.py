@@ -1,3 +1,81 @@
+"""Provider and fault-pack loading — the single enforcement point (plan 17 Phase 2).
+
+Everything a third-party artifact has to survive before mayhem will hold a
+:class:`~mayhem.domain.provider.ProviderRegistration` for it passes through this
+module: a catalog document or a set of entry points is read here, its
+declaration is gated here, its implementation is materialised here, and its
+sandbox profile is chosen here. Nothing else in the codebase constructs a
+registration from an artifact the provider ecosystem did not author — that
+one-way property is what makes this module the place to audit.
+
+The gates, in the order :meth:`ProviderLoader.load_catalog` applies them. Every
+one of them refuses, and each has a negative control in
+``tests/unit/test_provider_sandbox.py``:
+
+============================  ==========================================
+code                          refused because
+============================  ==========================================
+``catalog_invalid``           the catalog is unreadable, not JSON, or not a catalog
+``provider_wire_field_unknown``  the declaration carries a wire field this core does not implement
+``provider_api_incompatible``  the declaration is a different ``mayhem.provider/vN``
+``provider_version_unreadable``  the running core version cannot be compared
+``provider_version_unsupported``  the declared release window excludes this Mayhem
+``provider_engine_unsupported``   the declared engine lanes exclude this run
+``provider_permission_denied``   the declaration asks for a permission outside the grant
+``provider_permission_undeclared``  a capability/locator/fault asks for an undeclared permission
+``provider_capability_undeclared`` a fault names a capability or locator it did not declare
+``provider_fault_id_shadows_builtin``  a declared fault id is already a mayhem catalog fault
+``provider_id_shadows_builtin``  the provider id is already a built-in provider
+``provider_parameter_default_invalid``  a fault's own parameter defaults fail its declared grammar
+``provider_evidence_missing``  a mutating fault resolves no evidence schema
+``provider_sandbox_mechanism_unapplied``  the profile needs a mechanism this build does not apply
+``provider_implementation_missing``  the entry point has no implementation
+``provider_factory_invalid``  the implementation is not callable but must be
+``provider_metadata_invalid``  entry-point metadata is malformed or names another provider
+``provider_behavior_mismatch``  the loaded runtime advertises what it did not declare
+``provider_already_registered``  the id is taken
+``provider_load_failed``       anything else, named by type
+============================  ==========================================
+
+Two of those are worth reading twice. ``provider_permission_undeclared`` and
+``provider_capability_undeclared`` re-check the declaration graph at the gate
+even though the model validates the same rules on construction. The model is the
+first line and stays the primary one; the gate is the second, and it exists
+because a declaration handed over by an entry point is built by a
+``model_copy`` this module itself performs — "the object I was given is a valid
+declaration" must not be an assumption of the enforcement point.
+
+Everything else in that table is a rule the models do *not* have: a wire field
+this core does not implement, a fault's own defaults failing its own grammar, a
+mutation with no evidence mapping, an id that shadows a built-in, a runtime that
+advertises more than it declared, and a profile that needs a mechanism this build
+cannot apply. Those are the checks that make this module the single enforcement
+point rather than a second reader of the same sentence.
+
+One protocol, two documents (gap 37)
+-------------------------------------
+A "Mayhem-compatible provider" is *one* protocol with two halves:
+
+* :data:`MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL` — the declaration schema of
+  :mod:`mayhem.domain.provider`, written by plan 17;
+* :data:`MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL_PARTS` — the plan-03 fabric
+  command envelope, :class:`mayhem.domain.fabric.FabricCommand`, which every
+  dispatch travels in.
+
+:data:`MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL` is not a new identifier: it *is*
+:data:`mayhem.domain.provider.PROVIDER_DECLARATION_SCHEMA_VERSION`, imported
+below. Do not mint a second protocol id, and do not re-specify either half here
+— ``docs/v1.1.0/17_EXTENSION_SDK_PROVIDER_PROTOCOL.md`` and
+``docs/v1.1.0/03_EXECUTION_FABRIC.md`` describe the same protocol from their two
+angles, and a third document that defines its own would be the second protocol
+this note exists to prevent.
+
+Honesty note, carried by every refusal this module produces: mayhem **cannot**
+verify a signature. See :data:`mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`.
+A digest check is integrity, not provenance, and neither a sandbox profile nor
+a compatibility bound is a trust signal.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -5,14 +83,15 @@ import json
 import re
 from dataclasses import dataclass
 from importlib import import_module
-from importlib.metadata import entry_points
+from importlib.metadata import PackageNotFoundError, entry_points, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from pydantic import ValidationError
 
 from mayhem.domain.catalog import CATALOG, validate_catalog
 from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.fabric import FABRIC_PROTOCOL_VERSION
 from mayhem.domain.faults import (
     EngineLane,
     FailureDomain,
@@ -25,6 +104,9 @@ from mayhem.domain.faults import (
 )
 from mayhem.domain.provider import (
     PROVIDER_API_VERSION,
+    PROVIDER_DECLARATION_SCHEMA_VERSION,
+    PROVIDER_DECLARATION_WIRE_FIELDS,
+    PROVIDER_FAULT_WIRE_FIELDS,
     CapabilityDescriptor,
     EvidenceSchema,
     FaultDeclaration,
@@ -34,12 +116,14 @@ from mayhem.domain.provider import (
     ProviderError,
     ProviderMetadata,
     ProviderMutation,
+    ProviderNotFoundError,
     ProviderPermission,
     ProviderRegistration,
     ProviderSource,
     TargetLocator,
-    ensure_api_compatible,
-    ensure_permissions,
+    ensure_compatibility_bounds,
+    ensure_declared_permissions,
+    fault_parameter_problems,
 )
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import NodeKind
@@ -54,14 +138,99 @@ from mayhem.providers.pack import (
     validate_pack,
 )
 from mayhem.providers.permissions import ProviderPermissionSet, SandboxRefusal
+from mayhem.providers.sandbox import (
+    SandboxEnforcer,
+    SandboxProfile,
+    select_profile,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
     from mayhem.providers.registry import ProviderRegistry
 
 METADATA_ENTRY_POINT_GROUP = "mayhem.provider.metadata"
 IMPLEMENTATION_ENTRY_POINT_GROUP = "mayhem.providers"
+
+#: The version a local, untagged build reports — the ``fallback-version`` of
+#: ``[tool.hatch.version]``. Restated rather than read: importing pyproject is
+#: not something a loader may do, and a build that cannot read its own version
+#: must still be able to compare a provider's bounds against *something* ordered.
+FALLBACK_CORE_VERSION: Final[str] = "1.0.0.dev0"
+
+#: The shape :class:`~mayhem.domain.provider.CompatibilityBounds` can order.
+#: Mirrors the private ``_VERSION`` of :mod:`mayhem.domain.provider` on purpose:
+#: the domain's is private, and a loader that guessed at the shape would refuse
+#: every provider on an unparsable core version.
+_ORDERABLE_VERSION = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-.][0-9A-Za-z.+-]+)?$"
+)
+
+
+def core_version() -> str:
+    """The running Mayhem version, in a form compatibility bounds can order.
+
+    Prefers the installed distribution's version, because that is what a user is
+    actually running, and falls back to :data:`FALLBACK_CORE_VERSION` in two
+    cases: the distribution is not installed (a source checkout), or its version
+    is not ``major.minor.patch[prerelease]``.
+
+    The second fallback matters more than it looks. ``ensure_compatibility_bounds``
+    raises ``provider_version_unreadable`` on a version it cannot order, so a
+    distribution reporting something exotic would refuse *every* provider — a
+    self-inflicted outage caused by a version string, not by any provider.
+    """
+    try:
+        candidate = version("mayhem-cli")
+    except PackageNotFoundError:  # pragma: no cover — depends on the environment
+        return FALLBACK_CORE_VERSION
+    if _ORDERABLE_VERSION.fullmatch(candidate):
+        return candidate
+    return FALLBACK_CORE_VERSION
+
+
+# ── gap 37: one protocol, two documents ──────────────────────────────────────
+
+#: The protocol a third-party provider implements to be Mayhem-compatible.
+#: An alias, not a definition: the declaration schema already versions itself
+#: (:data:`~mayhem.domain.provider.PROVIDER_DECLARATION_SCHEMA_VERSION`), and a
+#: second id for the same artifact is how two protocols get built by accident.
+MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL: Final[str] = PROVIDER_DECLARATION_SCHEMA_VERSION
+
+#: The two halves, named as importable symbols so a reader (and
+#: ``tests/unit/test_provider_sandbox.py``) can resolve them instead of taking
+#: this module's word for it. The declaration half is a module of record; the
+#: execution half is plan 03's envelope.
+MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL_PARTS: Final[tuple[tuple[str, str], ...]] = (
+    ("mayhem.domain.provider", "ProviderMetadata"),
+    ("mayhem.domain.fabric", "FabricCommand"),
+)
+
+#: The two documents that describe that protocol, one per half.
+MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL_DOCUMENTS: Final[tuple[str, ...]] = (
+    "docs/v1.1.0/17_EXTENSION_SDK_PROVIDER_PROTOCOL.md",
+    "docs/v1.1.0/03_EXECUTION_FABRIC.md",
+)
+
+
+def compatible_provider_protocol() -> dict[str, object]:
+    """The gap-37 protocol identity, as data a caller or a test can assert on.
+
+    Returns the protocol id, both halves as ``module:symbol``, both documents,
+    and the transport framing that carries an envelope between controller and
+    agent. That last field is :data:`mayhem.domain.fabric.FABRIC_PROTOCOL_VERSION`
+    (``mayhem/1``) and is *framing*, not the provider protocol — a reader who
+    mistakes one for the other is exactly the confusion this function exists to
+    prevent.
+    """
+    return {
+        "protocol": MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL,
+        "parts": tuple(
+            f"{module}:{symbol}" for module, symbol in (MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL_PARTS)
+        ),
+        "documents": MAYHEM_COMPATIBLE_PROVIDER_PROTOCOL_DOCUMENTS,
+        "fabric_framing": FABRIC_PROTOCOL_VERSION,
+    }
 
 
 def _factory_for(runtime: object) -> Callable[[], object]:
@@ -117,6 +286,13 @@ class ProviderInspection:
     source: str
     metadata: dict[str, Any] | None = None
     error: ProviderLoadFailure | None = None
+    #: The sandbox profile chosen for this provider, and the compatibility
+    #: axes this run actually checked. Both are additive and both default to
+    #: ``None``/empty so a caller that never asked for them keeps the shape it
+    #: had. ``sandbox`` carries the profile's own ``notice``, so a caller that
+    #: renders it cannot render a profile without the caveat.
+    sandbox: dict[str, Any] | None = None
+    compatibility: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -128,6 +304,10 @@ class ProviderInspection:
             payload["metadata"] = self.metadata
         if self.error is not None:
             payload["error"] = self.error.to_dict()
+        if self.sandbox is not None:
+            payload["sandbox"] = self.sandbox
+        if self.compatibility is not None:
+            payload["compatibility"] = self.compatibility
         return payload
 
 
@@ -419,6 +599,315 @@ def _requested_permissions(pack: FaultPack) -> frozenset[ProviderPermission]:
     return frozenset(pack.manifest.permissions) | frozenset(
         permission for fault in pack.faults for permission in fault.permissions
     )
+
+
+# ── the declaration gates, re-checkable without re-validating ─────────────────
+#
+# The rules below are *also* enforced by the models in ``domain.provider``. They
+# are restated here as loader checks for one specific reason, and it is worth
+# being precise about it: ``ProviderMetadata.model_copy`` does not re-validate,
+# this module calls ``model_copy`` itself, and whether pydantic re-runs a nested
+# model's validators when a ``ProviderRegistration`` is built around an existing
+# instance is behaviour the loader should not be *only* line of defence against —
+# it is exactly the kind of undocumented detail that changes between releases.
+#
+# So the loader does not assume the object in front of it was validated by the
+# code path that is running: it reads the declaration's own derived views
+# (:attr:`~mayhem.domain.provider.ProviderMetadata.capability_ids`,
+# ``target_locator_ids``, ``declared_fault_ids``, ``required_permissions``) and
+# compares them. Where the two disagree, the loader refuses — and the test that
+# proves these gates fire builds the disagreement with
+# ``ProviderRegistration.model_construct``, which is the honest way to reach the
+# state pydantic's revalidation currently prevents.
+
+
+class _Problem(NamedTuple):
+    """One refusal: the code a consumer routes on, and the message it prints.
+
+    A code per *problem kind* rather than one bucket for the whole declaration
+    gate, so a consumer can distinguish "this provider over-claims" from "this
+    provider's defaults contradict its own grammar" without parsing prose.
+    """
+
+    code: str
+    message: str
+
+
+def _check_wire_fields(document: Mapping[str, Any]) -> list[str]:
+    """Wire keys this core does not implement, named by provider.
+
+    ``PROVIDER_DECLARATION_WIRE_FIELDS`` and ``PROVIDER_FAULT_WIRE_FIELDS`` are
+    hand-written frozen contracts. Pydantic's ``extra="forbid"`` would refuse an
+    unknown key anyway, but it refuses with a dump of the whole document, which
+    does not tell an SDK author *which* field is from a newer core. Naming it is
+    the difference between "invalid provider catalog" and "this Mayhem does not
+    implement ``sandboxProfiles``; upgrade mayhem or downgrade your SDK".
+
+    Only the top level of a declaration and of each fault declaration are
+    checked. Nested objects (``compatibility``, ``evidenceSchema``, a fault's
+    ``parameterGrammar``) are pydantic's business; this is the two hand-written
+    lists the contract actually froze. Anything structurally unexpected is left
+    to :class:`ProviderCatalog`, which is the authority on shape.
+    """
+    problems: list[str] = []
+    if not isinstance(document, dict):
+        return problems
+    providers = document.get("providers")
+    if not isinstance(providers, list):
+        return problems
+    for index, entry in enumerate(providers):
+        if not isinstance(entry, dict):
+            continue
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        provider_id = metadata.get("providerId", f"<providers[{index}]>")
+        for key in sorted(set(metadata) - PROVIDER_DECLARATION_WIRE_FIELDS):
+            problems.append(
+                f"provider {provider_id!r} declares wire field {key!r}, which "
+                f"{PROVIDER_DECLARATION_SCHEMA_VERSION} does not implement; "
+                "a field added by a newer core is not readable here"
+            )
+        faults = metadata.get("faultDeclarations")
+        if not isinstance(faults, list):
+            continue
+        for position, fault in enumerate(faults):
+            if not isinstance(fault, dict):
+                continue
+            for key in sorted(set(fault) - PROVIDER_FAULT_WIRE_FIELDS):
+                problems.append(
+                    f"provider {provider_id!r} fault #{position} declares wire field "
+                    f"{key!r}, which {PROVIDER_DECLARATION_SCHEMA_VERSION} does not implement"
+                )
+    return problems
+
+
+def _check_declared_permission_union(metadata: ProviderMetadata) -> list[_Problem]:
+    """No capability, locator or fault may ask for an undeclared permission.
+
+    The model enforces this on construction. Re-read here through
+    :attr:`~mayhem.domain.provider.ProviderMetadata.required_permissions` — the
+    union over every part — because that property is what an operator is shown
+    before approving an install, and a union that is wider than the declared set
+    is a request nobody approved.
+    """
+    undeclared = sorted(
+        permission.value for permission in metadata.required_permissions - metadata.permissions
+    )
+    if not undeclared:
+        return []
+    return [
+        _Problem(
+            "provider_permission_undeclared",
+            f"provider {metadata.provider_id!r} requires permissions its own declaration "
+            f"does not list: {', '.join(undeclared)}",
+        )
+    ]
+
+
+def _check_declared_graph(metadata: ProviderMetadata) -> list[_Problem]:
+    """Every declared fault hangs off a declared capability and locator.
+
+    Same rule as the model validator, restated against the declaration's derived
+    views so the gate refuses an object it did not build. The refusal names the
+    fault and the id it asked for, because "a fault references an undeclared
+    capability" without saying which is a search, not a diagnosis.
+    """
+    capability_ids = metadata.capability_ids
+    locator_ids = metadata.target_locator_ids
+    problems: list[_Problem] = []
+    for fault in metadata.fault_declarations:
+        if fault.capability not in capability_ids:
+            problems.append(
+                _Problem(
+                    "provider_capability_undeclared",
+                    f"provider {metadata.provider_id!r} fault {fault.id!r} names capability "
+                    f"{fault.capability!r}, which it does not declare",
+                )
+            )
+        for locator_id in fault.target_locator_ids:
+            if locator_id not in locator_ids:
+                problems.append(
+                    _Problem(
+                        "provider_capability_undeclared",
+                        f"provider {metadata.provider_id!r} fault {fault.id!r} names target "
+                        f"locator {locator_id!r}, which it does not declare",
+                    )
+                )
+    return problems
+
+
+def _resolved_parameter_defaults(fault: FaultDeclaration) -> dict[str, str] | None:
+    """Every grammar entry's shipped value, or ``None`` if the caller must supply one.
+
+    A ``required`` entry with neither a shipped value nor a default is not a
+    load-time problem — the fault is callable, the caller supplies the argument
+    at execution time — so the fault is skipped rather than refused. A value
+    grammar check that fired on a perfectly callable declaration would be a false
+    refusal, and a false refusal is how a gate stops being read.
+    """
+    values: dict[str, str] = {}
+    for entry in fault.parameter_grammar:
+        if entry.name in fault.parameters:
+            values[entry.name] = fault.parameters[entry.name]
+        elif entry.default is not None:
+            values[entry.name] = entry.default
+        elif entry.required:
+            return None
+    return values
+
+
+def _check_parameter_defaults(metadata: ProviderMetadata) -> list[_Problem]:
+    """A fault's own parameter defaults must satisfy its declared grammar.
+
+    The grammar is the contract an SDK emits and a core checks calls against;
+    a declaration whose *defaults* violate its own grammar is a fault that
+    cannot be applied with the values it shipped with. Checked here with the
+    domain's pure :func:`~mayhem.domain.provider.fault_parameter_problems`, so
+    the value grammar stays in one place, and deliberately only over the
+    ``parameters`` the declaration carries — a fault with no grammar is a v1
+    artifact and is checked against nothing.
+    """
+    problems: list[_Problem] = []
+    for fault in metadata.fault_declarations:
+        if not fault.parameters or not fault.parameter_grammar:
+            continue
+        defaults = _resolved_parameter_defaults(fault)
+        if defaults is None:
+            continue
+        for problem in fault_parameter_problems(fault, defaults):
+            problems.append(
+                _Problem(
+                    "provider_parameter_default_invalid",
+                    f"provider {metadata.provider_id!r} fault {fault.id!r} declares parameter "
+                    f"values its own grammar does not admit: {problem}",
+                )
+            )
+    return problems
+
+
+def _check_evidence_coverage(metadata: ProviderMetadata) -> list[_Problem]:
+    """A mutating fault must resolve an evidence schema through its mapping.
+
+    :meth:`~mayhem.domain.provider.ProviderMetadata.evidence_for` is the only way
+    to resolve a mapping, and it returns ``None`` for a fault the declaration
+    says nothing about. That silence is fine for a read-only fault. It is not
+    fine for one that changes a target: a mutation with no declared evidence
+    schema is a mutation whose result nobody can seal, and refusing it at load
+    is cheaper than discovering it after the fact.
+    """
+    return [
+        _Problem(
+            "provider_evidence_missing",
+            f"provider {metadata.provider_id!r} fault {fault.id!r} mutates targets but "
+            "declares no evidence mapping, so its outcome cannot be recorded",
+        )
+        for fault in metadata.fault_declarations
+        if fault.mutation is ProviderMutation.MUTATING and metadata.evidence_for(fault.id) is None
+    ]
+
+
+def _check_no_provider_shadowing(
+    metadata: ProviderMetadata,
+    reserved_fault_ids: frozenset[str],
+    builtin_providers: frozenset[str],
+) -> list[_Problem]:
+    """A third-party provider may add ids; it may never shadow mayhem's own.
+
+    The same rule ``_check_no_shadowing`` applies to a fault pack, applied to
+    the declaration a *catalog* carries. Without it a catalog could register
+    ``docker`` and either fail late on ``provider_already_registered`` or — with
+    ``replace=True`` — take over a built-in id, so the refusal has to name the
+    collision rather than surface as a duplicate registration.
+    """
+    problems: list[_Problem] = []
+    if metadata.provider_id in builtin_providers:
+        problems.append(
+            _Problem(
+                "provider_id_shadows_builtin",
+                f"provider id {metadata.provider_id!r} is already a built-in mayhem provider; "
+                "choose an id that does not shadow a built-in provider",
+            )
+        )
+    shadows = sorted(metadata.declared_fault_ids & reserved_fault_ids)
+    if shadows:
+        problems.append(
+            _Problem(
+                "provider_fault_id_shadows_builtin",
+                f"provider {metadata.provider_id!r} declares fault ids mayhem already owns: "
+                f"{', '.join(shadows)}; a provider must not redeclare or shadow a catalog fault",
+            )
+        )
+    return problems
+
+
+def _declared_strings(runtime: object, method: str) -> frozenset[str] | None:
+    """The strings *method* advertises, or ``None`` when the runtime stays quiet.
+
+    ``None`` means "this runtime does not declare that", which is a legitimate
+    answer for an in-process object that has no such method: the protocols in
+    :mod:`mayhem.providers.protocols` are structural, and a runtime that
+    implements none of the optional accessors is checked on the declaration
+    alone. What is refused is a runtime that advertises *something* outside what
+    it declared — silence is not a claim.
+    """
+    accessor = getattr(runtime, method, None)
+    if not callable(accessor):
+        return None
+    advertised = accessor()
+    if not isinstance(advertised, (list, tuple, set, frozenset)):
+        return None
+    return frozenset(value for value in advertised if isinstance(value, str))
+
+
+def _check_behavior(metadata: ProviderMetadata, runtime: object) -> list[str]:
+    """What the loaded runtime advertises must be inside what it declared.
+
+    Three optional accessors are read, each from
+    :mod:`mayhem.providers.protocols`: ``capabilities()`` (part of
+    :class:`~mayhem.providers.protocols.ProviderRuntime`), ``fault_ids()``, and
+    ``permissions()``. A runtime that implements none of them is not refused —
+    it cannot over-claim about a set it never published.
+
+    Run *before* the runtime is handed to the registry, so a mismatch is a
+    refusal rather than a revocation: nothing to take back afterwards, and no
+    window in which a mismatched runtime was reachable.
+    """
+    problems: list[str] = []
+
+    advertised_capabilities = _declared_strings(runtime, "capabilities")
+    if advertised_capabilities is not None:
+        undeclared = sorted(advertised_capabilities - metadata.capability_ids)
+        if undeclared:
+            problems.append(
+                f"provider {metadata.provider_id!r} advertises capabilities it does not "
+                f"declare: {', '.join(undeclared)}"
+            )
+
+    advertised_faults = _declared_strings(runtime, "fault_ids")
+    if advertised_faults is not None:
+        undeclared_faults = sorted(advertised_faults - metadata.declared_fault_ids)
+        if undeclared_faults:
+            problems.append(
+                f"provider {metadata.provider_id!r} advertises faults it does not declare: "
+                f"{', '.join(undeclared_faults)}"
+            )
+
+    requested: set[ProviderPermission] = set()
+    for value in sorted(_declared_strings(runtime, "permissions") or ()):
+        try:
+            requested.add(ProviderPermission(value))
+        except ValueError:
+            problems.append(
+                f"provider {metadata.provider_id!r} requests unknown permission {value!r}"
+            )
+    undeclared_permissions = sorted(requested - metadata.permissions)
+    if undeclared_permissions:
+        problems.append(
+            f"provider {metadata.provider_id!r} requests permissions it does not declare: "
+            f"{', '.join(permission.value for permission in undeclared_permissions)}"
+        )
+    return problems
 
 
 def _category_defaults(category: FaultCategory) -> tuple[FailureDomain, VerificationMethod]:
@@ -859,6 +1348,22 @@ class PackLoader:
 
 
 class ProviderLoader:
+    """Read, gate, and register third-party providers.
+
+    The *default* posture is the domain's: nothing is granted, so a declaration
+    that asks for a permission loads only when the caller supplied that
+    permission explicitly. Two more defaults are named here because they are
+    decisions a caller may otherwise have to reverse-engineer:
+
+    * ``running_version`` defaults to :func:`core_version` and ``running_engine``
+      to ``None``. The engine axis is then **unchecked**, not passed — every
+      inspection carries ``compatibility["unchecked_axes"]`` so "we did not
+      look" is never rendered as "we looked and it was fine".
+    * ``require_sandbox_enforcement`` defaults to ``False``: a profile that
+      needs a mechanism this build does not apply is loaded and *reported* as
+      unconfined rather than refused. Set it to ``True`` to refuse instead.
+    """
+
     def __init__(
         self,
         *,
@@ -866,11 +1371,127 @@ class ProviderLoader:
         allowed_permissions: frozenset[ProviderPermission] = frozenset(),
         import_module_fn: Callable[[str], Any] | None = None,
         entry_points_fn: Callable[..., Iterable[Any]] | None = None,
+        running_version: str | None = None,
+        running_engine: str | None = None,
+        require_sandbox_enforcement: bool = False,
     ) -> None:
         self.registry = registry if registry is not None else create_builtin_registry()
         self.allowed_permissions = allowed_permissions
         self._import_module = import_module_fn if import_module_fn is not None else import_module
         self._entry_points = entry_points_fn if entry_points_fn is not None else entry_points
+        self.running_version = running_version if running_version else core_version()
+        self.running_engine = running_engine
+        self.require_sandbox_enforcement = require_sandbox_enforcement
+        self._profiles: dict[str, SandboxProfile] = {}
+        self._builtin_providers: frozenset[str] | None = None
+
+    # -- what this loader checked, and what it did not --------------------------
+
+    def compatibility_report(self) -> dict[str, Any]:
+        """The compatibility axes this loader checked on this run.
+
+        Three axes, and the engine axis is only among them when the caller
+        supplied ``running_engine``. Reported rather than implied so an operator
+        reading a load report cannot mistake an unchecked axis for a passed one.
+        """
+        checked = ["api_major", "release_window"]
+        unchecked = ["engine"] if self.running_engine is None else []
+        return {
+            "running_version": self.running_version,
+            "running_engine": self.running_engine,
+            "checked_axes": checked,
+            "unchecked_axes": unchecked,
+        }
+
+    def sandbox_profile(self, provider_id: str) -> SandboxProfile:
+        """The profile chosen for an already-loaded *provider_id*."""
+        try:
+            return self._profiles[provider_id]
+        except KeyError as exc:
+            raise ProviderNotFoundError(
+                "provider_not_found",
+                f"provider {provider_id!r} has no sandbox profile on this loader",
+            ) from exc
+
+    def sandbox_enforcer(
+        self,
+        provider_id: str,
+        *,
+        require_enforced: bool = False,
+        read_roots: Iterable[str] = (),
+        writable_roots: Iterable[str] = (),
+        egress_allowlist: Iterable[str] = (),
+    ) -> SandboxEnforcer:
+        """An enforcer over the stored profile, with the operator's grants attached.
+
+        The seam an execution path uses: the profile came from the declaration,
+        the roots and destinations came from whoever approved the install, and
+        every denial the enforcer makes is recorded as evidence.
+        """
+        return SandboxEnforcer(
+            self.sandbox_profile(provider_id),
+            require_enforced=require_enforced or self.require_sandbox_enforcement,
+            read_roots=read_roots,
+            writable_roots=writable_roots,
+            egress_allowlist=egress_allowlist,
+        )
+
+    def _builtin_provider_ids(self) -> frozenset[str]:
+        """mayhem's own provider ids, read live and cached per loader.
+
+        Live rather than imported as a constant so a built-in added in a later
+        release is shadow-checked without editing this module, and cached per
+        instance so a catalog of fifty providers does not build fifty built-in
+        registries. Built from the authoritative factory rather than from
+        ``self.registry``, because the registry may hold third-party providers
+        that are not reserved.
+        """
+        if self._builtin_providers is None:
+            self._builtin_providers = frozenset(create_builtin_registry().ids())
+        return self._builtin_providers
+
+    def _admit(self, registration: ProviderRegistration) -> SandboxProfile:
+        """Every declaration gate, then the sandbox profile it earns.
+
+        The order is fixed so a refusal is deterministic and so a caller can read
+        one line of the module docstring and know what happened first:
+        compatibility bounds (api major, release window, engine), the declared
+        permission set against the grant, the declaration graph, the fault
+        parameter defaults, evidence coverage, id shadowing, then the sandbox.
+        """
+        metadata = registration.metadata
+        ensure_compatibility_bounds(
+            metadata,
+            running_version=self.running_version,
+            running_engine=self.running_engine,
+        )
+        ensure_declared_permissions(metadata, self.allowed_permissions)
+        problems: list[_Problem] = [
+            *_check_declared_permission_union(metadata),
+            *_check_declared_graph(metadata),
+            *_check_parameter_defaults(metadata),
+            *_check_evidence_coverage(metadata),
+            *_check_no_provider_shadowing(
+                metadata, builtin_fault_ids(), self._builtin_provider_ids()
+            ),
+        ]
+        if problems:
+            # Every problem is reported, not just the first: a declaration that
+            # is wrong in three ways should not need three load attempts. The
+            # code is the first problem's, in gate order, so it is stable.
+            raise ProviderLoadError(
+                problems[0].code, "; ".join(problem.message for problem in problems)
+            )
+        profile = select_profile(metadata)
+        if self.require_sandbox_enforcement:
+            # Raises provider_sandbox_mechanism_unapplied when the profile needs
+            # a mechanism this build does not apply. Deliberately before the
+            # profile is stored: a provider refused here has no profile, so a
+            # later sandbox_enforcer() call cannot hand out a policy for a
+            # provider that never loaded.
+            SandboxEnforcer(profile, require_enforced=True).admit()
+        self._profiles[metadata.provider_id] = profile
+        return profile
 
     def inspect_catalog(self, catalog_path: str | Path) -> ProviderLoadReport:
         catalog = self._read_catalog(catalog_path)
@@ -880,6 +1501,8 @@ class ProviderLoader:
                 status="ready",
                 source=ProviderSource.CATALOG.value,
                 metadata=registration.metadata.model_dump(mode="json", by_alias=True),
+                sandbox=select_profile(registration.metadata).to_dict(),
+                compatibility=self.compatibility_report(),
             )
             for registration in catalog.providers
         )
@@ -892,10 +1515,10 @@ class ProviderLoader:
         failures: list[ProviderLoadFailure] = []
         for registration in catalog.providers:
             provider_id = registration.metadata.provider_id
-            self._validate_before_load(registration)
+            profile = self._admit(registration)
             try:
                 runtime = self._load_registration_runtime(registration)
-                self.registry.register(registration, _factory_for(runtime))
+                self._register_runtime(registration, runtime)
             except Exception as exc:
                 failure = self._failure(provider_id, exc)
                 failures.append(failure)
@@ -906,6 +1529,8 @@ class ProviderLoader:
                         source=ProviderSource.CATALOG.value,
                         metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                         error=failure,
+                        sandbox=profile.to_dict(),
+                        compatibility=self.compatibility_report(),
                     )
                 )
                 continue
@@ -916,6 +1541,8 @@ class ProviderLoader:
                     status="loaded",
                     source=ProviderSource.CATALOG.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
+                    sandbox=profile.to_dict(),
+                    compatibility=self.compatibility_report(),
                 )
             )
         return ProviderLoadReport(
@@ -938,6 +1565,8 @@ class ProviderLoader:
                     status="ready",
                     source=ProviderSource.ENTRY_POINT.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
+                    sandbox=select_profile(registration.metadata).to_dict(),
+                    compatibility=self.compatibility_report(),
                 )
                 for registration in registrations
             )
@@ -960,7 +1589,7 @@ class ProviderLoader:
         failures: list[ProviderLoadFailure] = []
         for registration in registrations:
             provider_id = registration.metadata.provider_id
-            self._validate_before_load(registration)
+            profile = self._admit(registration)
             try:
                 implementation = implementations.get(provider_id)
                 if implementation is None:
@@ -970,7 +1599,7 @@ class ProviderLoader:
                         f"{IMPLEMENTATION_ENTRY_POINT_GROUP!r} registration",
                     )
                 runtime = self._materialize(implementation.load(), registration.implementation)
-                self.registry.register(registration, _factory_for(runtime))
+                self._register_runtime(registration, runtime)
             except Exception as exc:
                 failure = self._failure(provider_id, exc)
                 failures.append(failure)
@@ -981,6 +1610,8 @@ class ProviderLoader:
                         source=ProviderSource.ENTRY_POINT.value,
                         metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                         error=failure,
+                        sandbox=profile.to_dict(),
+                        compatibility=self.compatibility_report(),
                     )
                 )
                 continue
@@ -991,6 +1622,8 @@ class ProviderLoader:
                     status="loaded",
                     source=ProviderSource.ENTRY_POINT.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
+                    sandbox=profile.to_dict(),
+                    compatibility=self.compatibility_report(),
                 )
             )
         return ProviderLoadReport(
@@ -999,6 +1632,20 @@ class ProviderLoader:
             failures=tuple(failures),
         )
 
+    def _register_runtime(self, registration: ProviderRegistration, runtime: object) -> None:
+        """Check what the runtime advertises, *then* put it in the registry.
+
+        Order is the enforcement. A runtime that claims a capability, a fault or
+        a permission it never declared is refused while it is still a local
+        variable, so it is never registered and therefore never has to be
+        revoked: there is no window in which a mismatched runtime was reachable
+        by anything holding the registry.
+        """
+        problems = _check_behavior(registration.metadata, runtime)
+        if problems:
+            raise ProviderLoadError("provider_behavior_mismatch", "; ".join(problems))
+        self.registry.register(registration, _factory_for(runtime))
+
     def _read_catalog(self, catalog_path: str | Path) -> ProviderCatalog:
         path = Path(catalog_path)
         try:
@@ -1006,6 +1653,9 @@ class ProviderLoader:
         except (OSError, json.JSONDecodeError) as exc:
             message = f"cannot read provider catalog {path}: {exc}"
             raise ProviderLoadError("catalog_invalid", message) from exc
+        unknown_fields = _check_wire_fields(document)
+        if unknown_fields:
+            raise ProviderLoadError("provider_wire_field_unknown", "; ".join(unknown_fields))
         try:
             return ProviderCatalog.model_validate(document)
         except ValidationError as exc:
@@ -1033,19 +1683,25 @@ class ProviderLoader:
                 "provider_metadata_invalid",
                 f"entry point {entry_point.name!r} declares provider {metadata.provider_id!r}",
             )
-        ensure_api_compatible(metadata)
-        return ProviderRegistration(
-            metadata=metadata,
-            implementation=ImplementationReference(
-                kind=ImplementationKind.ENTRY_POINT,
-                target=entry_point.name,
-                factory=False,
-            ),
-        )
-
-    def _validate_before_load(self, registration: ProviderRegistration) -> None:
-        ensure_api_compatible(registration.metadata)
-        ensure_permissions(registration.metadata, self.allowed_permissions)
+        try:
+            return ProviderRegistration(
+                metadata=metadata,
+                implementation=ImplementationReference(
+                    kind=ImplementationKind.ENTRY_POINT,
+                    target=entry_point.name,
+                    factory=False,
+                ),
+            )
+        except ValidationError as exc:
+            # ``ProviderRegistration`` re-runs the declaration's own validators on
+            # the nested model, so an entry point that hands over an edited
+            # declaration (``model_copy`` does not validate) is refused here
+            # rather than at a gate. Converted so a malformed entry point is one
+            # refusal type with one message shape, exactly like the catalog path.
+            raise ProviderLoadError(
+                "provider_metadata_invalid",
+                f"entry point {entry_point.name!r} has invalid metadata: {exc}",
+            ) from exc
 
     def _load_registration_runtime(self, registration: ProviderRegistration) -> object:
         implementation = registration.implementation

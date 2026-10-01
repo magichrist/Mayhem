@@ -46,10 +46,10 @@ Scheduling reference (cron dialect, timezone rules), campaign operations guide, 
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/scheduling.py` lands `Schedule` (5-field cron / interval / calendar + business hours, maintenance windows, blackouts, bounded deterministic jitter), `FairnessPolicy` (weighted shares with a provable anti-starvation floor), and `ConcurrencyClass` with a symmetric lock-compatibility matrix over 07's `ResourceLock`; every decision is a pure function of an injected instant
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/scheduler.py` + `infra/schedule_store.py` land a durable scheduler that evaluates registered schedules at fire time, orders dispatches by the fairness policy, refuses on incident/deployment/hold/concurrency state, and dispatches through a four-stage pipeline whose planner, admission, approver, and executor are all required; `M0026_SCHEDULES` persists the registry, the claim ledger keyed by a slot-derived idempotency key (the no-double-fire mechanism, enforced by a primary key), and game-day dispatch steps whose facilitator hold is read at fire time
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

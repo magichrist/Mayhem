@@ -58,10 +58,10 @@ Statistics interpretation guide (what "no material effect" does and does not mea
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/analytics.py` (distribution summaries, effect size, 95% CIs, sufficiency, warm-up/cooldown) and `domain/search.py` (`SearchPolicy`, pure step planning with stop conditions, untrusted AI drafts) landed with unit and negative-control tests
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/analytics_service.py` (boundary brackets with a confidence statement, recovery curves, minimal failure cases, gap-53 causal chains where an uncited hop is withheld, the adaptive runner with per-step approval + admission + budget, and `compile_stages` for the single-target → 5% → 10% → 25% → 50% gated ladder)
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

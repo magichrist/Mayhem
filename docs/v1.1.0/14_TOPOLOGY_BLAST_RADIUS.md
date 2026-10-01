@@ -49,10 +49,10 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/prediction.py` adds `ImpactPrediction` (affected set, dependency fan-out with depth, replica-loss delta, expected capacity change, violated rules with observed values, cost estimate) as a pure deterministic function over a frozen graph plus frozen plan, with `is_never_permissive` pinning prediction-vs-gate agreement.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/prediction_service.py` assembles the prediction from live topology plus configuration and returns it beside the real gate's own refusal set, enforcing prediction-vs-gate agreement in production (a calmer preview raises rather than returns); `simulate_plan` runs the mutation backend detached and publishes the observed sink length, so a simulate is provably inert while still reaching a verdict; the four §Controls dimensions are reported as admission dimensions with the Phase 4 wiring named in `PENDING_ADMISSION_WIRING`; an absent price table yields an explicit `unpriced` disclosure with the measured affected-node-seconds, never a dollar figure.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

@@ -49,10 +49,10 @@ Benchmark methodology doc, scale-characterization pages per range (measured numb
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/budgets.py` adds ResourceDimension (8 cost dimensions), ResourceBudget/BudgetConsumption with half-open windows, pure estimate-vs-actual comparison, and a digest-pinned BenchmarkSpec whose workload regenerates exactly from the spec
-- Phase 2: not started
+- Phase 2 (engine): DONE — `infra/metering.py` meters the six real seams (plan-compilation, discovery, policy-evaluation and per-command agent latency as non-blocking context managers over an injected monotonic clock, plus evidence bytes and store growth per run; a failing sink loses one reading and is recorded, never raised), and enforces gap 68 at both moments: `admit()` refuses a pre-execution estimate that would breach *before* mutation and `observe()` re-checks continuously and raises `PauseForReview` on a mid-run breach — both naming the breaching dimension and its numbers, from the domain's own refusal text. Publishing is gated by `publish_benchmark()` (methodology attached) and `render_scale_claim()` (authorable unmeasured, not renderable). `safety.py` is untouched by design; Phase 3/4 owes the two call sites named in `ResourceBudgetEnforcer`'s docstring.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

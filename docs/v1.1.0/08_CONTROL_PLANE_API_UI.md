@@ -56,4 +56,12 @@ API reference generated from OpenAPI (never hand-maintained), UI operator guide,
 ## Dependencies
 03 (orchestrator/fencing), 07 (policy service), 09 (auth/RBAC/approvals), 12 (evidence service), 13 (scheduler), 30 (proof view).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/api.py` lands the resource vocabulary as digest-bound projections of the existing domain types (experiments, plans, plan steps, runs, outcomes, approvals, policy decisions, schedules, evidence references), the derived timeline over stored events (32), the withholding failure explanation over the recorded graded verdict (60), and the provenance-carrying executive summary (59)
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

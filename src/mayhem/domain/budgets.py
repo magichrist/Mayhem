@@ -120,6 +120,12 @@ __all__ = [
 RESOURCE_PRECISION: int = 6
 
 # -- rule ids (stable; an evidence record names these) --------------------------
+#: Resource-budget refusals over cpu-seconds, request counts, bytes, and the
+#: like. The hierarchical *damage* budget is a different ledger with its own
+#: namespace (``mayhem.domain.policy.BudgetNode``); where the two would collide
+#: the damage side is the qualified one — see
+#: ``budget.damage_negative_limit`` in that module, which is why this id keeps
+#: the bare name.
 RULE_NEGATIVE_LIMIT = "budget.negative_limit"
 RULE_NON_POSITIVE_WINDOW = "budget.non_positive_window"
 RULE_NEGATIVE_MEASUREMENT = "budget.negative_measurement"

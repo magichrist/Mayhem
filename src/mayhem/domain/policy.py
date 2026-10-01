@@ -806,7 +806,17 @@ class BudgetNode(BaseModel):
             raise InvariantViolationError("budget.empty_key", msg)
         if self.limit_s is not None and self.limit_s < 0.0:
             msg = f"budget node {self.key!r} has a negative limit {self.limit_s}"
-            raise InvariantViolationError("budget.negative_limit", msg)
+            # Damage-qualified, and deliberately NOT ``budget.negative_limit``:
+            # that id belongs to :data:`mayhem.domain.budgets.RULE_NEGATIVE_LIMIT`,
+            # which is the *resource* budget's refusal over cpu-seconds and
+            # request counts. These two ledgers are not the same ledger —
+            # :class:`mayhem.domain.budgets.ResourceScope` says so at length —
+            # and the two refusals do not even share a threshold: a zero limit is
+            # a typo for a resource budget (``<= 0.0``) and a legal
+            # "no ceiling at this scope" here (``< 0.0``). One id for both would
+            # make an evidence record naming it ambiguous about which budget was
+            # authored badly. Do not de-duplicate these back together.
+            raise InvariantViolationError("budget.damage_negative_limit", msg)
         if self.spent_s < 0.0:
             msg = f"budget node {self.key!r} has negative spend {self.spent_s}"
             raise InvariantViolationError("budget.negative_spend", msg)
