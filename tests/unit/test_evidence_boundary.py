@@ -27,18 +27,33 @@ write path without passing the gate** — and each claim is attacked three ways:
   removing only the file gate changes no behaviour — which is precisely why the
   static check is needed and not merely belt-and-braces).
 
-The audit stream, added later
------------------------------
+The audit stream, and then attestation, replay and coverage
+-----------------------------------------------------------
 
-An integrator reproduced a leak the original four-rule statement missed:
-``AuditStream.record`` persisted a free-form ``AuditEntry.detail`` dict with no
-gate, so a resolved value reached ``audit_entries`` while a guard was active. An
-audit entry is evidence — persisted, exported, and covered by the attestation and
-retention machinery — so plan 12's "secrets must never enter evidence" binds it
-exactly as it binds the envelope row. :class:`TestAuditStreamBoundary` attacks it
-the same way, with the addition that ``detail`` is *free-form*: the planted value
-goes several levels down, where no key name is graded ``secret`` and only the
-byte rule can see it.
+The same defect class has now recurred, so this suite names each recurrence rather
+than letting the newest one be the only one described.
+
+An integrator first reproduced it in ``AuditStream.record``: it persisted a
+free-form ``AuditEntry.detail`` dict with no gate, so a resolved value reached
+``audit_entries`` while a guard was active. An audit entry is evidence —
+persisted, exported, and covered by the attestation and retention machinery — so
+plan 12's "secrets must never enter evidence" binds it exactly as it binds the
+envelope row. :class:`TestAuditStreamBoundary` attacks it the same way, with the
+addition that ``detail`` is *free-form*: the planted value goes several levels
+down, where no key name is graded ``secret`` and only the byte rule can see it.
+
+The same reasoning then bound ``infra/attestation_store.py``: an attestation row
+is persisted, exported, and read by the retention engine (which holds and
+archives its manifests), so it is evidence too. All three of that module's
+writers are gated — :func:`seal_run_evidence`, and both
+``AttestationRepository`` writers — and
+:class:`TestAttestationBoundary` proves each on its own, because a gate proved
+only through the wrapper that happens to be its only caller today is not a gate
+on the repository. A final sweep of the tree for persist paths then found two
+more ungated evidence surfaces, both of which persist a caller-authored free-form
+document: the replay capsule (``spec``/``plan``, the document an operator is
+handed in order to reproduce a run) and the coverage observation (``verdict`` and
+``metadata``). :class:`TestReplayAndCoverageBoundary` covers those.
 
 What this suite still cannot prove
 ----------------------------------
@@ -69,11 +84,15 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from mayhem.domain.attestation import AttestedTimestamp
+from mayhem.domain.approval import ApprovalState
+from mayhem.domain.attestation import AttestedEvent, AttestedTimestamp, seal_events
+from mayhem.domain.coverage import CellState, CoverageCell
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.evidence import EvidenceEnvelope, require_persistable_envelope
 from mayhem.domain.evidence_bundle import build_bundle, verify_bundle
+from mayhem.domain.policy import PolicyDecision
 from mayhem.domain.redaction import redact_log_event
+from mayhem.domain.replay import ReplayCapsule
 from mayhem.domain.secrets import (
     EVIDENCE_FIELD_CLASSIFICATIONS,
     REFUSAL_SECRET_FIELD_PERSISTED,
@@ -83,12 +102,18 @@ from mayhem.domain.secrets import (
     SecretGrant,
     SecretProvider,
 )
+from mayhem.infra.attestation_store import (
+    AttestationRepository,
+    RunAuthorization,
+    seal_run_evidence,
+)
 from mayhem.infra.audit_stream import (
     KIND_RUN_SEALED,
     AuditEntry,
     AuditStream,
     seal_run_evidence_at_run_close,
 )
+from mayhem.infra.coverage_repository import SQLiteCoverageRepository
 from mayhem.infra.evidence import (
     build_evidence,
     redact_envelope,
@@ -97,6 +122,7 @@ from mayhem.infra.evidence import (
     write_evidence_file,
 )
 from mayhem.infra.evidence_bundle_io import load_bundle, write_bundle
+from mayhem.infra.replay_repository import ReplayRepository
 from mayhem.infra.report import (
     render_report_html,
     render_report_json,
@@ -121,10 +147,26 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from mayhem.infra.attestation_store import SealedRun
+
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 ALICE = "svc:alice"
 PROD = "prod-eu"
 RUN_ID = "r-boundary-1"
+
+#: The plan digest a hand-built authorization binds. Matches
+#: :func:`_marked_envelope`'s ``plan_hash`` so the plan-pin check passes and the
+#: *evidence boundary* is what refuses, not the authorization mismatch.
+PLAN_DIGEST = "9" * 64
+
+#: One coverage cell. Constant rather than per-test so a refusal can be asserted
+#: against a key that is known in advance.
+CELL = CoverageCell(
+    target="db-1",
+    fault_kind="latency",
+    execution_context="steady",
+    parameter_band="p50",
+)
 
 #: Long and unguessable: a match cannot be a coincidence of a short needle.
 SECRET_VALUE = "vault-value-9f3c-4b71-must-not-be-persisted"
@@ -664,6 +706,341 @@ class TestAuditStreamBoundary:
         store.close()
 
 
+# --- Write path 2c: attestation, replay and coverage -----------------------------
+#
+# An attestation row is evidence: it is persisted, exported, and covered by the
+# retention and audit machinery — ``infra.retention`` reads these manifests for
+# legal holds and expiry and archives their bytes externally. So the rule that
+# binds the envelope row binds these rows identically.
+#
+# Two of the three surfaces here are genuinely free-form, which is what the byte
+# rule is for and why gating the envelope was never enough:
+#
+# * ``AttestedEvent.payload`` is ``dict[str, Any]`` by construction, so any chain
+#   written through ``AttestationRepository.save_chain`` can carry a value under a
+#   key name nobody graded;
+# * ``RunAuthorization.payload`` carries ``approval_detail`` — the approver and
+#   rule strings a *caller* supplies, which is the free-form half of a sealed run.
+#
+# The derived run-close events deliberately *reference* the envelope by digest
+# rather than embedding it, so most of what ``seal_run_evidence`` persists has
+# already been through the envelope boundary by the time it arrives. The gate
+# there is what makes the guarantee hold anyway, and what stops a caller-built
+# authorization payload from being the one hole left.
+
+
+def _sealed_event(run_id: str, payload: dict[str, Any]) -> tuple[AttestedEvent, ...]:
+    """A one-event sealed chain carrying ``payload`` — for the repository writers."""
+    unsealed = AttestedEvent(
+        event_id=f"{run_id}:probe",
+        event_kind="evidence.recorded",
+        run_id=run_id,
+        sequence=0,
+        payload=payload,
+        recorded_at=_fixed_reading(),
+    )
+    return seal_events([unsealed])
+
+
+def _authorization(detail: tuple[str, ...] = ()) -> RunAuthorization:
+    """A passing authorization whose ``approval_detail`` is caller-supplied."""
+    return RunAuthorization(
+        policy_decision=PolicyDecision(
+            outcome="allow",
+            reasons=("production permits this fault family",),
+            matched_rules=("prod.family.allow",),
+            bundle_id="production",
+            bundle_version=2,
+            rule_digest="2" * 64,
+            policy_digest="3" * 64,
+            facts_digest="4" * 64,
+        ),
+        approval_state=ApprovalState(
+            valid=True, approvers=("ana",), required=1, detail=detail
+        ),
+        plan_digest=PLAN_DIGEST,
+        proof_digest="5" * 64,
+    )
+
+
+class TestAttestationBoundary:
+    @staticmethod
+    def _repository(store: Store) -> AttestationRepository:
+        return AttestationRepository(store)
+
+    def test_a_secret_classified_event_payload_is_refused_and_leaves_no_row(
+        self, tmp_path: Path
+    ) -> None:
+        """The stateless half, on the surface that is free-form by construction."""
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        events = _sealed_event(RUN_ID, {"resolved_credentials": {"db": "x"}})
+        with pytest.raises(InvariantViolationError) as excinfo:
+            self._repository(store).save_chain(RUN_ID, events, sealed_at=NOW)
+        assert excinfo.value.rule == REFUSAL_SECRET_FIELD_PERSISTED
+        assert _attestation_event_rows(store) == []
+        assert _attestation_chain_rows(store) == []
+        store.close()
+
+    def test_a_planted_signature_reason_is_refused_and_leaves_no_row(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """``save_manifest``'s other two columns are caller *parameters*.
+
+        ``signature_state`` and ``signature_reason`` are passed in, not derived, so
+        they are the free-form surface of this writer — the same argument
+        ``SecretGrantRepository.save`` makes about a table with no value column.
+        """
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        sealed = _ordinary_seal(store)
+        with pytest.raises(InvariantViolationError) as excinfo:
+            self._repository(store).save_manifest(
+                sealed.manifest, signature_reason=f"unsigned; key rotated after {SECRET_VALUE}"
+            )
+        assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
+        assert SECRET_VALUE not in str(excinfo.value)
+        assert len(_attestation_manifest_rows(store)) == 1, "the clean row must survive"
+        store.close()
+
+    def test_the_byte_rule_catches_a_value_nested_deep_in_an_event_payload(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """No key here is graded ``secret``, so only the byte rule can see it."""
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        planted = {
+            "provider": {"stderr": f"FATAL: auth failed for {SECRET_VALUE}"},
+            "attempts": [{"retry": f"still {SECRET_VALUE}"}],
+        }
+        events = _sealed_event(RUN_ID, planted)
+        with pytest.raises(InvariantViolationError) as excinfo:
+            self._repository(store).save_chain(RUN_ID, events, sealed_at=NOW)
+        assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
+        assert SECRET_VALUE not in str(excinfo.value)
+        assert _attestation_event_rows(store) == []
+        store.close()
+
+    def test_the_byte_rule_catches_a_planted_approver_detail(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """The real free-form surface of a sealed run: the authorization payload.
+
+        ``RunAuthorization.payload`` copies ``ApprovalState.detail`` — caller
+        strings — straight into the chain, so a value can reach an attested event
+        without ever touching the envelope the chain references by digest.
+        """
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        with pytest.raises(InvariantViolationError) as excinfo:
+            seal_run_evidence(
+                store,
+                _marked_envelope(),
+                run_status="completed",
+                verdict="pass",
+                recorded_at=_fixed_reading(),
+                authorization=_authorization(
+                    detail=(f"rotated after a failed attempt with {SECRET_VALUE}",)
+                ),
+            )
+        assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
+        assert SECRET_VALUE not in str(excinfo.value)
+        # Neither half of the seal may survive: the gate runs before the first
+        # transaction, so there is no chain-without-manifest state to clean up.
+        assert _attestation_event_rows(store) == []
+        assert _attestation_manifest_rows(store) == []
+        assert _attestation_chain_rows(store) == []
+        store.close()
+
+    def test_the_refusal_precedes_the_bytes_reaching_disk(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """Not merely "the row was rolled back": the needle is in no file at all."""
+        database = tmp_path / "mayhem.db"
+        store = Store.open_migrated(database)
+        events = _sealed_event(RUN_ID, {"note": f"used {SECRET_VALUE}"})
+        with pytest.raises(InvariantViolationError):
+            self._repository(store).save_chain(RUN_ID, events, sealed_at=NOW)
+        store.close()
+        assert SECRET_VALUE.encode() not in database.read_bytes()
+
+    def test_ordinary_attestation_still_seals_reloads_and_re_verifies(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """The positive control: a live guard must not cost a run its attestation."""
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        sealed = _ordinary_seal(store)
+        assert sealed.completeness is not None
+        assert sealed.completeness.mutating is False, "no mutating facts were recorded"
+        assert sealed.complete, "a read-only run needs no authorization"
+        repository = self._repository(store)
+        reloaded = repository.load_chain(RUN_ID)
+        assert [event.event_kind for event in reloaded] == [
+            "evidence.recorded",
+            "run.closed",
+        ]
+        verification = repository.verify_run_chain(RUN_ID)
+        assert verification.valid, verification.errors
+        stored_manifest = repository.load_manifest(f"{RUN_ID}:manifest")
+        assert stored_manifest is not None
+        assert stored_manifest.manifest_digest == sealed.manifest.manifest_digest
+        assert repository.verify_stored_manifest(f"{RUN_ID}:manifest").valid
+        store.close()
+
+        reopened = Store(tmp_path / "mayhem.db")
+        assert AttestationRepository(reopened).verify_run_chain(RUN_ID).valid
+        reopened.close()
+
+    def test_an_ordinary_authorization_still_seals_a_complete_chain(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        sealed = seal_run_evidence(
+            store,
+            _mutating_envelope(),
+            run_status="completed",
+            verdict="pass",
+            recorded_at=_fixed_reading(),
+            authorization=_authorization(),
+        )
+        assert sealed.complete
+        assert len(sealed.events) == 4
+        assert AttestationRepository(store).verify_run_chain(RUN_ID).valid
+        store.close()
+
+    def test_the_repository_writers_are_gated_without_the_seal_in_front_of_them(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """``save_chain`` is public API; ``seal_run_evidence`` is not its only caller.
+
+        Asserted directly so the repository gate is proved on its own, rather than
+        inherited from a wrapper that happens to be the only caller today.
+        """
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        repository = self._repository(store)
+        sealed = _ordinary_seal(store)
+
+        # A clean chain, then a poisoned one on the same run: the refusal must
+        # leave the previously sealed rows exactly as they were.
+        assert repository.verify_run_chain(RUN_ID).valid
+        poisoned = _sealed_event(RUN_ID, {"detail": f"used {SECRET_VALUE}"})
+        with pytest.raises(InvariantViolationError):
+            repository.save_chain(RUN_ID, poisoned, sealed_at=NOW)
+        assert repository.verify_run_chain(RUN_ID).valid
+        assert [event.event_kind for event in repository.load_chain(RUN_ID)] == [
+            "evidence.recorded",
+            "run.closed",
+        ]
+        assert sealed.manifest.manifest_id
+        store.close()
+
+
+class TestReplayAndCoverageBoundary:
+    """The two surfaces the final sweep found ungated.
+
+    Both persist a caller-authored free-form document: a replay capsule carries the
+    run spec and plan an operator is handed in order to reproduce a run, and a
+    coverage observation carries the verdict and metadata of what a run did.
+    """
+
+    @staticmethod
+    def _capsule(**overrides: Any) -> ReplayCapsule:
+        payload: dict[str, Any] = {
+            "run_id": RUN_ID,
+            "spec": {"fault": "pod-delete", "namespace": "prod"},
+            "plan": {"steps": [{"id": "s1", "target": "db-1"}]},
+            "fingerprints": {"environment": PROD},
+            "digests": {"plan": "a" * 64},
+        }
+        payload.update(overrides)
+        return ReplayCapsule(**payload)
+
+    def test_a_secret_classified_capsule_is_refused_and_leaves_no_row(
+        self, tmp_path: Path
+    ) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        capsule = self._capsule(spec={"resolved_credentials": {"db": "x"}})
+        with pytest.raises(InvariantViolationError) as excinfo:
+            ReplayRepository(store).save(capsule)
+        assert excinfo.value.rule == REFUSAL_SECRET_FIELD_PERSISTED
+        assert store.query("SELECT * FROM replay_capsules") == []
+        store.close()
+
+    def test_a_planted_value_in_the_plan_is_refused(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        capsule = self._capsule(
+            plan={"steps": [{"id": "s1", "note": f"rotate before {SECRET_VALUE}"}]}
+        )
+        with pytest.raises(InvariantViolationError) as excinfo:
+            ReplayRepository(store).save(capsule)
+        assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
+        assert store.query("SELECT * FROM replay_capsules") == []
+        store.close()
+
+    def test_an_ordinary_capsule_still_writes_and_reloads(self, tmp_path: Path) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        ReplayRepository(store).save(self._capsule())
+        loaded = ReplayRepository(store).load(RUN_ID)
+        assert loaded is not None
+        assert loaded.spec["fault"] == "pod-delete"
+        assert loaded.digest() == self._capsule().digest()
+        store.close()
+
+    def test_a_secret_classified_coverage_observation_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        with pytest.raises(InvariantViolationError) as excinfo:
+            SQLiteCoverageRepository(store).record(
+                CELL,
+                CellState.COVERED,
+                run_id=RUN_ID,
+                verdict={"secret_value": SECRET_VALUE},
+            )
+        assert excinfo.value.rule == REFUSAL_SECRET_FIELD_PERSISTED
+        assert store.query("SELECT * FROM m5_coverage") == []
+        store.close()
+
+    def test_a_planted_coverage_observation_is_refused_on_both_branches(
+        self, tmp_path: Path, active_guard: SecretLeakGuard
+    ) -> None:
+        """``record`` writes on an insert *and* on an update branch; both are gated.
+
+        The refusal must also leave a previously recorded row untouched — the
+        second call here takes the update branch precisely to prove it.
+        """
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        repository = SQLiteCoverageRepository(store)
+        repository.record(CELL, CellState.COVERED, run_id=RUN_ID, verdict={"covered": True})
+        planted = {"detail": f"provider stderr: used {SECRET_VALUE}"}
+        with pytest.raises(InvariantViolationError) as excinfo:
+            repository.record(CELL, CellState.FAILED, run_id="run-2", verdict=planted)
+        assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
+        rows = store.query("SELECT run_id, verdict_json FROM m5_coverage WHERE cell_key = ?",
+                           (CELL.key,))
+        assert len(rows) == 1
+        assert str(rows[0]["run_id"]) == RUN_ID
+        store.close()
+
+    def test_an_ordinary_coverage_observation_still_writes(self, tmp_path: Path) -> None:
+        store = Store.open_migrated(tmp_path / "mayhem.db")
+        repository = SQLiteCoverageRepository(store)
+        repository.record(
+            CELL,
+            CellState.COVERED,
+            run_id=RUN_ID,
+            verdict={"result_status": "completed", "verdict": "pass"},
+            metadata={"note": "steady"},
+        )
+        rows = store.query(
+            "SELECT run_id, verdict_json, extra_json FROM m5_coverage WHERE cell_key = ?",
+            (CELL.key,),
+        )
+        assert len(rows) == 1
+        assert json.loads(str(rows[0]["verdict_json"]))["verdict"] == "pass"
+        assert json.loads(str(rows[0]["extra_json"]))["note"] == "steady"
+        assert repository.cell_state(CELL) is CellState.COVERED
+        store.close()
+
+
 # --- Write path 3: the evidence file and its report artifacts -------------------
 
 
@@ -1002,6 +1379,21 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
     ("mayhem.infra.secret_resolver", "SecretGrantRepository.save"): frozenset(
         {"require_persistable_document"}
     ),
+    ("mayhem.infra.attestation_store", "seal_run_evidence"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.attestation_store", "AttestationRepository.save_chain"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.attestation_store", "AttestationRepository.save_manifest"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.replay_repository", "ReplayRepository.save"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.coverage_repository", "SQLiteCoverageRepository.record"): frozenset(
+        {"require_persistable_document"}
+    ),
 }
 
 #: The boundary functions themselves. Each is a module-level ``def`` in
@@ -1047,12 +1439,18 @@ def _function_node(module_name: str, function_name: str) -> ast.FunctionDef:
     raise AssertionError(f"{module_name}.{function_name} is no longer a plain function")
 
 
-def _modules_calling_a_boundary_gate() -> set[str]:
-    """Every ``mayhem.*`` module that *calls* one of :data:`BOUNDARY_FUNCTIONS`.
+def _gate_calling_functions() -> set[tuple[str, str]]:
+    """Every ``(module, function)`` in ``mayhem`` that *calls* a boundary gate.
 
     Scans the installed source rather than a declared list, so the answer is a
-    property of the code and not a copy of it. The defining module is not a match
-    by construction: it declares these functions, it does not import them.
+    property of the code and not a copy of it.
+
+    The unit is the *function*, not the module, and that is deliberate.
+    ``mayhem.infra.attestation_store`` alone has three gated writers, and under a
+    module-granular check deleting one of the three table rows still leaves the
+    module registered — the guard would pass on a row that no longer describes
+    anything. One row per write entry point is what makes the table checkable
+    entry by entry.
     """
     from pathlib import Path
 
@@ -1061,7 +1459,7 @@ def _modules_calling_a_boundary_gate() -> set[str]:
     # ``mayhem`` is a namespace package, so ``mayhem.__file__`` is None; anchor
     # on a module that definitely has one and walk up to the package root.
     package_root = Path(resolver_module.__file__).resolve().parent.parent
-    found: set[str] = set()
+    found: set[tuple[str, str]] = set()
     for path in sorted(package_root.rglob("*.py")):
         relative = path.relative_to(package_root).with_suffix("")
         dotted = ".".join(("mayhem", *relative.parts))
@@ -1069,12 +1467,43 @@ def _modules_calling_a_boundary_gate() -> set[str]:
             dotted = dotted[: -len(".__init__")]
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "mayhem.infra.secret_resolver":
-                if {alias.name for alias in node.names} & set(BOUNDARY_FUNCTIONS):
-                    found.add(dotted)
-            elif isinstance(node, ast.Attribute) and node.attr in BOUNDARY_FUNCTIONS:
-                found.add(dotted)
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if not _calls_a_boundary_gate(node):
+                continue
+            name = _enclosing_names(node, tree)
+            if dotted == resolver_module.__name__ and name in BOUNDARY_FUNCTIONS:
+                # A gate delegating to another gate is one implementation of one
+                # boundary, not a second write path. Excluded by name rather than
+                # by module, because that same module also holds
+                # ``SecretGrantRepository.save``, which *is* a write path.
+                continue
+            found.add((dotted, name))
     return found
+
+
+def _calls_a_boundary_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether this definition calls one of :data:`BOUNDARY_FUNCTIONS`."""
+    return bool(_called_names(node) & set(BOUNDARY_FUNCTIONS))
+
+
+def _enclosing_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module
+) -> str:
+    """``name`` for a module function, ``Class.name`` for a direct method.
+
+    The same spelling :data:`BOUNDARY_CALL_SITES` and :func:`_function_node` use,
+    so the completeness check and the conformance check agree on what a row names.
+    A gate call from anywhere else — a nested function, a closure, a comprehension
+    body — gets a name the table cannot spell, so it is reported unspellable and
+    fails loudly rather than matching a row it was never covered by.
+    """
+    for candidate in tree.body:
+        if isinstance(candidate, ast.FunctionDef) and candidate is node:
+            return node.name
+        if isinstance(candidate, ast.ClassDef) and any(child is node for child in candidate.body):
+            return f"{candidate.name}.{node.name}"
+    return f"{node.name} (not a plain function or method)"
 
 
 class TestTheGateCannotBeDeleted:
@@ -1112,9 +1541,14 @@ class TestTheGateCannotBeDeleted:
 
         The table above is hand-maintained, so "the listed gates are still called"
         says nothing about a path nobody listed. This closes the half of that
-        hole a machine can close honestly: a module that *does* call a boundary
-        gate has opted into the boundary, and an unlisted one means the table has
-        drifted from the code — which is how a new write path escapes review.
+        hole a machine can close honestly: a function that *does* call a boundary
+        gate has opted into the boundary, and an unregistered one means the table
+        has drifted from the code — which is how a new write path escapes review.
+
+        The unit is the write entry point, not its module. ``attestation_store``
+        has three gated writers, and a module-granular check would stay green after
+        one of the three rows was deleted — the guard would pass on a row that no
+        longer describes anything. Deleting any single row now fails here.
 
         The other half is not decidable and is not faked here. Detecting a write
         path with no gate at all would need to decide "writes evidence" from source
@@ -1128,12 +1562,18 @@ class TestTheGateCannotBeDeleted:
         ungated direction is a reviewer obligation, stated here rather than
         simulated.
         """
-        registered = {module for module, _ in BOUNDARY_CALL_SITES}
-        unregistered = _modules_calling_a_boundary_gate() - registered
+        registered = set(BOUNDARY_CALL_SITES)
+        unregistered = _gate_calling_functions() - registered
         assert not unregistered, (
             f"{sorted(unregistered)} call a boundary gate but have no "
             "BOUNDARY_CALL_SITES row, so the static conformance check does not "
             "cover them; add a row per write entry point or the table is a lie"
+        )
+        stale = registered - _gate_calling_functions()
+        assert not stale, (
+            f"{sorted(stale)} have a BOUNDARY_CALL_SITES row but no longer call a "
+            "boundary gate, so the table claims coverage that does not exist; "
+            "delete the row or restore the gate"
         )
 
     @pytest.mark.parametrize("name", BOUNDARY_FUNCTIONS)
@@ -1204,10 +1644,61 @@ def _audit_head_rows(store: Store) -> list[dict[str, object]]:
     return [dict(row) for row in store.query("SELECT * FROM audit_stream_heads")]
 
 
+def _attestation_event_rows(store: Store) -> list[dict[str, object]]:
+    return [dict(row) for row in store.query("SELECT * FROM attestation_events")]
+
+
+def _attestation_chain_rows(store: Store) -> list[dict[str, object]]:
+    return [dict(row) for row in store.query("SELECT * FROM attestation_chains")]
+
+
+def _attestation_manifest_rows(store: Store) -> list[dict[str, object]]:
+    return [dict(row) for row in store.query("SELECT * FROM attestation_manifests")]
+
+
 def _fixed_reading() -> AttestedTimestamp:
     """A deterministic reading, so an audit assertion is not wall-clock sensitive."""
     return AttestedTimestamp(
         wall_clock=NOW, monotonic_ns=0, uncertainty_ms=0.0, source="test"
+    )
+
+
+def _marked_envelope() -> EvidenceEnvelope:
+    """``ordinary_envelope`` with the redaction marker a seal requires.
+
+    Every real seal path redacts first, so every attestation test here does too:
+    an envelope with no marker is refused by ``_redaction_policy``, which is a
+    different gate and not the one under test.
+    """
+    return redact_envelope(
+        ordinary_envelope().model_copy(update={"plan_hash": PLAN_DIGEST})
+    )
+
+
+def _mutating_envelope() -> EvidenceEnvelope:
+    """The marked envelope plus the two facts that make the run mutating.
+
+    A mutating run's chain must carry its authorization, so this is the envelope
+    the complete-chain positive control seals.
+    """
+    marked = _marked_envelope()
+    return marked.model_copy(
+        update={
+            "action_outcomes": ("applied",),
+            "execution_intent": {"actor": ALICE},
+        }
+    )
+
+
+def _ordinary_seal(store: Store) -> SealedRun:
+    """Seal the ordinary marked envelope: the positive control's setup."""
+    return seal_run_evidence(
+        store,
+        _marked_envelope(),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=_fixed_reading(),
+        created_at=_fixed_reading(),
     )
 
 

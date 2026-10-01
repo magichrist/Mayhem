@@ -56,12 +56,44 @@ Honesty rules inherited from Phase 1
   calls :func:`~mayhem.domain.attestation.verify_chain`, then additionally
   checks the stored root against the recomputed one.
 * **One chain per run.** Phase 1's verifier defines a chain as starting at
-  genesis, so an event chain cannot be hung off a previous run's root without
-  changing the domain's law. Runs are linked at the *manifest* layer instead
-  (``Manifest.previous_manifest_digest``, which the manifest digest covers).
-  The cross-run event stream is :mod:`mayhem.infra.audit_stream`, and it is
-  still the *same* ``AttestedEvent`` format verified by the *same*
-  :func:`~mayhem.domain.attestation.verify_chain` — not a second logger.
+    genesis, so an event chain cannot be hung off a previous run's root without
+    changing the domain's law. Runs are linked at the *manifest* layer instead
+    (``Manifest.previous_manifest_digest``, which the manifest digest covers).
+    The cross-run event stream is :mod:`mayhem.infra.audit_stream`, and it is
+    still the *same* ``AttestedEvent`` format verified by the *same*
+    :func:`~mayhem.domain.attestation.verify_chain` — not a second logger.
+
+What this IS inside
+-------------------
+
+An attestation row is evidence. It is persisted, it is exported (a chain plus its
+manifest is what an auditor or an offline verifier is handed), and it is covered
+by the retention and audit machinery — :mod:`mayhem.infra.retention` reads these
+manifests to apply legal holds and expiry, and archives their bytes to external
+storage. So plan 12's "secrets must never enter evidence" binds this module
+exactly as it binds the envelope row, a sealed bundle, or an audit entry.
+
+Every write path therefore calls
+:func:`~mayhem.infra.secret_resolver.require_persistable_document`: the
+``AttestedEvent`` rows :meth:`AttestationRepository.save_chain` persists, the
+``Manifest`` row :meth:`AttestationRepository.save_manifest` persists, and
+:func:`seal_run_evidence` — which gates the whole derived document before its
+first transaction opens, so a refusal leaves neither a chain nor a manifest. The
+gate is the same one, with the same two rules, in the same placement
+:mod:`mayhem.infra.audit_stream` chose: after sealing, before the transaction
+opens, on the document the column actually receives. There is no
+attestation-specific rule, no attestation-specific guard, and no opt-out
+parameter, and no writer here takes a ``guard=`` or reads configuration.
+
+The practical exposure before that was small, and the reason is worth recording
+so nobody overstates what the gate adds: the derived events *reference* the
+envelope by digest rather than embedding it, so most of what
+:func:`seal_run_evidence` persists is already-boundary content by the time it
+gets here. What is genuinely free-form is the authorization payload — the
+approver and rule strings a caller supplies — and the event ``payload`` dict of
+any chain written through :meth:`AttestationRepository.save_chain` directly.
+That is exactly what the byte rule is for: neither surface carries a key name a
+name-based rule could grade.
 """
 
 from __future__ import annotations
@@ -90,6 +122,7 @@ from mayhem.domain.attestation import (
 )
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import DomainError
+from mayhem.infra.secret_resolver import require_persistable_document
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -135,6 +168,29 @@ _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 MUTATING_ACTION_OUTCOMES: frozenset[str] = frozenset(
     {"applied", "compensated", "acknowledged_no_backend"}
 )
+
+#: The ``artifact`` label the evidence boundary reports under for this module.
+#:
+#: Named per write path, for the reason :mod:`mayhem.infra.audit_stream` names
+#: its own: an operator reading a refusal has to be able to tell *which* write
+#: path refused, and ``attestation:chain:r-1`` answers that where a bare
+#: "evidence" would not. The three suffixes are the three writers.
+ATTESTATION_ARTIFACT_PREFIX = "attestation:"
+
+
+def _seal_artifact(run_id: str) -> str:
+    """The boundary label for :func:`seal_run_evidence`."""
+    return f"{ATTESTATION_ARTIFACT_PREFIX}seal:{run_id}"
+
+
+def _chain_artifact(run_id: str) -> str:
+    """The boundary label for :meth:`AttestationRepository.save_chain`."""
+    return f"{ATTESTATION_ARTIFACT_PREFIX}chain:{run_id}"
+
+
+def _manifest_artifact(manifest_id: str) -> str:
+    """The boundary label for :meth:`AttestationRepository.save_manifest`."""
+    return f"{ATTESTATION_ARTIFACT_PREFIX}manifest:{manifest_id}"
 
 
 class AttestationError(DomainError):
@@ -674,6 +730,10 @@ def seal_run_evidence(
         EvidenceNotAttestableError: If the envelope has no redaction marker.
         AuthorizationMismatchError: If the authorization's ``plan_digest`` is
             non-empty and does not match the envelope's ``plan_hash``.
+        InvariantViolationError: From the evidence boundary, if the derived chain
+            or manifest carries a secret-classified field or a value this run
+            resolved. Nothing is written at all — neither the chain nor the
+            manifest.
         AttestationError: If the derived chain or manifest fails verification, in
             which case nothing is written.
     """
@@ -736,6 +796,20 @@ def seal_run_evidence(
         )
     completeness = chain_completeness(events)
 
+    # The evidence boundary, after sealing and before the first transaction opens.
+    # Gating here rather than only in the two repository writers below is what makes
+    # "nothing is written" true of the whole call: the chain and the manifest are two
+    # transactions, so a repository-level refusal could still leave a chain with no
+    # manifest. The document is the one the two columns receive — the sealed events
+    # and the manifest, as the writers serialise them.
+    require_persistable_document(
+        {
+            "events": [event.model_dump(mode="json") for event in events],
+            "manifest": manifest.model_dump(mode="json"),
+        },
+        artifact=_seal_artifact(envelope.run_id),
+    )
+
     repository = AttestationRepository(store)
     repository.save_chain(envelope.run_id, events, sealed_at=reading.wall_clock)
     repository.save_manifest(manifest)
@@ -788,6 +862,9 @@ class AttestationRepository:
             The chain root written.
 
         Raises:
+            InvariantViolationError: From the evidence boundary, if any event
+                carries a secret-classified field or a value this run resolved.
+                No chain row and no event row is written.
             AttestationError: If ``events`` is not a valid sealed chain.
         """
         verification = verify_chain(events)
@@ -798,6 +875,18 @@ class AttestationRepository:
             )
         root = chain_root(events)
         stamp = _iso(sealed_at) or utc_now().isoformat()
+
+        # The evidence boundary, before the transaction opens, on the events as the
+        # column below serialises them. An ``AttestedEvent.payload`` is a free-form
+        # dict by construction, so this is the one write path in this module where a
+        # caller can plant a value under a field name nobody graded — which is the
+        # byte rule's whole reason to exist, and why the gate cannot be the envelope's.
+        # ``run_id`` is gated with them because it is a caller-supplied column.
+        require_persistable_document(
+            {"run_id": run_id, "events": [event.model_dump(mode="json") for event in events]},
+            artifact=_chain_artifact(run_id),
+        )
+
         with self._store.write() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO attestation_chains "
@@ -924,6 +1013,9 @@ class AttestationRepository:
         a reader has to infer.
 
         Raises:
+            InvariantViolationError: From the evidence boundary, if the manifest
+                carries a secret-classified field or a value this run resolved.
+                No row is written.
             AttestationError: If the manifest fails its own verification.
         """
         verification = verify_manifest(manifest)
@@ -937,6 +1029,24 @@ class AttestationRepository:
             if manifest.created_at is not None
             else utc_now().isoformat()
         )
+
+        # The evidence boundary, before the transaction opens, on the manifest as the
+        # column below serialises it, plus the two caller-supplied columns beside it.
+        # The manifest is what an auditor is handed and what ``infra.retention``
+        # archives to external storage, so it is inside the boundary for the same
+        # reason the chain is; ``signature_state``/``signature_reason`` are gated with
+        # it because they are parameters a caller passes, not fields the manifest
+        # derives — the same argument ``SecretGrantRepository.save`` makes about a
+        # table with no value column.
+        require_persistable_document(
+            {
+                "manifest": manifest.model_dump(mode="json"),
+                "signature_state": signature_state,
+                "signature_reason": signature_reason,
+            },
+            artifact=_manifest_artifact(manifest.manifest_id),
+        )
+
         with self._store.write() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO attestation_manifests "

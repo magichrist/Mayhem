@@ -40,12 +40,18 @@ from mayhem.domain.coverage_graph import (
     build_edges,
 )
 from mayhem.infra.ranking import rank_resilience_cells
+from mayhem.infra.secret_resolver import require_persistable_document
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from mayhem.domain.risks import RiskLevel
     from mayhem.infra.store import Store
+
+#: The ``artifact`` label the evidence boundary reports under for this module.
+#: Named per the reason ``infra.audit_stream`` names its own: a refusal has to be
+#: attributable to a named write path, not to a generic "evidence".
+COVERAGE_ARTIFACT_PREFIX = "coverage:"
 
 
 class SQLiteCoverageRepository:
@@ -154,6 +160,22 @@ class SQLiteCoverageRepository:
         maturity: str = "",
         next_rationale: str = "",
     ) -> None:
+        """Record a cell's observed state, with the observation that produced it.
+
+        ``verdict`` and ``metadata`` are the free-form half of this row: the verdict
+        a run reported, and whatever metadata a caller attached to the observation.
+        A coverage observation is an account of what a run *did*, and it is
+        persisted, exported into reports and the coverage graph, and read back by
+        the prioritization surfaces — so plan 12's "secrets must never enter
+        evidence" binds it the way it binds an envelope row. The gate is the same
+        :func:`~mayhem.infra.secret_resolver.require_persistable_document` every
+        other write path calls, with no opt-out parameter and no second rule.
+
+        Raises:
+            InvariantViolationError: From the evidence boundary, if the verdict or
+                metadata carries a secret-classified field or a value this run
+                resolved. No row is written or updated.
+        """
         if state is CellState.UNKNOWN:
             return
         verdict_json = json.dumps(verdict or {}, sort_keys=True)
@@ -174,6 +196,16 @@ class SQLiteCoverageRepository:
             }
         )
         extra_json = json.dumps(extra, sort_keys=True)
+
+        # Before the transaction opens, on the two documents the columns receive.
+        # Gated here rather than at each caller because the row is written on both
+        # the insert and the update branch, and a refusal must leave the previously
+        # recorded row exactly as it was.
+        require_persistable_document(
+            {"verdict": verdict or {}, "metadata": extra},
+            artifact=f"{COVERAGE_ARTIFACT_PREFIX}{cell.key}",
+        )
+
         with self._store.write() as conn:
             existing = conn.execute(
                 "SELECT state, run_id FROM m5_coverage WHERE cell_key = ?",

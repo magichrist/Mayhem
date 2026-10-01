@@ -4,6 +4,12 @@ import json
 from typing import Any
 
 from mayhem.domain.replay import ReplayCapsule
+from mayhem.infra.secret_resolver import require_persistable_document
+
+#: The ``artifact`` label the evidence boundary reports under for this module.
+#: Named per the reason ``infra.audit_stream`` names its own: a refusal has to be
+#: attributable to a named write path, not to a generic "evidence".
+REPLAY_ARTIFACT_PREFIX = "replay:"
 
 
 def build_capsule(
@@ -64,11 +70,32 @@ def build_capsule(
 
 
 class ReplayRepository:
+    """Persists replay capsules: the run spec, plan and evidence-derived digests.
+
+    A capsule is evidence. It is built from the durable run row and the run's
+    evidence envelope, it is persisted, and it is what an operator is handed when
+    they ask to reproduce a run — so plan 12's "secrets must never enter evidence"
+    binds :meth:`save` exactly as it binds an envelope row or an attested chain.
+    ``spec``/``plan``/``policy``/``target``/``runtime`` are caller-authored
+    free-form dicts, which is why the byte rule rather than the grade rule is what
+    would catch a value planted in one; the gate is the same
+    :func:`~mayhem.infra.secret_resolver.require_persistable_document` every other
+    write path calls, with no opt-out parameter and no second rule.
+    """
+
     def __init__(self, store: Any) -> None:
         self._store = store
 
     def save(self, capsule: ReplayCapsule) -> None:
-        payload = capsule.with_digests().model_dump_json()
+        document = capsule.with_digests()
+
+        # Before the transaction opens, on the document the column receives.
+        require_persistable_document(
+            {"run_id": capsule.run_id, "capsule": document.model_dump(mode="json")},
+            artifact=f"{REPLAY_ARTIFACT_PREFIX}{capsule.run_id}",
+        )
+
+        payload = document.model_dump_json()
         with self._store.write() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO replay_capsules "
