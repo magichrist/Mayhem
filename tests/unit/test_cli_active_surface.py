@@ -9,6 +9,7 @@ from mayhem.cli.app import app
 ACTIVE_COMMANDS = {
     "bundle",
     "campaign",
+    "certify",
     "commands",
     "completion",
     "discover",

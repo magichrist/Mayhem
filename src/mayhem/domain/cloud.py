@@ -10,7 +10,10 @@ would otherwise have to re-derive by reading adapter code:
 1. **A selector resolves to an exact resource identity, or it is refused.**
    :class:`CloudSelector` has no prefix form and no wildcard form — there is
    no field in which to write one, and a value containing a glob metacharacter
-   is refused at construction (:data:`CLOUD_SELECTOR_WILDCARD`). A target that
+   is refused at construction (:data:`CLOUD_SELECTOR_WILDCARD`;
+   :func:`ensure_selector_is_specific` raises that same judgement as a typed
+   :class:`CloudRefused`, since a pydantic validator can only raise
+   :class:`ValueError`). A target that
    has not been resolved is not a :class:`CloudTarget` at all; it is a
    :class:`CloudTargetIntent`, and :func:`resolve_cloud_target` turns an intent
    into a target by requiring *exactly one* matching identity. Zero matches is
@@ -42,7 +45,10 @@ would otherwise have to re-derive by reading adapter code:
 4. **Every cloud action declares the permission it needs.** ``required_permissions``
    uses :class:`mayhem.domain.provider.ProviderPermission`, the vocabulary the
    provider sandbox already gates on, and a mutating action that does not ask
-   for ``target:mutate`` cannot be built. :func:`check_role_can_perform` answers
+   for ``target:mutate`` cannot be built
+   (:func:`ensure_action_declares_permissions` raises that as a typed refusal,
+   for the same validator reason as the selector codes above).
+   :func:`check_role_can_perform` answers
    "can this role perform this action?" purely, and a refusal names the exact
    missing permission rather than a boolean.
 
@@ -74,7 +80,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from math import isfinite
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -83,6 +89,9 @@ from mayhem.domain.errors import DomainError, InvariantViolationError
 from mayhem.domain.faults import Reversibility
 from mayhem.domain.provider import ProviderPermission
 from mayhem.domain.risks import RiskLevel
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 __all__ = [
     "CLOUD_ACTION_PERMISSION_UNDECLARED",
@@ -104,6 +113,7 @@ __all__ = [
     "CloudResourceIdentity",
     "CloudRoleRef",
     "CloudSelector",
+    "CloudSelectorDecision",
     "CloudSelectorKind",
     "CloudSpec",
     "CloudTarget",
@@ -112,10 +122,14 @@ __all__ = [
     "CostEstimate",
     "IrreversibleCloudAction",
     "ReversibleCloudAction",
+    "check_action_declares_permissions",
     "check_cost_ceiling",
     "check_role_can_perform",
+    "check_selector_is_specific",
+    "ensure_action_declares_permissions",
     "ensure_cost_ceiling",
     "ensure_role_can_perform",
+    "ensure_selector_is_specific",
     "requires_elevated_approval",
     "resolve_cloud_target",
 ]
@@ -343,16 +357,20 @@ class CloudSelector(BaseModel):
 
     @model_validator(mode="after")
     def _check_exactness(self) -> CloudSelector:
+        # The same two judgements :func:`check_selector_is_specific` makes, so
+        # the code and the decision function cannot drift. Raised as ValueError
+        # because pydantic is what is calling; the code appears in the message
+        # so a caller reading the refusal can still branch on it.
+        specificity = check_selector_is_specific(
+            identifiers=self.identifiers, tags=self.tags
+        )
+        if not specificity.allowed:
+            raise ValueError(f"[{specificity.code}] {specificity.reason}")
         if self.kind is CloudSelectorKind.IDENTIFIER:
-            if not self.identifiers:
-                raise ValueError("an identifier selector must name at least one identifier")
             if self.tags:
                 raise ValueError("an identifier selector must not carry tags")
-        else:
-            if not self.tags:
-                raise ValueError("a tag selector must name at least one tag")
-            if self.identifiers:
-                raise ValueError("a tag selector must not carry identifiers")
+        elif self.identifiers:
+            raise ValueError("a tag selector must not carry identifiers")
         return self
 
     def matches(self, identity: CloudResourceIdentity) -> bool:
@@ -381,6 +399,167 @@ class CloudSelector(BaseModel):
             f"{self.resource_class.value} in {self.account}/{self.region} "
             f"where {criteria}"
         )
+
+
+class CloudSelectorDecision(BaseModel):
+    """Whether a selector is specific enough to act on, judged purely.
+
+    Exists because :data:`CLOUD_SELECTOR_EMPTY` and
+    :data:`CLOUD_SELECTOR_WILDCARD` are raised by *constructors*, and a
+    constructor raises :class:`ValueError` — which pydantic re-wraps, so no
+    adapter or CLI ever saw a :class:`CloudRefused` carrying either code. A
+    refusal code nothing can raise is a spelling, not a contract.
+
+    These two decision functions close that gap: they take the *raw* fields a
+    caller is about to build a selector from, so the same judgement is available
+    with a typed refusal, a remediation string, and structured details. They do
+    not weaken the constructor — an empty or wildcard selector is still
+    unbuildable — they give the boundary a way to say the same thing in the
+    vocabulary the rest of the module refuses in.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    allowed: bool
+    code: str = ""
+    reason: str = ""
+    offending: tuple[str, ...] = ()
+
+    @property
+    def denied(self) -> bool:
+        return not self.allowed
+
+
+def check_selector_is_specific(
+    *,
+    identifiers: Sequence[str] = (),
+    tags: Iterable[str] = (),
+) -> CloudSelectorDecision:
+    """Answer, purely, whether these selector fields name a bounded set.
+
+    Two refusals, in the order a reader would want them:
+
+    * a wildcard or glob character in any member is
+      :data:`CLOUD_SELECTOR_WILDCARD` — checked first, because a wildcard in an
+      otherwise-empty selector would otherwise be reported as merely empty and
+      the real mistake would be hidden; and
+    * naming nothing at all is :data:`CLOUD_SELECTOR_EMPTY`, because a selector
+      that constrains nothing matches everything, and "everything" is never what
+      a plan meant.
+    """
+    named = tuple(identifiers) + tuple(tags)
+    wildcarded = tuple(
+        sorted({value for value in named if _WILDCARD_CHARS & set(value)})
+    )
+    if wildcarded:
+        return CloudSelectorDecision(
+            allowed=False,
+            code=CLOUD_SELECTOR_WILDCARD,
+            offending=wildcarded,
+            reason=(
+                f"selector member(s) {', '.join(repr(v) for v in wildcarded)} contain a "
+                "wildcard character; a cloud selector is exact-match only"
+            ),
+        )
+    if not named:
+        return CloudSelectorDecision(
+            allowed=False,
+            code=CLOUD_SELECTOR_EMPTY,
+            reason=(
+                "a cloud selector must name at least one identifier or tag; a selector "
+                "that constrains nothing matches every resource in the account/region"
+            ),
+        )
+    return CloudSelectorDecision(
+        allowed=True,
+        reason=f"selector names {len(named)} member(s)",
+    )
+
+
+def ensure_selector_is_specific(
+    *,
+    identifiers: Sequence[str] = (),
+    tags: Iterable[str] = (),
+) -> CloudSelectorDecision:
+    """Raise :class:`CloudRefused` unless these selector fields are specific.
+
+    The refusal names what *would* have passed, per this module's convention:
+    the offending members for a wildcard, and the requirement for an empty one.
+    """
+    decision = check_selector_is_specific(identifiers=identifiers, tags=tags)
+    if decision.allowed:
+        return decision
+    raise CloudRefused(
+        decision.code,
+        decision.reason,
+        details={"offending": list(decision.offending)},
+        remediation=_SELECTOR_REMEDIATION,
+    )
+
+
+def check_action_declares_permissions(
+    action_id: str,
+    required_permissions: Iterable[ProviderPermission],
+) -> CloudSelectorDecision:
+    """Answer, purely, whether an action declares what it needs to act.
+
+    The decision-function counterpart to :meth:`CloudAction._check_permissions`,
+    for the same reason as :func:`check_selector_is_specific`: the validator
+    raises :class:`ValueError`, so :data:`CLOUD_ACTION_PERMISSION_UNDECLARED` was
+    a code no caller could ever receive.
+    """
+    declared = frozenset(required_permissions)
+    if not declared:
+        return CloudSelectorDecision(
+            allowed=False,
+            code=CLOUD_ACTION_PERMISSION_UNDECLARED,
+            reason=(
+                f"cloud action {action_id!r} declares no required_permissions; every cloud "
+                "action acts on a resource and must say what it needs"
+            ),
+        )
+    if ProviderPermission.TARGET_MUTATE not in declared:
+        named = ", ".join(sorted(p.value for p in declared))
+        return CloudSelectorDecision(
+            allowed=False,
+            code=CLOUD_ACTION_PERMISSION_UNDECLARED,
+            offending=(ProviderPermission.TARGET_MUTATE.value,),
+            reason=(
+                f"cloud action {action_id!r} declares {named} but every cloud action "
+                f"mutates a resource and must declare "
+                f"{ProviderPermission.TARGET_MUTATE.value}"
+            ),
+        )
+    return CloudSelectorDecision(
+        allowed=True,
+        reason=(
+            f"action {action_id!r} declares "
+            f"{', '.join(sorted(p.value for p in declared))}"
+        ),
+    )
+
+
+def ensure_action_declares_permissions(
+    action_id: str,
+    required_permissions: Iterable[ProviderPermission],
+) -> CloudSelectorDecision:
+    """Raise :class:`CloudRefused` unless an action declares what it needs."""
+    decision = check_action_declares_permissions(action_id, required_permissions)
+    if decision.allowed:
+        return decision
+    raise CloudRefused(
+        decision.code,
+        decision.reason,
+        details={
+            "action_id": action_id,
+            "declared": sorted(p.value for p in required_permissions),
+            "missing": list(decision.offending),
+        },
+        remediation=(
+            f"declare {ProviderPermission.TARGET_MUTATE.value} in required_permissions; "
+            "every cloud action mutates the resource it names"
+        ),
+    )
 
 
 class CloudResourceIdentity(BaseModel):
@@ -560,15 +739,14 @@ class CloudAction(BaseModel):
 
     @model_validator(mode="after")
     def _check_permissions(self) -> CloudAction:
-        if not self.required_permissions:
-            raise ValueError(
-                f"cloud action {self.action_id!r} declares no required_permissions; "
-                "every cloud action acts on a resource and must say what it needs"
-            )
-        if ProviderPermission.TARGET_MUTATE not in self.required_permissions:
-            raise ValueError(
-                f"cloud action {self.action_id!r} must require target:mutate"
-            )
+        # Delegates to the decision function for the same reason
+        # CloudSelector._check_exactness does: one rule, so the refusal code in
+        # the message and the code the decision function returns cannot drift.
+        declared = check_action_declares_permissions(
+            self.action_id, self.required_permissions
+        )
+        if not declared.allowed:
+            raise ValueError(f"[{declared.code}] {declared.reason}")
         return self
 
     @property

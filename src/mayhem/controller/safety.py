@@ -4,10 +4,18 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from mayhem.controller.approval_gate import (
+    RULE_APPROVAL_ALLOW,
+    RULE_APPROVAL_OVERRIDE,
+    ApprovalGateInputs,
+    ApprovalGateResult,
+    verify_approvals,
+)
 from mayhem.controller.policy_gate import (
     RULE_APPROVAL_REQUIRED,
     RULE_BUNDLE_ALLOW,
     PolicyGateInputs,
+    RequiredApproval,
     _risk_of,
     capability_requirements_for,
     evaluate_gate,
@@ -29,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mayhem.config import PolicyCfg
+    from mayhem.controller.k8s_admission import K8sAdmissionInput
     from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
@@ -81,6 +90,33 @@ class SafetyContext:
     # and the default is deliberately loose enough that ordinary drills never
     # meet it.
     damage_quota: DamageQuota = field(default_factory=DamageQuota)
+    # Plan 09 Phase 2: the approval gate. ``None`` — the default — means this
+    # context knows nothing about approvals, and admission is byte-for-byte what
+    # it was before the field existed. It is independent of ``policy_gate`` on
+    # purpose: a run must be approval-gated whether or not a policy bundle
+    # exists, and a bundle may demand approvals without being the thing that
+    # enforces them.
+    #
+    # Declared *before* ``policy_gate`` because ``tests/unit/test_policy_gate.py``
+    # asserts that field is last on the dataclass. That assertion is that suite's
+    # statement about its own addition, not a semantic claim about ordering, and
+    # every construction of this context in the tree passes keywords.
+    approval_gate: ApprovalGateInputs | None = None
+    # v1.1.0 plan 02 Phase 2: the workload-aware Kubernetes admission — the
+    # cluster client, the injected authorization predicate, and the resolver's
+    # per-step records. ``None`` — the default — means this context knows
+    # nothing about Kubernetes admission, and ``validate_plan`` skips it as a
+    # single ``is not None`` test, so no existing decision, refusal, message, or
+    # ordering moves. Configured, it can only *add* a refusal before any
+    # mutation; it never relaxes one. Nothing in the CLI constructs one yet
+    # (see the ledger in docs/v1.1.0/02_KUBERNETES_RUNTIME.md).
+    #
+    # Declared before ``policy_gate`` for the same reason ``approval_gate`` is:
+    # ``tests/unit/test_policy_gate.py`` pins ``policy_gate`` as the last field
+    # on this dataclass, and every construction in the tree passes keywords, so
+    # the constraint is about that suite's own statement rather than about
+    # semantics.
+    k8s_admission: K8sAdmissionInput | None = None
     # Plan 07 Phase 2: the versioned policy bundle, plus the locks, budgets,
     # and collision graph it is evaluated against. ``None`` — the default —
     # means this context knows nothing about policy bundles, and every gate
@@ -485,6 +521,62 @@ def _check_environment_policy(ctx: SafetyContext) -> None:
         raise SafetyRefusedError("safety.refused", dec.reason, dec)
 
 
+def _check_k8s_admission(plan: ExecutionPlan, ctx: SafetyContext) -> None:
+    """Plan 02 Phase 2: refuse an unsafe Kubernetes workload plan before mutation.
+
+    Additive in the same way the policy bundle is, and for the same reason: one
+    optional field on the context, so a context without it never reaches the
+    function body and every existing decision keeps its place in the order.
+
+    What it adds is a refusal that names the violated rule and the observed
+    numbers (the PDB arithmetic, the StatefulSet rollout budget, the DaemonSet
+    node coverage, the anti-affinity domains, the topology skew, the cluster
+    health) plus the two admission refusals no pure rule can make: a target the
+    run is not authorized to touch, and a step with no resolved live target.
+
+    Decisions are recorded as the steps are walked, and the walk stops at the
+    first refusal — so a refusal recorded here is the same shape (and reachable
+    through the same ``explain_fault_refusal``) as every other gate refusal.
+    """
+    from mayhem.controller.k8s_admission import admit_k8s_plan
+
+    admission = ctx.k8s_admission
+    if admission is None:
+        return
+    for outcome in admit_k8s_plan(plan, admission):
+        for rule_id in outcome.warnings:
+            ctx.record(
+                SafetyDecision(
+                    rule_id=rule_id,
+                    inputs=dict(outcome.inputs),
+                    outcome="warn",
+                    reason=f"{outcome.workload}: {rule_id}",
+                    remediation=outcome.remediation,
+                    severity=SafetySeverity.warning,
+                )
+            )
+        if outcome.admitted:
+            ctx.record(
+                SafetyDecision(
+                    rule_id=outcome.rule_id,
+                    inputs=dict(outcome.inputs),
+                    outcome="allow",
+                    reason=outcome.reason,
+                    remediation="",
+                    severity=SafetySeverity.info,
+                )
+            )
+            continue
+        dec = _deny_decision(
+            outcome.rule_id,
+            dict(outcome.inputs),
+            outcome.reason,
+            outcome.remediation,
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("k8s.admission_refused", dec.reason, dec)
+
+
 def validate_plan(
     plan: ExecutionPlan,
     graph: TopologyGraph,
@@ -510,6 +602,15 @@ def validate_plan(
         ctx.record(dec)
         raise SafetyRefusedError("environment.mismatch", dec.reason, dec)
     _check_environment_policy(ctx)
+    # Plan 02 Phase 2. Placed after the identity/environment checks — which are
+    # statements about *this run* and outrank anything about one workload — and
+    # before ``_check_k8s_targets``, because a refusal that names a violated
+    # rule and its observed numbers is strictly more actionable than the
+    # generic "kubernetes execution not yet supported" placeholder, and a plan
+    # already refused for a real reason has no use for the placeholder one.
+    # With no ``ctx.k8s_admission`` this is a single ``is not None`` test, so
+    # the refusal order of every check below is byte-for-byte what it was.
+    _check_k8s_admission(plan, ctx)
     _check_k8s_targets(plan, graph)
     _check_remote_targets(plan, graph)
     if adapter is not None:
@@ -524,9 +625,22 @@ def validate_plan(
     # configured this is a single ``is not None`` test and the function below
     # is never reached, so every existing gate, refusal, message, and decision
     # ordering is untouched.
+    requirements: tuple[RequiredApproval, ...] = ()
     if ctx.policy_gate is not None:
-        _apply_policy_result(
-            evaluate_gate(plan, ctx.policy_gate, environment=ctx.environment), ctx
+        policy_result = evaluate_gate(plan, ctx.policy_gate, environment=ctx.environment)
+        _apply_policy_result(policy_result, ctx)
+        # Handed to the approval gate below: a decision that names outstanding
+        # approval levels raises the quorum there. The policy gate *surfaces*
+        # them; plan 09 Phase 2 enforces them.
+        requirements = policy_result.required_approvals
+    # Plan 09 Phase 2, same placement rationale and the same additive contract:
+    # with no approval gate configured nothing below runs and admission is
+    # unchanged. After the policy gate, because "may this plan exist at all" is
+    # answered before "is this particular run approved" — an approval cannot
+    # legalize a plan the policy half refuses.
+    if ctx.approval_gate is not None:
+        _apply_approval_result(
+            verify_approvals(plan, ctx.approval_gate, requirements=requirements), ctx
         )
     seen_faults: list[str] = []
     # One ledger per validation pass, not one per context: a context is reused
@@ -560,11 +674,13 @@ def validate_plan(
 def _apply_policy_result(result: PolicyGateResult, ctx: SafetyContext) -> None:
     """Record a policy verdict on ``ctx`` and refuse the plan if it denied.
 
-    Approvals are recorded as warnings, never as refusals: Phase 2 surfaces
-    what a decision requires and plan 09 is what requests, binds, and checks
-    it. Surfacing a requirement as a hard refusal here would be implementing
-    approvals badly and early — a plan whose policy merely *asks* for an
-    approval would be refused, which is not what the decision said.
+    Approvals are recorded as warnings, never as refusals *here*: a bundle that
+    merely *asks* for an approval must not refuse the plan by itself, which
+    would be implementing approvals badly and early. Plan 09 Phase 2 is what
+    enforces the requirement, in :func:`_apply_approval_result`, which
+    :func:`validate_plan` runs immediately after this one and feeds the
+    outstanding levels through. The split is deliberate: this half says what
+    would change the verdict, that half requires the answer.
     """
     for approval in result.required_approvals:
         ctx.record(
@@ -596,6 +712,57 @@ def _apply_policy_result(result: PolicyGateResult, ctx: SafetyContext) -> None:
             inputs=result.inputs(),
             outcome="allow",
             reason=f"policy {result.decision.describe()} permits this plan",
+            remediation="",
+            severity=SafetySeverity.info,
+        )
+    )
+
+
+def _apply_approval_result(result: ApprovalGateResult, ctx: SafetyContext) -> None:
+    """Record an approval verdict on ``ctx`` and refuse the plan if it denied.
+
+    This is the enforcement half of what :func:`_apply_policy_result` only
+    surfaces: a policy decision may *ask* for an approval, and this is where the
+    answer is required. The two are additive — a bundle can add a refusal here
+    never gets to make, and a configured approval gate can refuse a plan a
+    bundle was happy with, which is the point of an approval.
+
+    On the allow path the whole sealed record
+    (:meth:`ApprovalGateResult.evidence`) is attached to the decision, and an
+    emergency override additionally gets its own decision under
+    :data:`~mayhem.controller.approval_gate.RULE_APPROVAL_OVERRIDE` — a distinct
+    rule id, a warning severity, and the overriding principal and reason in the
+    text, so a run that executed under an override is never mistakable for a run
+    that was approved outright once the decision reaches the evidence envelope's
+    ``safety_decisions``.
+    """
+    evidence = result.evidence()
+    if result.refusal is not None:
+        dec = _deny_decision(
+            result.refusal.rule_id,
+            evidence,
+            result.refusal.reason,
+            result.refusal.remediation,
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    for override in result.overrides:
+        ctx.record(
+            SafetyDecision(
+                rule_id=RULE_APPROVAL_OVERRIDE,
+                inputs=override.evidence(),
+                outcome="allow",
+                reason=f"{override.describe()} [{RULE_APPROVAL_OVERRIDE}]",
+                remediation="file the post-hoc review for this emergency override",
+                severity=SafetySeverity.warning,
+            )
+        )
+    ctx.record(
+        SafetyDecision(
+            rule_id=RULE_APPROVAL_ALLOW,
+            inputs=evidence,
+            outcome="allow",
+            reason=f"approvals verified: {result.state.describe()}",
             remediation="",
             severity=SafetySeverity.info,
         )

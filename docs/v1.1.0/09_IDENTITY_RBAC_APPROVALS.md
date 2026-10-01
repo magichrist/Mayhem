@@ -59,10 +59,10 @@ Identity configuration guide, RBAC role reference, approval policy examples. Rol
 
 ## STATUS
 - Phase 1 (domain model): DONE — `Principal`/`TeamMembership`/`EnvironmentScope`/`Role`/`RoleGrant` in `domain/identity.py`, plus `domain/approval.py` (`Approval`, `ApprovalState`, `InvalidationReason`) and the pure `evaluate_approvals` predicate that enumerates every invalidation trigger
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/approval_gate.py` (`ApprovalGateInputs`, `verify_approvals`, `ApprovalLedger`, sealed `evidence()`) wired into `controller/safety.validate_plan` behind the additive `SafetyContext.approval_gate`; executor role + environment scope authorized before any approval counts, separation of duties switchable by policy, and an emergency override that executes while sealing principal and reason into the evidence record
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

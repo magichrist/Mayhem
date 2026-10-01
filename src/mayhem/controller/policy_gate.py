@@ -36,10 +36,15 @@ and conditions on top of that, so it can never be the only thing standing
 between a plan and an incompatible pair, and it can never quietly turn a
 passing plan into a failing one.
 
-**Approvals are surfaced, not implemented.** :func:`required_approvals` reads
-what a decision says is required and puts it in the result (and in the refusal
-reason, as the plan's example output shows). Requesting, binding, and checking
-an approval is plan 09.
+**Approvals are surfaced here and enforced next door.** :func:`required_approvals`
+reads what a decision says is required and puts it in the result (and in the
+refusal reason, as the plan's example output shows). This module still does not
+mint, bind, or check an approval — it cannot, and it stays a pure function of
+``(plan, inputs, environment)``. Enforcement is
+:mod:`mayhem.controller.approval_gate`, which ``controller.safety.validate_plan``
+runs immediately after this gate and hands the outstanding levels to: a level
+this gate names raises the quorum there. Which *named group* satisfies which
+level is still unbound, because nothing on an approval says so.
 """
 
 from __future__ import annotations
@@ -584,9 +589,11 @@ def required_approvals(
     to go and do. With nothing on hand the result is the full list, which is the
     shape the plan's example renders.
 
-    Nothing is requested, bound, or enforced here. Phase 2's whole obligation
-    is that the requirement is visible on the refusal, so a reader sees what
-    would change the verdict instead of only learning that it changed.
+    Nothing is requested, bound, or enforced here: this function's whole
+    obligation is that the requirement is *visible* on the refusal, so a reader
+    sees what would change the verdict instead of only learning that it
+    changed. ``controller.approval_gate`` is where the requirement is answered
+    — it takes the levels this returns and turns them into a quorum.
     """
     held = facts.observed(PolicyDimension.APPROVAL_LEVEL) or frozenset()
     found: list[RequiredApproval] = []

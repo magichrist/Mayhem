@@ -43,10 +43,14 @@ from mayhem.domain.cloud import (
     CostEstimate,
     IrreversibleCloudAction,
     ReversibleCloudAction,
+    check_action_declares_permissions,
     check_cost_ceiling,
     check_role_can_perform,
+    check_selector_is_specific,
+    ensure_action_declares_permissions,
     ensure_cost_ceiling,
     ensure_role_can_perform,
+    ensure_selector_is_specific,
     requires_elevated_approval,
     resolve_cloud_target,
 )
@@ -278,7 +282,7 @@ class TestSelectorExactness:
             )
 
     def test_empty_identifier_selector_is_refused(self) -> None:
-        with pytest.raises(ValidationError, match="at least one identifier"):
+        with pytest.raises(ValidationError, match="at least one identifier or tag"):
             CloudSelector(
                 resource_class=CloudResourceClass.VM,
                 kind=CloudSelectorKind.IDENTIFIER,
@@ -289,7 +293,7 @@ class TestSelectorExactness:
     def test_empty_tag_selector_is_refused(self) -> None:
         # A selector that constrains nothing matches everything, and
         # "everything" is never what a plan meant.
-        with pytest.raises(ValidationError, match="at least one tag"):
+        with pytest.raises(ValidationError, match="at least one identifier or tag"):
             _by_tag()
 
     def test_identifier_selector_refuses_tags(self) -> None:
@@ -355,6 +359,74 @@ class TestSelectorExactness:
     def test_refusal_codes_exist_for_selector_construction(self) -> None:
         assert CLOUD_SELECTOR_WILDCARD == "cloud.selector_wildcard"
         assert CLOUD_SELECTOR_EMPTY == "cloud.selector_empty"
+
+
+# --- the selector codes are reachable, not merely spelled ----------------------
+
+
+class TestSelectorCodesAreRaisable:
+    """A refusal code nothing can raise is a spelling, not a contract.
+
+    Both codes fire inside a pydantic validator, which raises ``ValueError``, so
+    before the decision functions existed no adapter or CLI could ever receive a
+    :class:`CloudRefused` carrying either one. These are the reachability tests
+    that were missing.
+    """
+
+    def test_an_empty_selector_raises_cloud_refused_with_its_code(self) -> None:
+        with pytest.raises(CloudRefused) as excinfo:
+            ensure_selector_is_specific()
+        assert excinfo.value.code == CLOUD_SELECTOR_EMPTY
+        assert excinfo.value.remediation
+
+    def test_a_wildcard_selector_raises_cloud_refused_with_its_code(self) -> None:
+        with pytest.raises(CloudRefused) as excinfo:
+            ensure_selector_is_specific(identifiers=["i-0abc*"])
+        assert excinfo.value.code == CLOUD_SELECTOR_WILDCARD
+        assert excinfo.value.details["offending"] == ["i-0abc*"]
+
+    def test_a_wildcard_is_reported_as_a_wildcard_even_when_it_is_the_only_member(
+        self,
+    ) -> None:
+        """Ordering matters: an otherwise-empty selector must not mask the mistake.
+
+        Reporting ``selector_empty`` for ``identifiers=['i-*']`` would tell the
+        author to add a second identifier, which would still be a wildcard.
+        """
+        decision = check_selector_is_specific(identifiers=["i-*"])
+        assert decision.code == CLOUD_SELECTOR_WILDCARD
+        assert decision.code != CLOUD_SELECTOR_EMPTY
+
+    def test_a_specific_selector_is_admitted(self) -> None:
+        decision = check_selector_is_specific(identifiers=["i-0abc"], tags=["env=prod"])
+        assert decision.allowed is True
+        assert decision.denied is False
+
+    def test_the_decision_function_agrees_with_the_constructor(self) -> None:
+        """One rule, two surfaces: the code cannot drift from the refusal.
+
+        The constructor delegates to this decision function, so a selector that
+        builds and a selector the check admits must be the same set of inputs.
+        """
+        admitted = check_selector_is_specific(identifiers=["i-0abc"], tags=["env=prod"])
+        CloudSelector(
+            resource_class=CloudResourceClass.VM,
+            kind=CloudSelectorKind.IDENTIFIER,
+            account="123456789012",
+            region="eu-west-1",
+            identifiers=["i-0abc"],
+        )
+        assert admitted.allowed is True
+
+    def test_the_constructor_names_the_code_in_its_own_refusal(self) -> None:
+        """The ValueError path still carries the branchable code."""
+        with pytest.raises(ValidationError, match=CLOUD_SELECTOR_EMPTY):
+            CloudSelector(
+                resource_class=CloudResourceClass.VM,
+                kind=CloudSelectorKind.IDENTIFIER,
+                account="123456789012",
+                region="eu-west-1",
+            )
 
 
 # --- identities ----------------------------------------------------------------
@@ -662,7 +734,7 @@ class TestActionPermissions:
             )
 
     def test_a_mutating_action_must_require_target_mutate(self) -> None:
-        with pytest.raises(ValidationError, match="must require target:mutate"):
+        with pytest.raises(ValidationError, match="must declare target:mutate"):
             _reversible(permissions=frozenset({ProviderPermission.TARGET_READ}))
 
     def test_an_action_may_declare_more_than_the_minimum(self) -> None:
@@ -711,6 +783,57 @@ class TestActionPermissions:
 
     def test_permission_refusal_code_is_named(self) -> None:
         assert CLOUD_ACTION_PERMISSION_UNDECLARED == "cloud.action_permission_undeclared"
+
+
+# --- the action permission code is reachable, not merely spelled --------------
+
+
+class TestActionPermissionCodeIsRaisable:
+    """``CLOUD_ACTION_PERMISSION_UNDECLARED`` fires in a pydantic validator.
+
+    A validator raises ``ValueError``, which pydantic re-wraps, so no caller
+    ever received a :class:`CloudRefused` carrying this code. The decision
+    function is what makes it a real refusal.
+    """
+
+    def test_an_action_with_no_permissions_raises_with_its_code(self) -> None:
+        with pytest.raises(CloudRefused) as excinfo:
+            ensure_action_declares_permissions("cloud.aws.stop", [])
+        assert excinfo.value.code == CLOUD_ACTION_PERMISSION_UNDECLARED
+        assert excinfo.value.details["action_id"] == "cloud.aws.stop"
+
+    def test_an_action_missing_target_mutate_names_what_would_have_passed(self) -> None:
+        with pytest.raises(CloudRefused) as excinfo:
+            ensure_action_declares_permissions(
+                "cloud.aws.stop", [ProviderPermission.TARGET_READ]
+            )
+        assert excinfo.value.code == CLOUD_ACTION_PERMISSION_UNDECLARED
+        assert excinfo.value.details["missing"] == ["target:mutate"]
+        assert "target:mutate" in excinfo.value.remediation
+
+    def test_a_fully_declared_action_is_admitted(self) -> None:
+        decision = check_action_declares_permissions(
+            "cloud.aws.stop", [ProviderPermission.TARGET_READ, ProviderPermission.TARGET_MUTATE]
+        )
+        assert decision.allowed is True
+
+    def test_the_decision_function_agrees_with_the_constructor(self) -> None:
+        """The constructor delegates here, so the two cannot disagree."""
+        with pytest.raises(ValidationError, match=CLOUD_ACTION_PERMISSION_UNDECLARED):
+            _reversible(permissions=frozenset({ProviderPermission.TARGET_READ}))
+        assert (
+            check_action_declares_permissions(
+                "x", [ProviderPermission.TARGET_READ]
+            ).code
+            == CLOUD_ACTION_PERMISSION_UNDECLARED
+        )
+
+    def test_a_constructible_action_is_admitted_by_the_check(self) -> None:
+        action = _reversible()
+        decision = check_action_declares_permissions(
+            action.action_id, action.required_permissions
+        )
+        assert decision.allowed is True
 
 
 # --- reversibility: the structural distinction ----------------------------------

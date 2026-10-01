@@ -8,6 +8,7 @@ identically in both.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,6 +22,9 @@ from mayhem.domain.topology import (
     TopologyGraph,
 )
 from mayhem.topology.providers.compose import ComposeFileProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 TESTCASE_DIR = Path(__file__).resolve().parents[1] / "examples" / "testCase"
 
@@ -65,6 +69,41 @@ def build_compose_runtime_graph() -> TopologyGraph:
 @pytest.fixture(scope="module")
 def compose_runtime_graph() -> TopologyGraph:
     return build_compose_runtime_graph()
+
+
+# --- process-global CLI state ---------------------------------------------------
+#
+# ``mayhem.cli.app._STATE`` is a module-level dict that ``main()`` writes on
+# every invocation (the resolved ``--format``, ``--engine``, ``--dry-run`` and
+# so on) and that ``mayhem.cli.output.current_format()`` reads to decide how to
+# render. It is process-global by design — a single CLI process is meant to
+# resolve its flags once — which is exactly what makes it leak between tests
+# sharing a worker.
+#
+# The observed failure was real and order-dependent: a test that calls
+# ``main(["--format", "json", ...])`` and does not restore the dict leaves
+# ``format="json"`` behind, and the next test that asserts on *human* output
+# gets JSON instead. Under ``--dist load`` the interleaving is scheduling-
+# dependent, so it reproduced on some runs and not others — a test that fails
+# only sometimes and never in isolation.
+#
+# Restoring it here rather than in the offending files is deliberate: the
+# invariant is "no test may leak CLI state", which is a property of the whole
+# suite and cannot be enforced by remembering to clean up in each new file that
+# invokes the CLI. ``test_cli_exhaustive_matrix.py`` already had a local
+# ``_restore_cli_state`` fixture for the same reason; this is that fixture,
+# hoisted so it covers every caller.
+@pytest.fixture(autouse=True)
+def _isolate_cli_state() -> Iterator[None]:
+    """Snapshot and restore ``mayhem.cli.app._STATE`` around every test."""
+    from mayhem.cli.app import _STATE
+
+    saved = dict(_STATE)
+    try:
+        yield
+    finally:
+        _STATE.clear()
+        _STATE.update(saved)
 
 
 # --- execution intent (v0.9.0) -------------------------------------------------

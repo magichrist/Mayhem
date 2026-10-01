@@ -56,4 +56,12 @@ Advisor methodology doc (criteria declaration, trace reading), replay guide, sce
 ## Dependencies
 11 (SLOs, probes), 12 (cited evidence), 14 (graph), 15 (candidate compilation), 22 (coverage facts).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/advisor.py` adds `Finding` (gap cell + landscape + topology, all required), `Recommendation` (finding + candidate + derived priority), `IncidentFacts` (normalised capture), `CoverageLandscape`, and `UntrustedRecommendationDraft`, which has no approval, weight, or execution field; priority is the weighted mean of declared criteria and is stored nowhere.
+- Phase 2 (engine): not started
+- Phase 3 (surface): not started
+- Phase 4 (safety/evidence): not started
+- Phase 5 (tests/negative controls): not started
+- Phase 6 (docs/rollout): not started
+
+Overall: 1 of 6 phases complete.

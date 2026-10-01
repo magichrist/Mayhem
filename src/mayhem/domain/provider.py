@@ -3,9 +3,16 @@ from __future__ import annotations
 import json
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+)
 
 from mayhem.domain.errors import DomainError
 from mayhem.domain.risks import RiskLevel
@@ -121,6 +128,39 @@ class ProviderPermission(StrEnum):
 DEFAULT_DECLARED_PERMISSIONS: frozenset[ProviderPermission] = frozenset()
 
 
+def _sorted_permissions(value: frozenset[ProviderPermission]) -> list[str]:
+    """Serialise a permission set in a stable, sorted order.
+
+    A ``frozenset`` has no iteration order, and CPython's is derived from the
+    string hashes, which are salted per process. Left alone, pydantic dumps the
+    members in whatever order this particular interpreter happens to produce, so
+    the *same* declaration serialises to *different bytes* in two runs.
+
+    That is not cosmetic here. This module's own docstring and
+    ``test_canonical_json_is_byte_stable`` both promise that an SDK in Rust,
+    Python or Go can hash the canonical form and get one answer, and the loader
+    writes these dumps straight back out to a catalog file. An unsorted
+    permission list makes the canonical form a function of ``PYTHONHASHSEED``:
+    two machines hashing the same artifact disagree, and a re-serialised
+    catalog diffs against itself.
+
+    Sorting matches what ``mayhem.providers.pack`` already does for its own
+    permission tuples, so both pack documents and provider declarations now
+    canonicalise the same way.
+    """
+    return sorted(permission.value for permission in value)
+
+
+#: A permission set that serialises deterministically. The *model* stays a
+#: ``frozenset`` — comparison and ``<=`` against a grant are set semantics, and
+#: the declared default posture is set-shaped — while only the wire form is
+#: ordered.
+PermissionSet = Annotated[
+    frozenset[ProviderPermission],
+    PlainSerializer(_sorted_permissions, return_type=list[str], when_used="json"),
+]
+
+
 class ProviderMutation(StrEnum):
     READ_ONLY = "read_only"
     MUTATING = "mutating"
@@ -163,7 +203,7 @@ class FrozenDeclaration(BaseModel):
 class CapabilityDescriptor(FrozenDeclaration):
     id: str
     summary: str = Field(min_length=1, max_length=500)
-    required_permissions: frozenset[ProviderPermission] = Field(
+    required_permissions: PermissionSet = Field(
         default_factory=frozenset,
         alias="requiredPermissions",
     )
@@ -242,7 +282,7 @@ class FaultDeclaration(FrozenDeclaration):
     risk: RiskLevel = RiskLevel.MEDIUM
     mutation: ProviderMutation = ProviderMutation.READ_ONLY
     reversible: bool = True
-    required_permissions: frozenset[ProviderPermission] = Field(
+    required_permissions: PermissionSet = Field(
         default_factory=frozenset,
         alias="requiredPermissions",
     )
@@ -289,7 +329,7 @@ class TargetLocator(FrozenDeclaration):
         default_factory=dict,
         alias="selectorSchema",
     )
-    required_permissions: frozenset[ProviderPermission] = Field(
+    required_permissions: PermissionSet = Field(
         default_factory=lambda: frozenset({ProviderPermission.TARGET_READ}),
         alias="requiredPermissions",
     )
@@ -421,7 +461,7 @@ class ProviderMetadata(FrozenDeclaration):
     name: str = Field(min_length=1, max_length=100)
     version: str
     description: str = Field(min_length=1, max_length=1000)
-    permissions: frozenset[ProviderPermission] = Field(default_factory=frozenset)
+    permissions: PermissionSet = Field(default_factory=frozenset)
     capabilities: tuple[CapabilityDescriptor, ...] = ()
     fault_declarations: tuple[FaultDeclaration, ...] = Field(
         default_factory=tuple,

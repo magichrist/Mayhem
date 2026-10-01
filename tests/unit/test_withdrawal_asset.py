@@ -45,6 +45,11 @@ _BUILD_BUNDLE_MODULES = frozenset(
         "domain/evidence_bundle.py",
         "infra/evidence_bundle_io.py",
         "cli/verify_bundle.py",
+        # v1.1.0 plan 01 Phase 2: the certification evidence capturer seals a
+        # real bundle for a certification record to *reference*. It calls the
+        # one producer; it does not implement a second one, which is the
+        # distinction the call gate below enforces.
+        "cli/certify.py",
     }
 )
 

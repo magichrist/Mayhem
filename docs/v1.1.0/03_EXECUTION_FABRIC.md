@@ -60,14 +60,16 @@ Document the protocol version (`mayhem/1` successor rules), provider integration
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/fabric.py` landed the `FabricCommand` envelope (no defaulted field anywhere, so an unsigned command is unrepresentable), `NonceLedger`, `FencingToken`, `StepSemantics` with its well-formedness table, `StepSpec`, `Reservation`, and the refusal vocabulary; 111 tests.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/fabric_engine.py` landed the dispatch layer: a stateless engine (every decision is a projection over the durable journal plus the lease sink, so a new instance over the same durable objects *is* a controller failover) with fence checks, one effect per `(step, epoch)` (`fabric_duplicate_dispatch`), idempotent retries keyed on `idempotency_key` that spend a fresh nonce and never re-run the provider, nonce-replay refusal, reservation checks before dispatch, provider errors normalised into the existing `StepOutcome`/`TargetOutcome` taxonomy (a target that moved is `TARGET_DRIFT`, never a pass), and claim/settlement crash reconciliation; 52 tests including a killed-controller drill.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
 Known limitations:
 - Signature **verification is not implemented** and is not in scope for this phase. `FabricCommand.signing_payload` states *what* was signed; checking it needs the identities, keys and trust roots of plan 19. A `signature` string on the envelope is a claim, not proof, until then.
-- `FABRIC_UNDERSIGNED` is currently **raised nowhere**, by design. The envelope makes an unsigned command unrepresentable at the type level, so the decision function that would raise it has no reachable input; it stays named so the refusal vocabulary is complete and the code that eventually needs it does not have to invent a spelling.
+- `FABRIC_UNDERSIGNED` is currently **raised nowhere**, by design. The envelope makes an unsigned command unrepresentable at the type level, so the decision function that would raise it has no reachable input; it stays named so the refusal vocabulary is complete and the code that eventually needs it does not have to invent a spelling. The engine calls that decision function on every dispatch (`FabricEngine._require_signed`) so the future wire receiver has a seam to decode into.
+- The dispatch journal ships as a **protocol, not a table**: `FabricJournal` has no SQLite implementation in this phase (no migration lands here), so the crash-resume drill proves the *engine* resumes from durable objects it did not hold, using the real `InMemoryLeaseSink` and the real `LeaseClient`/`FaultLease` state machine — not that the production binding exists. A durable `FabricJournal` in the controller's store is Phase 4 work.
+- Drift-by-mismatch is only decidable when the caller states `DispatchRequest.expected_target`; a step dispatched with `None` falls back to provider error codes and cannot notice an `ok` about the wrong object. That is a declared limitation of the call site, not a silent pass.

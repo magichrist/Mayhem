@@ -32,7 +32,7 @@ class TestAmbiguity:
     def test_ambiguous_prefix_raises_typed_error_with_candidates(self) -> None:
         with pytest.raises(CommandResolutionError) as excinfo:
             app.get_command(_ctx(), "c")
-        assert excinfo.value.candidates == ("campaign", "commands", "completion")
+        assert excinfo.value.candidates == ("campaign", "certify", "commands", "completion")
 
     def test_no_match_raises_resolution_error(self) -> None:
         with pytest.raises(CommandResolutionError):

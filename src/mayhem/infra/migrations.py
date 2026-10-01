@@ -874,6 +874,201 @@ M0022_SECRET_GRANTS = Migration(
 )
 
 
+# Plan 01 Phase 2 — the certification record store.
+#
+# The store is a *sequence per fault*, not a mutable cell: re-certifying a fault
+# after its claim expired appends a new row rather than reviving the old one
+# (``domain.certification`` makes a lapsed claim terminal on purpose). The key
+# is therefore ``(fault_id, sequence)`` and ``sequence`` is dense and 1-based
+# per fault, so a gap means a write was lost rather than renumbered.
+#
+# Every row carries both the denormalised columns an auditor's SQL needs
+# (``state``, ``cell_fingerprint``, ``bundle_hash``, ``outcome``, ``reason``) and
+# the canonical ``record_json`` the row was derived from. The columns make
+# "which faults are certified right now" a single indexed query; the JSON makes
+# reloading the exact frozen record — through the same validators that refused an
+# impossible one at construction time — possible without re-deriving it.
+#
+# No foreign key to ``runs``. A certification outlives the run that produced it
+# on purpose: deleting the control-plane row that describes the run must not
+# silently withdraw a live claim, and equally a claim is only re-earned by a new
+# run, never by resurrecting an old one.
+#
+# Id note: 23 is ``M0023_ATTESTATION_RETENTION`` (see its own comment above), so
+# 24 is the reserved id for this migration and the chain stays contiguous 1..24.
+M0024_CERTIFICATION_RECORDS = Migration(
+    version=24,
+    name="certification_records",
+    statements=(
+        """
+        CREATE TABLE certification_records (
+            fault_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            cell_label TEXT NOT NULL,
+            cell_fingerprint TEXT NOT NULL,
+            engine TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN
+                ('pending','certified','expiring','stale','failed','incompatible')),
+            outcome TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            bundle_hash TEXT NOT NULL DEFAULT '',
+            run_id TEXT NOT NULL DEFAULT '',
+            record_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (fault_id, sequence)
+        )
+        """,
+        "CREATE INDEX idx_certification_records_state ON certification_records(state)",
+        "CREATE INDEX idx_certification_records_cell ON certification_records(cell_fingerprint)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_certification_records_cell",
+        "DROP INDEX idx_certification_records_state",
+        "DROP TABLE certification_records",
+    ),
+)
+
+
+# Plan 19 Phase 1 — agent identity/credential state and backup descriptors.
+#
+# Id note: 24 is ``M0024_CERTIFICATION_RECORDS`` (a concurrent v1.1.0 lane), so
+# ``M0025_AGENT_IDENTITY_BACKUPS`` is the id reserved for this migration and the
+# chain stays contiguous 1..25. If a further migration lands alongside, take the
+# next free id rather than renumbering this one — the migrator keys on
+# ``version`` alone and refuses duplicates outright, so a collision would be a
+# loud startup failure rather than a silent overwrite.
+#
+# What these tables hold, and what they deliberately do not:
+#
+# * **No key material, anywhere.** ``agent_identities`` and
+#   ``agent_credential_revocations`` name credentials and revocations, never a
+#   secret. Same rule as ``M0022_SECRET_GRANTS`` above: no column a credential
+#   value could occupy, so no code path can persist one through this repository.
+# * **No "this restored fine" column.** ``backup_snapshots`` describes bytes that
+#   were written and has no ``restored``/``verified``/``good`` field, because
+#   that is a fact about a drill, not about a capture.
+#   ``backup_restore_verifications`` is where restore outcomes live, and its
+#   ``outcome`` column stores the *derived* verdict
+#   (``verified``/``failed``/``incomplete``) together with a nullable
+#   ``data_loss_seconds`` — an unmeasured restore stays NULL, which is what makes
+#   "we have never actually measured our RPO" visible in the database rather
+#   than a zero.
+# * **``recovery_objectives`` has no achieved columns.** It stores the *target*
+#   only. An achieved value is a join against verified restore evidence, never a
+#   number written next to a promise.
+# * No foreign key to ``runs``, for the same reason plan 12 omits one (gap 101):
+#   credential and backup state must survive the control plane deleting the run
+#   it describes.
+M0025_AGENT_IDENTITY_BACKUPS = Migration(
+    version=25,
+    name="agent_identity_backups",
+    statements=(
+        """
+        CREATE TABLE agent_identities (
+            agent_id TEXT PRIMARY KEY,
+            controller_id TEXT NOT NULL,
+            credential_id TEXT NOT NULL,
+            credential_generation INTEGER NOT NULL,
+            rotation_state TEXT NOT NULL,
+            identity_version INTEGER NOT NULL,
+            identity_digest TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            rotation_due_at TEXT NOT NULL,
+            identity_revoked INTEGER NOT NULL DEFAULT 0,
+            identity_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_agent_identities_controller ON agent_identities(controller_id)",
+        "CREATE INDEX idx_agent_identities_expires ON agent_identities(expires_at)",
+        """
+        CREATE TABLE agent_credential_revocations (
+            agent_id TEXT NOT NULL,
+            credential_id TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('credential','identity')),
+            reason TEXT NOT NULL,
+            revoked_at TEXT NOT NULL,
+            revoked_by TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            revocation_json TEXT NOT NULL,
+            PRIMARY KEY (agent_id, credential_id, scope, revoked_at)
+        )
+        """,
+        "CREATE INDEX idx_agent_revocations_agent "
+        "ON agent_credential_revocations(agent_id, revoked_at)",
+        """
+        CREATE TABLE backup_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('full','incremental','wal_archive','evidence')),
+            datastore TEXT NOT NULL,
+            taken_at TEXT NOT NULL,
+            covers_through TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            parent_snapshot_id TEXT,
+            wal_sequence INTEGER,
+            byte_size INTEGER NOT NULL DEFAULT 0,
+            replica_count INTEGER NOT NULL DEFAULT 0,
+            descriptor_digest TEXT NOT NULL,
+            descriptor_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_backup_snapshots_store ON backup_snapshots(datastore, taken_at DESC)",
+        "CREATE INDEX idx_backup_snapshots_kind ON backup_snapshots(datastore, kind)",
+        """
+        CREATE TABLE backup_restore_verifications (
+            restore_id TEXT PRIMARY KEY,
+            snapshot_id TEXT NOT NULL,
+            target_cell TEXT NOT NULL,
+            drill INTEGER NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('verified','failed','incomplete')),
+            data_loss_seconds REAL,
+            duration_seconds REAL NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            verification_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_backup_restores_snapshot ON backup_restore_verifications(snapshot_id)",
+        "CREATE INDEX idx_backup_restores_outcome ON backup_restore_verifications(outcome)",
+        """
+        CREATE TABLE recovery_objectives (
+            datastore TEXT NOT NULL,
+            stated_at TEXT NOT NULL,
+            rpo_seconds REAL NOT NULL,
+            rto_seconds REAL NOT NULL,
+            stated_by TEXT NOT NULL,
+            objective_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (datastore, stated_at)
+        )
+        """,
+        "CREATE INDEX idx_recovery_objectives_latest "
+        "ON recovery_objectives(datastore, stated_at DESC)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_recovery_objectives_latest",
+        "DROP TABLE recovery_objectives",
+        "DROP INDEX idx_backup_restores_outcome",
+        "DROP INDEX idx_backup_restores_snapshot",
+        "DROP TABLE backup_restore_verifications",
+        "DROP INDEX idx_backup_snapshots_kind",
+        "DROP INDEX idx_backup_snapshots_store",
+        "DROP TABLE backup_snapshots",
+        "DROP INDEX idx_agent_revocations_agent",
+        "DROP TABLE agent_credential_revocations",
+        "DROP INDEX idx_agent_identities_expires",
+        "DROP INDEX idx_agent_identities_controller",
+        "DROP TABLE agent_identities",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -898,4 +1093,6 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0021_GAME_DAY_SESSIONS,
     M0022_SECRET_GRANTS,
     M0023_ATTESTATION_RETENTION,
+    M0024_CERTIFICATION_RECORDS,
+    M0025_AGENT_IDENTITY_BACKUPS,
 )

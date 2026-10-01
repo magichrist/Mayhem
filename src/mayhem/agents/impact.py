@@ -26,6 +26,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.lowlevel import CURRENT_SUBSTRATE
 from mayhem.toolkit.tool_runner import ToolError, run_tool
 
 if TYPE_CHECKING:
@@ -845,3 +847,66 @@ def compile_requirements(plan: ExecutionPlan, graph: TopologyGraph) -> list[Cont
             )
         )
     return plans
+
+
+# --- the restatement guard ----------------------------------------------------
+#
+# ``mayhem.domain.lowlevel.CURRENT_SUBSTRATE`` restates the four tables above,
+# because ``mayhem.domain`` sits *below* ``mayhem.agents`` in the layering
+# contract and cannot import this module to read them. The layering is
+# machine-checked and worth keeping; the cost is a second literal that has to
+# be kept in step by hand.
+#
+# Previously nothing but four tests noticed a divergence, and a test only runs
+# when somebody runs it — so an edit to a table here could leave the domain
+# claiming a capability the gate cannot actually see, with the suite green. That
+# is the "green tests, broken behaviour" shape this module has been bitten by
+# before, so the comparison is made here instead: this module *is* allowed to
+# import the domain, so it is the one layer that can see both sides at once.
+#
+# The check runs at import, like ``mayhem.domain.catalog``'s
+# ``validate_catalog(CATALOG)``. A stale restatement is then a broken import —
+# the failure lands on whoever made the edit, at the moment they made it — and
+# never on an operator reading a capability report.
+_SUBSTRATE_MIRRORS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    ("_PROBE_BINS", frozenset(_PROBE_BINS), CURRENT_SUBSTRATE.probe_bins),
+    ("_CAP_BITS", frozenset(_CAP_BITS), CURRENT_SUBSTRATE.cap_bits),
+    ("_PM_PACKAGES", frozenset(_PM_PACKAGES), CURRENT_SUBSTRATE.installable_bins),
+    ("_HOST_TOOL_BINS", frozenset(_HOST_TOOL_BINS), CURRENT_SUBSTRATE.host_tools),
+)
+
+
+def validate_substrate_mirrors() -> tuple[str, ...]:
+    """Problems with the domain's restatement of this module's tables, or ``()``.
+
+    Split out from the import-time call below so the negative control can drive
+    it against a deliberately divergent surface without having to monkeypatch a
+    module global, and so the failure is inspectable rather than only raised.
+    """
+    problems: list[str] = []
+    for table, live, mirrored in _SUBSTRATE_MIRRORS:
+        if live == mirrored:
+            continue
+        only_live = sorted(live - mirrored)
+        only_mirrored = sorted(mirrored - live)
+        detail = []
+        if only_live:
+            detail.append(f"in {table} but not CURRENT_SUBSTRATE: {', '.join(only_live)}")
+        if only_mirrored:
+            detail.append(
+                f"in CURRENT_SUBSTRATE but not {table}: {', '.join(only_mirrored)}"
+            )
+        problems.append(
+            f"{table} and mayhem.domain.lowlevel.CURRENT_SUBSTRATE disagree — "
+            + "; ".join(detail)
+            + ". A bin or cap bit the domain does not know about is one the impact gate "
+            "cannot see, so a fault needing it is gated permanently inert."
+        )
+    return tuple(problems)
+
+
+_SUBSTRATE_MIRROR_PROBLEMS = validate_substrate_mirrors()
+if _SUBSTRATE_MIRROR_PROBLEMS:  # pragma: no cover - only reachable via a bad edit
+    raise InvariantViolationError(
+        "substrate.mirror_drift", "; ".join(_SUBSTRATE_MIRROR_PROBLEMS)
+    )

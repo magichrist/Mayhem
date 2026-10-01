@@ -386,6 +386,7 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem bundle` | Verify a portable evidence bundle offline. |
 | `mayhem completion` | Print a bash/zsh/fish completion script. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
+| `mayhem certify` | Certify a fault on one live runtime cell, or ask whether it can run there — **0-of-141 faults are live-verified, because no live cell has been certified yet.** `certify run` provisions a disposable container, executes the drill through the normal run path, residue-scans the cell, and records a certification record; a refused attempt is recorded as a refusal, never as a pass. `certify matrix` answers compatibility questions without executing. Every maturity it reports is gated by the certification record store, so nothing is presented as live-verified without a stored record behind it. |
 
 Use each command's current `--help` output for accepted arguments. `mayhem commands show`
 prints the live command map, and `tests/unit/test_cli_exhaustive_matrix.py` fails

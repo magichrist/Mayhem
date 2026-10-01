@@ -373,12 +373,53 @@ _SIGN_DISCLAIMER = re.compile(
 
 #: Phrasings that assert a pack *is* authenticated. Each is a direct
 #: contradiction of ``SIGNATURE_VERIFICATION_IMPLEMENTED = False``.
-_SIGNATURE_OVERCLAIM = re.compile(
+#:
+#: Public (no leading underscore) because it is not only a documents check.
+#: ``mayhem.domain.marketplace.CLASS_MEANING`` states the same honesty claim in
+#: *source data* rather than in prose, and the honest strings there are only
+#: load-bearing if the overclaim detector is applied to them too — see
+#: ``test_marketplace.py``. The pattern lives here so the two cannot drift.
+SIGNATURE_OVERCLAIM = re.compile(
     r"cryptographically\s+signed|signature[-\s]?verified|verified\s+signature|"
     r"signature\s+is\s+verified|signatures\s+are\s+verified|"
     r"trusted\s+sign(?:ature|er)|signed\s+and\s+verified",
     re.IGNORECASE,
 )
+
+#: Phrasings that assert a publisher has been *authenticated*, independently of
+#: the word "signature". A rewrite can dodge the pattern above by never saying
+#: "signed" — "so the publisher is authenticated" claims exactly the same thing
+#: the domain refuses to establish, so it is caught by name.
+#:
+#: Each alternative is written so the shipped honest sentences do not match. The
+#: real ``CLASS_MEANING`` text says "nothing here authenticates the publisher",
+#: which is a *negation*: ``authenticates?`` with no preceding negation word
+#: would match it, so a negative lookbehind is required rather than a rewrite of
+#: the honest prose, which must not be bent around a test.
+PUBLISHER_AUTHENTICATED_OVERCLAIM = re.compile(
+    r"(?<!nothing here )(?<!never )(?<!not )"
+    r"(?:publisher\s+is\s+authenticated|authenticates?\s+the\s+publisher|"
+    r"verif(?:y|ies|ied)\s+the\s+publisher|"
+    r"trust\s+(?:is\s+)?established|no\s+certification\s+gap|"
+    r"certification\s+gap\s+remains|provenance\s+(?:is\s+)?established)",
+    re.IGNORECASE,
+)
+
+#: Kept as a private alias so the existing document checks below read unchanged.
+_SIGNATURE_OVERCLAIM = SIGNATURE_OVERCLAIM
+
+
+def honesty_overclaims(text: str) -> list[str]:
+    """Every overclaim phrase in *text*, whichever gate it belongs to.
+
+    The single entry point for "does this sentence claim more than mayhem can
+    establish", shared by the document gates and by the source-data guard in
+    ``test_marketplace.py``. Returns the matched phrases so a failure can name
+    the sentence rather than just the file.
+    """
+    found = [match.group(0) for match in SIGNATURE_OVERCLAIM.finditer(text)]
+    found += [match.group(0) for match in PUBLISHER_AUTHENTICATED_OVERCLAIM.finditer(text)]
+    return found
 
 
 def _pack_signing_overclaims(text: str) -> list[str]:

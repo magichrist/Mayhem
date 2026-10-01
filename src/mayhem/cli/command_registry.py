@@ -14,6 +14,7 @@ class CommandSpec:
 
 COMMAND_HELP: dict[str, str] = {
     "campaign": "Create, inspect, and run chaos campaigns.",
+    "certify": "Certify faults on live runtime cells and query the certification matrix.",
     "commands": "Show the command migration map.",
     "completion": "Generate a shell completion script for this Mayhem build.",
     "discover": "Discover targets, engines, and capabilities.",
@@ -36,6 +37,11 @@ COMMAND_HELP: dict[str, str] = {
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("campaign", "run", help_group="experiments", mutating=True),
+    # `certify` is mutating because `certify run` provisions a disposable
+    # container and injects a fault into it. It gates itself twice: an explicit
+    # `--execute`, and the ordinary v0.9 execution-intent contract that
+    # `RunEngine.execute` enforces for every other mutating surface.
+    CommandSpec("certify", "run", help_group="experiments", mutating=True),
     CommandSpec("commands", "inspect", help_group="inspect"),
     CommandSpec("completion", "inspect", help_group="inspect"),
     CommandSpec("discover", "discover", help_group="discovery"),
@@ -61,6 +67,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 
 def register_commands(app: Any) -> None:
     from mayhem.cli.campaign import campaign
+    from mayhem.cli.certify import certify
     from mayhem.cli.commands import commands
     from mayhem.cli.completion import completion
     from mayhem.cli.doctor import doctor_cmd
@@ -74,6 +81,7 @@ def register_commands(app: Any) -> None:
 
     command_map = {
         "campaign": campaign,
+        "certify": certify,
         "commands": commands,
         "completion": completion,
         "discover": discover,

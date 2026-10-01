@@ -140,4 +140,6 @@ def test_name_snapshot_is_stable() -> None:
         "game_day_sessions",
         "secret_grants",
         "attestation_retention",
+        "certification_records",
+        "agent_identity_backups",
     ), "migration name sequence drifted from the snapshot — append-only."

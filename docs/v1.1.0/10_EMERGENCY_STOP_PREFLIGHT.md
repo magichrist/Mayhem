@@ -59,10 +59,10 @@ Stop runbook, preflight-check catalogue with per-check meaning, postflight inter
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/stop.py` lands `StopReason`/`StopSignal` (total one-to-one path→reason mapping), `StopTrigger` (reason bound to condition id + observed values), `StopCommand` (run vs. environment scope, principal, issued-at, injectable-`now` staleness), `PostflightReport`/`PostflightCheck` (per-check pass/fail, evidence refs required on a pass), and the pure escalation ladder over run state that reuses `cancellation.CancellationLevel` by reference.
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/stop_engine.py` walks `STOP_FLOW` against the lease sink (freeze via the dispatch freezer, cancel pending → `EXPIRED`/`mechanism=stop`, compensate active through the existing `RecoveryService`/janitor undo contracts, reconcile, residue-scan, verify via `assert_all_recovered`, seal); a resume that skips an owed stage is refused, a stage that cannot complete is recorded with `stalled_at` naming it and is never sealed, and the postflight is computed from the recovery output so a residue finding keeps the run dirty; the controller-loss path derives run state from the sink and seals `controller_lost`, with `CompensationPath.AGENT_WATCHDOG` driving the agent's own `AgentWatchdog` when no controller exists; 61 tests.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

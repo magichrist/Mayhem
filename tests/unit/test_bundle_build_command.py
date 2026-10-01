@@ -125,24 +125,36 @@ class TestBundleBuild:
         assert manifest["artifacts"]
 
 
+#: Modules permitted to invoke `build_bundle(` — the definition, the advertised
+#: CLI producer, and (v1.1.0 plan 01 Phase 2) the certification evidence
+#: capturer, which must seal a real bundle for a record to reference rather than
+#: cite a hash of nothing. Each is a *caller of the one producer*; none
+#: reimplements bundling, which is what this allowlist is actually protecting.
+#: An unlisted caller still fails, so the assertion keeps its teeth.
+_BUILD_BUNDLE_CALL_SITES = frozenset({"evidence_bundle.py", "verify_bundle.py", "certify.py"})
+
+
 def test_build_bundle_has_a_production_caller() -> None:
     """The gap this command closed must not reopen.
 
     Before this command, `build_bundle` had zero callers outside `tests/` and
-    the advertised producer did not exist. Invert this assertion the day the
-    producer is reachable by some other, better route.
+    the advertised producer did not exist. The allowlist is the documented route
+    by which a second legitimate consumer is admitted: each entry must be a
+    caller of the *one* producer, never a second implementation of it.
     """
-    # The only permitted `build_bundle(` call sites are the definition itself
-    # and the CLI producer. If the producer is reachable some other way, the
-    # gap this command closed has reopened by a route nobody documented.
+    # The only permitted `build_bundle(` call sites are the ones named in
+    # ``_BUILD_BUNDLE_CALL_SITES``. If the producer is reachable some other
+    # undocumented way, the gap this command closed has reopened.
     src = Path("src/mayhem")
     callers = [
         p
         for p in src.rglob("*.py")
-        if p.name not in ("verify_bundle.py", "evidence_bundle.py")
-        and "build_bundle(" in p.read_text()
+        if p.name not in _BUILD_BUNDLE_CALL_SITES and "build_bundle(" in p.read_text()
     ]
     assert not callers, f"bundle producer reachable elsewhere: {callers}"
+    # The advertised producer must still be one of them: admitting a second
+    # consumer may not quietly retire the command that made the producer real.
+    assert Path("src/mayhem/cli/verify_bundle.py").name in _BUILD_BUNDLE_CALL_SITES
 
 
 def test_verify_reports_authorship_honestly() -> None:

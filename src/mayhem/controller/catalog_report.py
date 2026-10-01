@@ -35,6 +35,9 @@ from mayhem.infra.promotion import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from mayhem.domain.certification import CertificationRecord
     from mayhem.domain.target_profiles import TargetProfile
 
 __all__ = [
@@ -47,6 +50,7 @@ __all__ = [
     "build_coverage",
     "build_probe",
     "capability_status",
+    "certification_gate_state",
     "deprecation_status",
     "execution_status",
     "explain_catalog_fault",
@@ -209,6 +213,7 @@ def maturity_decision(
     *,
     evidence: EvidenceStore | None = None,
     probe: CatalogProbe | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> PromotionDecision:
     """The fault's *earned* maturity, evaluated from the evidence store.
 
@@ -216,21 +221,62 @@ def maturity_decision(
     recomputation, and the two are allowed to disagree: the declaration is
     reported alongside the derived value so a stale badge is visible rather
     than laundered.
+
+    ``records`` is the certification store in the shape
+    :func:`evaluate_maturity` consumes — the output of
+    :meth:`~mayhem.infra.certification_repository.CertificationRepository.certification_gate`.
+    It defaults to ``None``, which is the caller's statement that *this* report
+    does not use certification and preserves 1.0.0 behaviour exactly. An empty
+    mapping is the opposite statement — "nothing is certified" — and caps every
+    fault at ``verified-unit``.
+
+    The distinction is load-bearing and is why the parameter exists rather than
+    being hard-coded: ``cli/certify.py`` has the repository and always arms the
+    gate, so without this seam ``mayhem discover capabilities`` could report a
+    rung above ``verified-unit`` that the certification store would contradict.
+    A reported maturity level must never be higher than the evidence supports,
+    so a caller holding a repository passes it here. Callers that report
+    maturity without one should say so — see
+    :func:`certification_gate_state`, which the dashboard carries so the
+    omission is visible in the payload rather than silent.
     """
     return evaluate_maturity(
         definition,
         probe=probe if probe is not None else build_catalog_probe(definition),
         store=evidence,
+        records=records,
     )
+
+
+def certification_gate_state(
+    records: Mapping[str, Sequence[CertificationRecord]] | None,
+) -> str:
+    """How the certification gate was armed for a report, in one readable word.
+
+    Three states, and the middle one is the dangerous one:
+
+    * ``"armed"`` — a certification store was consulted, so no rung above
+      ``verified-unit`` survives without a live record.
+    * ``"asserted-empty"`` — certification was consulted and nothing is
+      certified, which is an assertion and correctly caps every fault.
+    * ``"not-consulted"`` — this report does not use certification at all. The
+      levels it shows are the 1.0.0 run-evidence levels and say nothing about
+      certification. Surfaced in the payload so a reader is never left to
+      assume the gate ran.
+    """
+    if records is None:
+        return "not-consulted"
+    return "armed" if records else "asserted-empty"
 
 
 def promotion_refusals(
     definition: FaultDefinition,
     *,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> tuple[str, ...]:
     """Every unmet criterion for ``definition``, each naming what was observed."""
-    return maturity_decision(definition, evidence=evidence).refusals
+    return maturity_decision(definition, evidence=evidence, records=records).refusals
 
 
 def _unmet_unit_criteria(decision: PromotionDecision) -> tuple[str, ...]:
@@ -251,6 +297,7 @@ def capability_status(
     engine: str,
     *,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> CapabilityStatus:
     lane = _engine_lane(engine)
     target_supported = lane is not None and lane in definition.engine_lanes
@@ -263,7 +310,7 @@ def capability_status(
     else:
         registered = executor_for(definition.id) is not None
         compensation_complete = template_for(definition.id) is not None
-    decision = maturity_decision(definition, evidence=evidence)
+    decision = maturity_decision(definition, evidence=evidence, records=records)
     if definition.catalog_only:
         blocked_reason = definition.refusal_reason or "catalog-only definition"
     elif lane is None:
@@ -343,10 +390,11 @@ def build_capability_statuses(
     *,
     engine: str | None = None,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> list[CapabilityStatus]:
     engines = (engine,) if engine else ("docker", "podman", "kubernetes")
     return [
-        capability_status(definition, engine_name, evidence=evidence)
+        capability_status(definition, engine_name, evidence=evidence, records=records)
         for engine_name in engines
         for definition in all_definitions()
     ]
@@ -359,11 +407,18 @@ def build_capability_dashboard(
     maturity: str | None = None,
     blocked: bool | None = None,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> CapabilityDashboard:
-    """Read-only capability dashboard with the documented filters applied."""
+    """Read-only capability dashboard with the documented filters applied.
+
+    ``records`` arms the certification gate for every row; see
+    :func:`maturity_decision`. It is threaded rather than hard-coded because the
+    dashboard is a *read* view with no store handle of its own, so the caller
+    that has a repository is the only one that can consult it.
+    """
     dashboard = CapabilityDashboard(
         engine=engine.lower() if engine else None,
-        rows=tuple(build_capability_statuses(engine=engine, evidence=evidence)),
+        rows=tuple(build_capability_statuses(engine=engine, evidence=evidence, records=records)),
         # Local calendar date, deliberately not UTC: this is a human-readable
         # "report generated on" stamp, and a UTC date would read as the wrong
         # day for operators outside UTC. No tz-aware local-date API exists.
@@ -376,8 +431,22 @@ def build_capability_report(
     *,
     engine: str | None = None,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> dict[str, object]:
-    return build_capability_dashboard(engine=engine, evidence=evidence).to_dict()
+    """The dashboard as a plain dict, with the certification gate state stated.
+
+    ``certification_gate`` is always present, so a reader is told whether the
+    maturity levels in this payload were capped by a certification store or are
+    simply the uncapped run-evidence levels. Leaving it out would let
+    ``mayhem discover capabilities`` and ``mayhem certify`` disagree about the
+    same fault with nothing in the payload to say which one is looking at the
+    evidence.
+    """
+    payload = build_capability_dashboard(
+        engine=engine, evidence=evidence, records=records
+    ).to_dict()
+    payload["certification_gate"] = certification_gate_state(records)
+    return payload
 
 
 def _executor_name(definition: FaultDefinition, engine: str) -> str:
@@ -468,6 +537,7 @@ def build_coverage(
     *,
     engine: str | None = None,
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> dict[str, object]:
     definitions = all_definitions()
     selected = [
@@ -495,7 +565,10 @@ def build_coverage(
     # The maturity tally is derived per fault, not read off the catalog, so a
     # fault whose declared badge its facts no longer earn is counted at the rung
     # it actually holds.
-    decisions = [maturity_decision(definition, evidence=evidence) for definition in selected]
+    decisions = [
+        maturity_decision(definition, evidence=evidence, records=records)
+        for definition in selected
+    ]
     by_maturity = Counter(decision.maturity.value for decision in decisions)
     live_verified = sorted(decision.fault_id for decision in decisions if decision.live_verified)
     return {
@@ -507,8 +580,11 @@ def build_coverage(
         "by_maturity": dict(sorted(by_maturity.items())),
         "verified_live": len(live_verified),
         "verified_live_faults": live_verified,
-        "live_evidence_records": len(evidence) if evidence is not None else 0,
+"live_evidence_records": len(evidence) if evidence is not None else 0,
         "maturity_disclaimer": Maturity_DISCLAIMER,
+        # Stated for the same reason as in build_capability_report: a maturity
+        # tally is only as meaningful as the gate that produced it.
+        "certification_gate": certification_gate_state(records),
         "catalog_only": sum(definition.catalog_only for definition in selected),
         "generated_at": date(2026, 9, 24).isoformat(),
     }

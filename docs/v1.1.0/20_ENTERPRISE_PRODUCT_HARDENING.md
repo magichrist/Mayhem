@@ -71,4 +71,12 @@ Deployment guides per model, sandbox tutorial, compliance-mapping methodology (w
 ## Dependencies
 08 (platform), 09 (org model), 12 (evidence-backed reports), 14 (simulate path), 22 (coverage inputs), 29 (bundle redaction).
 
-## STATUS — planning only, 0%
+## STATUS
+- Phase 1 (domain model): DONE — `domain/deployment.py` (four deployment models, gap-77 network policy as fail-closed data, sealed execution-mode markers that make a demo run structurally unpresentable as production, validated feature flags) and `domain/failure_modes.py` (18-member taxonomy plus all 141 catalog faults mapped to failure mode/mechanism/symptom/risk/recovery/verification, test-enforced) landed with unit and negative-control tests
+- Phase 2: not started
+- Phase 3: not started
+- Phase 4: not started
+- Phase 5: not started
+- Phase 6: not started
+
+Overall: 1 of 6 phases complete.

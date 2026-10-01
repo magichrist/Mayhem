@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 ACTIVE_ROOTS = {
     "bundle",
     "campaign",
+    "certify",
     "commands",
     "completion",
     "discover",
@@ -75,6 +76,7 @@ ACTIVE_GROUP_PATHS = {
         "checkpoint",
         "resume-plan",
     ),
+    "certify": ("run", "matrix"),
     "commands": ("show",),
     "discover": ("topology", "faults", "capabilities", "engines"),
     "experiment": ("show", "validate", "explore", "compose", "check-scenario"),

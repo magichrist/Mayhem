@@ -576,3 +576,49 @@ def test_evidence_store_starts_empty_and_grows_only_by_recording() -> None:
     assert not EvidenceStore()
     assert len(EvidenceStore()) == 0
     assert EvidenceStore().fault_ids() == frozenset()
+
+
+# --- the certification gate must not be silently disarmed ---------------------
+
+
+def test_a_report_states_whether_the_certification_gate_was_consulted() -> None:
+    """The omission is loud, not silent.
+
+    ``maturity_decision`` takes ``records=None`` by default because the
+    dashboard is a read-time path with no store handle. That default preserves
+    1.0.0 behaviour, but it also means a report can show a level the
+    certification store would contradict — so every payload that carries
+    maturity says which of the three states produced it.
+    """
+    assert catalog_report.certification_gate_state(None) == "not-consulted"
+    assert catalog_report.certification_gate_state({}) == "asserted-empty"
+    assert catalog_report.certification_gate_state({"proc.pause": ()}) == "armed"
+
+    assert catalog_report.build_capability_report()["certification_gate"] == "not-consulted"
+    assert catalog_report.build_capability_report(records={})["certification_gate"] == (
+        "asserted-empty"
+    )
+    assert catalog_report.build_capability_report(records={"x": ()})["certification_gate"] == (
+        "armed"
+    )
+    assert catalog_report.build_coverage()["certification_gate"] == "not-consulted"
+    assert catalog_report.build_coverage(records={})["certification_gate"] == "asserted-empty"
+
+
+def test_an_armed_empty_gate_never_reports_above_verified_unit() -> None:
+    """The safety property: an assertion that nothing is certified caps the level.
+
+    ``records={}`` says "I consulted certification and there is none". That must
+    not be confused with ``records=None``, which says "this report does not use
+    certification" and preserves the 1.0.0 levels.
+    """
+    allowed = MaturityLevel.at_or_below(MaturityLevel.VERIFIED_UNIT)
+    for definition in all_definitions():
+        uncapped = catalog_report.maturity_decision(definition)
+        capped = catalog_report.maturity_decision(definition, records={})
+        assert capped.maturity in allowed, definition.id
+        # Capping can only ever lower a level, never raise one.
+        assert allowed.index(capped.maturity) <= allowed.index(
+            uncapped.maturity
+        ) or uncapped.maturity in allowed, definition.id
+        assert capped.live_verified is False, definition.id
