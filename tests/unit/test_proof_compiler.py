@@ -26,13 +26,24 @@ Three groups of tests:
 
 from __future__ import annotations
 
+import ast
 import re
-from typing import Any
+from dataclasses import replace as dataclass_replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from mayhem.config import PolicyCfg
 from mayhem.controller import safety_proof as compiler
+from mayhem.controller.approval_gate import (
+    RULE_APPROVAL_EXECUTOR_UNAUTHORIZED,
+    RULE_APPROVAL_PROOF_NOT_PASS,
+    RULE_APPROVAL_REQUIRED,
+    ApprovalGateInputs,
+    ApprovalLedger,
+)
 from mayhem.controller.safety import SafetyContext, SafetyRefusedError, validate_plan
 from mayhem.controller.safety_proof import (
     GATE_RULE_IDS,
@@ -55,7 +66,13 @@ from mayhem.domain.experiments import (
     Wait,
 )
 from mayhem.domain.hashing import digest as digest_of
-from mayhem.domain.identity import RuntimeIdentity
+from mayhem.domain.identity import (
+    EnvironmentScope,
+    Principal,
+    Role,
+    RoleGrant,
+    RuntimeIdentity,
+)
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.prediction import (
     RULE_MAX_CONCURRENT_FAULTS,
@@ -91,6 +108,9 @@ from mayhem.domain.topology import (
     TopologyGraph,
 )
 from mayhem.topology.providers.base import PartialGraph
+
+if TYPE_CHECKING:
+    from mayhem.domain.approval import Approval
 
 FP = "f" * 64
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -164,12 +184,14 @@ def _ctx(
     budget: BlastRadiusBudget | None = None,
     quota: DamageQuota | None = None,
     policy: PolicyCfg | None = None,
+    approval_gate: ApprovalGateInputs | None = None,
 ) -> SafetyContext:
     return SafetyContext(
         policy=policy or PolicyCfg(),
         budget=budget or _permissive(),
         fingerprint=FP,
         damage_quota=quota or DamageQuota(),
+        approval_gate=approval_gate,
     )
 
 
@@ -791,6 +813,335 @@ def test_every_rule_the_compiler_can_blame_is_owned_by_a_line():
     """The unmapped-refusal escape hatch has to stay shut for known rules."""
     for rule in sorted(GATE_RULE_IDS):
         assert OBLIGATION_FOR_RULE.get(rule), rule
+
+
+# --------------------------------------------------------------------------------
+# rule-mapping completeness, by reading the gates' own source
+# --------------------------------------------------------------------------------
+#
+# The test above checks the rules the compiler *knows about*. This one checks the
+# rules the gates actually *raise*, by parsing the two modules that raise them —
+# `controller/safety.py` (authoritative) and `controller/approval_gate.py` (plan
+# 09). A gate that grows a new refusal and nobody maps it is then a *test
+# failure naming the rule*, not a silent VOID at run time.
+#
+# Phase 4 exists because this exact check was missing: the approval gate's three
+# refusal ids were unmapped for two phases, so an approval-refused run compiled
+# to a VOID proof naming a rule nobody owned. The check below would have caught
+# it the day the gate landed.
+
+#: The modules whose rule ids the compiler has to be able to place. Both are read
+#: as *source*, not as data: there is no registry to forget to update.
+BLAMEABLE_SOURCES: tuple[str, ...] = (
+    "src/mayhem/controller/safety.py",
+    "src/mayhem/controller/approval_gate.py",
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _literal(node: ast.expr) -> str | None:
+    """The string a node spells, or ``None`` when it is not a plain literal."""
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _module_string_constants(source: str) -> dict[str, str]:
+    """Module-level ``NAME = "literal"`` assignments, as a name->value map."""
+    constants: dict[str, str] = {}
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            continue
+        value = _literal(node.value)
+        if value is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                constants[target.id] = value
+    return constants
+
+
+def blameable_rule_ids(source: str) -> frozenset[str]:
+    """Every rule id ``source`` can refuse a plan on.
+
+    Three syntactic sites, each of which is a refusal in the code's own words:
+
+    * ``_deny_decision("rule", ...)`` — the deny-decision factory both modules
+      build their refusals through, so its first argument *is* the rule id the
+      decision records;
+    * ``SafetyRefusedError("rule", ...)`` raised **without** a decision — then
+      the reason code is the rule id, because there is no decision to read one
+      from (with a decision attached, the compiler reads ``decision.rule_id``,
+      which site one already covers);
+    * ``ApprovalRefusal(rule_id=RULE_X, ...)`` where ``RULE_X`` is a module-level
+      string constant — how the plan-09 gate names its three refusals.
+
+    Anything not a plain literal is deliberately *not* resolved (a name defined
+    elsewhere, a computed string): those are the dynamic cases the compiler
+    handles by kind rather than by enumeration, and inventing a value for them
+    would make this test assert something the gate never raises.
+    """
+    constants = _module_string_constants(source)
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else None
+        if node.func.__class__.__name__ == "Attribute":
+            name = node.func.attr
+        if name == "_deny_decision" and node.args:
+            literal = _literal(node.args[0])
+            if literal is not None:
+                found.add(literal)
+        elif name == "SafetyRefusedError" and node.args:
+            attaches_decision = len(node.args) >= 3 or any(
+                kw.arg == "decision" for kw in node.keywords
+            )
+            literal = _literal(node.args[0])
+            if literal is not None and not attaches_decision:
+                found.add(literal)
+        elif name == "ApprovalRefusal":
+            for keyword in node.keywords:
+                if keyword.arg != "rule_id" or not isinstance(keyword.value, ast.Name):
+                    continue
+                resolved = constants.get(keyword.value.id)
+                if resolved is not None:
+                    found.add(resolved)
+    return frozenset(found)
+
+
+def _blameable_rule_ids() -> frozenset[str]:
+    """The union across both gate modules."""
+    found: set[str] = set()
+    for relative in BLAMEABLE_SOURCES:
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        found |= blameable_rule_ids(source)
+    return frozenset(found)
+
+
+def test_the_rule_extractor_actually_finds_the_gates_own_rules():
+    """The guard is only worth what its extractor finds.
+
+    Without this, a broken extractor would make every completeness test below
+    pass vacuously — which is the exact failure mode a coverage test is supposed
+    to prevent. It asserts against spelled-out rules from each module rather than
+    a count, so it fails if the extractor goes quiet on either file.
+    """
+    safety = blameable_rule_ids((REPO_ROOT / BLAMEABLE_SOURCES[0]).read_text(encoding="utf-8"))
+    approval = blameable_rule_ids((REPO_ROOT / BLAMEABLE_SOURCES[1]).read_text(encoding="utf-8"))
+
+    # Spelled out, not derived from the same table the tests below check.
+    assert "policy.deny_faults" in safety
+    assert "blast_radius.max_hosts" in safety
+    assert "k8s.unsupported" in safety
+    assert RULE_APPROVAL_EXECUTOR_UNAUTHORIZED in approval
+    assert RULE_APPROVAL_PROOF_NOT_PASS in approval
+    assert RULE_APPROVAL_REQUIRED in approval
+
+
+def test_every_rule_the_gates_can_raise_has_an_owning_proof_line():
+    """The completeness guard: each gate's refusals land on a named line.
+
+    This is the assertion the missing approval-gate mapping violated. Read from
+    the gates' own source, so a refusal added tomorrow without a mapping fails
+    here by name — before any run compiles to an unplaceable VOID.
+    """
+    unmapped = sorted(rule for rule in _blameable_rule_ids() if not OBLIGATION_FOR_RULE.get(rule))
+
+    assert not unmapped, (
+        "these rule ids are raised by a gate but no proof line owns them, so a refusal on "
+        f"any of them compiles to a VOID proof naming a rule this compiler cannot place: "
+        f"{unmapped}. Add each to OBLIGATION_FOR_RULE (and to "
+        "controller.check_gate.RULE_CHECK, which must cover the same set)"
+    )
+
+
+def test_the_completeness_check_fails_on_a_newly_added_unmapped_rule():
+    """The negative control: the guard is a real gate, not a tautology.
+
+    Parses a synthetic gate that raises one known rule and one the table does
+    not know, and asserts the extractor surfaces the unmapped one. Without this,
+    "every rule has an owning line" could pass because the extractor found
+    nothing at all — and the next lane would repeat the gap this phase closed.
+    """
+    synthetic = '''
+def _new_gate_check(ctx):
+    _deny_decision(
+        "policy.deny_faults",
+        {"fault_id": fault_id},
+        "already mapped",
+        "",
+    )
+    raise SafetyRefusedError("brand.new.unmapped.rule", "a gate grew a new refusal")
+'''
+
+    found = blameable_rule_ids(synthetic)
+
+    assert "brand.new.unmapped.rule" in found
+    unmapped = sorted(rule for rule in found if not OBLIGATION_FOR_RULE.get(rule))
+    assert unmapped == ["brand.new.unmapped.rule"], (
+        "the extractor must classify the new rule as unowned, or the completeness test "
+        f"above cannot fail: got {unmapped}"
+    )
+
+
+def test_the_approval_gate_refusals_are_owned_by_the_approvals_line():
+    """The gap this phase closed, asserted directly.
+
+    All three plan-09 refusals are statements about whether *this run* was
+    authorised, so they belong to ``required_approvals``. Unmapped, an
+    approval-refused run compiled to a VOID proof naming an unplaceable rule —
+    fail-closed, but strictly worse than the FAIL the line can now report.
+    """
+    for rule in (
+        RULE_APPROVAL_EXECUTOR_UNAUTHORIZED,
+        RULE_APPROVAL_PROOF_NOT_PASS,
+        RULE_APPROVAL_REQUIRED,
+    ):
+        assert OBLIGATION_FOR_RULE[rule] == ObligationName.REQUIRED_APPROVALS.value, rule
+
+
+def test_an_approval_refused_run_fails_the_approvals_line_rather_than_voiding():
+    """The honest answer is a FAIL on the line, not a whole-proof VOID.
+
+    Phase 3's author recorded this as "fail-closed and by that module's own
+    design", which was true but left the gate's finding unreportable. With the
+    mapping in place the refusal is attributable, so the proof is FAIL — a
+    finding about this plan — and the rule is named in the line's own detail.
+    """
+    plan = _plan()
+    proof = compile_safety_proof(
+        plan,
+        _graph(),
+        _ctx(approval_gate=_refusing_gate(plan)),
+        adapter=_Adapter(),
+    )
+
+    line = proof.obligation(ObligationName.REQUIRED_APPROVALS.value)
+    assert line is not None
+    assert line.status is ObligationStatus.FAIL
+    assert RULE_APPROVAL_REQUIRED in line.detail
+    assert proof.verdict is ProofVerdict.FAIL
+    assert proof.void_reason == ""
+
+
+def test_a_configured_approval_gate_that_allows_reports_its_decision_on_the_line():
+    """The positive half: the line reads the approval *state*, not just the rule.
+
+    Phase 4's requirement is that ``required_approvals`` actually reads the
+    approval state. A refusal proves it is wired; this proves the reading is not
+    merely a refusal path — an allowed gate contributes its verdict and its
+    approvers to the line's cited output, so the artifact says who authorised
+    the run and not merely that nobody objected.
+    """
+    plan = _plan()
+    gate = _refusing_gate(plan)
+    approval, approve_grant = _mint_approval(gate.proof, gate)
+    allowed = dataclass_replace(
+        gate, approvals=(approval,), grants=(*gate.grants, approve_grant)
+    )
+
+    proof = compile_safety_proof(
+        plan,
+        _graph(),
+        _ctx(approval_gate=allowed),
+        adapter=_Adapter(),
+    )
+
+    line = proof.obligation(ObligationName.REQUIRED_APPROVALS.value)
+    assert line is not None
+    assert line.status is ObligationStatus.PASS
+    assert "the approval gate authorized plan" in line.detail
+    assert "u-approve" in line.detail
+
+
+def _mint_approval(proof: SafetyProof, gate: ApprovalGateInputs) -> tuple[Approval, RoleGrant]:
+    """One approval bound to ``proof``, minted through the plan-09 service.
+
+    Through :meth:`ApprovalLedger.mint` rather than the constructor, so the
+    minting path is on the path under test. The ``APPROVE`` grant it needs is
+    returned alongside the approval because the gate reads its grants from
+    ``ApprovalGateInputs`` — minting against a grant the gate cannot see would
+    make the approval look unauthorized at admission, which is a different test.
+    """
+    approver = Principal(principal_id="u-approve")
+    approve_grant = RoleGrant(
+        role=Role.APPROVE,
+        scope=EnvironmentScope(environment="production"),
+        granted_at=datetime(2026, 2, 28, tzinfo=UTC),
+        principal=approver,
+    )
+    ledger = ApprovalLedger(grants=(*gate.grants, approve_grant))
+    approval = ledger.mint(
+        approval_id="a-proof1",
+        proof=proof,
+        policy_digest=gate.policy_digest,
+        approver=approver,
+        environment=EnvironmentScope(environment="production"),
+        now=gate.now,
+    ).approvals[-1]
+    return approval, approve_grant
+
+
+def test_the_approvals_line_cites_the_approval_state_it_read():
+    """The reading is in the citation, so it is evidence rather than prose.
+
+    The line's own output must carry the gate's decision — ``configured``, the
+    verdict payload, and the refusal rule ids — because a rendered proof that
+    only said "approvals fine" would be a claim with nothing behind it, which is
+    the failure Phase 1's forged-PASS guard exists to prevent.
+    """
+    plan = _plan()
+    proof = compile_safety_proof(
+        plan,
+        _graph(),
+        _ctx(approval_gate=_refusing_gate(plan)),
+        adapter=_Adapter(),
+    )
+
+    line = proof.obligation(ObligationName.REQUIRED_APPROVALS.value)
+    assert line is not None
+    assert SHA256_HEX.fullmatch(line.gate_digest)
+    assert "verify_approvals" in line.evidence_ref
+
+
+def _refusing_gate(plan: ExecutionPlan) -> ApprovalGateInputs:
+    """An approval gate configured with no approvals, so it refuses on the quorum.
+
+    The gate's own proof is a PASS over *this* plan's digest. That matters: the
+    gate checks the proof before the approvals, so a proof that did not match
+    would make ``approval.proof_not_pass`` fire first and mask the quorum
+    refusal this test is about.
+    """
+    obligations = tuple(
+        Obligation(
+            name=name.value,
+            status=ObligationStatus.PASS,
+            gate_digest=digest_of({"gate": name.value}),
+            evidence_ref=f"evidence://{name.value}",
+        )
+        for name in ObligationName
+    )
+    proof = SafetyProof(
+        plan_digest=canonical_plan_digest(plan),
+        obligations=obligations,
+        verdict=ProofVerdict.PASS,
+    )
+    return ApprovalGateInputs(
+        now=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        environment=EnvironmentScope(environment="production"),
+        executor=Principal(principal_id="u-exec"),
+        proof=proof,
+        policy_digest=digest_of({"bundle": "test"}),
+        approvals=(),
+        grants=(
+            RoleGrant(
+                role=Role.EXECUTE,
+                scope=EnvironmentScope(environment="production"),
+                granted_at=datetime(2026, 2, 28, tzinfo=UTC),
+                principal=Principal(principal_id="u-exec"),
+            ),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------------

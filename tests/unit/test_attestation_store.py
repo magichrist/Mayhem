@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
+from mayhem.domain.approval import ApprovalState
 from mayhem.domain.attestation import (
     GENESIS_DIGEST,
     AttestedEvent,
@@ -27,12 +28,15 @@ from mayhem.domain.attestation import (
     seal_events,
 )
 from mayhem.domain.evidence import EvidenceEnvelope
+from mayhem.domain.policy import PolicyDecision
 from mayhem.infra.attestation_store import (
     SIGNATURE_UNSIGNED_NO_SIGNING,
     UNSIGNED_REASON_NO_SIGNING,
     AttestationError,
     AttestationRepository,
+    AuthorizationMismatchError,
     EvidenceNotAttestableError,
+    RunAuthorization,
     SigningNotImplementedError,
     seal_run_evidence,
 )
@@ -531,3 +535,217 @@ def test_blank_run_id_cannot_become_an_attested_event(tmp_path: Path) -> None:
 
     assert AttestationRepository(store).load_chain("run-blank") == ()
     store.close()
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 — authorization sealed into the chain, and chain completeness          #
+# --------------------------------------------------------------------------- #
+
+
+def authorization(plan_digest: str = "1" * 64) -> RunAuthorization:
+    """A passing policy decision plus the approval state that consumed it."""
+    return RunAuthorization(
+        policy_decision=PolicyDecision(
+            outcome="allow",
+            reasons=("production permits this fault family",),
+            matched_rules=("prod.family.allow",),
+            bundle_id="production",
+            bundle_version=2,
+            rule_digest="2" * 64,
+            policy_digest="3" * 64,
+            facts_digest="4" * 64,
+        ),
+        approval_state=ApprovalState(valid=True, approvers=("ana",), required=1),
+        plan_digest=plan_digest,
+        proof_digest="5" * 64,
+    )
+
+
+def mutating_envelope(run_id: str = "run-1") -> EvidenceEnvelope:
+    """A read-only envelope plus the two facts that make the run mutating."""
+    return make_envelope(
+        run_id,
+        plan_hash="1" * 64,
+        action_outcomes=("applied",),
+        execution_intent={"actor": "ana"},
+    )
+
+
+def test_seal_with_authorization_persists_four_events_and_one_manifest(tmp_path: Path) -> None:
+    """The persisted chain carries the artifacts, and reloads them intact."""
+    store = open_store(tmp_path)
+    sealed = seal_run_evidence(
+        store,
+        mutating_envelope(),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        created_at=READING,
+        manifest_id="run-1:manifest",
+        authorization=authorization(),
+    )
+
+    assert [event.event_kind for event in sealed.events] == [
+        "evidence.recorded",
+        "policy.decided",
+        "approval.evaluated",
+        "run.closed",
+    ]
+    assert sealed.completeness is not None
+    assert sealed.completeness.complete is True
+    store.close()
+
+    reopened = Store(tmp_path / "mayhem.db")
+    repository = AttestationRepository(reopened)
+    reloaded = repository.load_chain("run-1")
+
+    assert [event.to_dict() for event in reloaded] == [e.to_dict() for e in sealed.events]
+    assert repository.verify_run_chain("run-1").valid
+    completeness = repository.verify_run_completeness("run-1")
+    assert completeness.complete is True
+    assert completeness.missing == ()
+    assert completeness.plan_digest == "1" * 64
+    reopened.close()
+
+
+def test_the_authorization_digests_are_the_chain_inputs(tmp_path: Path) -> None:
+    """09/07 digests enter the chain, and the domain objects are not copied."""
+    store = open_store(tmp_path)
+    record = authorization()
+    sealed = seal_run_evidence(
+        store,
+        mutating_envelope(),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        manifest_id="run-1:manifest",
+        authorization=record,
+    )
+    payload = sealed.events[1].payload
+
+    assert payload["decision_digest"] == record.policy_decision.decision_digest()
+    assert payload["approval_state_digest"] == record.approval_state_digest()
+    assert payload["policy_digest"] == "3" * 64
+    assert payload["approval_proof_digest"] == "5" * 64
+    # The decision is referenced by digest, not vendored: its full rule dump is
+    # not inlined, only what an operator reads.
+    assert "predicate" not in payload
+    assert "discarded" not in payload
+    store.close()
+
+
+def test_seal_refuses_an_approval_bound_to_a_different_plan(tmp_path: Path) -> None:
+    """An approval for one plan does not authorize another — and says so loudly."""
+    store = open_store(tmp_path)
+
+    with pytest.raises(AuthorizationMismatchError, match="does not authorize another"):
+        seal_run_evidence(
+            store,
+            mutating_envelope(),
+            run_status="completed",
+            verdict="pass",
+            recorded_at=READING,
+            manifest_id="run-1:manifest",
+            authorization=authorization(plan_digest="9" * 64),
+        )
+
+    assert store.query("SELECT COUNT(*) AS n FROM attestation_events")[0]["n"] == 0
+    assert store.query("SELECT COUNT(*) AS n FROM attestation_manifests")[0]["n"] == 0
+    store.close()
+
+
+def test_a_mutating_run_with_no_authorization_is_persisted_but_incomplete(
+    tmp_path: Path,
+) -> None:
+    """The load-bearing Phase 4 assertion: sealed, and honestly incomplete.
+
+    Not refused. A run's evidence has to survive even when the evidence about how
+    it was authorized did not, and a chain that verifies while carrying no
+    explanation of its own authorization is the failure this closes.
+    """
+    store = open_store(tmp_path)
+    sealed = seal_run_evidence(
+        store,
+        mutating_envelope(),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        manifest_id="run-1:manifest",
+    )
+
+    assert sealed.chain_verification.valid
+    assert sealed.completeness is not None
+    assert sealed.completeness.mutating is True
+    assert sealed.completeness.complete is False
+    assert sealed.complete is False
+    assert sealed.completeness.missing == ("policy.decided", "approval.evaluated")
+    store.close()
+
+    reopened = Store(tmp_path / "mayhem.db")
+    completeness = AttestationRepository(reopened).verify_run_completeness("run-1")
+    assert completeness.complete is False
+    assert AttestationRepository(reopened).verify_run_chain("run-1").valid
+    reopened.close()
+
+
+def test_a_read_only_run_is_complete_without_any_authorization(tmp_path: Path) -> None:
+    """Nothing changed, so there is nothing to justify. Reported, not implied."""
+    store = open_store(tmp_path)
+    sealed = seal(store)
+
+    assert sealed.completeness is not None
+    assert sealed.completeness.mutating is False
+    assert sealed.completeness.complete is True
+    assert "read-only" in sealed.completeness.errors[0]
+    store.close()
+
+
+def test_completeness_does_not_make_an_unsigned_manifest_signed(tmp_path: Path) -> None:
+    """The two axes are independent: complete is not the same as authenticated."""
+    store = open_store(tmp_path)
+    sealed = seal_run_evidence(
+        store,
+        mutating_envelope(),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        manifest_id="run-1:manifest",
+        authorization=authorization(),
+    )
+
+    assert sealed.completeness is not None and sealed.completeness.complete is True
+    assert sealed.signed is False
+    assert sealed.signature_state == SIGNATURE_UNSIGNED_NO_SIGNING
+    assert any("authorship is not" in w for w in sealed.manifest_verification.warnings)
+    store.close()
+
+
+def test_the_seal_stays_deterministic_with_the_same_authorization(tmp_path: Path) -> None:
+    """Two stores, one reading, one authorization: the same chain root."""
+    first_store = open_store(tmp_path / "a")
+    first = seal_run_evidence(
+        first_store,
+        mutating_envelope("run-dup"),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        created_at=READING,
+        manifest_id="run-dup:manifest",
+        authorization=authorization(),
+    )
+    first_store.close()
+    second_store = open_store(tmp_path / "b")
+    second = seal_run_evidence(
+        second_store,
+        mutating_envelope("run-dup"),
+        run_status="completed",
+        verdict="pass",
+        recorded_at=READING,
+        created_at=READING,
+        manifest_id="run-dup:manifest",
+        authorization=authorization(),
+    )
+    second_store.close()
+
+    assert first.chain_root == second.chain_root
+    assert first.manifest.manifest_digest == second.manifest.manifest_digest

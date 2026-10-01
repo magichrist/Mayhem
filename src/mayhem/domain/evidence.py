@@ -1,9 +1,29 @@
+"""The evidence envelope: the artifact a reviewer reads, and its one hard rule.
+
+Plan 29 Phase 4's boundary. An :class:`EvidenceEnvelope` is the only shape
+Mayhem hands to a human, a reviewer tool, or a downstream system, so it is the
+narrowest place to say what may never be inside one: a field graded ``secret``
+in :data:`mayhem.domain.secrets.EVIDENCE_FIELD_CLASSIFICATIONS`. The rule lives
+here, in the domain, as a pure predicate over the envelope's own payload —
+:func:`require_persistable_envelope` — because a rule that needed IO to state
+could not be checked from the type, and a rule that needed a resolved value to
+state would only protect the runs that happened to resolve one.
+
+What this module deliberately does *not* do is catch a value planted under a
+field name nobody graded. That is a byte scan, it needs the value the run
+actually resolved, and it therefore lives in
+:mod:`mayhem.infra.secret_resolver`, which is also where every write path calls
+it. The two rules compose at the write boundary and neither subsumes the other.
+"""
+
 from __future__ import annotations
 
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from mayhem.domain.secrets import EVIDENCE_FIELD_CLASSIFICATIONS
 
 
 class ActionOutcome(StrEnum):
@@ -87,3 +107,25 @@ class EvidenceEnvelope(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+
+def require_persistable_envelope(envelope: EvidenceEnvelope, *, artifact: str = "evidence") -> None:
+    """Refuse an envelope carrying a field graded ``secret``, or return.
+
+    Pure and IO-free, so it is callable from the domain and from any write path
+    without dragging the engine in. The walk is recursive and name-based, which
+    is exactly :meth:`FieldClassifications.find_forbidden`'s contract: a
+    ``resolved_credentials`` key nested inside one step report is refused for the
+    same reason a top-level one is.
+
+    This is the *structural* half of the boundary — it needs no run state, so it
+    holds on a run that resolved nothing. The byte half, which catches a value
+    under an ungraded field name, is
+    :func:`mayhem.infra.secret_resolver.require_envelope_boundary`.
+
+    Raises:
+        InvariantViolationError: With
+            ``mayhem.domain.secrets.REFUSAL_SECRET_FIELD_PERSISTED`` and every
+            offending path named.
+    """
+    EVIDENCE_FIELD_CLASSIFICATIONS.require_persistable(envelope.to_dict(), path=artifact)

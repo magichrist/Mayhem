@@ -55,6 +55,30 @@ scans artifact *bytes* for values the run actually resolved. Name-based
 redaction cannot be the primary defence — it triggers on how a field is
 *called*, so a value written under ``detail`` or embedded in a provider's stderr
 survives it — which is exactly why ``redact`` is backup and not policy.
+
+## Phase 4: why the guard cannot be skipped
+
+A guard that a caller may decline to call is documentation. So from Phase 4 the
+boundary is not "call :meth:`SecretLeakGuard.require_clean_envelope` before you
+write" — it is **two rules with no opt-out parameter**, reachable from a single
+module and invoked by the write paths themselves:
+
+* **The grade rule is stateless.** :func:`require_persistable_document` calls
+  :meth:`FieldClassifications.require_persistable` on every document it is
+  handed, always, whether or not a run ever resolved anything. It needs no
+  registry, no configuration and no run state, so there is nothing a caller can
+  leave unset to switch it off.
+* **The byte rule is ambient.** A :class:`SecretLeakGuard` made active by
+  :func:`guard_evidence_writes` is consulted by *every* artifact write in the
+  process, including from threads the caller did not spawn on the guard's
+  thread. The registry is a lock-guarded set rather than a
+  :class:`~contextvars.ContextVar` precisely because a security gate should fail
+  closed in a worker thread, not silently fall back to "no needles registered".
+
+The registry is the *only* optional part, and it is optional in the safe
+direction: no active guard means no resolved value exists for the run to leak,
+because a value can only enter the process through :meth:`SecretResolver.resolve`
+and that is what registers the needles.
 """
 
 from __future__ import annotations
@@ -62,6 +86,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -70,6 +95,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.evidence import require_persistable_envelope
 from mayhem.domain.secrets import (
     EVIDENCE_FIELD_CLASSIFICATIONS,
     CredentialRef,
@@ -489,8 +515,28 @@ class SecretGrantRepository:
         self._store = store
 
     def save(self, grant: SecretGrant) -> None:
-        """Insert or replace one grant record."""
+        """Insert or replace one grant record.
+
+        Gated like every other store write: the schema has no column a value
+        could occupy, but the *contents* of a column are still caller-supplied
+        strings, and ``environments=("vault-value-9f3c-...",)`` is a refusal this
+        module can make cheaply. Without the gate the guarantee would be "no
+        column exists" plus "nobody thought of that", which is one of the two.
+        """
         issued = grant.issued_at.isoformat() if grant.issued_at else ""
+        require_persistable_document(
+            {
+                "secret_grants": {
+                    "principal": grant.principal,
+                    "credential_pattern": grant.credential_pattern,
+                    "environments_json": json.dumps(list(grant.environments)),
+                    "scopes_json": json.dumps(list(grant.scopes)),
+                    "expires_at": grant.expires_at.isoformat(),
+                    "issued_at": issued,
+                }
+            },
+            artifact="store:secret_grants",
+        )
         with self._store.write() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO secret_grants "
@@ -902,3 +948,131 @@ def require_clean_bundle(
     returning a verdict, because every caller of this is a gate, not a report.
     """
     return guard.require_clean_tree(bundle_directory, artifact="bundle")
+
+
+# --- Phase 4: the ambient enforcement boundary ---------------------------------
+#
+# The write paths in ``infra.evidence``, ``infra.report`` and
+# ``infra.evidence_bundle_io`` do not take a guard argument and do not read
+# configuration: they call the four functions below. That is the whole
+# enforcement story, and it is worth stating plainly why it is shaped this way.
+#
+# A caller-supplied guard is skippable — the caller holds the guard, so the
+# caller decides whether to pass it, and every new call site repeats the
+# decision. An ambient registry inverts that: the guard is *registered by the
+# thing that resolved the value*, and the write path consults it whether or not
+# anybody thought to mention it. The grade rule needs no registration at all, so
+# even a run that never resolves a credential still cannot persist a field
+# graded ``secret``.
+
+# The registry is process-wide rather than a :class:`~contextvars.ContextVar`
+# because a fault executed on a worker thread writes its evidence from that
+# thread, and a guard scoped to the resolving thread would not be consulted
+# there. Failing closed — scanning too much — is the correct bias for a leak
+# gate, so the set is shared and lock-guarded rather than thread-local.
+_ACTIVE_GUARDS: list[SecretLeakGuard] = []
+_ACTIVE_LOCK = threading.RLock()
+
+
+@contextmanager
+def guard_evidence_writes(guard: SecretLeakGuard) -> Iterator[SecretLeakGuard]:
+    """Make ``guard`` apply to every evidence write in this process.
+
+    Intended use is ``with``::
+
+        with guard_evidence_writes(guard):
+            envelope = build_evidence(...)
+
+    The needles themselves are zeroed by :meth:`SecretLeakGuard.release`; this
+    scope only decides *when* the guard is consulted.
+    """
+    with _ACTIVE_LOCK:
+        if guard not in _ACTIVE_GUARDS:
+            _ACTIVE_GUARDS.append(guard)
+    try:
+        yield guard
+    finally:
+        # Unconditional, including when the block raises: a registry entry left
+        # behind is process-global state that outlives the run that created it.
+        with _ACTIVE_LOCK:
+            if guard in _ACTIVE_GUARDS:
+                _ACTIVE_GUARDS.remove(guard)
+
+
+def active_guards() -> tuple[SecretLeakGuard, ...]:
+    """Every guard currently applying to evidence writes, in registration order."""
+    with _ACTIVE_LOCK:
+        return tuple(_ACTIVE_GUARDS)
+
+
+def require_clean_artifact(payload: bytes | str, *, artifact: str) -> None:
+    """Refuse ``payload`` when any active guard's needle appears in it.
+
+    The byte rule on its own, for surfaces that are already strings or bytes —
+    a rendered report file, a bundle file's contents, a log line.
+
+    Raises:
+        InvariantViolationError: With
+            :data:`REFUSAL_SECRET_BYTES_IN_ARTIFACT`, naming the artifact and the
+            offsets. Never the value.
+    """
+    for guard in active_guards():
+        guard.require_clean_bytes(payload, artifact=artifact)
+
+
+def require_persistable_document(document: Any, *, artifact: str) -> None:
+    """The gate every evidence write path calls. Two rules, no opt-out.
+
+    The grade rule runs first and unconditionally: a field name graded ``secret``
+    is refused whatever produced it, whether or not this run resolved anything.
+    The byte rule runs second and only for guards that are active, because it is
+    the only one that needs run state.
+
+    Splitting them this way is deliberate. A single "check the guard" call would
+    be vacuous with no guard registered; a single name-based check would miss a
+    value planted under ``detail``. Keeping both means the cheap structural rule
+    is always on and the expensive value rule is on whenever there is a value to
+    look for.
+
+    Raises:
+        InvariantViolationError: With
+            ``mayhem.domain.secrets.REFUSAL_SECRET_FIELD_PERSISTED`` when a field
+            is graded ``secret``, or :data:`REFUSAL_SECRET_BYTES_IN_ARTIFACT` when
+            a resolved value is present in the serialised document.
+    """
+    EVIDENCE_FIELD_CLASSIFICATIONS.require_persistable(document, path=artifact)
+    guards = active_guards()
+    if not guards:
+        return
+    serialised = json.dumps(document, sort_keys=True, default=str)
+    for guard in guards:
+        guard.require_clean_bytes(serialised, artifact=artifact)
+
+
+def require_envelope_boundary(envelope: EvidenceEnvelope, *, artifact: str = "evidence") -> None:
+    """The envelope write gate: grade the fields, then scan the exact bytes.
+
+    The bytes scanned are the ones that reach disk — pydantic's own JSON — not
+    a re-serialisation of a dict, because a gate that scans a different rendering
+    than the writer emits is a gate on the wrong artifact.
+
+    Raises:
+        InvariantViolationError: With
+            ``mayhem.domain.secrets.REFUSAL_SECRET_FIELD_PERSISTED`` or
+            :data:`REFUSAL_SECRET_BYTES_IN_ARTIFACT`.
+    """
+    require_persistable_envelope(envelope, artifact=artifact)
+    require_clean_artifact(envelope.model_dump_json(), artifact=artifact)
+
+
+def require_clean_log_line(line: str, *, event: str) -> None:
+    """The log boundary: refuse a log line carrying a resolved value.
+
+    Name-based redaction is not consulted here and must not be: ``redact`` fires
+    on how a field is named, so it cannot see a value a caller interpolated into
+    a message it composed. This gate is the one that can.
+
+    Raises:
+        InvariantViolationError: With :data:`REFUSAL_SECRET_BYTES_IN_ARTIFACT`.
+    """
+    require_clean_artifact(line, artifact=f"log:{event}")

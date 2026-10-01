@@ -33,6 +33,16 @@ per-obligation probes in :func:`_blast_probe` and :func:`_admission_probe` run
 the same gate functions the authoritative pass runs, on the same inputs, for
 attribution and for the numbers a line reports — not to re-derive the verdict.
 
+**Phase 4 added the plan-09 approval gate to both halves.** Its three refusal
+rule ids were unmapped until then, so a run the approval gate refused compiled
+to a whole-proof ``VOID`` naming a rule no line owned — fail-closed, but a
+finding the artifact could not report. They now map to
+:data:`ObligationName.REQUIRED_APPROVALS`, and :func:`_approval_probe` reads the
+gate's actual verdict into that line rather than only restating what an approval
+would have to say. ``tests/unit/test_proof_compiler.py`` parses this module and
+``controller/approval_gate.py`` and asserts every rule either can raise is owned
+by a line, so the next lane's unmapped refusal fails a test by name instead.
+
 ## Why the probes clone the context
 
 :func:`mayhem.controller.safety.validate_plan` and
@@ -100,7 +110,10 @@ obligation                    gates that feed it
                               :class:`~mayhem.domain.observations.SloCriterion`
 ``required_approvals``        the plan-07 gate's ``required_approvals`` (or the
                               critical-fault triple opt-in when no bundle is
-                              configured), plus
+                              configured), the plan-09
+                              :func:`~mayhem.controller.approval_gate.verify_approvals`
+                              verdict when ``SafetyContext.approval_gate`` is
+                              configured (Phase 4), plus
                               :func:`mayhem.domain.execution_intent.require_execution_intent`
                               when an :class:`~mayhem.domain.execution_intent.ExecutionIntent`
                               is supplied
@@ -134,6 +147,13 @@ the verdict is recomputed from all nine.
   ("nothing to check") rather than a vacuous pass. Refusing more than the gate is
   permitted by the acceptance rule; claiming a pass over an empty surface is
   the thing the rule exists to prevent.
+* **Residue obligations are still generated here, not discharged.** Phase 4 put
+  the scan, the discharge, and the seal in
+  :mod:`mayhem.controller.proof_sealing`, which reads the plan-01 residue
+  vocabulary. This module still only *asserts* the per-fault lines, because
+  asserting them is a plan-time fact and discharging them is an observation about
+  a cell that ran — two different jobs, two different modules, and the import
+  direction keeps the compiler free of the store and the scan seam.
 """
 
 from __future__ import annotations
@@ -142,6 +162,14 @@ from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from typing import TYPE_CHECKING, Any
 
+from mayhem.controller.approval_gate import (
+    RULE_APPROVAL_EXECUTOR_UNAUTHORIZED,
+    RULE_APPROVAL_PROOF_NOT_PASS,
+    verify_approvals,
+)
+from mayhem.controller.approval_gate import (
+    RULE_APPROVAL_REQUIRED as APPROVAL_RULE_REQUIRED,
+)
 from mayhem.controller.plan_diff import diff_plans
 from mayhem.controller.policy_gate import (
     RULE_BUDGET_EXHAUSTED,
@@ -188,8 +216,9 @@ from mayhem.domain.safety_proof import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
+    from mayhem.controller.policy_gate import RequiredApproval
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
@@ -247,6 +276,16 @@ OBLIGATION_FOR_RULE: dict[str, str] = {
     "capability.unsupported": ObligationName.CAPABILITY_REQUIREMENTS.value,
     "execution_context.compatibility": ObligationName.CAPABILITY_REQUIREMENTS.value,
     "execution_context.refused": ObligationName.CAPABILITY_REQUIREMENTS.value,
+    # -- the plan-09 approval gate -------------------------------------------------
+    # Phase 4. All three refusals the approval gate can raise are statements about
+    # whether *this run* was authorised, so ``required_approvals`` owns all of
+    # them. They were unmapped until now, which by :func:`_blame`'s own design
+    # meant an approval-refused run compiled to a ``VOID`` proof naming the rule
+    # it could not place — fail-closed, but strictly less useful than the answer
+    # the gate itself gives, and it hid a real ``FAIL`` behind a ``VOID``.
+    RULE_APPROVAL_EXECUTOR_UNAUTHORIZED: ObligationName.REQUIRED_APPROVALS.value,
+    RULE_APPROVAL_PROOF_NOT_PASS: ObligationName.REQUIRED_APPROVALS.value,
+    APPROVAL_RULE_REQUIRED: ObligationName.REQUIRED_APPROVALS.value,
     # -- the plan-07 policy gate ---------------------------------------------------
     RULE_BUNDLE_EXPIRED: ObligationName.TARGET_POLICY.value,
     RULE_BUNDLE_DENY: ObligationName.TARGET_POLICY.value,
@@ -346,6 +385,10 @@ class _BlastProbe:
     refusals: tuple[tuple[str, str], ...] = ()  # (rule_id, reason)
     ledger: DamageLedger | None = None
     first_refused_step: int | None = None
+    #: Approval levels the plan-07 gate surfaced, carried so the approval probe
+    #: can raise the quorum the same way :func:`validate_plan` does rather than
+    #: re-deriving the requirements from a second bundle evaluation.
+    requirements: tuple[RequiredApproval, ...] = ()
 
     @property
     def rule_ids(self) -> frozenset[str]:
@@ -567,6 +610,7 @@ def _policy_probe(plan: ExecutionPlan, ctx: SafetyContext) -> _BlastProbe:
         return _BlastProbe(refusals=((_rule_of(exc), _describe(exc)),), first_refused_step=0)
     if result is None:
         return _BlastProbe()
+    requirements = tuple(result.required_approvals)
     if result.refusal is not None:
         return _BlastProbe(
             steps=(dict(result.inputs()),),
@@ -575,8 +619,49 @@ def _policy_probe(plan: ExecutionPlan, ctx: SafetyContext) -> _BlastProbe:
                 *((rule, result.refusal.reason) for rule in result.refusal.rule_ids()),
             ),
             first_refused_step=0,
+            requirements=requirements,
         )
-    return _BlastProbe(steps=(dict(result.inputs()),))
+    return _BlastProbe(steps=(dict(result.inputs()),), requirements=requirements)
+
+
+def _approval_probe(
+    plan: ExecutionPlan,
+    ctx: SafetyContext,
+    *,
+    requirements: Sequence[RequiredApproval] = (),
+) -> _BlastProbe:
+    """The plan-09 approval gate, read-only, through its own entry point.
+
+    Phase 4. :func:`mayhem.controller.approval_gate.verify_approvals` is pure —
+    ``now`` is a field on its inputs, no store is opened, and nothing is mutated —
+    so this probe runs the same gate ``validate_plan`` runs and reads the verdict
+    off the result. That is what lets the ``required_approvals`` line *read the
+    approval state* instead of only restating the requirements: with no gate
+    configured nothing was evaluated and the line says so, and with one
+    configured the refusal is reported through its own rule id (now mapped to
+    this line in :data:`OBLIGATION_FOR_RULE`) rather than arriving as an
+    unplaceable refusal that voids the whole proof.
+
+    The result is a *probe*, not a decision: it runs on the caller's own gate
+    inputs without recording anything on ``ctx``, because compiling a proof must
+    not append preview decisions to the safety record a real run is judged by.
+    """
+    inputs = ctx.approval_gate
+    if inputs is None:
+        return _BlastProbe()
+    try:
+        result = verify_approvals(plan, inputs, requirements=tuple(requirements))
+    except DomainError as exc:
+        return _BlastProbe(refusals=((_rule_of(exc), _describe(exc)),), first_refused_step=0)
+    evidence = result.evidence()
+    refusals: tuple[tuple[str, str], ...] = ()
+    if result.refusal is not None:
+        refusals = ((result.refusal.rule_id, result.refusal.reason),)
+    return _BlastProbe(
+        steps=(evidence,),
+        refusals=refusals,
+        first_refused_step=0 if refusals else None,
+    )
 
 
 def _blast_probe(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext) -> _BlastProbe:
@@ -1092,20 +1177,26 @@ def _line_required_approvals(
     ctx: SafetyContext,
     plan_digest: str,
     policy: _BlastProbe,
+    approval: _BlastProbe,
     *,
     intent: ExecutionIntent | None,
     engine: str,
     target_identity: str,
 ) -> _Line:
-    """Approval *requirements* for this plan, plus any presented intent's verdict.
+    """Approval *requirements* for this plan, the approval gate's own verdict, and
+    any presented intent's verdict.
 
     The requirements come from the plan-07 policy gate when a bundle is
     configured — the gate's own :class:`RequiredApproval` records, which are the
     levels a decision says must be approved before the plan may stand — and from
-    the critical-fault triple opt-in when it is not. The line is named
-    ``required_approvals``, not ``approved``: stating the requirement is what
-    this phase owes, and the grant itself is bound later, against the proof
-    digest.
+    the critical-fault triple opt-in when it is not.
+
+    Phase 4 adds the middle term: when ``ctx.approval_gate`` is configured, the
+    line reports the plan-09 gate's actual verdict and the sealed evidence
+    payload it produced, so ``required_approvals`` reads *the approval state*
+    rather than only restating what an approval would have to say. With no gate
+    configured nothing was evaluated, and the line says exactly that — a
+    requirement restated is not an authorization read.
     """
     try:
         gate_result = simulate_plan_policy(plan, ctx)
@@ -1114,12 +1205,14 @@ def _line_required_approvals(
     required = (
         [
             {
-                "approval_level": approval.approval_level,
-                "policy_rule_id": approval.rule_id,
-                "reason": approval.reason,
-                "remediation": approval.remediation,
+                "approval_level": approval_level.approval_level,
+                "policy_rule_id": approval_level.rule_id,
+                "reason": approval_level.reason,
+                "remediation": approval_level.remediation,
             }
-            for approval in (gate_result.required_approvals if gate_result is not None else ())
+            for approval_level in (
+                gate_result.required_approvals if gate_result is not None else ()
+            )
         ]
         if gate_result is not None
         else []
@@ -1144,9 +1237,16 @@ def _line_required_approvals(
         "intent_actor": intent.actor if intent is not None else "",
         "intent_break_glass": intent.break_glass if intent is not None else False,
         "intent_expired": intent.is_expired() if intent is not None else None,
+        # Phase 4: the approval *state*, as the plan-09 gate itself reported it.
+        # ``configured`` is separate from ``steps`` on purpose — an empty evidence
+        # list would be indistinguishable from "the gate ran and said nothing".
+        "approval_gate_configured": ctx.approval_gate is not None,
+        "approval_gate_verdict": [dict(step) for step in approval.steps],
+        "approval_gate_refusals": [rule for rule, _ in approval.refusals],
     }
     output = {
         "gate": "controller.policy_gate.required_approvals + "
+        "controller.approval_gate.verify_approvals + "
         "domain.execution_intent.require_execution_intent",
         "requirements": requirements,
         "policy_gate_recorded": [rule for rule, _ in policy.refusals],
@@ -1156,6 +1256,13 @@ def _line_required_approvals(
         if required
         else f"{len(critical)} critical fault(s) need an explicit ack: {', '.join(critical)}"
     )
+    if ctx.approval_gate is not None:
+        return _approval_line(
+            output=output,
+            approval=approval,
+            wanted=wanted,
+            plan_digest=plan_digest,
+        )
     if intent is None:
         return _Line(
             name=ObligationName.REQUIRED_APPROVALS.value,
@@ -1192,6 +1299,51 @@ def _line_required_approvals(
         detail=(
             f"approval requirements established ({wanted}) and the presented intent "
             f"(actor {intent.actor or '(unnamed)'}) verifies against plan {plan_digest[:12]}"
+        ),
+    )
+
+
+def _approval_line(
+    *,
+    output: dict[str, Any],
+    approval: _BlastProbe,
+    wanted: str,
+    plan_digest: str,
+) -> _Line:
+    """The ``required_approvals`` line once the plan-09 gate has actually run.
+
+    Split out of :func:`_line_required_approvals` because the two cases answer
+    different questions. Without a gate the line can only state a requirement;
+    with one it can report a decision, and a decision has exactly two honest
+    shapes here — the gate refused (a finding, so ``FAIL``) or it allowed (a
+    reading, so ``PASS`` with the approvers named).
+    """
+    gates = (
+        "controller.approval_gate.verify_approvals",
+        "controller.policy_gate.required_approvals",
+    )
+    if approval.rule_ids:
+        return _Line(
+            name=ObligationName.REQUIRED_APPROVALS.value,
+            gates=gates,
+            output=output,
+            status=ObligationStatus.FAIL,
+            detail=(
+                f"the approval gate refused on "
+                f"{', '.join(sorted(approval.rule_ids))}: {wanted}"
+            ),
+        )
+    state = approval.steps[0] if approval.steps else {}
+    approvers = list((state.get("approvals") or {}).get("approvers") or []) if state else []
+    return _Line(
+        name=ObligationName.REQUIRED_APPROVALS.value,
+        gates=gates,
+        output=output,
+        status=ObligationStatus.PASS,
+        detail=(
+            f"the approval gate authorized plan {plan_digest[:12]}: {wanted}; "
+            f"{len(approvers)} approval(s) bound to the compiled proof digest"
+            + (f" from {', '.join(approvers)}" if approvers else "")
         ),
     )
 
@@ -1294,6 +1446,7 @@ def compile_safety_evidence(
     admission = _admission_probe(plan, ctx)
     drift = _drift_probe(plan, graph)
     policy = _policy_probe(plan, ctx)
+    approval = _approval_probe(plan, ctx, requirements=policy.requirements)
     capability = _capability_probe(plan, adapter)
     blast = _blast_probe(plan, graph, ctx)
 
@@ -1376,6 +1529,7 @@ def compile_safety_evidence(
             ctx,
             plan_digest,
             policy,
+            approval,
             intent=intent,
             engine=engine,
             target_identity=target_identity,
@@ -1384,6 +1538,7 @@ def compile_safety_evidence(
 
     refusals: list[tuple[str, str]] = [*authoritative, *admission.refusals, *drift.refusals]
     refusals.extend(policy.refusals)
+    refusals.extend(approval.refusals)
     refusals.extend(capability.refusals)
     refusals.extend(blast.refusals)
     refusals.extend(predicted)

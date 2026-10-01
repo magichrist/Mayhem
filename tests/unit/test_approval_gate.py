@@ -57,7 +57,7 @@ from mayhem.controller.safety import (
     SafetyRefusedError,
     validate_plan,
 )
-from mayhem.controller.safety_proof import canonical_plan_digest
+from mayhem.controller.safety_proof import OBLIGATION_FOR_RULE, canonical_plan_digest
 from mayhem.domain.approval import (
     Approval,
     InvalidationReason,
@@ -1279,3 +1279,94 @@ def test_a_different_but_equally_ungated_plan_is_gated_the_same_way() -> None:
     assert ungated.denied
     assert ungated.refusal is not None
     assert ungated.refusal.rule_id == RULE_APPROVAL_REQUIRED
+
+
+# =============================================================================
+# Mapping completeness — this module's refusals must be reportable on a line
+# =============================================================================
+#
+# Added by plan 30 Phase 4. This module's author recorded the gap directly:
+#
+#   "Approval-refusal rule ids are unmapped in
+#    `controller.safety_proof.OBLIGATION_FOR_RULE`, so a run refused by the
+#    approval gate compiles to a `VOID` proof with the rule named unmapped.
+#    Fail-closed and by that module's own design, but the honest fix ... belongs
+#    to Phase 4."
+#
+# The fix landed; these two tests are the guard against the next lane repeating
+# it. The wider coverage — every rule both gate modules can raise — lives in
+# `tests/unit/test_proof_compiler.py`, which parses the sources. What belongs
+# here is the check a reader of *this* module would want: its own three refusal
+# ids, asserted against its own rule constants, plus the admission behaviour the
+# mapping buys.
+
+
+def test_every_refusal_this_module_raises_is_owned_by_a_proof_line() -> None:
+    """All three refusals land on ``required_approvals``.
+
+    Stated here as well as in the compiler suite because this module is where a
+    future refusal would be added, and the constants below are the module's own.
+    If a fourth refusal is added and nobody maps it, this fails by name.
+    """
+    for rule in (
+        RULE_APPROVAL_EXECUTOR_UNAUTHORIZED,
+        RULE_APPROVAL_PROOF_NOT_PASS,
+        RULE_APPROVAL_REQUIRED,
+    ):
+        assert OBLIGATION_FOR_RULE.get(rule) == ObligationName.REQUIRED_APPROVALS.value, rule
+
+
+def test_its_allow_and_override_rules_are_not_blameable_and_so_need_no_line() -> None:
+    """The non-refusal rules stay unmapped, and that is correct.
+
+    ``approval.allow`` and ``approval.override`` are recorded on the *allow*
+    path — the override one as a warning beside a decision that permitted the
+    run. Mapping them would claim an owning line for a rule that can never
+    refuse, which would let the blame pass name a line for something that
+    happened to succeed. Asserted so a future "map everything for safety" pass
+    does not quietly add them.
+    """
+    assert RULE_APPROVAL_ALLOW not in OBLIGATION_FOR_RULE
+    assert RULE_APPROVAL_OVERRIDE not in OBLIGATION_FOR_RULE
+
+
+def test_an_approval_refused_plan_compiles_to_a_reported_fail_not_an_unplaceable_void() -> None:
+    """The gap's actual symptom, asserted at the boundary that produced it.
+
+    Before the mapping this compiled to a whole-proof ``VOID`` whose
+    ``void_reason`` said "a gate refused on a rule no obligation owns". The gate
+    had *refused*, which is a finding about the plan and belongs on a line — so
+    the rule is now blamed on ``required_approvals`` and named in that line's own
+    detail.
+
+    The overall verdict is deliberately *not* asserted here. This module's
+    ``_plan`` fixture carries no undo contract and the compiler is given no
+    adapter, so ``compensation``, ``recovery_path`` and ``capability_requirements``
+    are unestablished independently of any approval — and ``VOID`` outranks
+    ``FAIL``. Asserting ``FAIL`` would be asserting something about this
+    fixture, not about the mapping. The end-to-end ``FAIL`` verdict over an
+    otherwise-admitted plan is asserted in ``tests/unit/test_proof_compiler.py``;
+    what this test owns is that the refusal is *placed*.
+    """
+    from mayhem.controller.safety_proof import compile_safety_evidence
+
+    plan = _plan("proc.pause")
+    # The gate's proof must be over this plan's digest, or the *proof* check
+    # fires first and the quorum refusal under test would be masked.
+    plan_proof = _passing_proof(candidate_plan_digest(plan))
+    ctx = replace(_ctx(), approval_gate=_gate(proof=plan_proof))
+
+    compilation = compile_safety_evidence(plan, _graph(), ctx)
+
+    # The gate refused on the quorum, and that refusal is the authoritative one.
+    assert compilation.gate_refusals == (RULE_APPROVAL_REQUIRED,)
+    # It is blamed on a named line...
+    blamed = compilation.blame[ObligationName.REQUIRED_APPROVALS.value]
+    assert any(RULE_APPROVAL_REQUIRED in entry for entry in blamed)
+    # ...the line reports it in its own text...
+    line = compilation.proof.obligation(ObligationName.REQUIRED_APPROVALS.value)
+    assert line is not None
+    assert line.status is ObligationStatus.FAIL
+    assert RULE_APPROVAL_REQUIRED in line.detail
+    # ...and the pre-fix symptom is gone: no refusal is unplaceable any more.
+    assert "no obligation owns" not in compilation.proof.void_reason

@@ -73,10 +73,10 @@ Deployment guides per model, sandbox tutorial, compliance-mapping methodology (w
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/deployment.py` (four deployment models, gap-77 network policy as fail-closed data, sealed execution-mode markers that make a demo run structurally unpresentable as production, validated feature flags) and `domain/failure_modes.py` (18-member taxonomy plus all 141 catalog faults mapped to failure mode/mechanism/symptom/risk/recovery/verification, test-enforced) landed with unit and negative-control tests
-- Phase 2: not started
+- Phase 2 (engine): DONE — `controller/sandbox_service.py` (compose-blueprint sandbox provisioner driven by an injectable runner, failing closed with a rollback instead of returning a half-built environment; demo/training mode that runs the existing `PredictionService.simulate_plan` no-mutation path with the mode marker sealed into every piece of evidence and sandbox runs admitted against the sandbox's own plan-14 ceilings) and `infra/network_policy.py` (pure policy resolution and egress decisions plus the enforcement guard every external call passes through: proxy, custom CA, private registry/Git, enforced allowlist, and an air gap that fails closed naming the cause), with 76 unit tests including negative controls
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

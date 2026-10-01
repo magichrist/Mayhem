@@ -36,6 +36,28 @@ last local copy without one archived elsewhere is the evidence-loss failure gap
 
 No signing anywhere in this module: retention governs how long sealed evidence
 lives, never who vouched for it.
+
+How this composes with the audit stream (Phase 4)
+-------------------------------------------------
+
+Every operation that *changes* a retention record now writes an
+:class:`~mayhem.infra.audit_stream.AuditEntry`, so the answer to "who moved this
+record, and on whose authority" is in a hash-chained, offline-verifiable stream
+rather than only in the mutable ``evidence_retention`` row.
+
+The deletion case is the load-bearing one, and it composes the way it must:
+
+* the tombstone (who requested, who approved, over which manifest digest) is
+  written in the same transaction as the state change — unchanged from Phase 2;
+* the audit entry is written **after** that transaction, into a different table,
+  with no foreign key to anything the deletion touches;
+* :data:`UNSIGNED_REASON_NO_SIGNING` still applies: the stream proves the recorded
+  bytes are unaltered, not who wrote them.
+
+So a deletion removes the manifest and leaves behind two independent records of
+itself — the tombstone row and the audit chain entry — and neither is reachable by
+the deletion. :meth:`RetentionEngine.expire` reports the audit entry it wrote, so
+a caller can see the record was made rather than assume it.
 """
 
 from __future__ import annotations
@@ -45,10 +67,18 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from mayhem.domain.attestation import Manifest, RetentionClass
+from mayhem.domain.attestation import AttestedEvent, Manifest, RetentionClass
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import DomainError
 from mayhem.infra.attestation_store import AttestationRepository
+from mayhem.infra.audit_stream import (
+    KIND_EVIDENCE_ARCHIVED,
+    KIND_EVIDENCE_REGISTERED,
+    KIND_LEGAL_HOLD_PLACED,
+    KIND_LEGAL_HOLD_RELEASED,
+    AuditEntry,
+    AuditStream,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -497,17 +527,55 @@ class RetentionEngine:
         *,
         backend: RetentionBackend | None = None,
         clock: Callable[[], datetime] = utc_now,
+        audit: AuditStream | None = None,
+        audit_principal: str = "mayhem.controller",
     ) -> None:
         self._store = store
         self._backend = backend
         self._clock = clock
         self._retention = RetentionRepository(store)
         self._attestations = AttestationRepository(store)
+        # Phase 4. Built here rather than required, so an existing caller keeps
+        # working unchanged and a deletion still leaves its audit record — the
+        # default *is* to audit, not to opt in to auditing.
+        self._audit = audit if audit is not None else AuditStream(store)
+        self._audit_principal = audit_principal
 
     @property
     def backend(self) -> RetentionBackend | None:
         """The configured external store, or ``None`` — which means fail closed."""
         return self._backend
+
+    @property
+    def audit(self) -> AuditStream:
+        """The attested stream every state change is recorded in (Phase 4)."""
+        return self._audit
+
+    def _record(
+        self,
+        *,
+        action: str,
+        target: str,
+        run_id: str,
+        detail: dict[str, object] | None = None,
+    ) -> AttestedEvent:
+        """Write one audit entry, named after the actor that asked for the change.
+
+        Failures are *not* swallowed: an audit entry that could not be written is
+        a gap in the record, and a caller that believes it was logged when it was
+        not is worse off than one that gets the error. The retention change has
+        already committed by this point, so the exception is raised after the fact
+        — deliberately, and the ordering is what the tests assert.
+        """
+        return self._audit.record(
+            AuditEntry(
+                principal=self._audit_principal,
+                action=action,
+                target=target,
+                subject_run_id=run_id,
+                detail=detail,
+            )
+        )
 
     def _moment(self, now: datetime | None) -> datetime:
         moment = now or self._clock()
@@ -548,7 +616,7 @@ class RetentionEngine:
         moment = self._moment(now)
         stamp = moment.isoformat()
         held = manifest.retention_class is RetentionClass.LEGAL_HOLD
-        return self._retention.save_record(
+        record = self._retention.save_record(
             RetentionRecord(
                 manifest_id=manifest.manifest_id,
                 run_id=manifest.run_id,
@@ -563,6 +631,18 @@ class RetentionEngine:
                 updated_at=stamp,
             )
         )
+        self._record(
+            action=KIND_EVIDENCE_REGISTERED,
+            target=record.manifest_id,
+            run_id=record.run_id,
+            detail={
+                "retention_class": record.retention_class.value,
+                "manifest_digest": record.manifest_digest,
+                "expires_at": record.expires_at.isoformat() if record.expires_at else "never",
+                "legal_hold": record.legal_hold,
+            },
+        )
+        return record
 
     def get(self, manifest_id: str) -> RetentionRecord:
         """The stored record.
@@ -694,7 +774,18 @@ class RetentionEngine:
             raise RetentionBackendUnavailableError(
                 f"backend {getattr(backend, 'name', backend)!r} failed to store {key!r}: {exc}"
             ) from exc
-        return self._move(manifest_id, RetentionState.ARCHIVE, now=now)
+        moved = self._move(manifest_id, RetentionState.ARCHIVE, now=now)
+        self._record(
+            action=KIND_EVIDENCE_ARCHIVED,
+            target=manifest_id,
+            run_id=moved.run_id,
+            detail={
+                "backend": str(getattr(backend, "name", type(backend).__name__)),
+                "key": key,
+                "manifest_digest": moved.manifest_digest,
+            },
+        )
+        return moved
 
     # -- legal hold ---------------------------------------------------------- #
 
@@ -720,7 +811,7 @@ class RetentionEngine:
             raise RetentionRefusedError(
                 f"manifest {manifest_id!r} is already held ({record.hold_reason})"
             )
-        return self._retention.save_record(
+        moved = self._retention.save_record(
             RetentionRecord(
                 manifest_id=record.manifest_id,
                 run_id=record.run_id,
@@ -735,6 +826,13 @@ class RetentionEngine:
                 updated_at=self._moment(now).isoformat(),
             )
         )
+        self._record(
+            action=KIND_LEGAL_HOLD_PLACED,
+            target=record.manifest_id,
+            run_id=record.run_id,
+            detail={"reason": reason},
+        )
+        return moved
 
     def release_legal_hold(
         self,
@@ -756,7 +854,7 @@ class RetentionEngine:
         record = self.get(manifest_id)
         if not record.legal_hold:
             raise RetentionRefusedError(f"manifest {manifest_id!r} is not under legal hold")
-        return self._retention.save_record(
+        moved = self._retention.save_record(
             RetentionRecord(
                 manifest_id=record.manifest_id,
                 run_id=record.run_id,
@@ -771,6 +869,13 @@ class RetentionEngine:
                 updated_at=self._moment(now).isoformat(),
             )
         )
+        self._record(
+            action=KIND_LEGAL_HOLD_RELEASED,
+            target=record.manifest_id,
+            run_id=record.run_id,
+            detail={"actor": actor, "reason": reason},
+        )
+        return moved
 
     # -- deletion ------------------------------------------------------------ #
 
@@ -841,4 +946,25 @@ class RetentionEngine:
             backend=str(getattr(backend, "name", type(backend).__name__)),
             deleted_at=self._moment(now).isoformat(),
         )
-        return self._retention.save_deletion(record, tombstone)
+        saved = self._retention.save_deletion(record, tombstone)
+        # Phase 4: the tombstone attestation. Written *after* the deletion commits
+        # and into a table the deletion does not touch, so the record of the
+        # deletion is not part of what the deletion removes. `requester` is the
+        # principal because they asked for it; `approver` is in the payload,
+        # because dual control is the whole point and an entry naming only the
+        # requester would under-record it.
+        self._audit.record_evidence_deleted(
+            principal=requester,
+            manifest_id=record.manifest_id,
+            run_id=record.run_id,
+            approver=approver,
+            detail={
+                "tombstone_id": saved.tombstone_id,
+                "manifest_digest": saved.manifest_digest,
+                "retention_class": saved.retention_class.value,
+                "reason": reason,
+                "backend": saved.backend,
+                "deleted_at": saved.deleted_at,
+            },
+        )
+        return saved

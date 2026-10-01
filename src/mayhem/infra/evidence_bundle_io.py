@@ -9,6 +9,20 @@ imports, so it must not import ``pathlib`` to persist its own model.
 Callers use :func:`write_bundle` / :func:`load_bundle`; the domain model keeps
 :func:`mayhem.domain.evidence_bundle.build_bundle` and
 :func:`mayhem.domain.evidence_bundle.verify_bundle`.
+
+Plan 29 Phase 4 makes :func:`write_bundle` a boundary. A bundle is the artifact
+most likely to travel — it is self-contained, signed by digest chain, and handed
+to somebody who was not in the room — so the gate sits here rather than being
+left to whoever assembles it. Two properties make the refusal total:
+
+* **Nothing is written before everything is gated.** The payloads are serialised
+  in full first, every artifact and the manifest are graded and byte-scanned, and
+  only then does the first byte reach the filesystem. A bundle is therefore never
+  left half-written by a refusal, which matters because a partial bundle on disk
+  is itself a leak.
+* **The gate takes no argument.** It is not ``write_bundle(bundle, dir, guard=...)``
+  with a default, which a caller could pass ``None``; the active guards are
+  consulted by the module itself.
 """
 
 from __future__ import annotations
@@ -22,17 +36,37 @@ from mayhem.domain.evidence_bundle import (
     BundleVerificationError,
     EvidenceBundle,
 )
+from mayhem.infra.secret_resolver import (
+    require_clean_artifact,
+    require_persistable_document,
+)
 
 
 def write_bundle(bundle: EvidenceBundle, directory: str | Path) -> Path:
-    """Persist *bundle* into *directory*, creating it if needed."""
+    """Persist *bundle* into *directory*, creating it if needed.
+
+    Refuses a bundle whose artifact payloads contain a field graded ``secret``,
+    or whose serialised bytes contain a value the run actually resolved.
+
+    Raises:
+        InvariantViolationError: With
+            ``mayhem.domain.secrets.REFUSAL_SECRET_FIELD_PERSISTED`` or
+            ``secret.credential_bytes_in_artifact``. Nothing is written when
+            either fires.
+    """
     target = Path(directory)
-    target.mkdir(parents=True, exist_ok=True)
+    staged: list[tuple[str, bytes]] = []
     for name, payload in bundle.artifacts.items():
-        (target / name).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    (target / "manifest.json").write_text(
-        json.dumps(bundle.manifest.to_dict(), indent=2, sort_keys=True)
-    )
+        require_persistable_document(payload, artifact=f"bundle:{name}")
+        staged.append((name, json.dumps(payload, indent=2, sort_keys=True, default=str).encode()))
+    manifest = bundle.manifest.to_dict()
+    require_persistable_document(manifest, artifact="bundle:manifest.json")
+    staged.append(("manifest.json", json.dumps(manifest, indent=2, sort_keys=True).encode()))
+    for name, blob in staged:
+        require_clean_artifact(blob, artifact=f"bundle:{name}")
+    target.mkdir(parents=True, exist_ok=True)
+    for name, blob in staged:
+        (target / name).write_bytes(blob)
     return target
 
 

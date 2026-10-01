@@ -1185,6 +1185,32 @@ class TestFederation:
         federation = federated_registries([a, b])
         assert federation.registry_ids == ("a.registry", "b.registry")
 
+    def test_an_unknown_peer_is_absent_from_the_closure_rather_than_a_crash(self) -> None:
+        """The docstring promises totality; the walk used to raise ``KeyError``.
+
+        A registry naming a peer this table does not carry is a fact about the
+        caller's table, not about the peer. Following the edge put an id in the
+        closure with no row behind it and then indexed the table with it, so a
+        documented input crashed a function documented as total.
+        """
+        alone = _registry(registry_id="a.registry", federates_with=("ghost.registry",))
+        federation = federated_registries([alone])
+
+        assert federation.registry_ids == ("a.registry",)
+        assert federation.contains("ghost.registry") is False
+
+    def test_a_dangling_edge_does_not_hide_the_peers_that_do_resolve(self) -> None:
+        """Skipping the unknown peer must not truncate the reachable closure."""
+        a = _registry(registry_id="a.registry", federates_with=("ghost.registry", "b.registry"))
+        b = _registry(registry_id="b.registry", federates_with=("c.registry",))
+        c = _registry(registry_id="c.registry")
+
+        assert federated_registries([a, b, c]).registry_ids == (
+            "a.registry",
+            "b.registry",
+            "c.registry",
+        )
+
     def test_a_seed_outside_the_membership_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="federation seeds are not in its own"):
             RegistryFederation(

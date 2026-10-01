@@ -48,7 +48,7 @@ _ERROR_LINE = re.compile(r"^(?P<file>[^:]+):(?P<line>\d+): error: .*\[(?P<code>[
 #: a convenience. Raising a number without deleting the corresponding entry
 #: fails :func:`test_baseline_table_is_ordered_and_complete`.
 BASELINE: dict[tuple[str, str], int] = {
-    # cli/lifecycle.py:1427 — a `rows[0][0]` fallback in a `sqlite3.Row`
+    # cli/lifecycle.py:1604 — a `rows[0][0]` fallback in a `sqlite3.Row`
     # ternary. `Store.query` is annotated `list[sqlite3.Row]` and
     # `Store.__init__` sets `row_factory = sqlite3.Row` unconditionally, so
     # `hasattr(row, "__getitem__")` is always true and the else is provably

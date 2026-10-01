@@ -1531,12 +1531,23 @@ def test_an_event_matching_no_suite_is_stated_as_a_gap_not_a_clean_result() -> N
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_this_migration_is_the_contiguous_head_of_the_chain() -> None:
+def test_this_migration_sits_in_the_contiguous_reversible_chain() -> None:
+    """Our migration is identified by its own version, never by the chain head.
+
+    Other v1.1.0 lanes append migrations above this one, so "is the head" is
+    not a property of *this* file's migration and asserting it breaks on every
+    future append. What must hold forever is that the chain is contiguous and
+    that ours is present exactly once, reversible, and directly preceded by
+    its own predecessor.
+    """
     versions = [item.version for item in ALL_MIGRATIONS]
     assert versions == list(range(1, len(versions) + 1))
     mine = [item for item in ALL_MIGRATIONS if item.name == "coverage_findings"]
     assert len(mine) == 1
-    assert mine[0].version == versions[-1]
+    assert mine[0].version in versions
+    # Its predecessor is present and immediately adjacent, so migrating down to
+    # `version - 1` reverses this migration and nothing below it.
+    assert mine[0].version - 1 in versions
     assert mine[0].down_statements
 
 
@@ -1561,17 +1572,37 @@ def test_the_migration_adds_tables_without_touching_the_existing_accounting(
 
 
 def test_the_migration_is_reversible_and_reapplies(tmp_path: Path) -> None:
+    """Our migration and everything stacked above it reverses and reapplies.
+
+    The version, the migration id, and the head are all read from the chain
+    itself rather than written as literals, so a later lane appending a
+    migration does not make this test lie.
+    """
+    mine = next(item for item in ALL_MIGRATIONS if item.name == "coverage_findings")
+    version = mine.version
+    migration_id = mine.migration_id
+    predecessor = version - 1
+    head = ALL_MIGRATIONS[-1].version
+    stacked_above = [item.migration_id for item in ALL_MIGRATIONS if item.version >= version]
+
     path = tmp_path / "down.db"
     store = Store.open_migrated(path)
-    assert store.schema_version == 27
+    assert store.schema_version == head
 
-    reversed_ids = store.migrate_down(26)
+    reversed_ids = store.migrate_down(predecessor)
 
-    assert reversed_ids == ["0027_coverage_findings"]
-    assert store.schema_version == 26
+    assert reversed_ids == list(reversed(stacked_above))
+    # Ours is the lowest of the reversed set: migrating down to our predecessor
+    # reverses this migration and everything stacked above it, and nothing below.
+    assert migration_id == stacked_above[0]
+    assert migration_id in reversed_ids
+    assert store.schema_version == predecessor
     assert not store.query(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='suite_suggestions'"
     )
-    assert store.migrate() == ["0027_coverage_findings"]
-    assert store.schema_version == 27
+    assert store.migrate() == stacked_above
+    assert store.schema_version == head
+    assert store.query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='suite_suggestions'"
+    )
     store.close()

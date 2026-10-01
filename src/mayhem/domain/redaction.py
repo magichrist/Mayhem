@@ -1,10 +1,28 @@
+"""Name- and pattern-based redaction. Backup, never policy.
+
+Everything here triggers on how a value is *named* or on the shape of the text
+around it: ``password=``, ``Bearer x``, a key called ``token``. That is a real
+defence and it is the reason an artifact can be published without reading it —
+but it is blind to a value interpolated into a message a caller composed, which is
+why plan 29 Phase 4 does not rely on it. The authoritative check for evidence is
+:func:`mayhem.infra.secret_resolver.require_envelope_boundary`, which compares
+artifact bytes against the values the run actually resolved.
+
+The log sweep below is the middle ground: it applies every rule in this module to
+a structured event, and then the engine's byte gate is layered on top of it, so
+"the formatter redacted it" is never the whole answer.
+"""
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.policy import _SECRET_KEYS
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 RULE_VERSION = "1"
 
@@ -85,3 +103,27 @@ def redact(value: Any, *, path: str = "$") -> RedactionResult:
         redacted, changed = redact_text(value)
         return RedactionResult(redacted, (path,) if changed else ())
     return RedactionResult(value)
+
+
+def redact_log_event(event: str, fields: Mapping[str, Any] | None = None) -> RedactionResult:
+    """Sweep one structured log event: ``event`` plus a flat field mapping.
+
+    Both halves of a log line are covered because they fail differently. The
+    event *name* is a single token, so :func:`redact_text` catches the case where
+    an event name was itself built from a credential (``f"login:{value}"``), and
+    :func:`redact` covers the fields by key name. What neither can do is see a
+    value the caller interpolated into a field called ``detail`` — that is what
+    :func:`mayhem.infra.secret_resolver.require_clean_log_line` is for, and it
+    is why this function returns a value to check rather than a verdict.
+
+    Returns the swept text as ``value`` and the fields it changed as
+    ``removed_paths``, so a caller can log the line and count the sweep in the
+    same step.
+    """
+    clean_event, event_changed = redact_text(event)
+    removed: list[str] = ["$.event"] if event_changed else []
+    if not fields:
+        return RedactionResult(clean_event, tuple(removed))
+    result = redact(dict(fields))
+    removed.extend(result.removed_paths)
+    return RedactionResult({"event": clean_event, **dict(result.value)}, tuple(removed))

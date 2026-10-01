@@ -1,3 +1,30 @@
+"""Assembling, sanitising, and persisting the evidence envelope.
+
+This module owns every write path an :class:`~mayhem.domain.evidence.EvidenceEnvelope`
+takes: the store row (:func:`write_evidence`), the JSON artifact plus its report
+artifacts (:func:`write_evidence_file`), and the markdown rendering
+(:func:`render_report`). Plan 29 Phase 4 makes each of them a boundary rather
+than a convention.
+
+The mechanism is deliberately not "callers should gate their writes". Each write
+path calls :func:`mayhem.infra.secret_resolver.require_envelope_boundary` — or
+the document/log variants of it — itself, with no argument a caller can decline
+to pass. Two rules apply and neither has an opt-out: a field graded ``secret`` is
+refused (stateless, so it holds even for a run that resolved no credential), and
+a value this run actually resolved is refused if it appears in the bytes about to
+be written (which catches a value planted under a field name nobody graded).
+
+Ordering is part of the guarantee. :func:`build_evidence` gates *before* it
+constructs an envelope, and :func:`write_evidence` gates *before* it opens the
+store transaction, so a refusal leaves no row, no table, and no file behind — not
+a redacted row that merely looks clean.
+
+``redact`` still runs, and it runs first: it is what removes a credential named
+by convention, and the grade and byte gates are what catch what it cannot see.
+Redaction is backup. It is not the policy, and a change to it cannot weaken this
+boundary.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +35,11 @@ from mayhem.domain.common import utc_now
 from mayhem.domain.evidence import EvidenceEnvelope
 from mayhem.domain.preflight import plan_hash_for
 from mayhem.infra.report import report_id_for_run
+from mayhem.infra.secret_resolver import (
+    require_clean_artifact,
+    require_envelope_boundary,
+    require_persistable_document,
+)
 
 
 def _sanitize_evidence_dict(data: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +134,25 @@ def build_evidence(
                 engine_version = None
     if topology_fingerprint is None and environment_fingerprint:
         topology_fingerprint = environment_fingerprint[:16]
+    # The gate runs on the sanitized payload *before* the envelope exists, so a
+    # refusal cannot leave a constructed-but-unwritten envelope in a caller's
+    # hands to persist by another route. Gating after construction would make
+    # this function's contract depend on every later write path being honest.
+    require_persistable_document(
+        {
+            "step_reports": sanitized_reports,
+            "lease_timeline": sanitized_leases,
+            "observations": sanitized_obs,
+            "blast_radius": sanitized_blast,
+            "steady_state": sanitized_steady,
+            "execution_intent": (
+                None
+                if execution_intent is None
+                else _sanitize_evidence_dict(dict(execution_intent))
+            ),
+        },
+        artifact="evidence:build",
+    )
     return EvidenceEnvelope(
         run_id=run_id,
         plan_hash=phash,
@@ -148,12 +199,18 @@ def build_evidence(
 
 
 def redact_envelope(envelope: EvidenceEnvelope) -> EvidenceEnvelope:
-    """Return a sanitized copy — the last gate before bytes hit disk.
+    """Return a sanitized, gated copy — the last gate before bytes hit disk.
 
     ``build_evidence`` already redacts, but any caller can construct an
     ``EvidenceEnvelope`` directly. Enforcing the policy here means no write
     path can leak a secret, and the metrics are recomputed at the boundary so
     they describe what was actually written.
+
+    Plan 29 Phase 4 adds the gate to this function as well as to each write
+    path. It is called by :func:`write_evidence`, :func:`write_evidence_file` and
+    :func:`mayhem.infra.report.write_report_artifacts`, so it is the lowest
+    point every one of those passes through — a caller that reached for the
+    redactor directly rather than for a write path still cannot skip it.
     """
     from mayhem.domain.redaction import RULE_VERSION, redact
 
@@ -164,13 +221,24 @@ def redact_envelope(envelope: EvidenceEnvelope) -> EvidenceEnvelope:
         "redacted_path_count": len(result.removed_paths),
         "redacted_paths": tuple(sorted(set(result.removed_paths))),
     }
-    return EvidenceEnvelope.model_validate(payload)
+    stable = EvidenceEnvelope.model_validate(payload)
+    require_envelope_boundary(stable, artifact="evidence:redacted")
+    return stable
 
 
 def write_evidence(store: Any, envelope: EvidenceEnvelope) -> None:
+    """Persist one envelope as a store row.
+
+    The gate runs before the transaction opens, not inside it: a refusal then
+    leaves no row *and* no ``evidence_envelopes`` table, which is a stronger
+    statement than "the row was rolled back" and is what a reader of
+    :func:`test_a_store_row_cannot_be_written_with_a_secret_classified_value`
+    relies on.
+    """
     stable = redact_envelope(envelope).model_copy(
         update={"report_id": envelope.report_id or report_id_for_run(envelope.run_id)}
     )
+    require_envelope_boundary(stable, artifact="evidence:store")
     with store.write() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS evidence_envelopes (run_id TEXT PRIMARY KEY, envelope_json TEXT NOT NULL, created_at TEXT NOT NULL)"
@@ -219,6 +287,7 @@ def list_evidence(store: Any, limit: int = 20) -> list[EvidenceEnvelope]:
 
 
 def write_evidence_file(envelope: EvidenceEnvelope, evidence_dir: str | Path) -> Path:
+    """Write the envelope JSON and its report artifacts into ``evidence_dir``."""
     # Local so this module and mayhem.infra.report can reference each other
     # without a circular import; the dependency is one-directional at call time.
     from mayhem.infra.report import artifact_name, write_report_artifacts
@@ -226,16 +295,28 @@ def write_evidence_file(envelope: EvidenceEnvelope, evidence_dir: str | Path) ->
     stable = redact_envelope(envelope).model_copy(
         update={"report_id": envelope.report_id or report_id_for_run(envelope.run_id)}
     )
+    require_envelope_boundary(stable, artifact="evidence:file")
+    rendered = stable.model_dump_json(indent=2)
+    require_clean_artifact(rendered, artifact="evidence:file")
     directory = Path(evidence_dir)
     directory.mkdir(parents=True, exist_ok=True)
     name = artifact_name(stable.run_id, "evidence")
     target = directory / name
-    target.write_text(stable.model_dump_json(indent=2))
+    target.write_text(rendered)
     write_report_artifacts(stable, artifact_dir=directory)
     return target
 
 
 def render_report(envelope: EvidenceEnvelope) -> str:
+    """Render the envelope as markdown for a terminal or a log.
+
+    The rendered string is a distinct artifact from the envelope: it interpolates
+    dict values with ``repr``-shaped formatting, so it can carry bytes the JSON
+    form would have escaped differently. It is swept before it is returned rather
+    than only where it is written, because the commonest consumer of this
+    function returns the string straight to a caller that logs it.
+    """
+    require_envelope_boundary(envelope, artifact="report:text")
     lines: list[str] = []
     lines.append(f"# Evidence {envelope.run_id}")
     lines.append("")
@@ -283,7 +364,9 @@ def render_report(envelope: EvidenceEnvelope) -> str:
     lines.append("## observations")
     for item in envelope.observations:
         lines.append(f"- {item}")
-    return "\n".join(lines)
+    rendered = "\n".join(lines)
+    require_clean_artifact(rendered, artifact="report:text")
+    return rendered
 
 
 def verify_evidence(envelope: EvidenceEnvelope) -> dict[str, Any]:

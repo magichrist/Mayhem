@@ -1391,6 +1391,385 @@ M0027_COVERAGE_FINDINGS = Migration(
 )
 
 
+# Plan 18 Phase 2 — the marketplace catalog: artifacts, the label inputs a
+# trust label is *derived* from, supply-chain records, revocations, and pins.
+#
+# Id note: 28 is reserved for this migration and the chain stays contiguous
+# 1..28. If a further migration lands alongside, take the next free id rather
+# than renumbering this one — the migrator keys on ``version`` alone and refuses
+# duplicates outright.
+#
+# What these tables hold, and what they deliberately do not:
+#
+# * **No trust class column, anywhere.** There is no ``artifact_class`` and no
+#   ``verified`` on any of these tables, because
+#   :class:`mayhem.domain.marketplace.TrustLabel` derives its class from three
+#   stored facts and a persisted copy of that derivation would be a claim
+#   somebody could rewrite without producing a record. What *is* persisted is
+#   the evidence a derivation reads: the registry (distribution), the
+#   deprecation notice (withdrawal), and the artifact-digest-keyed certification
+#   pairings (evidence). A reader re-derives the class every time.
+# * **``marketplace_certifications`` stores the digest the record was made
+#   against, in the primary key.** A plan-01
+#   :class:`~mayhem.domain.certification.CertificationRecord` names a fault on a
+#   cell and never an artifact, so a row here that carried only ``fault_id``
+#   would let any artifact be "verified" by any record. There is deliberately
+#   **no foreign key to ``certification_records``**: that table's rows move in
+#   place as records age, and the catalog has to be able to answer "were these
+#   bytes ever certified" without a join a later transition could erase.
+# * **``marketplace_supply_chain.signature_verified`` is
+#   ``CHECK (signature_verified = 0)``.** Mayhem cannot verify a signature in
+#   this build
+#   (``mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED is False``), so
+#   the only value the column can ever hold is a 0. The column exists so the
+#   shape is already there when a signing lane lands, and the CHECK means
+#   nothing may write a 1 without a migration that admits it. Same technique as
+#   ``suite_suggestions.advisory`` above, and it is the reason this table can
+#   never be read as provenance.
+# * **No "in force" column on revocations.** A revocation becomes enforceable
+#   when the clock reaches ``propagation_deadline``, whether or not anybody ran
+#   a sweep. Storing that verdict would create a column that is silently wrong
+#   between the deadline and the next write, so enforcement reads the deadline
+#   against the caller's ``now`` on every decision instead.
+# * **A pin names its bytes.** ``marketplace_pins`` is keyed by
+#   ``(artifact_id, version)`` and CHECKs a 64-character lowercase-hex digest,
+#   because "pinned" and "resolved to some other version" are different words.
+#   The partial unique index admits one *live* install per version while keeping
+#   removed pins as history, so an uninstall/reinstall drill is replayable.
+M0028_MARKETPLACE = Migration(
+    version=28,
+    name="marketplace",
+    statements=(
+        """
+        CREATE TABLE marketplace_registries (
+            registry_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN
+                ('official', 'community', 'organization_private')),
+            organization TEXT NOT NULL DEFAULT '',
+            federates_with_json TEXT NOT NULL,
+            registry_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (registry_id),
+            CHECK (instr(registry_id, char(31)) = 0),
+            -- A private catalogue with no owner is not a boundary, and a public
+            -- one that names an owner is claiming a scope it does not have.
+            -- Same rule as ``RegistryRef``'s own validator, expressed where a
+            -- row cannot be written that breaks it.
+            CHECK (
+                (scope = 'organization_private' AND organization <> '')
+                OR (scope <> 'organization_private' AND organization = '')
+            )
+        )
+        """,
+        "CREATE INDEX idx_marketplace_registries_scope ON marketplace_registries(scope)",
+        """
+        CREATE TABLE marketplace_artifacts (
+            artifact_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            registry_id TEXT NOT NULL REFERENCES marketplace_registries(registry_id),
+            publisher_id TEXT NOT NULL,
+            license_id TEXT NOT NULL,
+            changelog_ref TEXT NOT NULL,
+            deprecation_json TEXT NOT NULL DEFAULT '',
+            permissions_json TEXT NOT NULL,
+            dependencies_json TEXT NOT NULL,
+            artifact_json TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            PRIMARY KEY (artifact_id, version),
+            CHECK (instr(artifact_id, char(31)) = 0),
+            CHECK (artifact_id <> '' AND version <> ''),
+            CHECK (length(digest) = 64),
+            CHECK (digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (publisher_id <> ''),
+            CHECK (instr(registry_id, char(31)) = 0)
+        )
+        """,
+        # One id resolves to one digest per version, and the same bytes cannot
+        # be republished under one id under a second version: two versions of
+        # one artifact carrying one digest is a catalog that cannot tell which
+        # label a reader is looking at.
+        "CREATE UNIQUE INDEX idx_marketplace_artifacts_digest "
+        "ON marketplace_artifacts(artifact_id, digest)",
+        "CREATE INDEX idx_marketplace_artifacts_registry "
+        "ON marketplace_artifacts(registry_id)",
+        "CREATE INDEX idx_marketplace_artifacts_publisher "
+        "ON marketplace_artifacts(publisher_id)",
+        """
+        CREATE TABLE marketplace_certifications (
+            artifact_digest TEXT NOT NULL,
+            fault_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            cell_fingerprint TEXT NOT NULL,
+            cell_label TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN
+                ('pending','certified','expiring','stale','failed','incompatible')),
+            expires_at TEXT NOT NULL,
+            certification_json TEXT NOT NULL,
+            linked_at TEXT NOT NULL,
+            PRIMARY KEY (artifact_digest, fault_id, sequence),
+            CHECK (length(artifact_digest) = 64),
+            CHECK (artifact_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (sequence >= 1),
+            CHECK (fault_id <> ''),
+            CHECK (cell_fingerprint <> '')
+        )
+        """,
+        "CREATE INDEX idx_marketplace_certifications_state "
+        "ON marketplace_certifications(artifact_digest, state)",
+        "CREATE INDEX idx_marketplace_certifications_cell "
+        "ON marketplace_certifications(cell_fingerprint)",
+        """
+        CREATE TABLE marketplace_supply_chain (
+            artifact_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            publisher_id TEXT NOT NULL,
+            publisher_json TEXT NOT NULL,
+            verification_state TEXT NOT NULL CHECK (verification_state IN
+                ('not_checked', 'digest_matched', 'digest_mismatched')),
+            -- Integrity only. No value but 0 can be written, so this table can
+            -- never be read as saying a signature was checked.
+            signature_verified INTEGER NOT NULL DEFAULT 0 CHECK (signature_verified = 0),
+            sbom_digest TEXT NOT NULL DEFAULT '',
+            sbom_json TEXT NOT NULL DEFAULT '',
+            dependency_count INTEGER NOT NULL DEFAULT 0,
+            declared_permissions_json TEXT NOT NULL,
+            release_count INTEGER NOT NULL DEFAULT 0,
+            release_head_digest TEXT NOT NULL DEFAULT '',
+            record_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (artifact_id, version),
+            CHECK (length(digest) = 64),
+            CHECK (digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (dependency_count >= 0),
+            CHECK (release_count >= 1),
+            -- The newest release entry must be the bytes this record describes,
+            -- or the release history is describing an artifact that is not here.
+            CHECK (release_head_digest = digest)
+        )
+        """,
+        "CREATE INDEX idx_marketplace_supply_chain_digest "
+        "ON marketplace_supply_chain(digest)",
+        """
+        CREATE TABLE marketplace_revocations (
+            revocation_id TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN
+                ('artifact_version', 'publisher', 'registry')),
+            reason TEXT NOT NULL CHECK (reason IN
+                ('security_defect', 'license', 'malformed', 'superseded', 'policy', 'other')),
+            artifact_id TEXT NOT NULL DEFAULT '',
+            version TEXT NOT NULL DEFAULT '',
+            digest TEXT NOT NULL DEFAULT '',
+            publisher_id TEXT NOT NULL DEFAULT '',
+            registry_id TEXT NOT NULL DEFAULT '',
+            issued_at TEXT NOT NULL,
+            propagation_deadline TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            revocation_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            PRIMARY KEY (revocation_id),
+            CHECK (instr(revocation_id, char(31)) = 0),
+            -- ISO-8601 in UTC, so the lexicographic comparison is the
+            -- chronological one. Enforced in the domain too; a CHECK here means
+            -- a row claiming to be in force before it was issued cannot be written.
+            CHECK (propagation_deadline > issued_at),
+            CHECK (detail <> ''),
+            -- Each scope names exactly its own target. A revocation that
+            -- over-reaches reads as "we withdrew something" while matching
+            -- nothing, so the shape is refused by the schema too.
+            CHECK (
+                (scope = 'artifact_version'
+                    AND artifact_id <> '' AND version <> '' AND digest <> ''
+                    AND publisher_id = '' AND registry_id = '')
+                OR (scope = 'publisher' AND publisher_id <> ''
+                    AND artifact_id = '' AND version = '' AND digest = ''
+                    AND registry_id = '')
+                OR (scope = 'registry' AND registry_id <> ''
+                    AND artifact_id = '' AND version = '' AND digest = ''
+                    AND publisher_id = '')
+            ),
+            CHECK (digest = '' OR (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*'))
+        )
+        """,
+        "CREATE INDEX idx_marketplace_revocations_target "
+        "ON marketplace_revocations(scope, artifact_id, version, publisher_id, registry_id)",
+        "CREATE INDEX idx_marketplace_revocations_deadline "
+        "ON marketplace_revocations(propagation_deadline)",
+        """
+        CREATE TABLE marketplace_pins (
+            artifact_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            registry_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('installed', 'removed')),
+            installed_at TEXT NOT NULL,
+            removed_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (artifact_id, version, digest),
+            CHECK (instr(artifact_id, char(31)) = 0),
+            -- A pin without its bytes is a version range wearing a pin's name.
+            CHECK (length(digest) = 64),
+            CHECK (digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (provider_id <> ''),
+            -- A removed pin has a removal stamp; a live one has none.
+            CHECK (
+                (state = 'installed' AND removed_at = '')
+                OR (state = 'removed' AND removed_at <> '')
+            )
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_marketplace_pins_live "
+        "ON marketplace_pins(artifact_id, version) WHERE state = 'installed'",
+        "CREATE INDEX idx_marketplace_pins_provider ON marketplace_pins(provider_id, state)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_marketplace_pins_provider",
+        "DROP INDEX idx_marketplace_pins_live",
+        "DROP TABLE marketplace_pins",
+        "DROP INDEX idx_marketplace_revocations_deadline",
+        "DROP INDEX idx_marketplace_revocations_target",
+        "DROP TABLE marketplace_revocations",
+        "DROP INDEX idx_marketplace_supply_chain_digest",
+        "DROP TABLE marketplace_supply_chain",
+        "DROP INDEX idx_marketplace_certifications_cell",
+        "DROP INDEX idx_marketplace_certifications_state",
+        "DROP TABLE marketplace_certifications",
+        "DROP INDEX idx_marketplace_artifacts_publisher",
+        "DROP INDEX idx_marketplace_artifacts_registry",
+        "DROP INDEX idx_marketplace_artifacts_digest",
+        "DROP TABLE marketplace_artifacts",
+        "DROP INDEX idx_marketplace_registries_scope",
+        "DROP TABLE marketplace_registries",
+    ),
+)
+
+
+# Plan 12 Phase 4 — the audit log as an attested event stream.
+#
+# This is a *cross-run* stream, and that is the whole reason it needs its own
+# table rather than living in `attestation_events`. Phase 1's verifier defines a
+# chain as starting at genesis and requires every event in it to share one
+# `run_id`, so a per-run chain physically cannot hold entries about many runs.
+# `infra/audit_stream.py` therefore gives every stream entry the *same*
+# `run_id` — the stream's own id — and records the run being acted on in the
+# payload. One format, one canonicalizer, one `verify_chain`: this is a second
+# *table*, never a second *format*.
+#
+# What these tables do and do not claim:
+#
+# * **Append-only is enforced by triggers, not by convention.** `BEFORE UPDATE`
+#   and `BEFORE DELETE` triggers RAISE, so an audit row cannot be edited or
+#   removed even by a direct SQL writer. The application code has no update or
+#   delete path at all; the triggers are the backstop for the case where
+#   somebody goes around it. This is what lets requirement 4 close honestly: a
+#   retention deletion removes the *manifest*, and the audit entry recording that
+#   deletion is not reachable by the same deletion.
+# * **No `signature_state` column.** The stream is unsigned, and the reason is
+#   in `infra/attestation_store.UNSIGNED_REASON_NO_SIGNING` plus a module-level
+#   constant — not in a per-row column nobody would read. Authorship is not
+#   claimed anywhere (Phase 6).
+# * **No foreign keys to `runs`, `attestation_manifests`, or anything else**, for
+#   the gap-101 reason: the audit trail must survive the control plane deleting
+#   the very records it describes.
+# * `audit_stream_heads` holds one row per stream naming the current root and
+#   count, so a verifier can detect a *truncated* stream — a chain whose tail was
+#   removed is still internally consistent, so only a recorded head can catch it.
+M0029_AUDIT_STREAM = Migration(
+    version=29,
+    name="audit_stream",
+    statements=(
+        """
+        CREATE TABLE audit_entries (
+            stream_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            principal TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT NOT NULL,
+            subject_run_id TEXT NOT NULL DEFAULT '',
+            policy_digest TEXT NOT NULL DEFAULT '',
+            approval_digest TEXT NOT NULL DEFAULT '',
+            decision_digest TEXT NOT NULL DEFAULT '',
+            previous_digest TEXT NOT NULL DEFAULT '',
+            digest TEXT NOT NULL,
+            chain_link TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            PRIMARY KEY (stream_id, sequence),
+            -- An entry names an actor, an action, and a target. An entry with
+            -- any of them blank is not an audit record, it is a row.
+            CHECK (principal <> ''),
+            CHECK (action <> ''),
+            CHECK (target <> ''),
+            CHECK (instr(principal, char(31)) = 0),
+            CHECK (instr(action, char(31)) = 0),
+            CHECK (instr(target, char(31)) = 0),
+            -- Digest columns are digests or empty, never prose: the same rule
+            -- `M0028_MARKETPLACE` applies to its own digest columns.
+            CHECK (digest = '' OR (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*')),
+            CHECK (
+                chain_link = ''
+                OR (length(chain_link) = 64 AND chain_link NOT GLOB '*[^0-9a-f]*')
+            ),
+            CHECK (
+                previous_digest = ''
+                OR (length(previous_digest) = 64 AND previous_digest NOT GLOB '*[^0-9a-f]*')
+            ),
+            CHECK (
+                policy_digest = ''
+                OR (length(policy_digest) = 64 AND policy_digest NOT GLOB '*[^0-9a-f]*')
+            ),
+            CHECK (
+                approval_digest = ''
+                OR (length(approval_digest) = 64 AND approval_digest NOT GLOB '*[^0-9a-f]*')
+            ),
+            CHECK (
+                decision_digest = ''
+                OR (length(decision_digest) = 64 AND decision_digest NOT GLOB '*[^0-9a-f]*')
+            )
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_audit_entries_identity "
+        "ON audit_entries(stream_id, event_id)",
+        "CREATE INDEX idx_audit_entries_principal "
+        "ON audit_entries(stream_id, principal, sequence)",
+        "CREATE INDEX idx_audit_entries_target "
+        "ON audit_entries(stream_id, target, sequence)",
+        "CREATE INDEX idx_audit_entries_subject_run "
+        "ON audit_entries(subject_run_id, sequence)",
+        "CREATE TRIGGER audit_entries_no_update BEFORE UPDATE ON audit_entries "
+        "BEGIN SELECT RAISE(ABORT, 'audit_entries is append-only: UPDATE is refused'); END",
+        "CREATE TRIGGER audit_entries_no_delete BEFORE DELETE ON audit_entries "
+        "BEGIN SELECT RAISE(ABORT, 'audit_entries is append-only: DELETE is refused'); END",
+        """
+        CREATE TABLE audit_stream_heads (
+            stream_id TEXT PRIMARY KEY,
+            chain_root TEXT NOT NULL DEFAULT '',
+            entry_count INTEGER NOT NULL DEFAULT 0,
+            last_event_id TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        "CREATE TRIGGER audit_stream_heads_no_delete BEFORE DELETE ON audit_stream_heads "
+        "BEGIN SELECT RAISE(ABORT, 'audit_stream_heads is append-only: DELETE is refused'); END",
+    ),
+    down_statements=(
+        "DROP TRIGGER audit_stream_heads_no_delete",
+        "DROP TABLE audit_stream_heads",
+        "DROP TRIGGER audit_entries_no_delete",
+        "DROP TRIGGER audit_entries_no_update",
+        "DROP INDEX idx_audit_entries_subject_run",
+        "DROP INDEX idx_audit_entries_target",
+        "DROP INDEX idx_audit_entries_principal",
+        "DROP INDEX idx_audit_entries_identity",
+        "DROP TABLE audit_entries",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -1419,4 +1798,6 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0025_AGENT_IDENTITY_BACKUPS,
     M0026_SCHEDULES,
     M0027_COVERAGE_FINDINGS,
+    M0028_MARKETPLACE,
+    M0029_AUDIT_STREAM,
 )

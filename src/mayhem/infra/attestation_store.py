@@ -25,7 +25,23 @@ What this module does NOT do
   container it already is, built by the one function that already builds it.
 * **It is not wired into the executor.** :func:`seal_run_evidence` is the seam
   the run-close path calls once Phase 3 wires it; the controller is unchanged
-  here.
+  here. Phase 4 confirms that verdict rather than revisiting it: the call site is
+  ``cli/lifecycle._write_evidence_after_run`` immediately after
+  ``write_evidence(store, envelope)`` — the first place the store, the redacted
+  envelope, and the run result all exist. The executor never builds an
+  ``EvidenceEnvelope`` (the type does not appear in ``controller/executor.py`` at
+  all), so sealing there would require a *second* envelope producer, which is the
+  duplication this module exists to avoid. Requirement 3's "additive or
+  documented" branch is the documented one:
+  :func:`mayhem.infra.audit_stream.seal_run_evidence_at_run_close` is the single
+  call that lane makes, and its docstring carries the exact call site.
+* **Phase 4 scope: authorization and completeness.** :class:`RunAuthorization`
+  and :func:`chain_completeness` are the only things added here, and both are
+  additive: a call that passes no authorization seals exactly the chain Phase 2
+  sealed. What changed is that a *mutating* run's chain now has to say **why**
+  it was allowed — see :func:`chain_completeness` for the fail-closed rule and
+  :data:`MUTATING_ACTION_OUTCOMES` for how "mutating" is decided (from the
+  envelope's own recorded facts, never from a caller asserting it).
 
 Honesty rules inherited from Phase 1
 ------------------------------------
@@ -42,12 +58,15 @@ Honesty rules inherited from Phase 1
 * **One chain per run.** Phase 1's verifier defines a chain as starting at
   genesis, so an event chain cannot be hung off a previous run's root without
   changing the domain's law. Runs are linked at the *manifest* layer instead
-  (``Manifest.previous_manifest_digest``, which the manifest digest covers). A
-  cross-run event stream is Phase 4's audit-log work, not this phase's.
+  (``Manifest.previous_manifest_digest``, which the manifest digest covers).
+  The cross-run event stream is :mod:`mayhem.infra.audit_stream`, and it is
+  still the *same* ``AttestedEvent`` format verified by the *same*
+  :func:`~mayhem.domain.attestation.verify_chain` — not a second logger.
 """
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -75,7 +94,9 @@ from mayhem.domain.errors import DomainError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from mayhem.domain.approval import ApprovalState
     from mayhem.domain.evidence import EvidenceEnvelope
+    from mayhem.domain.policy import PolicyDecision
     from mayhem.infra.store import Store
 
 #: The only ``signature_state`` this phase can write. Read it as "integrity is
@@ -93,7 +114,27 @@ UNSIGNED_REASON_NO_SIGNING = (
 
 #: Event kinds emitted at run close, in chain order.
 EVENT_EVIDENCE_RECORDED = "evidence.recorded"
+EVENT_POLICY_DECIDED = "policy.decided"
+EVENT_APPROVAL_EVALUATED = "approval.evaluated"
 EVENT_RUN_CLOSED = "run.closed"
+
+#: Phase 4: the event kinds a *mutating* run's chain must carry for a later
+#: reader to be able to reconstruct why it was allowed. Named as a tuple so the
+#: completeness check and its tests cannot disagree about the list.
+REQUIRED_AUTHORIZATION_KINDS: tuple[str, ...] = (EVENT_POLICY_DECIDED, EVENT_APPROVAL_EVALUATED)
+
+#: A digest field is a lowercase sha256 hex string and nothing looser — the same
+#: rule and regex ``domain/approval.py``, ``domain/policy.py`` and
+#: ``controller/approval_gate.py`` already use. A chain input that cannot name a
+#: digest did not name an artifact.
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+#: The action outcomes that mean the run changed something. Derived from the
+#: envelope's own recorded ``action_outcomes`` — never from a caller asserting
+#: that the run "was" mutating. See :func:`is_mutating_run`.
+MUTATING_ACTION_OUTCOMES: frozenset[str] = frozenset(
+    {"applied", "compensated", "acknowledged_no_backend"}
+)
 
 
 class AttestationError(DomainError):
@@ -106,6 +147,16 @@ class SigningNotImplementedError(AttestationError):
 
 class EvidenceNotAttestableError(AttestationError):
     """The evidence envelope cannot be sealed — e.g. it carries no redaction marker."""
+
+
+class AuthorizationMismatchError(AttestationError):
+    """The supplied authorization does not describe the plan it is being sealed against.
+
+    The negative control for "an approval is a statement about an *exact* plan"
+    (:mod:`mayhem.domain.approval`). Raised rather than recorded, because a chain
+    that carried an approval for a different plan would answer "why was this run
+    allowed?" with a lie.
+    """
 
 
 class AttestationSigner(Protocol):
@@ -121,6 +172,124 @@ class AttestationSigner(Protocol):
     trust_root_ref: str
 
 
+# --------------------------------------------------------------------------- #
+# Authorization (Phase 4)                                                       #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class RunAuthorization:
+    """The policy decision and approval state that authorized one run.
+
+    Phase 4's addition, and the answer to "reconstruct WHY the run was allowed".
+    Two artifacts, not one, because they answer different questions and only
+    together close the gap:
+
+    * :class:`~mayhem.domain.policy.PolicyDecision` — *was this shape of action
+      permitted at all*, under which bundle version, over which facts. Carries
+      its own ``policy_digest`` (the bundle) and ``rule_digest`` (the resolved
+      rule set), so a reader can name both the policy version and the rules that
+      spoke.
+    * :class:`~mayhem.domain.approval.ApprovalState` — *did named people approve
+      this exact plan under this exact policy and proof*, and if not, every
+      reason why not. Carries no digest of its own, so this module computes one
+      over its canonical bytes via :func:`~mayhem.domain.attestation.content_digest`
+      — Phase 1's canonicalization, not a second convention.
+
+    Both are *referenced by digest and summarised*, never copied wholesale. The
+    domain objects stay where they were minted; the chain names them, so a later
+    reader can go and get the whole thing.
+
+    ``plan_digest`` is the pin both artifacts are checked against. It is compared
+    against ``envelope.plan_hash`` at seal time and refused on mismatch — see
+    :class:`AuthorizationMismatchError`.
+    """
+
+    policy_decision: PolicyDecision
+    approval_state: ApprovalState
+    plan_digest: str
+    #: Optional proof digest the approval bound, when the caller has one. Recorded
+    #: in the payload when supplied; not required, because
+    #: :class:`~mayhem.domain.approval.ApprovalState` does not carry one itself.
+    proof_digest: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate the digests this record will assert.
+
+        Raises:
+            AuthorizationMismatchError: If ``plan_digest`` or ``proof_digest`` is
+                not a lowercase sha256 hex digest. A chain input that cannot name
+                a digest did not name an artifact.
+        """
+        for name, value in (("plan_digest", self.plan_digest), ("proof_digest", self.proof_digest)):
+            if value and not _SHA256_HEX.fullmatch(value):
+                raise AuthorizationMismatchError(
+                    f"run authorization {name} must be a lowercase 64-char sha256 hex "
+                    f"digest or empty, got {value!r}"
+                )
+
+    def approval_state_digest(self) -> str:
+        """Digest of the approval state over Phase 1's canonical bytes.
+
+        Computed here rather than in :mod:`mayhem.domain.approval` because that
+        module mints no digest for a bare :class:`ApprovalState` and is not ours
+        to change. The canonicalizer is the same one every other chain input uses.
+        """
+        return content_digest(self.approval_state.model_dump(mode="json"))
+
+    def payload(self) -> dict[str, object]:
+        """The attested summary of both artifacts — what a reader gets back.
+
+        Digests plus the fields an operator actually asks for (the outcome, the
+        matched rule ids, the approvers, the refusal reasons). Deliberately not
+        the full ``model_dump``: the chain is not a second copy of the artifacts,
+        it is a signed-by-digest reference to them.
+        """
+        decision = self.policy_decision
+        state = self.approval_state
+        return {
+            "plan_digest": self.plan_digest,
+            "policy_digest": decision.policy_digest,
+            "rule_digest": decision.rule_digest,
+            "facts_digest": decision.facts_digest,
+            "decision_digest": decision.decision_digest(),
+            "policy_outcome": decision.outcome,
+            "policy_bundle": decision.describe(),
+            "policy_matched_rules": list(decision.matched_rules),
+            "policy_reasons": list(decision.reasons),
+            "approval_state_digest": self.approval_state_digest(),
+            "approval_proof_digest": self.proof_digest,
+            "approval_valid": state.valid,
+            "approval_approvers": list(state.approvers),
+            "approval_required": state.required,
+            "approval_reasons": [reason.value for reason in state.reasons],
+            "approval_detail": list(state.detail),
+            "approval_describe": state.describe(),
+        }
+
+
+def is_mutating_run(envelope: EvidenceEnvelope) -> bool:
+    """Whether this run actually changed something, from the envelope's own record.
+
+    Derived, never asserted: a caller cannot declare its own run non-mutating to
+    dodge the completeness rule. Two signals, either sufficient:
+
+    * any recorded ``action_outcome`` in :data:`MUTATING_ACTION_OUTCOMES` — the
+      envelope records what each step did, and "applied" means it happened;
+    * a recorded ``execution_intent`` — v0.9.0 makes execution an approved act,
+      so an intent on the envelope is a statement that this was a real action.
+
+    A read-only run (checks, probes, simulation) records neither and is not
+    required to carry authorization: it changed nothing, so there is nothing to
+    justify. The distinction is recorded *in the chain* as the ``mutating`` key of
+    the evidence event, so a later reader does not have to re-derive it from an
+    envelope that may since have been redacted.
+    """
+    if any(outcome in MUTATING_ACTION_OUTCOMES for outcome in envelope.action_outcomes):
+        return True
+    return envelope.execution_intent is not None
+
+
 @dataclass(frozen=True, slots=True)
 class SealedRun:
     """What sealing a run produced, plus the verdicts that prove it."""
@@ -132,6 +301,7 @@ class SealedRun:
     signature_reason: str
     chain_verification: ChainVerification
     manifest_verification: ManifestVerification
+    completeness: ChainCompleteness | None = None
 
     @property
     def chain_root(self) -> str:
@@ -142,6 +312,17 @@ class SealedRun:
     def signed(self) -> bool:
         """Always False in Phase 2. Present so callers cannot assume otherwise."""
         return self.manifest.signed
+
+    @property
+    def complete(self) -> bool:
+        """Whether the chain carries the authorization this run needs (Phase 4).
+
+        ``True`` when :attr:`completeness` says so, and ``True`` when there is no
+        verdict at all — an older seal, or one made before Phase 4 existed. The
+        absence of a verdict is not a pass, so callers that care should read
+        :attr:`completeness` and treat ``None`` as "not assessed".
+        """
+        return True if self.completeness is None else self.completeness.complete
 
 
 def _iso(value: datetime | str | None) -> str:
@@ -204,14 +385,31 @@ def run_close_events(
     run_status: str,
     verdict: str,
     recorded_at: AttestedTimestamp,
+    authorization: RunAuthorization | None = None,
 ) -> tuple[AttestedEvent, ...]:
     """The events a run close attests to, in chain order (pure).
 
-    Two events, and they *reference* the envelope rather than copying it: the
-    first records which evidence this chain is about (by digest, plan hash, and
-    redaction policy), the second records the run's outcome. The evidence stays
-    exactly where the bundle producer put it — this chain never becomes a second
-    copy of it.
+    Always at least two events, and they *reference* the envelope rather than
+    copying it: the first records which evidence this chain is about (by digest,
+    plan hash, redaction policy, and whether the run mutated anything), the last
+    records the run's outcome. The evidence stays exactly where the bundle
+    producer put it — this chain never becomes a second copy of it.
+
+    With ``authorization`` supplied, two more events are inserted *between* those
+    two, in this order: :data:`EVENT_POLICY_DECIDED` then
+    :data:`EVENT_APPROVAL_EVALUATED`. Both carry the digests of the artifacts
+    that authorized the run (:meth:`RunAuthorization.payload`), so a reader months
+    later can reconstruct *why* the run was allowed without re-running the gates
+    and hoping the inputs still agree — which is the whole point of sealing the
+    decision rather than only the outcome.
+
+    The events are conditional but the *rule* is not: a mutating run with no
+    authorization seals a chain that
+    :func:`~mayhem.infra.audit_stream.verify_audit_chain` and
+    :func:`chain_completeness` report as incomplete. It is not refused here,
+    because a run's evidence must survive even when the evidence about how it was
+    authorized is missing — an incomplete-but-honest chain is worth more than no
+    chain, and the seal is what makes the gap visible.
 
     An incomplete envelope is sealed, not refused: an aborted run legitimately
     has no verdict, and its ``completeness_errors`` travel in the payload so an
@@ -222,7 +420,7 @@ def run_close_events(
     """
     policy = _redaction_policy(envelope)
     evidence_digest = content_digest(envelope.to_dict())
-    return (
+    events: list[AttestedEvent] = [
         _event(
             event_id=f"{envelope.run_id}:evidence",
             event_kind=EVENT_EVIDENCE_RECORDED,
@@ -238,15 +436,44 @@ def run_close_events(
                     envelope.redaction_metrics.get("redacted_path_count", 0) or 0
                 ),
                 "completeness_errors": envelope.completeness_errors(),
+                # Recorded, not re-derived later: whether the run mutated is a
+                # fact about this chain, and a reader must not have to trust a
+                # possibly-redacted envelope to learn it.
+                "mutating": is_mutating_run(envelope),
             },
             recorded_at=recorded_at,
             redaction_policy=policy,
-        ),
+        )
+    ]
+    if authorization is not None:
+        events.append(
+            _event(
+                event_id=f"{envelope.run_id}:policy",
+                event_kind=EVENT_POLICY_DECIDED,
+                run_id=envelope.run_id,
+                sequence=len(events),
+                payload=authorization.payload(),
+                recorded_at=recorded_at,
+                redaction_policy=policy,
+            )
+        )
+        events.append(
+            _event(
+                event_id=f"{envelope.run_id}:approval",
+                event_kind=EVENT_APPROVAL_EVALUATED,
+                run_id=envelope.run_id,
+                sequence=len(events),
+                payload=authorization.payload(),
+                recorded_at=recorded_at,
+                redaction_policy=policy,
+            )
+        )
+    events.append(
         _event(
             event_id=f"{envelope.run_id}:closure",
             event_kind=EVENT_RUN_CLOSED,
             run_id=envelope.run_id,
-            sequence=1,
+            sequence=len(events),
             payload={
                 "evidence_digest": evidence_digest,
                 "run_status": run_status,
@@ -257,7 +484,126 @@ def run_close_events(
             },
             recorded_at=recorded_at,
             redaction_policy=policy,
-        ),
+        )
+    )
+    return tuple(events)
+
+
+# --------------------------------------------------------------------------- #
+# Completeness (Phase 4)                                                        #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class ChainCompleteness:
+    """Whether a run's chain carries the authorization a mutating run needs.
+
+    ``complete`` is the one field to read. It is ``True`` for a read-only run and
+    for a mutating run that carries both authorization events — and ``False``,
+    with the missing kinds named, for a mutating run that carries fewer.
+
+    The asymmetry is the point. A chain that verifies *integrity* but is missing
+    its authorization is not clean, and this type is what says so: integrity is
+    :func:`~mayhem.domain.attestation.verify_chain`'s question, completeness is
+    this one, and neither answers for the other.
+    """
+
+    run_id: str
+    mutating: bool
+    complete: bool
+    present: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    plan_digest: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "mutating": self.mutating,
+            "complete": self.complete,
+            "present": list(self.present),
+            "missing": list(self.missing),
+            "errors": list(self.errors),
+            "plan_digest": self.plan_digest,
+        }
+
+    def describe(self) -> str:
+        if not self.mutating:
+            return f"{self.run_id}: read-only run; no authorization required"
+        if self.complete:
+            return f"{self.run_id}: complete ({', '.join(self.present)})"
+        return f"{self.run_id}: INCOMPLETE — missing {', '.join(self.missing)}"
+
+
+def _first_evidence_event(events: Sequence[AttestedEvent]) -> AttestedEvent | None:
+    return next((e for e in events if e.event_kind == EVENT_EVIDENCE_RECORDED), None)
+
+
+def chain_completeness(
+    events: Sequence[AttestedEvent],
+    *,
+    mutating: bool | None = None,
+) -> ChainCompleteness:
+    """Does this chain carry the authorization a mutating run must have? (pure).
+
+    Args:
+        events: The chain's events, in order.
+        mutating: Override the recorded fact. ``None`` (the default) reads the
+            ``mutating`` key the evidence event recorded, and falls back to
+            ``True`` when that key is absent — a chain written before this key
+            existed, or one whose evidence event is missing entirely, is treated
+            as mutating, because assuming a run changed nothing is exactly the
+            overclaim this check exists to prevent.
+
+    Returns:
+        A :class:`ChainCompleteness` naming what is present and what is missing.
+    """
+    evidence_event = _first_evidence_event(events)
+    run_id = events[0].run_id if events else ""
+    if mutating is None:
+        recorded = evidence_event.payload.get("mutating") if evidence_event else None
+        mutating = True if recorded is None else bool(recorded)
+
+    present = tuple(kind for kind in REQUIRED_AUTHORIZATION_KINDS if any(
+        event.event_kind == kind for event in events
+    ))
+    plan_digest = str(events[0].payload.get("plan_digest", "")) if events else ""
+    for event in events:
+        if event.event_kind in REQUIRED_AUTHORIZATION_KINDS:
+            plan_digest = str(event.payload.get("plan_digest", "")) or plan_digest
+            break
+
+    errors: list[str] = []
+    if not mutating:
+        # A read-only run changed nothing, so there is nothing to justify. Not
+        # a pass on the authorization — an explicit "not applicable".
+        return ChainCompleteness(
+            run_id=run_id,
+            mutating=False,
+            complete=True,
+            present=present,
+            plan_digest=plan_digest,
+            errors=("read-only run: no policy or approval artifact is required",),
+        )
+
+    missing = tuple(kind for kind in REQUIRED_AUTHORIZATION_KINDS if kind not in present)
+    for kind in missing:
+        errors.append(
+            f"run {run_id!r} is recorded as mutating but its chain carries no {kind!r} "
+            "event, so it cannot say why it was allowed"
+        )
+    if not missing:
+        errors.append(
+            f"run {run_id!r} carries its authorization artifacts; the chain is complete"
+        )
+    return ChainCompleteness(
+        run_id=run_id,
+        mutating=True,
+        complete=not missing,
+        present=present,
+        missing=missing,
+        errors=tuple(errors),
+        plan_digest=plan_digest,
     )
 
 
@@ -296,6 +642,7 @@ def seal_run_evidence(
     recorded_at: AttestedTimestamp | None = None,
     created_at: AttestedTimestamp | None = None,
     signer: AttestationSigner | None = None,
+    authorization: RunAuthorization | None = None,
 ) -> SealedRun:
     """Seal a closed run's evidence into a persisted chain and manifest.
 
@@ -314,6 +661,10 @@ def seal_run_evidence(
         recorded_at: The reading to stamp the events with (tests inject one).
         created_at: The manifest's creation reading (defaults to ``recorded_at``).
         signer: The Phase 6 signing seam. Phase 2 has no implementation.
+        authorization: The policy decision and approval state that authorized
+            this run (Phase 4). Additive: omit it and the chain is exactly the one
+            Phase 2 sealed. Supply it and two events carrying the artifacts'
+            digests are inserted into the chain.
 
     Returns:
         The sealed chain, the manifest, and both verification verdicts.
@@ -321,6 +672,8 @@ def seal_run_evidence(
     Raises:
         SigningNotImplementedError: If a signer is supplied. Phase 2 signs nothing.
         EvidenceNotAttestableError: If the envelope has no redaction marker.
+        AuthorizationMismatchError: If the authorization's ``plan_digest`` is
+            non-empty and does not match the envelope's ``plan_hash``.
         AttestationError: If the derived chain or manifest fails verification, in
             which case nothing is written.
     """
@@ -332,6 +685,22 @@ def seal_run_evidence(
             f"unsigned and the reason is stored: {UNSIGNED_REASON_NO_SIGNING}"
         )
 
+    # The negative control for "an approval is a statement about an exact plan".
+    # Refused here, at the only point where both values are in hand, rather than
+    # recorded: a chain that named an approval for a different plan would answer
+    # "why was this allowed?" with a confident lie.
+    if (
+        authorization is not None
+        and authorization.plan_digest
+        and authorization.plan_digest != envelope.plan_hash
+    ):
+        raise AuthorizationMismatchError(
+            f"refusing to seal run {envelope.run_id!r}: the supplied authorization "
+            f"binds plan digest {authorization.plan_digest[:12]} but the evidence "
+            f"envelope describes plan hash {envelope.plan_hash[:12]}; an approval "
+            "for one plan does not authorize another"
+        )
+
     reading = _recorded_at(recorded_at)
     events = seal_events(
         run_close_events(
@@ -339,6 +708,7 @@ def seal_run_evidence(
             run_status=run_status,
             verdict=verdict,
             recorded_at=reading,
+            authorization=authorization,
         ),
     )
     manifest = build_manifest(
@@ -364,6 +734,7 @@ def seal_run_evidence(
             f"refusing to persist an invalid manifest for run {envelope.run_id!r}: "
             f"{'; '.join(manifest_verification.errors)}"
         )
+    completeness = chain_completeness(events)
 
     repository = AttestationRepository(store)
     repository.save_chain(envelope.run_id, events, sealed_at=reading.wall_clock)
@@ -376,6 +747,7 @@ def seal_run_evidence(
         signature_reason=UNSIGNED_REASON_NO_SIGNING,
         chain_verification=chain_verification,
         manifest_verification=manifest_verification,
+        completeness=completeness,
     )
 
 
@@ -511,6 +883,30 @@ class AttestationRepository:
             errors=tuple(errors),
             root_digest=verification.root_digest,
         )
+
+    def verify_run_completeness(
+        self, run_id: str, *, mutating: bool | None = None
+    ) -> ChainCompleteness:
+        """Reload a run's chain and report whether it carries its authorization.
+
+        The persisted counterpart of :func:`chain_completeness`: a chain that
+        verifies integrity while missing its policy/approval events is *not*
+        clean, and this is what says so from stored bytes.
+
+        A run with no stored chain reports incomplete with the absence named,
+        rather than the ``mutating=False`` a fresh chain would report — an absent
+        chain has not been shown to be a read-only run.
+        """
+        events = self.load_chain(run_id)
+        if not events:
+            return ChainCompleteness(
+                run_id=run_id,
+                mutating=True,
+                complete=False,
+                missing=REQUIRED_AUTHORIZATION_KINDS,
+                errors=(f"no chain stored for run {run_id!r}",),
+            )
+        return chain_completeness(events, mutating=mutating)
 
     # -- manifests ----------------------------------------------------------- #
 

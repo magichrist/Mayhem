@@ -9,6 +9,13 @@ produce a rich, model-only report:
 
 The builder is deterministic and pure: given the same history it always
 renders the same report. Assertions in tests are model/string level.
+
+Plan 29 Phase 4 note: this module is one of the evidence write paths, so the
+report is a boundary. :func:`_report_document` gates the assembled document —
+the single point all three renderers pass through — and
+:func:`write_report_artifacts` sweeps the rendered bytes before they reach disk.
+The gate takes no argument a caller can decline to pass, so "I remembered to
+redact" is not the property holding the line here.
 """
 
 from __future__ import annotations
@@ -23,6 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 from mayhem.infra.candidate_gates import CandidateGatePipeline
 from mayhem.infra.maniac import SelectionInputs, select_next
+from mayhem.infra.secret_resolver import (
+    require_clean_artifact,
+    require_envelope_boundary,
+    require_persistable_document,
+)
 
 if TYPE_CHECKING:
     from mayhem.domain.candidates import ExperimentCandidate
@@ -308,6 +320,15 @@ def _report_id(envelope: EvidenceEnvelope) -> str:
 
 
 def _report_document(envelope: EvidenceEnvelope) -> dict[str, Any]:
+    """Assemble the report document, gated.
+
+    This is the one point every renderer — markdown, JSON, HTML — passes through,
+    so it is where the gate belongs: gating inside each renderer would be three
+    call sites to keep in step, and gating only inside
+    :func:`write_report_artifacts` would leave ``render_report_json`` (used
+    directly by callers that render without writing) ungated.
+    """
+    require_envelope_boundary(envelope, artifact="report")
     evidence = redact_report_data(envelope.model_dump(mode="json"))
     report_id = _report_id(envelope)
     basis = envelope.verification_basis or "unknown"
@@ -316,7 +337,7 @@ def _report_document(envelope: EvidenceEnvelope) -> dict[str, Any]:
     timeline = [{"kind": "step", **item} for item in evidence.get("step_reports", [])] + [
         {"kind": "lease", **item} for item in evidence.get("lease_timeline", [])
     ]
-    return {
+    document = {
         "report_id": report_id,
         "executive_summary": (
             f"Run {envelope.run_id} ended with verdict {verdict}; recovery is {recovery}."
@@ -351,6 +372,12 @@ def _report_document(envelope: EvidenceEnvelope) -> dict[str, Any]:
         },
         "evidence": evidence,
     }
+    # The report nests the whole envelope under ``evidence``, so the gate is
+    # applied again to the assembled document: ``redact_report_data`` replaces
+    # values but keeps key names, and a key graded ``secret`` is refused by name
+    # whether or not the value behind it was scrubbed.
+    require_persistable_document(document, artifact="report:document")
+    return document
 
 
 def render_report_json(envelope: EvidenceEnvelope) -> str:
@@ -516,8 +543,13 @@ def write_report_artifacts(
         if format_name not in renderers:
             raise ValueError(f"unsupported report format: {format_name}")
         suffix, renderer = renderers[format_name]
+        rendered = renderer(envelope)
+        # Swept as rendered text, not as the model: a renderer interpolates
+        # values into its own syntax, so the string is its own artifact and the
+        # model's bytes are not a faithful proxy for what lands on disk.
+        require_clean_artifact(rendered, artifact=f"report:{format_name}")
         path = directory / f"{report_id}.{suffix}"
-        path.write_text(renderer(envelope))
+        path.write_text(rendered)
         paths[format_name] = path
     apply_report_retention(
         directory,

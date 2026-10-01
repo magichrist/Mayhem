@@ -132,6 +132,11 @@ from typing import TYPE_CHECKING, Final, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from mayhem.controller.approval_gate import (
+    RULE_APPROVAL_EXECUTOR_UNAUTHORIZED,
+    RULE_APPROVAL_PROOF_NOT_PASS,
+    RULE_APPROVAL_REQUIRED,
+)
 from mayhem.controller.policy_gate import (
     RULE_BUDGET_EXHAUSTED,
     RULE_BUNDLE_DENY,
@@ -323,6 +328,15 @@ RULE_CHECK: Final[dict[str, CheckScope]] = {
     RULE_BUNDLE_EXPIRED: CheckScope.SAFETY_POLICY,
     RULE_BUNDLE_DENY: CheckScope.SAFETY_POLICY,
     RULE_LOCK_CONTENDED: CheckScope.SAFETY_POLICY,
+    # -- the plan-09 approval gate: the checks that report `required_approvals` --
+    # Added in plan 30 Phase 4, when the approval gate's refusal rule ids became
+    # blameable (they are mapped to `ObligationName.REQUIRED_APPROVALS` in
+    # `OBLIGATION_FOR_RULE`, which is what this table must cover). `SAFETY_POLICY`
+    # is where `required_approvals` is already reported, so the rules that blame
+    # it land on the same check rather than a new one.
+    RULE_APPROVAL_EXECUTOR_UNAUTHORIZED: CheckScope.SAFETY_POLICY,
+    RULE_APPROVAL_PROOF_NOT_PASS: CheckScope.SAFETY_POLICY,
+    RULE_APPROVAL_REQUIRED: CheckScope.SAFETY_POLICY,
 }
 
 #: Where a refusal goes when its rule id is not in :data:`RULE_CHECK`.

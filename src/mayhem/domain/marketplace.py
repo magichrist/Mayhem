@@ -1300,7 +1300,14 @@ def federated_registries(registries: Iterable[RegistryRef]) -> RegistryFederatio
     while frontier:
         current = frontier.pop()
         for peer in table[current].federates_with:
-            if peer not in closure:
+            # An edge naming a peer this table does not carry is a fact about
+            # the caller's table, not about the peer, so the edge is skipped
+            # rather than followed. Following it would put an id in the closure
+            # with no row behind it and then index the table with it — a
+            # ``KeyError`` out of a function documented as total, and a crash
+            # standing in for an answer the docstring already gives. The
+            # closure therefore only ever names registries that exist here.
+            if peer in table and peer not in closure:
                 closure.add(peer)
                 frontier.append(peer)
     return RegistryFederation(seed_registry_ids=seeds, registry_ids=tuple(sorted(closure)))

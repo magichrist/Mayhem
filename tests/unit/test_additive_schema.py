@@ -149,4 +149,14 @@ def test_name_snapshot_is_stable() -> None:
         # version order because the gate compares the whole ordered sequence.
         "schedules",
         "coverage_findings",
+        # ``marketplace`` (version 28) is the plan-18 Phase 2 registry, pin, and
+        # revocation store. Appended here in version order; nothing above is
+        # edited, and the migration carries ``down_statements`` like every
+        # migration after 16.
+        "marketplace",
+        # ``audit_stream`` (version 29) is plan 12 Phase 4's cross-run audit
+        # stream. Appended in version order per the same procedure; the
+        # append-only triggers it ships are what make a retention deletion
+        # unable to remove the audit entry recording it.
+        "audit_stream",
     ), "migration name sequence drifted from the snapshot — append-only."
