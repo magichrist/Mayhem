@@ -70,10 +70,51 @@ below. Do not mint a second protocol id, and do not re-specify either half here
 angles, and a third document that defines its own would be the second protocol
 this note exists to prevent.
 
+Phase 4: the lane's safety and evidence integration
+---------------------------------------------------
+Three things changed, and each one is a refusal of an easy lie.
+
+**The sandbox default is now deny.** :data:`DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT`
+is ``True``. Phase 2 shipped it ``False`` and left the decision open; it is made
+here, with the reasoning at that constant, because the honest consequence is
+that with no seccomp filter, AppArmor profile, SELinux label or container in this
+build, a provider that requests any permission at all no longer loads unless a
+caller says it accepts an unconfined runtime — and that acceptance is itself
+sealed. **No seccomp filter is built or applied and nothing here changes that**;
+the default decides whether mayhem will *run* an unconfined third-party runtime,
+not whether mayhem can confine one.
+
+**The engine axis is checkable.** :func:`detect_engine_lane` derives a real lane
+from a registry that holds exactly one engine runtime, ``running_engine`` accepts
+an :class:`~mayhem.domain.faults.EngineLane` member, and
+:meth:`ProviderLoader.compatibility_report` carries a per-declaration
+``engine_verdict`` of ``not_declared`` / ``unverified`` / ``matched`` /
+``mismatched``. "We did not look" is now a value in the report, not merely an
+axis missing from a list.
+
+**Provider activity is sealed.** :class:`ProviderActivityLedger` writes every
+load, admission, sandbox decision, permission denial and provider-initiated
+action into the existing attested chain through
+:class:`~mayhem.infra.attestation_store.AttestationRepository` — the same event
+type, the same canonicaliser, the same verifier — with the evidence schema
+resolved from the provider's **own** declared
+:class:`~mayhem.domain.provider.EvidenceMapping`, and every activity carrying an
+:class:`~mayhem.domain.evidence.ActionOutcome` from the same closed vocabulary a
+native action uses. Registration and permission changes are additionally recorded
+in :class:`~mayhem.infra.audit_stream.AuditStream` as privileged actions.
+
+The ledger is opt-in because a loader cannot invent a database: pass ``store=``
+to seal. When it is absent the loader is **loud** — every inspection carries
+``evidence["sealed"] = False`` plus :data:`UNSEALED_ACTIVITY_NOTICE` — so
+"observed and discarded" can never be rendered as "recorded and clean".
+
 Honesty note, carried by every refusal this module produces: mayhem **cannot**
 verify a signature. See :data:`mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`.
 A digest check is integrity, not provenance, and neither a sandbox profile nor
-a compatibility bound is a trust signal.
+a compatibility bound is a trust signal. Sealing a provider activity proves the
+recorded bytes are unaltered and in order; it does **not** prove who wrote the
+provider, because the manifests this module writes are unsigned for the reason
+:mod:`mayhem.infra.attestation_store` stores beside every one of them.
 """
 
 from __future__ import annotations
@@ -81,6 +122,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, entry_points, version
@@ -89,8 +131,19 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from pydantic import ValidationError
 
+from mayhem.domain.attestation import (
+    GENESIS_DIGEST,
+    AttestedEvent,
+    AttestedTimestamp,
+    RetentionClass,
+    build_manifest,
+    content_digest,
+    seal_events,
+)
 from mayhem.domain.catalog import CATALOG, validate_catalog
+from mayhem.domain.common import utc_now
 from mayhem.domain.errors import SchemaValidationError
+from mayhem.domain.evidence import ActionOutcome
 from mayhem.domain.fabric import FABRIC_PROTOCOL_VERSION
 from mayhem.domain.faults import (
     EngineLane,
@@ -113,11 +166,13 @@ from mayhem.domain.provider import (
     ImplementationKind,
     ImplementationReference,
     ProviderCatalog,
+    ProviderCompatibilityError,
     ProviderError,
     ProviderMetadata,
     ProviderMutation,
     ProviderNotFoundError,
     ProviderPermission,
+    ProviderPermissionError,
     ProviderRegistration,
     ProviderSource,
     TargetLocator,
@@ -127,6 +182,8 @@ from mayhem.domain.provider import (
 )
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import NodeKind
+from mayhem.infra.attestation_store import MUTATING_ACTION_OUTCOMES, AttestationRepository
+from mayhem.infra.audit_stream import DEFAULT_STREAM_ID, AuditEntry, AuditStream
 from mayhem.providers.builtin import create_builtin_registry
 from mayhem.providers.pack import (
     SIGNATURE_TRUST_NOTICE,
@@ -139,14 +196,19 @@ from mayhem.providers.pack import (
 )
 from mayhem.providers.permissions import ProviderPermissionSet, SandboxRefusal
 from mayhem.providers.sandbox import (
+    ProviderActivity,
+    ProviderActivityKind,
     SandboxEnforcer,
     SandboxProfile,
     select_profile,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 
+    from mayhem.domain.attestation import ChainVerification
+    from mayhem.domain.provider import ProviderEvidenceRecord
+    from mayhem.infra.store import Store
     from mayhem.providers.registry import ProviderRegistry
 
 METADATA_ENTRY_POINT_GROUP = "mayhem.provider.metadata"
@@ -233,6 +295,383 @@ def compatible_provider_protocol() -> dict[str, object]:
     }
 
 
+# ── Phase 4: the engine axis, and the provider activity ledger ──────────────────
+
+#: Whether a loader refuses a provider whose sandbox profile needs a mechanism
+#: this build does not apply. **``True``, deliberately.**
+#:
+#: Phase 2 shipped this at ``False`` and left the decision open. It is made here,
+#: and the reasoning is worth recording because the default is the whole policy:
+#:
+#: * mayhem applies **no** confinement mechanism at all in this build. A profile
+#:   is a decision mayhem makes and can refuse with; the operating system has
+#:   not been touched (see :data:`mayhem.providers.sandbox.MechanismState`).
+#: * Every non-empty declared permission set carries at least one
+#:   ``DECLARED_NOT_APPLIED`` mechanism, so ``False`` means: *any* provider that
+#:   asks for anything runs unconfined, by default, from a plain
+#:   ``ProviderLoader()``.
+#: * The alternative refusal rule — "refuse only what declares a world-reaching
+#:   permission" — was considered and rejected. It would admit an unconfined
+#:   third-party runtime precisely because the runtime *said* it needed nothing
+#:   dangerous, and mayhem cannot verify that claim. A default that depends on an
+#:   unverifiable statement is not a safety posture, it is a trust signal wearing
+#:   one, which is the exact confusion this module's docstring refuses to create.
+#:
+#: The cost is real and is not hidden: with no seccomp filter, AppArmor profile,
+#: SELinux label or container in this build, **a provider that requests any
+#: permission at all does not load by default** — only a declaration that
+#: requests nothing is admitted. The escape hatch is one explicit constructor
+#: argument, and this module records the use of it: an admission under
+#: ``require_sandbox_enforcement=False`` is sealed with
+#: :data:`~mayhem.domain.evidence.ActionOutcome.ACKNOWLEDGED_NO_BACKEND` and the
+#: profile's unapplied mechanism list, so "we ran it unconfined" is a fact in the
+#: chain rather than a default nobody chose deliberately.
+DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT: Final[bool] = True
+
+#: The ``run_id`` the provider activity chain is sealed under. Provider activity
+#: is not a run: :func:`~mayhem.domain.attestation.verify_chain` requires every
+#: event in a chain to share one ``run_id``, and this lane spans every provider
+#: load in a process. Named as a lane rather than as a run for the same reason
+#: :mod:`mayhem.infra.audit_stream` gives every entry its stream id.
+PROVIDER_ACTIVITY_CHAIN_ID: Final[str] = "mayhem.providers"
+
+#: The one ``event_kind`` a sealed provider activity carries. Single kind, many
+#: activities: the payload's ``activity_kind`` is the fine-grained vocabulary
+#: (:class:`~mayhem.providers.sandbox.ProviderActivityKind`), so filtering the
+#: chain by ``event_kind`` answers "did this lane seal anything at all" and
+#: filtering by ``activity_kind`` answers "what did it decide".
+EVENT_PROVIDER_ACTIVITY: Final[str] = "provider.activity"
+
+#: Audit-stream actions this lane records. Declared here, as module constants,
+#: rather than added to :mod:`mayhem.infra.audit_stream`'s vocabulary: that
+#: module is not this lane's to edit, and a spelled-out constant at the one call
+#: site honours the same "one place to grep" rule its own constants exist for.
+AUDIT_PROVIDER_REGISTERED: Final[str] = "audit.provider.registered"
+AUDIT_PROVIDER_PERMISSIONS_CHANGED: Final[str] = "audit.provider.permissions_changed"
+
+#: Who an audit entry says performed a provider action. A recorded claim, not an
+#: authenticated identity: :mod:`mayhem.infra.audit_stream` signs nothing, and a
+#: loader cannot change that.
+DEFAULT_PROVIDER_PRINCIPAL: Final[str] = "mayhem.provider_loader"
+
+#: What a load report says when the loader had nowhere to seal to. Spelled out
+#: rather than left as an empty dict, because the difference between "sealed and
+#: verified" and "observed and thrown away" is the whole point of the sealed
+#: chain, and a caller must not have to infer it from an absent key.
+UNSEALED_ACTIVITY_NOTICE: Final[str] = (
+    "this loader was constructed without a store, so provider activity was observed but "
+    "nothing was sealed: no attestation chain and no audit entry exist for it. Read this "
+    "as 'not recorded', never as 'recorded and clean'."
+)
+
+#: Engine lane names that mayhem knows, as provider ids. The built-in runtimes
+#: are named after the lanes they drive, which is why a registry is a usable
+#: answer to "what lane is this run on" when it holds exactly one of them.
+_ENGINE_LANE_PROVIDER_IDS: Final[frozenset[str]] = frozenset(lane.value for lane in EngineLane)
+
+
+def detect_engine_lane(registry: ProviderRegistry) -> EngineLane | None:
+    """The engine lane *registry* can name, or ``None`` when it cannot.
+
+    The honest answer to "which engine lane is this process on", derived from the
+    only thing the loader can actually see: the runtimes that are registered to
+    execute. The built-in registry registers ``docker``, ``podman`` **and**
+    ``kubernetes``, so on an unfiltered registry the answer is ``None`` — three
+    candidates is not a lane, and picking the first would be a guess with a
+    signature.
+
+    A caller that has narrowed its registry to one runtime gets that lane, and
+    can hand it to :class:`ProviderLoader` as ``running_engine`` so the engine
+    axis is verified rather than skipped. ``None`` means **unchecked**, and
+    :meth:`ProviderLoader.compatibility_report` says so for every declaration
+    that actually declares an engine constraint — the report is what keeps "we
+    did not look" from being rendered as "we looked and it was fine".
+
+    Not a trust signal and not a compatibility check: it names the lane, and
+    :func:`~mayhem.domain.provider.ensure_compatibility_bounds` decides what that
+    means for a given declaration.
+    """
+    candidates = sorted(registry.ids() & _ENGINE_LANE_PROVIDER_IDS)
+    if len(candidates) != 1:
+        return None
+    return EngineLane(candidates[0])
+
+
+class ProviderActivityLedger:
+    """Provider activity, sealed into Mayhem's attested chain (plan 17 Phase 4).
+
+    One record per provider activity, written through the *existing* attestation
+    machinery and nothing else: an :class:`~mayhem.domain.attestation.AttestedEvent`
+    of kind :data:`EVENT_PROVIDER_ACTIVITY`, appended to a chain stored by
+    :class:`~mayhem.infra.attestation_store.AttestationRepository`, committed by
+    a rolling manifest, and — for the two privileged actions — recorded in
+    :class:`~mayhem.infra.audit_stream.AuditStream`. There is no second event
+    type, no second table, no second verifier and no second canonicaliser here;
+    if the format ever needs to change it changes in
+    :mod:`mayhem.domain.attestation`.
+
+    Two properties are worth stating because both are costs, not features:
+
+    * **No signature.** Every manifest this writes is unsigned, with plan 12's own
+      reason stored beside it, and the chain proves integrity and order only.
+      Authorship is not established and nothing here may imply otherwise.
+    * **The whole lane chain is rewritten on every append.** The store's primary
+      key is ``(run_id, sequence)``, so an append has to re-verify and re-write
+      from sequence 0. That is fine for a lane whose length is the number of
+      provider decisions in one process, and it is the price of not inventing a
+      second table to append to.
+
+    What a provider contributes is the *declared* schema, not a mayhem-invented
+    one: :meth:`record_provider_activity` resolves
+    :meth:`~mayhem.domain.provider.ProviderMetadata.evidence_for` through the
+    declarations the loader shares with it, so an activity recorded by a sandbox
+    enforcer that has never seen a declaration still lands inside the provider's
+    own evidence mapping.
+    """
+
+    def __init__(
+        self,
+        store: Store,
+        *,
+        lane_id: str = PROVIDER_ACTIVITY_CHAIN_ID,
+        principal: str = DEFAULT_PROVIDER_PRINCIPAL,
+        audit: AuditStream | None = None,
+        stream_id: str = DEFAULT_STREAM_ID,
+        declarations: MutableMapping[str, ProviderMetadata] | None = None,
+    ) -> None:
+        self._store = store
+        self._lane_id = lane_id
+        self._principal = principal
+        self._declarations: MutableMapping[str, ProviderMetadata] = (
+            declarations if declarations is not None else {}
+        )
+        self._repository = AttestationRepository(store)
+        self._audit = audit if audit is not None else AuditStream(store, stream_id=stream_id)
+        self._activities: list[ProviderActivity] = []
+
+    @property
+    def lane_id(self) -> str:
+        """The ``run_id`` this lane's chain is sealed under."""
+        return self._lane_id
+
+    @property
+    def principal(self) -> str:
+        """The recorded claim of who performed the actions in this lane."""
+        return self._principal
+
+    @property
+    def audit_stream(self) -> AuditStream:
+        return self._audit
+
+    @property
+    def activities(self) -> tuple[ProviderActivity, ...]:
+        """Every activity sealed through this ledger, oldest first."""
+        return tuple(self._activities)
+
+    def declare(self, metadata: ProviderMetadata) -> None:
+        """Teach the ledger a provider's declared evidence schema."""
+        self._declarations[metadata.provider_id] = metadata
+
+    def forget(self, provider_id: str) -> None:
+        """Stop resolving evidence schemas through *provider_id*'s declaration."""
+        self._declarations.pop(provider_id, None)
+
+    def _resolved(self, activity: ProviderActivity) -> ProviderActivity:
+        """*activity* carrying the provider's declared schema, when it has one."""
+        if activity.evidence_schema:
+            return activity
+        metadata = self._declarations.get(activity.provider_id)
+        if metadata is None:
+            return activity
+        schema = metadata.evidence_schema
+        if activity.fault_id:
+            schema = metadata.evidence_for(activity.fault_id) or schema
+        return activity.with_declared_evidence(schema.name, schema.version)
+
+    @property
+    def manifest_id(self) -> str:
+        return f"{self._lane_id}:provider-activity"
+
+    def chain(self) -> tuple[AttestedEvent, ...]:
+        """The sealed chain as stored, reloaded from disk rather than remembered."""
+        return self._repository.load_chain(self._lane_id)
+
+    def verify(self) -> ChainVerification:
+        """Re-verify the stored chain offline, with the domain verifier."""
+        return self._repository.verify_run_chain(self._lane_id)
+
+    def record_provider_activity(self, activity: ProviderActivity) -> ProviderEvidenceRecord:
+        """Seal one activity and return the evidence record for it.
+
+        Order matters and is the same order
+        :meth:`~mayhem.infra.attestation_store.AttestationRepository.save_chain`
+        documents: build, seal, then persist in one transaction. The evidence
+        record is built *before* the write so its digest is in the sealed payload
+        — a chain that carried only a pointer to a record nobody can find would
+        be a chain about nothing.
+        """
+        resolved = self._resolved(activity)
+        self._activities.append(resolved)
+        evidence = resolved.to_evidence()
+        events = self._repository.load_chain(self._lane_id)
+        sequence = len(events)
+        reading = AttestedTimestamp(
+            wall_clock=resolved.recorded_at,
+            monotonic_ns=time.monotonic_ns(),
+            uncertainty_ms=0.0,
+            source="system",
+        )
+        unsealed = AttestedEvent(
+            event_id=f"{self._lane_id}:{sequence:06d}:{resolved.kind.value}",
+            event_kind=EVENT_PROVIDER_ACTIVITY,
+            run_id=self._lane_id,
+            sequence=sequence,
+            payload={
+                **resolved.to_dict(),
+                "lane": self._lane_id,
+                "principal": self._principal,
+                "evidence_digest": content_digest(evidence.model_dump(mode="json")),
+                # Deliberately narrower than
+                # ``MUTATING_ACTION_OUTCOMES``: an *admission* that succeeded
+                # while naming mechanisms this build cannot install carries
+                # ACKNOWLEDGED_NO_BACKEND, and reading the native set alone would
+                # record loading a provider as a mutation, which it is not.
+                "mutating": (
+                    resolved.kind is ProviderActivityKind.ACTION
+                    and resolved.action_outcome in MUTATING_ACTION_OUTCOMES
+                ),
+            },
+            recorded_at=reading,
+        )
+        previous = events[-1].chain_link if events else GENESIS_DIGEST
+        # ``sealed_event`` is one event, never a sequence: a pydantic model is
+        # iterable (over its *fields*), so unpacking one with ``*`` silently
+        # builds a tuple of key/value pairs instead of a chain.
+        (sealed_event,) = seal_events([unsealed], previous_digest=previous)
+        chain = (*events, sealed_event)
+        self._repository.save_chain(self._lane_id, chain)
+        self._commit_manifest(chain, reading)
+        return evidence
+
+    def _commit_manifest(
+        self, events: tuple[AttestedEvent, ...], reading: AttestedTimestamp
+    ) -> None:
+        """Commit the lane chain to a manifest, chained to the previous one.
+
+        ``previous_manifest_digest`` is what links one lane commit to the last:
+        the event chain cannot be hung off a previous run's root (plan 12's
+        one-chain-per-run rule), so the linkage lives at the manifest layer,
+        which is where plan 12 put it.
+        """
+        stored = self._repository.load_manifest(self.manifest_id)
+        manifest = build_manifest(
+            events,
+            manifest_id=self.manifest_id,
+            run_id=self._lane_id,
+            signer_identity="",
+            trust_root_ref="",
+            retention_class=RetentionClass.HOT,
+            created_at=reading,
+            previous_manifest_digest=(
+                stored.manifest_digest if stored is not None else GENESIS_DIGEST
+            ),
+        )
+        self._repository.save_manifest(manifest)
+
+    # -- the two privileged actions, in the audit stream --------------------- #
+
+    def record_registration(
+        self,
+        provider_id: str,
+        *,
+        source: str,
+        profile_id: str,
+        permissions: Iterable[ProviderPermission],
+        fault_ids: Iterable[str] = (),
+        declared_version: str = "",
+    ) -> AttestedEvent:
+        """Record that a provider entered the registry.
+
+        Both places, deliberately: a sealed chain event so the registration is
+        part of the attested history of this lane, and an audit entry so it is a
+        *privileged action* an operator can list. A provider entering a registry
+        is as much an administrative act as a manifest being deleted.
+        """
+        granted = sorted(permission.value for permission in permissions)
+        self.record_provider_activity(
+            ProviderActivity(
+                provider_id=provider_id,
+                kind=ProviderActivityKind.LOAD,
+                outcome="registered",
+                action_outcome=ActionOutcome.APPLIED,
+                target_id=provider_id,
+                operation_id=f"provider.register:{provider_id}",
+                recorded_at=utc_now(),
+                details={
+                    "source": source,
+                    "declared_version": declared_version,
+                    "sandbox_profile": profile_id,
+                    "permissions": granted,
+                    "fault_ids": list(fault_ids),
+                },
+            )
+        )
+        return self._audit.record(
+            AuditEntry(
+                principal=self._principal,
+                action=AUDIT_PROVIDER_REGISTERED,
+                target=provider_id,
+                subject_run_id=self._lane_id,
+                detail={
+                    "source": source,
+                    "declared_version": declared_version,
+                    "sandbox_profile": profile_id,
+                    "permissions": granted,
+                    "fault_ids": list(fault_ids),
+                },
+            )
+        )
+
+    def record_permission_change(
+        self,
+        provider_id: str,
+        *,
+        previous: Iterable[ProviderPermission],
+        granted: Iterable[ProviderPermission],
+        reason: str = "",
+        actor: str = "",
+    ) -> AttestedEvent:
+        """Record a change to what a provider may ask for.
+
+        Audit stream only, and the split is the point: the chain records *what the
+        provider did*, and the stream records *what was done to the provider's
+        grant*. A widened grant is an administrative act with no provider action
+        behind it, so putting it in the chain would make the chain answer a
+        question nobody asked.
+
+        ``previous`` and ``granted`` both travel in the payload. A permission log
+        that records only the new state cannot answer "what could it do before",
+        which is the question an incident review actually asks.
+        """
+        detail: dict[str, object] = {
+            "previous_permissions": sorted(permission.value for permission in previous),
+            "granted_permissions": sorted(permission.value for permission in granted),
+        }
+        if reason:
+            detail["reason"] = reason
+        if actor:
+            detail["actor"] = actor
+        return self._audit.record(
+            AuditEntry(
+                principal=actor or self._principal,
+                action=AUDIT_PROVIDER_PERMISSIONS_CHANGED,
+                target=provider_id,
+                subject_run_id=self._lane_id,
+                detail=detail,
+            )
+        )
+
+
 def _factory_for(runtime: object) -> Callable[[], object]:
     """Bind *runtime* into a zero-arg factory, by value.
 
@@ -286,13 +725,18 @@ class ProviderInspection:
     source: str
     metadata: dict[str, Any] | None = None
     error: ProviderLoadFailure | None = None
-    #: The sandbox profile chosen for this provider, and the compatibility
-    #: axes this run actually checked. Both are additive and both default to
-    #: ``None``/empty so a caller that never asked for them keeps the shape it
-    #: had. ``sandbox`` carries the profile's own ``notice``, so a caller that
-    #: renders it cannot render a profile without the caveat.
+    #: The sandbox profile chosen for this provider, the compatibility axes this
+    #: run actually checked, and what was sealed about it. All three are additive
+    #: and all three default to ``None`` so a caller that never asked for them
+    #: keeps the shape it had. ``sandbox`` carries the profile's own ``notice``,
+    #: so a caller that renders it cannot render a profile without the caveat;
+    #: ``evidence`` carries ``sealed``, and when that is ``False`` it carries the
+    #: notice saying nothing was written anywhere, so a report rendered from an
+    #: inspection cannot call a decision "recorded" when it only happened in
+    #: memory.
     sandbox: dict[str, Any] | None = None
     compatibility: dict[str, Any] | None = None
+    evidence: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -308,6 +752,8 @@ class ProviderInspection:
             payload["sandbox"] = self.sandbox
         if self.compatibility is not None:
             payload["compatibility"] = self.compatibility
+        if self.evidence is not None:
+            payload["evidence"] = self.evidence
         return payload
 
 
@@ -1089,15 +1535,39 @@ class PackLoader:
         *,
         grants: dict[str, ProviderPermissionSet] | None = None,
         allow_development_only: bool = False,
+        activity_ledger: ProviderActivityLedger | None = None,
+        principal: str = DEFAULT_PROVIDER_PRINCIPAL,
     ) -> None:
         self._grants = dict(grants or {})
         self._allow_development_only = allow_development_only
+        # Phase 4: a pack grant is the same privileged act as a provider grant,
+        # so it goes through the same recorded path. Optional, like every ledger
+        # in this module — a pack loader with nowhere to write writes no record,
+        # and says nothing that implies it did.
+        self._ledger = activity_ledger
+        self._principal = principal
 
     def permissions_for(self, provider_id: str) -> ProviderPermissionSet:
         return self._grants.get(provider_id) or ProviderPermissionSet.default(provider_id)
 
     def grant(self, provider_id: str, permissions: ProviderPermissionSet) -> None:
+        """Record what a provider may load, replacing any earlier grant.
+
+        Both states are recorded when a ledger was supplied, for the reason
+        :meth:`~mayhem.providers.loader.ProviderLoader.grant_permissions` gives:
+        an incident review asks what the pack could reach *before* the grant, not
+        only what it can reach now.
+        """
+        previous = self._grants.get(provider_id)
         self._grants[provider_id] = permissions
+        if self._ledger is not None:
+            self._ledger.record_permission_change(
+                provider_id,
+                previous=previous.granted if previous is not None else frozenset(),
+                granted=permissions.granted,
+                reason="fault pack permission grant",
+                actor=self._principal,
+            )
 
     @staticmethod
     def _require_mutation_grant(pack: FaultPack, permissions: ProviderPermissionSet) -> None:
@@ -1350,18 +1820,29 @@ class PackLoader:
 class ProviderLoader:
     """Read, gate, and register third-party providers.
 
-    The *default* posture is the domain's: nothing is granted, so a declaration
-    that asks for a permission loads only when the caller supplied that
-    permission explicitly. Two more defaults are named here because they are
-    decisions a caller may otherwise have to reverse-engineer:
+    The *default* posture is default-deny on every axis that can be default-deny,
+    and each of them is named here because they are decisions a caller may
+    otherwise have to reverse-engineer:
 
-    * ``running_version`` defaults to :func:`core_version` and ``running_engine``
-      to ``None``. The engine axis is then **unchecked**, not passed — every
-      inspection carries ``compatibility["unchecked_axes"]`` so "we did not
-      look" is never rendered as "we looked and it was fine".
-    * ``require_sandbox_enforcement`` defaults to ``False``: a profile that
-      needs a mechanism this build does not apply is loaded and *reported* as
-      unconfined rather than refused. Set it to ``True`` to refuse instead.
+    * ``allowed_permissions`` defaults to the domain's empty set: a declaration
+      that asks for a permission loads only when the caller supplied that
+      permission explicitly.
+    * ``require_sandbox_enforcement`` defaults to
+      :data:`DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT` (``True``): a profile that
+      needs a mechanism this build does not apply is **refused**, and the
+      admission it would have made is sealed either way. The full reasoning, and
+      what the decision costs, are at that constant.
+    * ``running_version`` defaults to :func:`core_version`. ``running_engine``
+      defaults to ``None``, which leaves the engine axis **unchecked**, not
+      passed — and a declaration that actually declares an engine constraint
+      carries ``engine_verdict="unverified"`` in its compatibility report, so
+      "we did not look" cannot be rendered as "we looked and it was fine".
+      :func:`detect_engine_lane` is how a caller obtains a real lane.
+    * ``store`` defaults to ``None``, which means provider activity is **observed
+      but not sealed**. Every inspection then carries
+      ``evidence["sealed"] = False`` and :data:`UNSEALED_ACTIVITY_NOTICE`; the
+      ledger is opt-in because a loader cannot invent a database, and it is
+      *loud* about the absence rather than silent about it.
     """
 
     def __init__(
@@ -1372,36 +1853,321 @@ class ProviderLoader:
         import_module_fn: Callable[[str], Any] | None = None,
         entry_points_fn: Callable[..., Iterable[Any]] | None = None,
         running_version: str | None = None,
-        running_engine: str | None = None,
-        require_sandbox_enforcement: bool = False,
+        running_engine: str | EngineLane | None = None,
+        require_sandbox_enforcement: bool = DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT,
+        store: Store | None = None,
+        activity_ledger: ProviderActivityLedger | None = None,
+        principal: str = DEFAULT_PROVIDER_PRINCIPAL,
+        lane_id: str = PROVIDER_ACTIVITY_CHAIN_ID,
+        audit_stream_id: str = DEFAULT_STREAM_ID,
     ) -> None:
         self.registry = registry if registry is not None else create_builtin_registry()
-        self.allowed_permissions = allowed_permissions
+        self.allowed_permissions = frozenset(allowed_permissions)
         self._import_module = import_module_fn if import_module_fn is not None else import_module
         self._entry_points = entry_points_fn if entry_points_fn is not None else entry_points
         self.running_version = running_version if running_version else core_version()
-        self.running_engine = running_engine
+        # Normalised to the bare lane name so the value in a report is the same
+        # string a declaration's ``compatibility.engines`` holds, whether the
+        # caller passed an ``EngineLane`` member or its value.
+        self.running_engine = str(running_engine) if running_engine else None
         self.require_sandbox_enforcement = require_sandbox_enforcement
         self._profiles: dict[str, SandboxProfile] = {}
+        self._declarations: dict[str, ProviderMetadata] = {}
         self._builtin_providers: frozenset[str] | None = None
+        self._observed: list[ProviderActivity] = []
+        # The loader owns the declarations dict and hands the *same* object to
+        # the ledger, so an activity recorded by anything the loader hands a
+        # sandbox enforcer to resolves the provider's declared evidence schema
+        # without knowing anything about the provider beyond its id.
+        self.ledger = (
+            activity_ledger
+            if activity_ledger is not None
+            else (
+                ProviderActivityLedger(
+                    store,
+                    lane_id=lane_id,
+                    principal=principal,
+                    stream_id=audit_stream_id,
+                    declarations=self._declarations,
+                )
+                if store is not None
+                else None
+            )
+        )
 
     # -- what this loader checked, and what it did not --------------------------
 
-    def compatibility_report(self) -> dict[str, Any]:
+    def compatibility_report(self, metadata: ProviderMetadata | None = None) -> dict[str, Any]:
         """The compatibility axes this loader checked on this run.
 
         Three axes, and the engine axis is only among them when the caller
         supplied ``running_engine``. Reported rather than implied so an operator
         reading a load report cannot mistake an unchecked axis for a passed one.
+
+        With *metadata*, the report also carries that declaration's own engine
+        verdict, which is the distinction Phase 4 exists to make reachable:
+
+        ``"engine_verdict"``
+            ``"not_declared"`` — the declaration states no engine constraint, so
+            there is nothing to check and the axis is *inapplicable* rather than
+            unchecked. ``"unverified"`` — it declares one and this loader has no
+            lane to check it against. ``"matched"``/``"mismatched"`` — a lane was
+            supplied and the axis was decided.
+
+        Without *metadata* the loader-level report is the Phase 2 shape, so a
+        caller asking "what did this loader check?" gets an answer that is about
+        the loader rather than about a declaration that may not exist.
         """
+        lane = self.running_engine
         checked = ["api_major", "release_window"]
-        unchecked = ["engine"] if self.running_engine is None else []
-        return {
+        unchecked = ["engine"] if lane is None else []
+        report: dict[str, Any] = {
             "running_version": self.running_version,
-            "running_engine": self.running_engine,
-            "checked_axes": checked,
-            "unchecked_axes": unchecked,
+            "running_engine": lane,
+            "checked_axes": list(checked),
+            "unchecked_axes": list(unchecked),
         }
+        if metadata is None:
+            return report
+        declared = tuple(metadata.compatibility.engines)
+        if not declared:
+            # Nothing to check is not the same as not checked: the axis is
+            # *inapplicable* here, so it appears in neither list. Putting it in
+            # ``unchecked_axes`` would train a reader to ignore that list.
+            report["unchecked_axes"] = []
+            report["inapplicable_axes"] = ["engine"]
+            report["declared_engines"] = []
+            report["engine_verdict"] = "not_declared"
+            return report
+        report["declared_engines"] = list(declared)
+        if lane is None:
+            report["engine_verdict"] = "unverified"
+            return report
+        report["checked_axes"] = [*checked, "engine"]
+        report["unchecked_axes"] = []
+        report["inapplicable_axes"] = []
+        report["engine_verdict"] = "matched" if lane in declared else "mismatched"
+        return report
+
+    def detected_engine(self) -> EngineLane | None:
+        """The engine lane this loader's own registry can name, or ``None``.
+
+        A convenience over :func:`detect_engine_lane` so the caller does not have
+        to pass the same registry twice:
+
+        .. code-block:: python
+
+            loader = ProviderLoader(registry=narrow)
+            loader.running_engine = loader.detected_engine()
+
+        ``None`` means unchecked, and :meth:`compatibility_report` will say so
+        for every declaration that declares an engine.
+        """
+        return detect_engine_lane(self.registry)
+
+    # -- the provider activity this loader produced ---------------------------
+
+    def activities(self) -> tuple[ProviderActivity, ...]:
+        """Every provider activity this loader made, oldest first.
+
+        Returned whether or not a ledger exists, because "what did this loader
+        decide?" is answerable in memory either way; what differs is whether it
+        survived in the sealed chain, which :meth:`evidence_summary` says.
+        """
+        return tuple(self._observed)
+
+    def evidence_summary(self, provider_id: str | None = None) -> dict[str, Any]:
+        """What was sealed, and — when nothing was — why.
+
+        ``sealed`` is the field to read. ``False`` is not an absence a caller has
+        to infer: it arrives with :data:`UNSEALED_ACTIVITY_NOTICE` and an empty
+        chain id, so a report can be rendered from this without ever implying
+        that an unrecorded decision was a recorded one.
+
+        *provider_id* narrows the activity list to one provider, which is what
+        every inspection wants. Without it the list is the loader's whole
+        history, and a fifty-provider catalog would render fifty copies of all
+        fifty providers' activities — quadratic, and wrong: an inspection is
+        about its provider.
+        """
+        observed: Sequence[ProviderActivity] = self._observed
+        if provider_id is not None:
+            observed = tuple(
+                activity for activity in observed if activity.provider_id == provider_id
+            )
+        return {
+            "sealed": self.ledger is not None,
+            "chain_run_id": self.ledger.lane_id if self.ledger is not None else "",
+            "audit_stream_id": (
+                self.ledger.audit_stream.stream_id if self.ledger is not None else ""
+            ),
+            "activity_count": len(observed),
+            "activities": [activity.to_dict() for activity in observed],
+            "notice": "" if self.ledger is not None else UNSEALED_ACTIVITY_NOTICE,
+        }
+
+    def sealed_events(self) -> tuple[AttestedEvent, ...]:
+        """The provider activity chain as stored, or empty when nothing was."""
+        return self.ledger.chain() if self.ledger is not None else ()
+
+    def _activity(
+        self,
+        metadata: ProviderMetadata,
+        kind: ProviderActivityKind,
+        *,
+        outcome: str,
+        action_outcome: ActionOutcome,
+        target_id: str,
+        operation_id: str,
+        fault_id: str = "",
+        details: Mapping[str, Any] | None = None,
+    ) -> ProviderEvidenceRecord | None:
+        """Record one activity: always observed, sealed when a ledger exists.
+
+        Returning the evidence record *or* ``None`` is deliberate. ``None`` means
+        "observed and not sealed", which is the same answer
+        :meth:`evidence_summary` gives, so a caller cannot mistake an unsealed
+        record for a sealed one by forgetting to check.
+
+        ``fault_id`` is not decoration: it is the key the ledger resolves the
+        provider's declared evidence schema through, so an activity about a
+        declared fault lands in *that fault's* mapping rather than in the
+        provider's blanket schema.
+        """
+        activity = ProviderActivity(
+            provider_id=metadata.provider_id,
+            kind=kind,
+            outcome=outcome,
+            action_outcome=action_outcome,
+            target_id=target_id,
+            operation_id=operation_id,
+            recorded_at=utc_now(),
+            fault_id=fault_id,
+            details=dict(details or {}),
+        )
+        self._observed.append(activity)
+        if self.ledger is None:
+            return None
+        return self.ledger.record_provider_activity(activity)
+
+    def record_action(
+        self,
+        provider_id: str,
+        *,
+        target_id: str,
+        action_outcome: ActionOutcome,
+        fault_id: str = "",
+        operation_id: str = "",
+        details: Mapping[str, Any] | None = None,
+    ) -> ProviderEvidenceRecord:
+        """Record a provider-initiated action in the sealed chain.
+
+        The Phase 4 contract point: a provider action participates in Mayhem's
+        safety and evidence pipeline *exactly like a native action*. Concretely
+        that means it produces the same
+        :class:`~mayhem.domain.provider.ProviderEvidenceRecord` shape, carries an
+        :class:`~mayhem.domain.evidence.ActionOutcome` from the same closed
+        vocabulary an :class:`~mayhem.domain.evidence.EvidenceEnvelope` uses for a
+        native step, and lands in the same attested chain and under the same
+        verifier.
+
+        ``fault_id`` is resolved through the provider's **own** declared
+        :class:`~mayhem.domain.provider.EvidenceMapping`, so the record carries
+        the schema the provider published rather than one mayhem invented.
+
+        Raises:
+            ProviderNotFoundError: If *provider_id* never passed this loader's
+                gates. Evidence for a provider Mayhem did not admit is evidence
+                about nothing, and the check is at the only place the declaration
+                is known.
+        """
+        metadata = self._declarations.get(provider_id)
+        if metadata is None:
+            raise ProviderNotFoundError(
+                "provider_not_found",
+                f"provider {provider_id!r} was never admitted by this loader, so its "
+                "declared evidence mapping cannot be resolved and its action cannot be recorded",
+            )
+        declared = metadata.evidence_for(fault_id) if fault_id else None
+        schema = declared or metadata.evidence_schema
+        record = self._activity(
+            metadata,
+            ProviderActivityKind.ACTION,
+            outcome=action_outcome.value,
+            action_outcome=action_outcome,
+            target_id=target_id,
+            operation_id=operation_id or f"provider.action:{provider_id}:{fault_id or target_id}",
+            fault_id=fault_id,
+            details={
+                "fault_id": fault_id,
+                "evidence_mapping": "declared" if declared is not None else "provider_schema",
+                "declared_evidence_schema": schema.name,
+                "declared_evidence_version": schema.version,
+                **dict(details or {}),
+            },
+        )
+        if record is None:
+            # Observed, not recorded. Returning a record nobody persisted would be
+            # the one lie this API must not tell, so it raises instead.
+            raise ProviderError(
+                "provider_evidence_not_sealed",
+                f"provider {provider_id!r} action "
+                f"{fault_id or '(unmapped fault)'} was observed but not recorded: this loader "
+                "was constructed without a store, so there is no attestation chain to write "
+                f"it to. {UNSEALED_ACTIVITY_NOTICE}",
+            )
+        return record
+
+    def grant_permissions(
+        self,
+        provider_id: str,
+        permissions: Iterable[ProviderPermission],
+        *,
+        reason: str = "",
+        actor: str = "",
+    ) -> frozenset[ProviderPermission]:
+        """Widen (or narrow) the declaration gate, and record that it happened.
+
+        The gate is **loader-wide**, not per provider: it is the set every
+        declaration is compared against. It is named for the provider the caller
+        is acting for, and that id must be one this loader admitted, so an audit
+        entry cannot be written against a provider that never existed.
+
+        Two things this deliberately does *not* change:
+
+        * the registry's own ``allowed_permissions``, which is fixed when the
+          registry is built. Widening this gate cannot widen what an
+          already-registered runtime may do — a permission a provider holds at
+          runtime is a separate, earlier decision, and only the engine path may
+          make it.
+        * a profile that was already selected. A widened grant admits a provider
+          that asks for more; it does not retro-fit the sandbox profile of one
+          that was loaded under the old grant.
+
+        ``self.allowed_permissions`` is public and therefore directly
+        assignable, and an assignment writes no audit entry. That is the honest
+        limit of an in-process attribute: the *recorded* way to change the grant
+        is this method, and the loader states in its report which activities it
+        sealed.
+        """
+        if provider_id not in self._declarations:
+            raise ProviderNotFoundError(
+                "provider_not_found",
+                f"provider {provider_id!r} was never admitted by this loader; a permission "
+                "change cannot be recorded against a provider that does not exist here",
+            )
+        previous = self.allowed_permissions
+        updated = frozenset(permissions)
+        self.allowed_permissions = updated
+        if self.ledger is not None:
+            self.ledger.record_permission_change(
+                provider_id,
+                previous=previous,
+                granted=updated,
+                reason=reason,
+                actor=actor,
+            )
+        return updated
 
     def sandbox_profile(self, provider_id: str) -> SandboxProfile:
         """The profile chosen for an already-loaded *provider_id*."""
@@ -1411,6 +2177,16 @@ class ProviderLoader:
             raise ProviderNotFoundError(
                 "provider_not_found",
                 f"provider {provider_id!r} has no sandbox profile on this loader",
+            ) from exc
+
+    def declaration_for(self, provider_id: str) -> ProviderMetadata:
+        """The declaration this loader admitted for *provider_id*."""
+        try:
+            return self._declarations[provider_id]
+        except KeyError as exc:
+            raise ProviderNotFoundError(
+                "provider_not_found",
+                f"provider {provider_id!r} was never admitted by this loader",
             ) from exc
 
     def sandbox_enforcer(
@@ -1426,7 +2202,9 @@ class ProviderLoader:
 
         The seam an execution path uses: the profile came from the declaration,
         the roots and destinations came from whoever approved the install, and
-        every denial the enforcer makes is recorded as evidence.
+        every denial the enforcer makes is recorded as evidence *and* handed to
+        this loader's ledger when one exists, so the decision reaches the sealed
+        chain rather than only the process that made it.
         """
         return SandboxEnforcer(
             self.sandbox_profile(provider_id),
@@ -1434,6 +2212,7 @@ class ProviderLoader:
             read_roots=read_roots,
             writable_roots=writable_roots,
             egress_allowlist=egress_allowlist,
+            sink=self.ledger,
         )
 
     def _builtin_provider_ids(self) -> frozenset[str]:
@@ -1458,14 +2237,65 @@ class ProviderLoader:
         compatibility bounds (api major, release window, engine), the declared
         permission set against the grant, the declaration graph, the fault
         parameter defaults, evidence coverage, id shadowing, then the sandbox.
+
+        The order is *also* the recording order: the load is observed before the
+        first gate runs, so a refusal is sealed as well as raised, and each gate
+        records its own refusal rather than a generic "load failed". Recording
+        never changes which gate fires or what it raises — the try/except pairs
+        below re-raise the object they caught, untouched.
         """
         metadata = registration.metadata
-        ensure_compatibility_bounds(
+        provider_id = metadata.provider_id
+        self._activity(
             metadata,
-            running_version=self.running_version,
-            running_engine=self.running_engine,
+            ProviderActivityKind.LOAD,
+            outcome="gate_entered",
+            action_outcome=ActionOutcome.APPLIED,
+            target_id=provider_id,
+            operation_id=f"provider.load:{provider_id}",
+            details={
+                "source": metadata.source.value,
+                "declared_version": metadata.version,
+                "declared_permissions": sorted(p.value for p in metadata.permissions),
+                "fault_ids": sorted(metadata.declared_fault_ids),
+                "require_sandbox_enforcement": self.require_sandbox_enforcement,
+            },
         )
-        ensure_declared_permissions(metadata, self.allowed_permissions)
+        try:
+            ensure_compatibility_bounds(
+                metadata,
+                running_version=self.running_version,
+                running_engine=self.running_engine,
+            )
+        except ProviderCompatibilityError as exc:
+            self._activity(
+                metadata,
+                ProviderActivityKind.LOAD,
+                outcome="refused",
+                action_outcome=ActionOutcome.REFUSED,
+                target_id=provider_id,
+                operation_id=f"provider.load:{provider_id}",
+                details={"gate": "compatibility_bounds", "code": exc.code, "reason": str(exc)},
+            )
+            raise
+        try:
+            ensure_declared_permissions(metadata, self.allowed_permissions)
+        except ProviderPermissionError as exc:
+            self._activity(
+                metadata,
+                ProviderActivityKind.PERMISSION_DENIED,
+                outcome="denied",
+                action_outcome=ActionOutcome.REFUSED,
+                target_id=provider_id,
+                operation_id=f"provider.permission:{provider_id}",
+                details={
+                    "gate": "declared_permissions",
+                    "code": exc.code,
+                    "requested": sorted(permission.value for permission in exc.permissions),
+                    "granted": sorted(permission.value for permission in self.allowed_permissions),
+                },
+            )
+            raise
         problems: list[_Problem] = [
             *_check_declared_permission_union(metadata),
             *_check_declared_graph(metadata),
@@ -1479,18 +2309,57 @@ class ProviderLoader:
             # Every problem is reported, not just the first: a declaration that
             # is wrong in three ways should not need three load attempts. The
             # code is the first problem's, in gate order, so it is stable.
+            self._activity(
+                metadata,
+                ProviderActivityKind.LOAD,
+                outcome="refused",
+                action_outcome=ActionOutcome.REFUSED,
+                target_id=provider_id,
+                operation_id=f"provider.load:{provider_id}",
+                details={
+                    "gate": "declaration_graph",
+                    "codes": [problem.code for problem in problems],
+                    "reasons": [problem.message for problem in problems],
+                },
+            )
             raise ProviderLoadError(
                 problems[0].code, "; ".join(problem.message for problem in problems)
             )
         profile = select_profile(metadata)
-        if self.require_sandbox_enforcement:
-            # Raises provider_sandbox_mechanism_unapplied when the profile needs
-            # a mechanism this build does not apply. Deliberately before the
-            # profile is stored: a provider refused here has no profile, so a
-            # later sandbox_enforcer() call cannot hand out a policy for a
-            # provider that never loaded.
-            SandboxEnforcer(profile, require_enforced=True).admit()
-        self._profiles[metadata.provider_id] = profile
+        # Deliberately before the profile is stored: a provider refused here has
+        # no profile, so a later sandbox_enforcer() call cannot hand out a policy
+        # for a provider that never loaded. The enforcer records the admission
+        # itself — refused or admitted, with the unapplied mechanisms named — so
+        # the verdict is in the chain and not only in the exception.
+        SandboxEnforcer(
+            profile,
+            require_enforced=self.require_sandbox_enforcement,
+            sink=self.ledger,
+        ).admit()
+        self._activity(
+            metadata,
+            ProviderActivityKind.ADMISSION,
+            outcome="profile_selected",
+            action_outcome=ActionOutcome.APPLIED,
+            target_id=profile.profile_id,
+            operation_id=f"provider.profile:{provider_id}",
+            details={
+                "tier": profile.tier,
+                "requested_permissions": sorted(
+                    permission.value for permission in profile.requested_permissions
+                ),
+                "admits_enforcement": profile.admits_enforcement,
+                "unapplied_mechanisms": [
+                    item.mechanism.value for item in profile.unapplied_mechanisms
+                ],
+                "engine_verdict": self.compatibility_report(metadata)["engine_verdict"],
+                "notice": profile.notice,
+            },
+        )
+        self._profiles[provider_id] = profile
+        self._declarations[provider_id] = metadata
+        if self.ledger is not None:
+            self.ledger.declare(metadata)
         return profile
 
     def inspect_catalog(self, catalog_path: str | Path) -> ProviderLoadReport:
@@ -1502,7 +2371,8 @@ class ProviderLoader:
                 source=ProviderSource.CATALOG.value,
                 metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                 sandbox=select_profile(registration.metadata).to_dict(),
-                compatibility=self.compatibility_report(),
+                compatibility=self.compatibility_report(registration.metadata),
+                evidence=self.evidence_summary(registration.metadata.provider_id),
             )
             for registration in catalog.providers
         )
@@ -1518,7 +2388,7 @@ class ProviderLoader:
             profile = self._admit(registration)
             try:
                 runtime = self._load_registration_runtime(registration)
-                self._register_runtime(registration, runtime)
+                self._register_runtime(registration, runtime, profile)
             except Exception as exc:
                 failure = self._failure(provider_id, exc)
                 failures.append(failure)
@@ -1530,7 +2400,8 @@ class ProviderLoader:
                         metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                         error=failure,
                         sandbox=profile.to_dict(),
-                        compatibility=self.compatibility_report(),
+                        compatibility=self.compatibility_report(registration.metadata),
+                        evidence=self.evidence_summary(provider_id),
                     )
                 )
                 continue
@@ -1542,7 +2413,8 @@ class ProviderLoader:
                     source=ProviderSource.CATALOG.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                     sandbox=profile.to_dict(),
-                    compatibility=self.compatibility_report(),
+                    compatibility=self.compatibility_report(registration.metadata),
+                    evidence=self.evidence_summary(provider_id),
                 )
             )
         return ProviderLoadReport(
@@ -1566,7 +2438,8 @@ class ProviderLoader:
                     source=ProviderSource.ENTRY_POINT.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                     sandbox=select_profile(registration.metadata).to_dict(),
-                    compatibility=self.compatibility_report(),
+                    compatibility=self.compatibility_report(registration.metadata),
+                    evidence=self.evidence_summary(registration.metadata.provider_id),
                 )
                 for registration in registrations
             )
@@ -1599,7 +2472,7 @@ class ProviderLoader:
                         f"{IMPLEMENTATION_ENTRY_POINT_GROUP!r} registration",
                     )
                 runtime = self._materialize(implementation.load(), registration.implementation)
-                self._register_runtime(registration, runtime)
+                self._register_runtime(registration, runtime, profile)
             except Exception as exc:
                 failure = self._failure(provider_id, exc)
                 failures.append(failure)
@@ -1611,7 +2484,8 @@ class ProviderLoader:
                         metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                         error=failure,
                         sandbox=profile.to_dict(),
-                        compatibility=self.compatibility_report(),
+                        compatibility=self.compatibility_report(registration.metadata),
+                        evidence=self.evidence_summary(provider_id),
                     )
                 )
                 continue
@@ -1623,7 +2497,8 @@ class ProviderLoader:
                     source=ProviderSource.ENTRY_POINT.value,
                     metadata=registration.metadata.model_dump(mode="json", by_alias=True),
                     sandbox=profile.to_dict(),
-                    compatibility=self.compatibility_report(),
+                    compatibility=self.compatibility_report(registration.metadata),
+                    evidence=self.evidence_summary(provider_id),
                 )
             )
         return ProviderLoadReport(
@@ -1632,7 +2507,12 @@ class ProviderLoader:
             failures=tuple(failures),
         )
 
-    def _register_runtime(self, registration: ProviderRegistration, runtime: object) -> None:
+    def _register_runtime(
+        self,
+        registration: ProviderRegistration,
+        runtime: object,
+        profile: SandboxProfile,
+    ) -> None:
         """Check what the runtime advertises, *then* put it in the registry.
 
         Order is the enforcement. A runtime that claims a capability, a fault or
@@ -1641,10 +2521,50 @@ class ProviderLoader:
         revoked: there is no window in which a mismatched runtime was reachable
         by anything holding the registry.
         """
-        problems = _check_behavior(registration.metadata, runtime)
+        metadata = registration.metadata
+        problems = _check_behavior(metadata, runtime)
         if problems:
+            self._activity(
+                metadata,
+                ProviderActivityKind.LOAD,
+                outcome="refused",
+                action_outcome=ActionOutcome.REFUSED,
+                target_id=metadata.provider_id,
+                operation_id=f"provider.behavior:{metadata.provider_id}",
+                details={
+                    "gate": "runtime_behaviour",
+                    "code": "provider_behavior_mismatch",
+                    "reasons": problems,
+                    "registered": False,
+                },
+            )
             raise ProviderLoadError("provider_behavior_mismatch", "; ".join(problems))
         self.registry.register(registration, _factory_for(runtime))
+        # Recorded after the registry accepted it: an entry that says a provider
+        # was registered and a registry that never took it would be a lie in the
+        # direction that matters most.
+        self._activity(
+            metadata,
+            ProviderActivityKind.LOAD,
+            outcome="loaded",
+            action_outcome=ActionOutcome.APPLIED,
+            target_id=metadata.provider_id,
+            operation_id=f"provider.load:{metadata.provider_id}",
+            details={
+                "registered": True,
+                "sandbox_profile": profile.profile_id,
+                "registry_ids": sorted(self.registry.ids()),
+            },
+        )
+        if self.ledger is not None:
+            self.ledger.record_registration(
+                metadata.provider_id,
+                source=metadata.source.value,
+                profile_id=profile.profile_id,
+                permissions=metadata.permissions,
+                fault_ids=sorted(metadata.declared_fault_ids),
+                declared_version=metadata.version,
+            )
 
     def _read_catalog(self, catalog_path: str | Path) -> ProviderCatalog:
         path = Path(catalog_path)

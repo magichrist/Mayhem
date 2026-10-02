@@ -28,10 +28,27 @@ What is deliberately **not** implemented, and must not be reported as if it were
   :attr:`SandboxProfile.unapplied_mechanisms` is non-empty for every profile that
   requested anything at all.
 * :meth:`SandboxEnforcer.admit` only refuses when the caller sets
-  ``require_enforced=True``. The default posture is to load the provider and
-  *report* that its confinement is declared rather than applied — a refusal by
-  default would be a policy decision this phase was not asked to make, and a
-  silent pass would be a lie. Both are stated; neither is hidden.
+  ``require_enforced=True``, and the *loader* — the caller that owns a policy —
+  now demands it by default. See
+  :data:`~mayhem.providers.loader.DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT` for the
+  decision and what it costs.
+
+Where the *activity* vocabulary lives, and why it is here
+----------------------------------------------------------
+:class:`ProviderActivityKind`, :class:`ProviderActivity` and
+:class:`ProviderActivitySink` are defined in this module rather than in
+:mod:`mayhem.providers.loader` for one structural reason: the enforcer produces
+sandbox decisions and the loader produces load and admission records, the
+loader imports this module, and an activity type that had to be imported back
+the other way would be a cycle. The alternative — moving the ledger here — was
+worse: it would put SQLite and the attestation store inside the module whose
+whole value is that it is a pure decision seam with no IO.
+
+So the direction of dependence is kept honest by injection: this module knows
+*what* an activity is (:class:`ProviderActivitySink`), and the loader owns the
+only implementation that persists one
+(:class:`~mayhem.providers.loader.ProviderActivityLedger`). Nothing in this file
+imports :mod:`mayhem.infra`, and that is pinned by a test.
 
 Also not claimed: nothing here verifies a signature.
 :data:`mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED` remains
@@ -42,12 +59,13 @@ against the grant, and never evidence that the code is safe.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from mayhem.domain.common import utc_now
+from mayhem.domain.evidence import ActionOutcome
 from mayhem.domain.provider import (
     CompensationStatus,
     ProviderError,
@@ -82,6 +100,147 @@ _WORLD_REACHING_PERMISSIONS: Final[frozenset[ProviderPermission]] = frozenset(
         ProviderPermission.TARGET_MUTATE,
     }
 )
+
+
+# ── the activity vocabulary: what a provider did, in Mayhem's own words ────────
+
+
+class ProviderActivityKind(StrEnum):
+    """The five things a provider can do that Mayhem must be able to show later.
+
+    A closed vocabulary, for the same reason
+    :data:`mayhem.infra.audit_stream.DEFAULT_STREAM_ID`'s action set is closed:
+    a reader filters on these strings, so adding one is a deliberate edit and a
+    spelling cannot drift between a writer and a test.
+
+    ``LOAD`` and ``ADMISSION`` are what the loader did *to* a declaration;
+    ``SANDBOX_DECISION`` is what the enforcer decided per operation;
+    ``PERMISSION_DENIED`` is a declaration asking for something the grant does
+    not carry; ``ACTION`` is the provider itself doing the thing it declared.
+    """
+
+    LOAD = "provider.load"
+    ADMISSION = "provider.admission"
+    SANDBOX_DECISION = "provider.sandbox_decision"
+    PERMISSION_DENIED = "provider.permission_denied"
+    ACTION = "provider.action"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderActivity:
+    """One provider activity, before anything persists it.
+
+    Two vocabularies, deliberately, and neither is allowed to stand in for the
+    other:
+
+    * ``outcome`` is the free-text verdict this lane already used
+      (``"loaded"``, ``"denied"``, ``"admitted_unconfined"``). It is what a
+      message says.
+    * ``action_outcome`` is a member of
+      :class:`~mayhem.domain.evidence.ActionOutcome` — **Mayhem's own** outcome
+      vocabulary, the one an :class:`~mayhem.domain.evidence.EvidenceEnvelope`
+      records for a native action. Carrying it is what "a provider action
+      participates in the evidence pipeline exactly like a native action" means
+      in practice: the same closed set, so a provider refusal is countable in the
+      same place a native refusal is, rather than in a private dialect.
+
+    The mapping, so it is a stated rule and not a habit: an action that happened
+    is ``APPLIED``; a decision that let a request through is ``APPLIED`` (the
+    decision was applied to that request); anything refused is ``REFUSED``; a
+    failure is ``FAILED``; a verification that established confinement is
+    ``VERIFIED``; and an admission that succeeded while naming mechanisms this
+    build cannot install is ``ACKNOWLEDGED_NO_BACKEND``, which says exactly what
+    happened and nothing more.
+
+    ``evidence_schema``/``evidence_version`` are the *provider's own* declared
+    schema, resolved through
+    :meth:`~mayhem.domain.provider.ProviderMetadata.evidence_for`. They are
+    filled in by whoever holds the declaration — in practice the ledger, which
+    every activity passes through — so a denial recorded by an enforcer that has
+    never seen a declaration still lands in the provider's schema rather than in
+    a mayhem-invented one.
+    """
+
+    provider_id: str
+    kind: ProviderActivityKind
+    outcome: str
+    action_outcome: ActionOutcome
+    target_id: str
+    operation_id: str
+    recorded_at: datetime
+    fault_id: str = ""
+    evidence_schema: str = ""
+    evidence_version: str = ""
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def with_declared_evidence(
+        self, schema: str, version: str, *, fault_id: str = ""
+    ) -> ProviderActivity:
+        """This activity, carrying the provider's declared evidence schema."""
+        return replace(
+            self,
+            evidence_schema=schema,
+            evidence_version=version,
+            fault_id=fault_id or self.fault_id,
+        )
+
+    def to_evidence(self) -> ProviderEvidenceRecord:
+        """The evidence record, in the one shape every provider record takes.
+
+        The same :class:`~mayhem.domain.provider.ProviderEvidenceRecord` the
+        sandbox denial has always used, so a provider activity cannot be
+        recorded in a private shape an auditor would have to special-case. The
+        declared schema travels *inside* the record, which is what makes the
+        claim "this was written through the provider's own evidence mapping"
+        checkable from the record alone rather than from a reader's memory.
+        """
+        return evidence_record(
+            provider_id=self.provider_id,
+            operation_id=self.operation_id,
+            target_id=self.target_id,
+            outcome=self.outcome,
+            recorded_at=self.recorded_at,
+            source=self.kind.value,
+            compensation_status=CompensationStatus.NOT_REQUIRED,
+            details={
+                "activity_kind": self.kind.value,
+                "action_outcome": self.action_outcome.value,
+                "declared_evidence_schema": self.evidence_schema,
+                "declared_evidence_version": self.evidence_version,
+                "evidence_mapping": "declared" if self.fault_id else "provider_schema",
+                **dict(self.details),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """The sealed payload body: names and digests, never a copy of the world."""
+        return {
+            "provider_id": self.provider_id,
+            "activity_kind": self.kind.value,
+            "outcome": self.outcome,
+            "action_outcome": self.action_outcome.value,
+            "target_id": self.target_id,
+            "operation_id": self.operation_id,
+            "recorded_at": self.recorded_at.isoformat(),
+            "fault_id": self.fault_id,
+            "declared_evidence_schema": self.evidence_schema,
+            "declared_evidence_version": self.evidence_version,
+            "details": dict(self.details),
+        }
+
+
+@runtime_checkable
+class ProviderActivitySink(Protocol):
+    """Where an activity goes to be sealed.
+
+    Structural on purpose, and declared here so this module never has to know
+    that the implementation writes SQLite. The only implementation is
+    :class:`~mayhem.providers.loader.ProviderActivityLedger`, and the return
+    value is the evidence record for the activity so a caller that has no ledger
+    and a caller that has one can be compared against each other.
+    """
+
+    def record_provider_activity(self, activity: ProviderActivity) -> ProviderEvidenceRecord: ...
 
 
 class ProviderSandboxError(ProviderError):
@@ -617,6 +776,13 @@ def sandbox_denial_evidence(
     auditor would have to special-case. ``compensation_status`` is
     ``NOT_REQUIRED`` because a denial has no effect to compensate; the thing
     that happened is that nothing happened.
+
+    ``details["action_outcome"]`` is Mayhem's own
+    :class:`~mayhem.domain.evidence.ActionOutcome` for the same event, added in
+    Phase 4. It is additive and changes nothing about the record's shape: the
+    record still says ``outcome="denied"`` in the provider lane's own words, and
+    now also says which native outcome a denial maps to, so a denial can be
+    counted next to a native refusal instead of in a dialect of its own.
     """
     target = decision.destination if isinstance(decision, EgressDecision) else decision.path
     stamped = recorded_at if recorded_at is not None else utc_now()
@@ -631,6 +797,7 @@ def sandbox_denial_evidence(
         details={
             "sandbox_kind": kind,
             "sandbox_profile": decision.profile_id,
+            "action_outcome": ActionOutcome.REFUSED.value,
             "decision": decision.to_dict(),
         },
     )
@@ -871,8 +1038,12 @@ class SandboxEnforcer:
 
     1. **Admit** — say whether mayhem can honour what the profile asks for. With
        ``require_enforced=True`` a profile that needs an unapplied mechanism is
-       refused at load, naming the mechanism; the default is to admit and report
-       the gap.
+       refused at load, naming the mechanism; without it the enforcer admits and
+       reports the gap. The *loader* sets that flag by default
+       (:data:`~mayhem.providers.loader.DEFAULT_REQUIRE_SANDBOX_ENFORCEMENT`);
+       the enforcer keeps its own default off because it is also the object a
+       real confinement backend is handed, and that backend knows what it
+       applied.
     2. **Decide** — answer the per-operation questions (this path, this
        destination), record a denial as
        :class:`~mayhem.domain.provider.ProviderEvidenceRecord`, and raise.
@@ -882,6 +1053,14 @@ class SandboxEnforcer:
     becomes ``POLICY_DECIDED`` once it can actually run. Nothing in this file
     needs to change for that; only the state does, which is the point of
     modelling the state separately from the decision.
+
+    Phase 4 adds a third, deliberately not-a-job behaviour: when a
+    :class:`ProviderActivitySink` is supplied, **every** decision — the
+    admission, and each allow and each deny — is also handed to the sink, so the
+    decision reaches the sealed chain rather than only the process that made it.
+    A decision the operator cannot find later is a decision mayhem made privately.
+    With no sink this module stays exactly as pure as it was, and
+    :attr:`activities` is the record of what it would have sent.
     """
 
     def __init__(
@@ -892,6 +1071,7 @@ class SandboxEnforcer:
         read_roots: Iterable[str] = (),
         writable_roots: Iterable[str] = (),
         egress_allowlist: Iterable[str] = (),
+        sink: ProviderActivitySink | None = None,
     ) -> None:
         self.profile = replace(
             profile,
@@ -902,6 +1082,8 @@ class SandboxEnforcer:
         )
         self._require_enforced = require_enforced
         self._denials: list[ProviderEvidenceRecord] = []
+        self._activities: list[ProviderActivity] = []
+        self._sink = sink
 
     @property
     def denials(self) -> tuple[ProviderEvidenceRecord, ...]:
@@ -913,33 +1095,114 @@ class SandboxEnforcer:
         """
         return tuple(self._denials)
 
+    @property
+    def activities(self) -> tuple[ProviderActivity, ...]:
+        """Every decision this enforcer made, oldest first.
+
+        Kept whether or not a sink was supplied. With a sink these are also in
+        the sealed chain; without one they exist only here, which is precisely
+        the difference the loader's report makes visible rather than hiding.
+        """
+        return tuple(self._activities)
+
+    def _send(self, activity: ProviderActivity) -> None:
+        """Keep the activity, and hand it on if anyone is listening.
+
+        A sink that refuses must not take the decision with it: the decision is
+        already made and already recorded here, so a persistence failure
+        propagates as an exception *after* the fact is recorded rather than
+        quietly erasing it. That ordering is the same one
+        :meth:`require_filesystem` and :meth:`authorize_egress` use for their
+        evidence records.
+        """
+        self._activities.append(activity)
+        if self._sink is not None:
+            self._sink.record_provider_activity(activity)
+
     def admit(self) -> SandboxAdmission:
         """Admit the provider, or refuse to because mayhem cannot confine it."""
-        unapplied = self.profile.unapplied_mechanisms
-        if self._require_enforced and unapplied:
-            names = ", ".join(item.mechanism.value for item in unapplied)
-            raise ProviderSandboxError(
-                "provider_sandbox_mechanism_unapplied",
-                f"provider {self.profile.provider_id!r} profile "
-                f"{self.profile.profile_id!r} requires {names}, which this mayhem "
-                "build does not apply; load it without sandbox enforcement or "
-                "provide a mechanism that does",
+        profile = self.profile
+        unapplied = profile.unapplied_mechanisms
+        try:
+            if self._require_enforced and unapplied:
+                names = ", ".join(item.mechanism.value for item in unapplied)
+                raise ProviderSandboxError(
+                    "provider_sandbox_mechanism_unapplied",
+                    f"provider {profile.provider_id!r} profile "
+                    f"{profile.profile_id!r} requires {names}, which this mayhem "
+                    "build does not apply; load it without sandbox enforcement or "
+                    "provide a mechanism that does",
+                )
+        except ProviderSandboxError as exc:
+            self._send(
+                ProviderActivity(
+                    provider_id=profile.provider_id,
+                    kind=ProviderActivityKind.ADMISSION,
+                    outcome="refused",
+                    action_outcome=ActionOutcome.REFUSED,
+                    target_id=profile.profile_id,
+                    operation_id=f"provider.sandbox.admit:{profile.provider_id}",
+                    recorded_at=utc_now(),
+                    details={
+                        "code": exc.code,
+                        "enforcement_required": True,
+                        "unapplied_mechanisms": [item.mechanism.value for item in unapplied],
+                        "notice": profile.notice,
+                    },
+                )
             )
+            raise
+        enforced = profile.admits_enforcement
+        self._send(
+            ProviderActivity(
+                provider_id=profile.provider_id,
+                kind=ProviderActivityKind.ADMISSION,
+                outcome="admitted_enforced" if enforced else "admitted_unconfined",
+                action_outcome=(
+                    ActionOutcome.VERIFIED if enforced else ActionOutcome.ACKNOWLEDGED_NO_BACKEND
+                ),
+                target_id=profile.profile_id,
+                operation_id=f"provider.sandbox.admit:{profile.provider_id}",
+                recorded_at=utc_now(),
+                details={
+                    "enforcement_required": self._require_enforced,
+                    "enforced": enforced,
+                    "tier": profile.tier,
+                    "unapplied_mechanisms": [item.mechanism.value for item in unapplied],
+                    "notice": profile.notice,
+                },
+            )
+        )
         return SandboxAdmission(
-            provider_id=self.profile.provider_id,
-            profile_id=self.profile.profile_id,
-            enforced=self.profile.admits_enforcement,
-            mechanisms=self.profile.mechanisms,
-            notice=self.profile.notice,
+            provider_id=profile.provider_id,
+            profile_id=profile.profile_id,
+            enforced=enforced,
+            mechanisms=profile.mechanisms,
+            notice=profile.notice,
         )
 
     def authorize_filesystem(self, operation: str, path: str) -> FilesystemDecision:
         """Decide one filesystem operation; raise nothing, record a denial."""
         decision = self.profile.decide_filesystem(operation, path)
+        now = utc_now()
         if decision.denied:
             self._denials.append(
-                sandbox_denial_evidence(decision, kind="filesystem", recorded_at=utc_now())
+                sandbox_denial_evidence(decision, kind="filesystem", recorded_at=now)
             )
+        self._send(
+            ProviderActivity(
+                provider_id=decision.provider_id,
+                kind=ProviderActivityKind.SANDBOX_DECISION,
+                outcome="denied" if decision.denied else "allowed",
+                action_outcome=(
+                    ActionOutcome.REFUSED if decision.denied else ActionOutcome.APPLIED
+                ),
+                target_id=path,
+                operation_id=f"sandbox.filesystem:{operation}:{path}",
+                recorded_at=now,
+                details={"sandbox_kind": "filesystem", "decision": decision.to_dict()},
+            )
+        )
         return decision
 
     def require_filesystem(self, operation: str, path: str) -> FilesystemDecision:
@@ -957,9 +1220,33 @@ class SandboxEnforcer:
         """
         decision = self.profile.decide_egress(destination)
         if decision.allowed:
+            self._send(
+                ProviderActivity(
+                    provider_id=decision.provider_id,
+                    kind=ProviderActivityKind.SANDBOX_DECISION,
+                    outcome="allowed",
+                    action_outcome=ActionOutcome.APPLIED,
+                    target_id=destination,
+                    operation_id=f"sandbox.egress:{destination}",
+                    recorded_at=utc_now(),
+                    details={"sandbox_kind": "egress", "decision": decision.to_dict()},
+                )
+            )
             return decision
         evidence = sandbox_denial_evidence(decision, kind="egress", recorded_at=utc_now())
         self._denials.append(evidence)
+        self._send(
+            ProviderActivity(
+                provider_id=decision.provider_id,
+                kind=ProviderActivityKind.SANDBOX_DECISION,
+                outcome="denied",
+                action_outcome=ActionOutcome.REFUSED,
+                target_id=destination,
+                operation_id=f"sandbox.egress:{destination}",
+                recorded_at=evidence.recorded_at,
+                details={"sandbox_kind": "egress", "decision": decision.to_dict()},
+            )
+        )
         raise SandboxEgressDenied(decision, evidence)
 
 
