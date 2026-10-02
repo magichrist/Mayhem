@@ -50,7 +50,127 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/prediction.py` adds `ImpactPrediction` (affected set, dependency fan-out with depth, replica-loss delta, expected capacity change, violated rules with observed values, cost estimate) as a pure deterministic function over a frozen graph plus frozen plan, with `is_never_permissive` pinning prediction-vs-gate agreement.
 - Phase 2 (engine): DONE — `controller/prediction_service.py` assembles the prediction from live topology plus configuration and returns it beside the real gate's own refusal set, enforcing prediction-vs-gate agreement in production (a calmer preview raises rather than returns); `simulate_plan` runs the mutation backend detached and publishes the observed sink length, so a simulate is provably inert while still reaching a verdict; the four §Controls dimensions are reported as admission dimensions with the Phase 4 wiring named in `PENDING_ADMISSION_WIRING`; an absent price table yields an explicit `unpriced` disclosure with the measured affected-node-seconds, never a dollar figure.
-- Phase 3: not started
+- Phase 3 (surface): INCOMPLETE — the view-model layer and the CLI landed; the
+  acceptance criterion's other two halves did not, and the reason is ownership,
+  not difficulty.
+  - **The view-model layer is the surface, and the CLI is only its first
+    renderer.** `cli/risk_preview_cmd.py` builds `RiskPreviewView` as a *pure
+    function* of a `SimulateReport` — `build_risk_preview(report, run_id=...)` —
+    and projects off it twice: `render_preview_lines` (the CLI) and
+    `preview_payload` (what a UI would render). This is the part of the
+    acceptance criterion that is easiest to fake and the only part that could be
+    made structurally true, so it was built first. "Rendered identically" is
+    enforced by there being *one* presentation structure with **no word for
+    "inside policy" in either renderer**: `PolicyStance` (`inside_policy` /
+    `outside_policy` / `unchecked`) is the whole vocabulary, a UI that wanted
+    different words would have to edit the enum and every surface would follow,
+    and `exit_code_for` is the one place the "a preview is not a failure"
+    decision is written. `tests/unit/test_risk_preview_surface.py::test_every_claim_reaches_both_renderers`
+    asserts at the *view-model* layer — every claim's rule id and reason must
+    appear whole in both projections — rather than asserting the CLI printed some
+    strings, because the latter would pass against a surface with no UI contract
+    at all.
+  - **`unchecked` is a third stance and it is the reason this is an enum.** An
+    unconfigured ceiling was *not checked*, and rendering it `inside_policy` would
+    tell an approver a limit was honoured that nobody evaluated. All five plan-14
+    ceilings therefore render `unchecked` by default, with `CEILINGS_NOTE`
+    saying so. This is the engine's `CeilingVerdict.configured` read through, not
+    a second opinion: a breached ceiling whose rule is also in the prediction's
+    violated set appears **once**, as the per-step violation, because the ceiling
+    verdict derives its `breached` flag from `prediction.rule_ids`. A ceiling
+    that claims a breach the prediction does *not* carry is still rendered as a
+    breach rather than dropped — a record whose fields disagree about a breach
+    must not be able to make the breach disappear.
+  - **Every refusal renders as unusable rather than as a clean preview, and each
+    is asserted separately.** An unresolvable target set renders the offending ids
+    under `UNRESOLVED:` plus `approval_refusal_reason`'s sentence and
+    `usable_for_approval: false`; a `DISAGREES` agreement renders
+    `prediction.calmer_than_gate` quoting the engine's own reason (and a
+    disagreement record with *no* reason is refused outright, because a defect
+    report with the finding removed is not a report); an `UNMODELLED` agreement
+    renders `prediction.unmodelled_gate_refusal` naming the rules the gate refused
+    this preview has no vocabulary for, and **without** claiming a disagreement,
+    which would be a different and wrong finding. The `UNMODELLED` branch reads
+    the *named state* rather than trusting `report.approval_refusal` to have
+    carried the sentence — the engine always does, so that branch is the belt to
+    its braces, and it is what stops a hand-built record rendering calm.
+  - **A claim that cannot cite itself refuses at the view-model layer.**
+    `PreviewRenderRefusedError` (a typed `InvariantViolationError` carrying
+    `preview.claim_uncited`) is raised for a claim with a blank rule id or a blank
+    reason, so no renderer can be handed a row it would have to print as an empty
+    cell — an empty cell in a risk preview reads as "checked, nothing to say",
+    which is the one reading that is never right. `_claim` also appends the rule id
+    to the reason when the reason does not carry it, which makes the rendered
+    output greppable by rule: a claim whose rule can only be found by reading prose
+    is a claim nobody can look up when they need it.
+  - **The dependency view reads three existing sources and re-derives none of
+    them.** `mayhem risk-preview nodes --run RUN_ID` shows, per node: blast radius
+    from `domain.prediction.affected_node_ids` / `dependency_fan_out` (the same
+    functions the gate's numbers come from — asserted equal for every node, so a
+    second traversal here could not disagree with the engine about a depth), health
+    from the node's *own* `state` field, coverage from
+    `infra.coverage_repository.CoverageGraphRepository.graph()` (read-only; the
+    `inspect graph --record` write path is deliberately not reachable from here),
+    and incident history from captures shaped like `domain.advisor.IncidentFacts`.
+    Coverage and incidents each carry an `available` flag because "mayhem read the
+    graph and this service has no cells" is a different finding from "mayhem holds
+    no coverage graph", and the CLI has **no incident port bound** — so incidents
+    render `UNAVAILABLE` with the port named, never `0`. Health is the same shape:
+    a `ServiceNode` carries no lifecycle state, so it reports
+    `reported: false` / `unknown`, never "healthy".
+  - **No `--force`, no `--record`, no bypass, and the declared option set is
+    asserted exactly** (`--json`, `--fingerprint`, `--run`, `--node`) so adding one
+    is a deliberate edit. Mutation evidence is a *measurement* in two places: a
+    `MutationSink` pre-loaded with a recorded call stays at length 1 across
+    `simulate_plan` (a hard-coded zero in `MutationProof` would pass the naive
+    assertion and fail this one — and `calls` is the engine's *observed sink
+    length*, which is why the loaded case asserts `== 1`, matching
+    `test_prediction_service.py`), and the CLI's row counts on `observations`,
+    `runs`, `m5_coverage`, `coverage_graph_nodes`, `topology_snapshots`, and the
+    three attestation tables are compared before and after — including on the
+    *refusal* paths and for the `nodes` command, which is the one that reads the
+    coverage graph. A preview that sealed anything would itself be a mutation.
+  - **An unpriced estimate discloses, and the type refuses to render a price it
+    does not have.** `CostView.to_payload()` omits the `currency` and `total` keys
+    *entirely* when unpriced — not `null`, not `0.0`, because a consumer that
+    renders `total: null` beside a number draws a dollar sign and half the JSON
+    tooling in existence reads `null` as zero-with-no-units. Measured
+    `affected_node_seconds` is always present, since it *is* measured. The
+    rendered line is asserted to contain no `USD` and no `$`; a priced fixture
+    asserts the inverse so the unpriced assertions are not vacuous.
+  - **Two behaviours a reader should know are disclosures, not bugs.** The
+    preview adopts the **plan's own recorded** `environment_fingerprint` by
+    default, which means the fingerprint-drift check does not run — stated in
+    `FINGERPRINT_NOTE` in the rendered output and in the payload, because
+    `--fingerprint` is how a caller asks the stricter question. And no plan-14
+    ceilings are configurable from this surface yet, so all five report
+    `unchecked` (`CEILINGS_NOTE`). Both are the engine's defaults, never invented
+    numbers.
+  - **WHAT DID NOT LAND, precisely.** (a) *The preview output is not stored with
+    the plan.* The acceptance criterion says "preview output stored with the plan";
+    what exists is that the payload is a **stable, versioned, self-describing
+    structure** (`RISK_PREVIEW_SCHEMA_VERSION`, `to_payload()` on every view) with
+    a tested projection identity, and Phase 4's `seal_prediction` already stores
+    the `ImpactPrediction` this payload is derived from — but the
+    `RiskPreviewView` itself is written nowhere. Storing it would mean a write
+    path, and a read-only preview command must not have one, so this half of the
+    criterion needs a seam this lane does not own (a decision about where a
+    surface's rendered output gets persisted, most likely alongside
+    `seal_prediction`). (b) *There is no UI renderer, so "rendered identically in
+    CLI and UI" is not demonstrated.* Plan 08 does not exist. What landed is the
+    part that makes the two cannot drift when it arrives — one structure, two
+    projections, acceptance asserted at the structure — and
+    `test_the_ui_renderer_does_not_exist_yet` pins the shape of what is missing
+    (exactly two projections in this module, no third hiding in it) so the suite
+    cannot imply the criterion is met. Marked INCOMPLETE rather than DONE for
+    those two reasons. 76 tests, all six negative controls the phase calls for.
+  - **Files:** `src/mayhem/cli/risk_preview_cmd.py`,
+    `tests/unit/test_risk_preview_surface.py`. **Registration is not done and
+    was not attempted** — `cli/command_registry.py` and `cli/app.py` are outside
+    this lane's ownership, so the group is exported as `risk_preview` and the
+    suite invokes that group directly rather than the app, which is also why
+    the module renders and exits its own `MayhemCliError`s instead of relying on
+    `cli.app.main`'s exception mapping.
 - Phase 4 (safety and evidence integration): DONE, with one named debt carried forward.
   - **The five §Controls ceilings are enforced by the real gate.** `SafetyContext.blast_ceilings` is a new optional field defaulting to `None`; `controller/safety.py::_check_blast_ceilings` refuses `blast_radius.protected_node`, `…max_dependency_depth`, `…max_customer_facing_services`, `…max_affected_pct` and `…max_affected_nodes` from `check_blast_radius`, in the same order `domain/prediction.py` predicts them, on the same step — so the gate's refusal is inside the preview's flagged set by construction rather than by coincidence. With no ceiling configured the pass is byte-identical to a captured golden (`GOLDEN_NO_CEILINGS`, asserted in `tests/unit/test_prediction_evidence.py`). Measurements are borrowed from `domain.prediction` (`dependency_fan_out`, `customer_facing_node_ids`) rather than re-derived, because a second implementation could disagree with the preview about a depth or a front door.
   - **`PENDING_ADMISSION_WIRING` is now empty, and that emptiness is the assertion.** `is_enforced_by_gate` still derives `CeilingVerdict.enforced_by_gate` from the table, so deleting the five rows flipped every record at once. Phase 2's tripwire (`test_no_pending_ceiling_rule_id_is_one_the_real_gate_can_emit`) was *designed to fire* on this phase and did; it was retired by inversion rather than deleted, since the surviving form of the check — every ceiling reported as enforced is one the gate actually raises — is what keeps the derivation from degenerating into a bare default now the table is empty.
@@ -61,4 +181,4 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 3 of 6 phases complete.
+Overall: 4 of 6 phases complete.

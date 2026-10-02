@@ -53,6 +53,7 @@ from mayhem.domain.fabric import (
     FabricCommandType,
     FencingToken,
 )
+from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.store import Store
 
 if TYPE_CHECKING:
@@ -62,6 +63,11 @@ NOW = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
 RUN_ID = "r-1"
 STEP_ID = "s-1"
 TTL_S = 30.0
+
+#: The version of ``M0032_HA_DR``. A literal on purpose: the reversibility drill
+#: below is a claim about *that* migration, so the migration it targets is pinned
+#: while the length of the chain it sits in is not. See the test's docstring.
+HA_DR_VERSION = 32
 
 
 class Clock:
@@ -598,25 +604,56 @@ def test_m0032_is_reversible_and_reapplies_cleanly(tmp_path: Path) -> None:
     The additive-schema gate already asserts that a down path *exists*; this asserts
     it *works* and that the election's tables come back, because a down path that
     raises would leave an operator with no way back to a baseline.
+
+    Head-relative on purpose. The subject is migration **32 specifically** — that
+    *this* migration reverses, and that its tables come back — not "the chain
+    happens to be 32 long". So the literals below identify 32 and its baseline,
+    and everything that depends on *how far* the chain has grown is derived:
+
+    * the chain head is read from the database rather than pinned, so registering
+      34 does not turn a true statement into a false one;
+    * the rollback target is ``HA_DR_VERSION - 1``, so it is "undo the election
+      and its successors" regardless of how many successors exist;
+    * ``reversed_ids`` is asserted as "contains 0032, and ends with 0032" rather
+      than as an exact list, because ``migrate_down`` reverses in strictly
+      descending version order — so the lowest migration above the baseline is
+      reversed *last*, and "last is 0032" is precisely the claim that 32 was
+      reversed. That is *stronger* than the old ``== ["0032_ha_dr"]``, which was
+      only ever true while 32 was the head, and would have gone quietly stale the
+      next time anything was appended after it.
+
+    Rewriting ``== 32`` as ``== 33`` would have been the tempting one-line change
+    and is exactly the pin that breaks again on registration of 34.
     """
     path = tmp_path / "ha-dr.db"
     store = Store.open_migrated(path)
-    assert store.schema_version == 32
+    by_version = {m.version: m for m in ALL_MIGRATIONS}
+    ha_dr = by_version[HA_DR_VERSION]
+    assert ha_dr.migration_id == "0032_ha_dr"  # the literal subject of this test
+    head = store.schema_version
+    assert head is not None and head >= HA_DR_VERSION, (
+        "0032 must actually be applied to this database, or the drill below "
+        "proves nothing about it"
+    )
+
     engine = LeaderElection(
         store=SqliteLeadershipStore(store), controller_id="ctl-a", ttl_s=30.0
     )
     engine.campaign(now=NOW)
 
-    reversed_ids = store.migrate_down(31)
-    assert reversed_ids == ["0032_ha_dr"]
+    reversed_ids = store.migrate_down(HA_DR_VERSION - 1)
+    assert ha_dr.migration_id in reversed_ids
+    assert reversed_ids[-1] == ha_dr.migration_id
+    assert store.schema_version == HA_DR_VERSION - 1
     tables = {
         str(row["name"])
         for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert "control_plane_leaders" not in tables
 
-    store.migrate()
-    assert store.schema_version == 32
+    reapplied = store.migrate()
+    assert ha_dr.migration_id in reapplied
+    assert store.schema_version == head
     tables = {
         str(row["name"])
         for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")

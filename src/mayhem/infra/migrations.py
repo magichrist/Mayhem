@@ -1,5 +1,14 @@
-"""Schema v1 — canonical DDL from docs/reference/sqlite-schema.md."""
+"""Schema v1 — canonical DDL from docs/reference/sqlite-schema.md.
 
+Most migrations are spelled out inline below. The exception is a table whose
+module already owns its own row discipline and therefore already owns its DDL:
+:mod:`mayhem.infra.fabric_journal` is imported here rather than duplicated, so
+the table the engine writes to and the table a deployment migrates to cannot
+drift apart. See the note above :data:`ALL_MIGRATIONS` for why those two are the
+same obligation and not two copies of one.
+"""
+
+from mayhem.infra.fabric_journal import FABRIC_JOURNAL_MIGRATION
 from mayhem.infra.migrator import Migration
 
 M0001_INITIAL = Migration(
@@ -2589,4 +2598,27 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     # were reserved for concurrently-running lanes; see the migration's comment
     # block for why this one takes 32 and what it deliberately does not hold.
     M0032_HA_DR,
+    # ``fabric_journal`` (version 33) is plan 03 Phase 4's durable dispatch
+    # journal — the object the execution fabric's crash-safety claim rests on.
+    # It is the one entry imported rather than re-spelled inline: the table, its
+    # row model and its self-checking read path live together in
+    # ``fabric_journal``, so the DDL is imported from there and cannot be given a
+    # second, divergent spelling here.
+    #
+    # **Registering it is what makes the claim true.** Until this line existed,
+    # the table existed only in databases where a *caller* spliced the migration
+    # in — which is what every test of the journal did, and is precisely why a
+    # hand-spliced fixture cannot support a "crash-resume against a real migrated
+    # database" claim. In a real deployment the chain stopped at 32, the first
+    # dispatch write failed with ``no such table``, and no test noticed because no
+    # test used this tuple. Registration is therefore not bookkeeping: it is the
+    # single line that moves the journal from "verified against a database built
+    # to fit" to "present in every migrated database".
+    #
+    # It goes last because 33 is the id ``fabric_journal`` reserved when the head
+    # was 32, and the migrator requires strictly increasing versions in tuple
+    # order — it refuses a duplicate or an inversion at startup rather than
+    # silently applying a chain in the wrong order. See that module's
+    # ``FABRIC_JOURNAL_VERSION``.
+    FABRIC_JOURNAL_MIGRATION,
 )

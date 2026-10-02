@@ -67,18 +67,35 @@ Ownership rules encoded in the schema
 Registration
 ------------
 
-This migration is **not** appended to
-:data:`mayhem.infra.migrations.ALL_MIGRATIONS` by this work item, because that
-tuple is appended to concurrently by several lanes and a write conflict there is
-a conflict, not a merge. Registration is one line in that module::
+This migration **is** registered in
+:data:`mayhem.infra.migrations.ALL_MIGRATIONS`, imported rather than re-spelled
+there, as version 33 immediately after ``M0032_HA_DR``. Two consequences are
+worth stating plainly, because both were the reason registration used to be
+deferred:
 
-    from mayhem.infra.fabric_journal import FABRIC_JOURNAL_MIGRATION
-    # …and in ALL_MIGRATIONS, after M0032_HA_DR:
-    FABRIC_JOURNAL_MIGRATION,
+* **The DDL has exactly one home.** ``migrations.py`` imports
+  ``FABRIC_JOURNAL_MIGRATION`` instead of copying ``MIGRATION_SQL``, so the
+  table a deployment migrates to and the table :class:`FabricJournalTable`
+  inserts into cannot drift into two spellings that pass their own tests.
+* **The journal is now covered by a *real* migrated database.** Registration was
+  deferred while ``ALL_MIGRATIONS`` was being appended to by concurrent lanes,
+  so the table existed only where a caller spliced the migration in — which is
+  what every test here did. That arrangement proves the row discipline works and
+  proves nothing about whether the table is present in production, because a
+  fixture built to fit the code under test cannot fail for want of it. The crash-
+  resume claim in plan 03 Phase 4 is a claim about a migrated database, and it
+  needed this line before it was entitled to be one.
 
-:data:`FABRIC_JOURNAL_VERSION` is the id this work item reserved. The migrator
-keys on ``version`` and refuses duplicates, so a collision surfaces at startup
-rather than silently overwriting a neighbour.
+There is no import cycle to manage: this module imports
+:mod:`mayhem.infra.migrator` (for :class:`~mayhem.infra.migrator.Migration`) and
+never ``migrations``, so the dependency runs one way. ``infra`` importing ``infra``
+is permitted by the layering contract, which constrains *upward* imports only.
+
+:data:`FABRIC_JOURNAL_VERSION` is the id this work item reserved when the head
+was 32. The migrator keys on ``version`` and refuses duplicates and inversions, so
+a collision would surface at startup rather than silently overwriting a
+neighbour — which is why the id was reserved rather than chosen by renumbering
+anything already shipped.
 """
 
 from __future__ import annotations
@@ -127,8 +144,8 @@ def journal_artifact(run_id: str) -> str:
 # --------------------------------------------------------------------------- #
 
 #: Forward DDL. Kept as a module constant (rather than inline in the
-#: :class:`~mayhem.infra.migrator.Migration`) so the later registration step is a
-#: one-line import and a reader of ``migrations.py`` never has to diff a 60-line
+#: :class:`~mayhem.infra.migrator.Migration`) so ``migrations.py`` can import the
+#: migration object whole and a reader of that tuple never has to diff a 60-line
 #: string to see what a lane added.
 MIGRATION_SQL: tuple[str, ...] = (
     f"""
@@ -170,8 +187,8 @@ DOWN_SQL: tuple[str, ...] = (
     f"DROP TABLE {FABRIC_JOURNAL_TABLE}",
 )
 
-#: The migration object a later lane registers in
-#: :data:`~mayhem.infra.migrations.ALL_MIGRATIONS`.
+#: The migration object, registered in
+#: :data:`~mayhem.infra.migrations.ALL_MIGRATIONS` as version 33.
 FABRIC_JOURNAL_MIGRATION = Migration(
     version=FABRIC_JOURNAL_VERSION,
     name="fabric_journal",

@@ -149,10 +149,41 @@ if TYPE_CHECKING:
 
     from mayhem.infra.agent_identity_verifier import VerifiedCommand
 
-#: The migration chain this phase applies. Splicing rather than editing
-#: ``ALL_MIGRATIONS`` is deliberate and is the same trick every other lane uses:
-#: the test stays correct whatever a concurrent agent appends to that tuple.
-MIGRATIONS = (*ALL_MIGRATIONS, FABRIC_JOURNAL_MIGRATION)
+#: The migration chain this phase applies: the production chain, unaltered.
+#:
+#: This used to be ``(*ALL_MIGRATIONS, FABRIC_JOURNAL_MIGRATION)`` — a splice, and
+#: the "the test stays correct whatever a concurrent agent appends" trick. That
+#: arrangement was wrong twice over, and registration fixed both halves:
+#:
+#: * **It was a broken chain.** Once ``FABRIC_JOURNAL_MIGRATION`` was registered,
+#:   the splice registered version 33 a second time, so the migrator refused every
+#:   fixture here with ``strictly increasing; got 33 after 33``.
+#: * **It was a fixture built to fit the code under test.** Every database in this
+#:   file was migrated through a chain no deployment ever runs. A chain spliced
+#:   to contain the table under test cannot fail for want of that table, so these
+#:   tests proved the row discipline and proved *nothing* about the table being
+#:   present in production — which is exactly the defect registration removes, and
+#:   exactly why the crash-resume drill was not entitled to call itself a
+#:   crash-resume drill until now.
+#:
+#: So this is no longer a defensible *trick*; it is the plain production tuple.
+#: The crash-resume tests below now migrate through ``ALL_MIGRATIONS`` itself,
+#: which is what a deployment migrates to, and which makes their claim strictly
+#: stronger than the splice ever supported.
+MIGRATIONS = ALL_MIGRATIONS
+
+#: The version the down path returns to: the one before the journal.
+#:
+#: Deliberately ``FABRIC_JOURNAL_VERSION - 1`` and deliberately *not*
+#: ``len(ALL_MIGRATIONS) - 1``. The target of a rollback is a property of the
+#: migration being rolled back ("undo the journal, leave its neighbour alone"),
+#: not a property of how long the chain happens to be. Deriving it from
+#: ``len()`` would silently retarget it at whatever landed next: register 34 and
+#: ``migrate_down(33)`` becomes a no-op, so ``test_down_migration_removes_the_
+#: table_and_restores_the_prior_head`` would stop exercising the journal's down
+#: path while still reporting green. This form stays correct as the chain grows,
+#: and the assertions above it are written to accommodate whatever else the
+#: rollback necessarily also reverses.
 PRIOR_HEAD = FABRIC_JOURNAL_VERSION - 1
 
 NOW = datetime(2026, 3, 5, 9, 0, 0, tzinfo=UTC)
@@ -450,15 +481,19 @@ def store(db_path: Path) -> Store:
 
 
 class TestMigration:
-    def test_the_migration_is_not_yet_registered_in_all_migrations(self) -> None:
-        # The documented integration step. This test fails the moment a later
-        # lane registers it, which is the signal to delete this assertion.
-        assert FABRIC_JOURNAL_MIGRATION not in ALL_MIGRATIONS
-        assert FABRIC_JOURNAL_MIGRATION.version > max(m.version for m in ALL_MIGRATIONS)
-
     def test_up_migration_creates_the_table_and_records_its_version(self, store: Store) -> None:
         assert FabricJournalTable(store).table_exists() is True
-        assert store.schema_version == FABRIC_JOURNAL_VERSION
+        # "Records its version" is asserted against ``_schema_migrations`` rather
+        # than against the chain head. "The journal is the head" was true only
+        # while nothing had been appended after it, and pinning this file to that
+        # would re-break it on the next registration — the exact failure mode this
+        # change exists to remove. The claim that matters is that *this*
+        # migration was applied to *this* database.
+        applied = {
+            int(row["version"]): str(row["name"])
+            for row in store.query("SELECT version, name FROM _schema_migrations")
+        }
+        assert applied[FABRIC_JOURNAL_VERSION] == FABRIC_JOURNAL_MIGRATION.name
 
     def test_down_migration_removes_the_table_and_restores_the_prior_head(
         self, db_path: Path
@@ -478,8 +513,17 @@ class TestMigration:
         assert store.schema_version == PRIOR_HEAD
         assert FabricJournalTable(store).table_exists() is False
         # Re-applying works, which is the other half of "the down path restores
-        # the baseline" (ADR-M4-5).
-        assert store.migrate(migrations=MIGRATIONS) == [FABRIC_JOURNAL_MIGRATION.migration_id]
+        # the baseline" (ADR-M4-5). *Which* ids a re-apply from ``PRIOR_HEAD``
+        # produces is a function of the chain's length, so it is asserted as
+        # "every registered migration above the baseline, and the journal among
+        # them" — not as a list pinned to today's head, which would fail the day
+        # 34 is registered while the journal's down path stayed perfectly fine.
+        reapplied = store.migrate(migrations=MIGRATIONS)
+        assert set(reapplied) == {
+            m.migration_id for m in MIGRATIONS if m.version > PRIOR_HEAD
+        }
+        assert FABRIC_JOURNAL_MIGRATION.migration_id in reapplied
+        assert store.schema_version == MIGRATIONS[-1].version
         assert FabricJournalTable(store).table_exists() is True
         store.close()
 

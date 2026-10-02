@@ -181,4 +181,17 @@ def test_name_snapshot_is_stable() -> None:
         # ``down_statements`` like every migration after 16. It deliberately holds
         # no key material and no achieved-RPO column.
         "ha_dr",
+        # ``fabric_journal`` (version 33) is plan 03 Phase 4's durable dispatch
+        # journal: the append-only table the execution fabric records claims and
+        # settlements in, with the index columns and payload digest the model
+        # re-checks on read. Appended per the same procedure; nothing above is
+        # edited, and the migration carries ``down_statements`` like every
+        # migration after 16.
+        #
+        # This entry exists because the journal is now migrated by the production
+        # chain. Until it was registered in ``ALL_MIGRATIONS`` the table only
+        # existed in databases whose fixture spliced the migration in, so this
+        # snapshot had no reason to name it — and a test could pass against a
+        # table no deployment would ever have had.
+        "fabric_journal",
     ), "migration name sequence drifted from the snapshot — append-only."
