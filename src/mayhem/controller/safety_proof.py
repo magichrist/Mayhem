@@ -932,9 +932,7 @@ def _ceiling_field(limits: dict[str, Any], stat: str) -> str | None:
     if aliased is not None and aliased in limits:
         return aliased
     stat_words = set(stat.split("_"))
-    matches = [
-        field for field in sorted(limits) if stat_words <= set(field.split("_"))
-    ]
+    matches = [field for field in sorted(limits) if stat_words <= set(field.split("_"))]
     if len(matches) == 1:
         return matches[0]
     return None
