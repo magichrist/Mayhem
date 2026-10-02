@@ -35,11 +35,13 @@ boundary test that depended on a seed would be a test of the seed.
 
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from mayhem.controller.analytics_service import (
+    AUTHORITY_FIELDS,
     CANARY_LADDER,
     MAX_CERTIFIABLE_COMPONENTS,
     RULE_ADMISSION_REFUSED,
@@ -72,6 +74,7 @@ from mayhem.controller.analytics_service import (
     MetricChange,
     ObservationCitation,
     Promotion,
+    SearchRecord,
     Stage,
     StepOutcome,
     adaptive_run,
@@ -86,6 +89,7 @@ from mayhem.controller.analytics_service import (
     promote_to,
     recovery_curve,
     run_progressive,
+    search_policy_digest,
     stage_ladder,
     step_affordable,
 )
@@ -998,9 +1002,11 @@ def test_a_candidate_step_with_an_unknown_field_is_refused() -> None:
 
 
 def test_the_runner_will_not_execute_a_step_it_cannot_pay_for() -> None:
-    """The runner's own budget predicate, tested directly — including the case it
-    exists for, which the ordinary wiring never reaches: a budget the runner is
-    spending that the planner did not see."""
+    """The runner's own budget predicate, tested directly — the *pure* half of the
+    check. The live half, taken through :func:`adaptive_run` with a planner budget the
+    runner is not spending, is in ``tests/unit/test_analytics_evidence.py``; both are
+    here because the helper must be right on its own and the runner must refuse to
+    spend what it does not have."""
     budget = policy().budget(0.5)
 
     assert step_affordable(budget, step(0, 4.0)) != ""
@@ -1355,6 +1361,66 @@ def test_resuming_a_search_carries_the_boundary_it_already_found() -> None:
     assert run.history.steps_used >= walked.steps_used
     assert run.report.boundary == walked.boundary
     assert run.report.bracket_low == walked.bracket_low
+
+
+# =======================================================================================
+# Phase 4 on the runner: the budget divergence and the search record
+# =======================================================================================
+
+
+def test_the_default_wiring_leaves_the_runners_budget_check_unreachable() -> None:
+    """With one budget, the planner refuses first and the runner's second check never
+    runs. Asserted rather than assumed: an ``AdaptiveRun`` that recorded a divergence
+    in the ordinary wiring would make the record meaningless, and a step charged
+    without the planner's agreement would mean the runner had stopped asking.
+
+    The reachable case — a planner budget the runner is not spending — is in
+    ``tests/unit/test_analytics_evidence.py``; this is the other half of the same
+    claim, and both halves have to hold for the check to be worth having.
+    """
+    search = policy()
+
+    run, _ = _run(search)
+
+    assert run.divergence is None
+    assert run.stops_on_divergent_budget is False
+    assert run.recorded is False
+
+    starved, recorder = _run(search, remaining=0.5)
+
+    # The planner stopped it before a step existed, so no admission record was made
+    # and the runner's own rule id never appears.
+    assert starved.stop is StopReason.NO_REMAINING_BUDGET
+    assert starved.admissions == ()
+    assert starved.executed == 0
+    assert "execute" not in recorder.calls
+
+
+def test_every_run_carries_a_search_record_naming_what_it_perturbed() -> None:
+    """A run describes itself even with no recorder attached. The record is what
+    :func:`record_boundary_search` writes into the audit stream, so it has to carry
+    the policy's identity and the ladder that was actually charged — and it must not
+    carry anything an approval could ride in."""
+    search = policy()
+
+    run, _ = _run(search)
+
+    record = run.record
+    assert isinstance(record, SearchRecord)
+    assert record.policy_name == search.name
+    assert record.policy_digest == search_policy_digest(search)
+    assert record.origin is SearchOrigin.AUTHORED
+    assert record.stop is run.stop
+    assert record.boundary == run.boundary
+    assert record.approved_by == ("sre-oncall",)
+    # The ladder is the values the system was actually asked to absorb, in order, and
+    # it is the same set the history recorded.
+    assert list(record.perturbations) == [trial.step.value for trial in run.history.trials]
+    assert [trace.index for trace in record.ladder] == list(
+        range(run.history.steps_used)
+    )
+    # And it grants nothing: no field here is an authority field.
+    assert {entry.name for entry in dataclass_fields(record)}.isdisjoint(AUTHORITY_FIELDS)
 
 
 # =======================================================================================

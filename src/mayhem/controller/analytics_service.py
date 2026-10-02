@@ -74,11 +74,63 @@ the SLO criteria that gate it, and promotion requires them to pass
 (:func:`promote_to`). An unhealthy stage stops the ladder; a stage with no
 recorded observation is *not* healthy, because "could not see it" and "nothing
 is wrong" are different answers and only one of them may promote a canary.
+
+Phase 4 — safety and evidence integration
+-----------------------------------------
+
+Phase 2 computed these reports and left three things open. All three are closed
+below, and each closing is a construction rule rather than a review habit.
+
+**The runner's own budget check is live, not decorative.** Phase 2's
+:func:`step_affordable` could only be reached by handing the runner a budget the
+planner did not see, and the ordinary wiring made that impossible. It is now a
+documented parameter: ``planner_budget`` lets a caller hand
+:func:`~mayhem.domain.search.plan_next_step` one budget while the runner spends
+another (:attr:`AdaptiveRun.divergence` names the two and the step they
+disagreed on). That is the case the check exists for — a ledger drained by a
+concurrent step, a search resumed against a smaller allocation, a caller that
+declared its full allowance up front — and it is reachable only by asking for
+it, so a divergence is a decision somebody made rather than a coincidence. The
+evidence is in the step itself: :class:`~mayhem.domain.search.SearchStep` records
+``budget_remaining`` as the *planner's* reading, so a divergence is visible in
+the sealed history and not merely in prose here.
+
+**Analytics evidence is sealed, and an unsupported claim is withheld.** Every
+report type carries its own support — the trial digests behind a boundary
+(:attr:`BoundaryReport.trial_digests`), the sample digest behind a recovery curve
+(:attr:`RecoveryCurve.samples_digest`), the tried cases behind a minimal failure
+case (:attr:`MinimalFailureCase.case_digests`), and the observation citations
+plus topology edges behind a causal chain. :func:`analytics_evidence` turns those
+into :class:`AnalyticsClaim` values and :func:`seal_analytics_evidence` seals
+them through :mod:`mayhem.infra.attestation_store` — the same sealer, the same
+verifier, the same evidence boundary, no second chain format. A claim with no
+support cannot be *constructed* (:data:`RULE_EVIDENCE_UNSUPPORTED`), and a
+report with no support becomes a :class:`WithheldEvidence` beside the claims that
+survived: the answer to "what did the search establish" is never a guess.
+:func:`require_sealed_claim` is the gate a decision path calls, and an unsealed
+report cannot cross it (:data:`RULE_EVIDENCE_NOT_SEALED`).
+
+**A boundary search is a privileged action, so it is an audit entry.** The runner
+builds a :class:`SearchRecord` naming the policy digest, the origin, the
+approvers, and the escalating ladder it walked, and hands it to whatever recorder
+the caller wired; :func:`record_boundary_search` writes it to
+:mod:`mayhem.infra.audit_stream` as :data:`KIND_RESILIENCE_BOUNDARY_SEARCHED`.
+The stream is the cross-run log that already exists, so an operator can see who
+searched a boundary and under what authorization without a second logger.
+:func:`require_recorded_search` is the fail-closed counterpart: a search with no
+entry in the stream is refused (:data:`RULE_SEARCH_NOT_RECORDED`).
+
+None of this widens the AI boundary. :data:`AUTHORITY_FIELDS` and
+:func:`_authority_keys` are unchanged and remain the single authority scan plan
+21's advisor service imports — this phase reuses them and forks neither. Neither
+:class:`AnalyticsClaim` nor :class:`SearchRecord` has a field an approval could
+travel in, so evidence cannot become an authority channel.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -87,6 +139,18 @@ from math import ceil, isfinite
 from typing import TYPE_CHECKING
 
 from mayhem.domain.analytics import Comparison, SamplePolicy, compare
+from mayhem.domain.attestation import (
+    GENESIS_DIGEST,
+    AttestedEvent,
+    AttestedTimestamp,
+    RetentionClass,
+    build_manifest,
+    chain_root,
+    seal_events,
+    verify_chain,
+    verify_manifest,
+)
+from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.hashing import digest
 from mayhem.domain.observations import ObservationResult, ObservationStatus
@@ -122,16 +186,37 @@ from mayhem.domain.steady_state import (
     sample_baseline,
     within_relative,
 )
+from mayhem.domain.topology import EdgeKind
+from mayhem.infra.attestation_store import (
+    SIGNATURE_UNSIGNED_NO_SIGNING,
+    UNSIGNED_REASON_NO_SIGNING,
+    AttestationError,
+    AttestationRepository,
+)
+from mayhem.infra.audit_stream import AuditEntry
 
 if TYPE_CHECKING:
+    from mayhem.domain.attestation import (
+        ChainVerification,
+        Manifest,
+        ManifestVerification,
+    )
     from mayhem.domain.experiments import ExecutionPlan
     from mayhem.domain.observations import CriterionOutcome, SloCriterion
     from mayhem.domain.steady_state import Baseline, Tolerance
-    from mayhem.domain.topology import EdgeKind, TopologyGraph
+    from mayhem.domain.topology import TopologyGraph
+    from mayhem.infra.audit_stream import AuditStream
+    from mayhem.infra.store import Store
 
 __all__ = [
+    "ANALYTICS_CHAIN_PREFIX",
     "AUTHORITY_FIELDS",
     "CANARY_LADDER",
+    "CHAIN_EVENT_ANALYTICS_CLAIM",
+    "CHAIN_EVENT_ANALYTICS_RECORDED",
+    "CHAIN_EVENT_ANALYTICS_SEALED",
+    "CHAIN_EVENT_ANALYTICS_WITHHELD",
+    "KIND_RESILIENCE_BOUNDARY_SEARCHED",
     "MAX_CERTIFIABLE_COMPONENTS",
     "RULE_ADMISSION_REFUSED",
     "RULE_CAUSAL_NOT_CUSTOMER_FACING",
@@ -143,22 +228,32 @@ __all__ = [
     "RULE_DRAFT_STEP_COST_MISMATCH",
     "RULE_DRAFT_UNKNOWN_FIELD",
     "RULE_DRAFT_VALUE_OUT_OF_LADDER",
+    "RULE_EVIDENCE_NOT_SEALED",
+    "RULE_EVIDENCE_UNSUPPORTED",
     "RULE_HOP_UNSUPPORTED",
     "RULE_HOP_WITHOUT_EDGE",
     "RULE_LADDER_NOT_INCREASING",
     "RULE_NO_TARGETS",
+    "RULE_PLANNER_BUDGET_DIVERGED",
+    "RULE_SEARCH_NOT_RECORDED",
     "RULE_STAGE_NOT_HEALTHY",
     "RULE_STAGE_NO_CRITERIA",
     "RULE_STEP_NOT_APPROVED",
     "RULE_STEP_UNAFFORDABLE",
     "AdaptiveRun",
+    "AnalyticsClaim",
+    "AnalyticsEvidence",
+    "AnalyticsEvidenceVerdict",
+    "AnalyticsSeal",
     "BoundaryReport",
+    "BudgetDivergence",
     "CausalAnalysis",
     "CausalChain",
     "CausalClaimRequest",
     "CausalHop",
     "CausalStep",
     "CitationKind",
+    "ClaimKind",
     "CustomerImpactCheck",
     "EdgeCitation",
     "FailureCase",
@@ -169,13 +264,21 @@ __all__ = [
     "RecoveryCurve",
     "RecoveryPoint",
     "ResilienceAnalysis",
+    "SearchRecord",
+    "SearchStepTrace",
     "Stage",
     "StageOutcome",
     "StepAdmission",
     "StepOutcome",
     "WithheldClaim",
+    "WithheldEvidence",
     "adaptive_run",
+    "analytics_chain_id",
+    "analytics_evidence",
+    "analytics_manifest_id",
     "analyze_run",
+    "boundary_claim",
+    "boundary_decision_support",
     "boundary_report",
     "causal_chains",
     "compile_candidate",
@@ -184,10 +287,16 @@ __all__ = [
     "evaluate_stage",
     "minimal_failure_case",
     "promote_to",
+    "record_boundary_search",
     "recovery_curve",
+    "require_recorded_search",
+    "require_sealed_claim",
     "run_progressive",
+    "seal_analytics_evidence",
+    "search_policy_digest",
     "stage_ladder",
     "step_affordable",
+    "verify_analytics_evidence",
 ]
 
 # -- rule ids -----------------------------------------------------------------------------
@@ -211,6 +320,43 @@ RULE_NO_TARGETS = "analytics.no_targets"
 RULE_LADDER_NOT_INCREASING = "analytics.ladder_not_increasing"
 RULE_STAGE_NO_CRITERIA = "analytics.stage_declares_no_criteria"
 RULE_STAGE_NOT_HEALTHY = "analytics.stage_not_healthy"
+#: Phase 4. The runner spent a budget the planner did not see
+#: (:attr:`AdaptiveRun.divergence`), and the runner's own per-step check is what
+#: caught it. Named so an operator reading an admission record can tell "the gate
+#: said no" from "the ledger and the plan disagreed".
+RULE_PLANNER_BUDGET_DIVERGED = "analytics.planner_budget_diverged"
+#: Phase 4. A claim with no observation and no topology edge behind it. Phase 2
+#: raised the same law for a causal hop
+#: (:data:`RULE_HOP_UNSUPPORTED`); this is the whole-analysis form, because a
+#: boundary, a curve, or a minimal case rests on records too.
+RULE_EVIDENCE_UNSUPPORTED = "analytics.evidence_unsupported"
+#: Phase 4. A decision asked a report to back it and that report is not in a
+#: verified attestation chain.
+RULE_EVIDENCE_NOT_SEALED = "analytics.evidence_not_sealed"
+#: Phase 4. A search ran and the cross-run audit stream holds no entry for it.
+RULE_SEARCH_NOT_RECORDED = "analytics.search_not_recorded"
+
+#: The synthetic run id an analytics chain hangs off, for the reason
+#: :mod:`mayhem.controller.certification_evidence` names its own: plan 12's
+#: verifier defines a chain as starting at genesis for one ``run_id``, so an
+#: analysis that spans several runs cannot hang off any one of them. The subject
+#: run id travels in the payload instead.
+ANALYTICS_CHAIN_PREFIX = "analytics.claim-chain"
+
+#: Event kinds on that chain, in chain order.
+CHAIN_EVENT_ANALYTICS_RECORDED = "analytics.recorded"
+CHAIN_EVENT_ANALYTICS_CLAIM = "analytics.claim"
+CHAIN_EVENT_ANALYTICS_WITHHELD = "analytics.claim.withheld"
+CHAIN_EVENT_ANALYTICS_SEALED = "analytics.sealed"
+
+#: The audit-stream action a resilience-boundary search is recorded under.
+#:
+#: Declared here rather than in :mod:`mayhem.infra.audit_stream` only because this
+#: phase does not own that file; the audit module's own docstring keeps the closed
+#: ``KIND_*`` vocabulary there so a new action is a grep-able edit, and moving this
+#: constant there is the follow-up it expects. The *string* is the event kind the
+#: entry carries, exactly as for every other action in the stream.
+KIND_RESILIENCE_BOUNDARY_SEARCHED = "audit.resilience_boundary.searched"
 
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
@@ -227,6 +373,11 @@ NO_METRIC_MOVEMENT_NOTE = (
     "the metric comparison at this dependency is not a graded material change: a chain "
     "cannot say a metric changed when the comparison says it could not be separated "
     "from the noise"
+)
+NO_SUPPORT_NOTE = (
+    "this report rests on no observation and no topology edge, so it is withheld rather "
+    "than sealed: 'the search found nothing' is a finding, and 'the search ran nothing' "
+    "is not one"
 )
 
 
@@ -836,6 +987,15 @@ class BoundaryReport:
     boundary_comparison: Comparison | None = None
     note: str = ""
     insufficient_trials: tuple[int, ...] = ()
+    trial_digests: tuple[str, ...] = ()
+    """The sha256 digest of every trial the bracket was read from, in order.
+
+    The report's own support (Phase 4). A boundary is a statement about the trials
+    that were executed, so the report carries the digests of those trials rather
+    than leaving a reader to re-derive them from a history that may since have
+    been redacted — and an empty tuple is what makes ``boundary is None`` over
+    zero trials *withheld* rather than sealed as a finding.
+    """
 
     @property
     def tolerance_statement(self) -> str:
@@ -896,6 +1056,7 @@ class BoundaryReport:
             "tolerance_statement": self.tolerance_statement,
             "confidence_statement": self.confidence_statement,
             "note": self.note,
+            "trial_digests": list(self.trial_digests),
         }
 
 
@@ -916,6 +1077,13 @@ def boundary_report(
     Trials whose measurement was insufficient are counted and named, never folded
     into the boundary: a search that stopped on an unmeasurable trial has a bracket
     from the trials before it and a note about the one it could not use.
+
+    The bracket itself is *not* recomputed here — :attr:`SearchHistory.boundary`
+    and :attr:`SearchHistory.bracket_low` are the one definition of it, and this
+    function reads them. Re-deriving them over the same trials in a second place
+    would give the runner and a later re-analysis two chances to disagree about
+    where the boundary is, and only one of them would be in the sealed evidence.
+    What this adds is the report shape and the trial digests behind it.
     """
     trials = history.trials
     boundary = history.boundary
@@ -954,6 +1122,7 @@ def boundary_report(
         boundary_comparison=boundary_comparison,
         note=note,
         insufficient_trials=insufficient,
+        trial_digests=tuple(digest(trial.to_dict()) for trial in trials),
     )
 
 
@@ -1002,6 +1171,16 @@ class RecoveryCurve:
     graded: bool
     comparison: Comparison | None = None
     note: str = ""
+    samples_digest: str = ""
+    """The sha256 digest of the raw baseline and cooldown samples (Phase 4).
+
+    The curve's own support: the baseline capture and the post-fault samples it was
+    computed from. Taken over the *inputs*, not over this curve, so a curve whose
+    samples were re-read differently is a different piece of evidence rather than
+    the same one quoted again. Empty when no post-fault sample exists at all — which
+    is the case :func:`analytics_evidence` withholds, because a curve with no
+    samples is not a recovery and is not evidence of one.
+    """
 
     @property
     def curve(self) -> tuple[float, ...]:
@@ -1045,7 +1224,27 @@ class RecoveryCurve:
             "comparison": None if self.comparison is None else self.comparison.to_dict(),
             "statement": self.statement,
             "note": self.note,
+            "samples_digest": self.samples_digest,
         }
+
+
+def _samples_digest(
+    baseline_values: Sequence[float], cooldown_values: Sequence[float]
+) -> str:
+    """The digest of one signal's raw capture, or ``""`` when there is nothing.
+
+    Empty is the honest answer for a curve with no post-fault samples: there is no
+    capture to cite, and citing the empty list would mint a digest that a reader
+    could later match against any other empty capture.
+    """
+    if not cooldown_values:
+        return ""
+    return digest(
+        {
+            "baseline": [float(value) for value in baseline_values],
+            "cooldown": [float(value) for value in cooldown_values],
+        }
+    )
 
 
 def recovery_curve(
@@ -1070,6 +1269,7 @@ def recovery_curve(
     """
     floor = SamplePolicy() if sample_policy is None else sample_policy
     baseline = sample_baseline(baseline_values, percentile=percentile)
+    samples = _samples_digest(baseline_values, cooldown_values)
     if not cooldown_values:
         # Checked before sufficiency, and deliberately: "no post-fault samples at
         # all" is a different failure from "fewer post-fault samples than the
@@ -1088,6 +1288,7 @@ def recovery_curve(
                 "recovery, and reporting one as clean would be the residue this tool "
                 "exists to surface"
             ),
+            samples_digest=samples,
         )
     base_count = 0 if baseline is None else baseline.samples
     sufficiency = floor.check(base_count, len(cooldown_values))
@@ -1102,6 +1303,7 @@ def recovery_curve(
             verdict=None,
             graded=False,
             note=sufficiency.reason,
+            samples_digest=samples,
         )
     points = tuple(
         RecoveryPoint(
@@ -1138,6 +1340,7 @@ def recovery_curve(
             materiality_pct=materiality_pct,
         ),
         note=result.note,
+        samples_digest=samples,
     )
 
 
@@ -1209,6 +1412,15 @@ class MinimalFailureCase:
     minimal: bool
     considered: int
     note: str = ""
+    case_digests: tuple[str, ...] = ()
+    """The sha256 digest of every *measurable* tried case the reduction read (Phase 4).
+
+    Including the cases that did **not** reproduce, because minimality is a claim
+    about the subsets that were tried and cleared — a minimal case with no record of
+    the clearances behind it is an assertion. Empty when no measurable case was
+    offered, which is what makes "nothing reproduced over nothing tried" withheld
+    rather than sealed as a finding.
+    """
 
     @property
     def found(self) -> bool:
@@ -1222,6 +1434,7 @@ class MinimalFailureCase:
             "found": self.found,
             "considered": self.considered,
             "note": self.note,
+            "case_digests": list(self.case_digests),
         }
 
 
@@ -1239,6 +1452,9 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
     subset that was never tried blocks certification and is named in the note.
     """
     usable = [case for case in cases if case.sufficient]
+    # Ordered by the canonical key, not by the caller's order, so the support a
+    # reader gets is the same whichever order the cases arrived in.
+    digests = tuple(digest(case.to_dict()) for case in sorted(usable, key=lambda c: c.key()))
     reproductions = sorted(
         (case for case in usable if case.reproduced),
         key=lambda case: (case.size, case.key()),
@@ -1254,6 +1470,7 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
                 "measurable case(s): there is no minimal failure case to report, and "
                 "the absence is the finding"
             ),
+            case_digests=digests,
         )
     winner = reproductions[0]
     if winner.size > MAX_CERTIFIABLE_COMPONENTS:
@@ -1267,6 +1484,7 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
                 "component certification ceiling, so this is the smallest tried "
                 "reproduction and not a certified minimal case"
             ),
+            case_digests=digests,
         )
     tried = {case.key(): case for case in usable}
     untested: list[str] = []
@@ -1290,6 +1508,7 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
                 f"{len(untested)} proper subset(s) were never tried or also reproduced "
                 f"(first: {sorted(untested)[0]})"
             ),
+            case_digests=digests,
         )
     return MinimalFailureCase(
         case=winner,
@@ -1299,6 +1518,7 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
         note=(
             "every fault-bearing proper subset was tried and did not reproduce"
         ),
+        case_digests=digests,
     )
 
 
@@ -1311,6 +1531,857 @@ def _proper_subsets(components: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
         )
         found.append(subset)
     return tuple(found)
+
+
+# =======================================================================================
+# Sealed analytics evidence (Phase 4)
+# =======================================================================================
+
+
+class ClaimKind(StrEnum):
+    """What one sealed claim is about."""
+
+    BOUNDARY = "boundary"
+    RECOVERY = "recovery"
+    MINIMAL_FAILURE_CASE = "minimal-failure-case"
+    CAUSAL_CHAIN = "causal-chain"
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsClaim:
+    """One analytics finding, the digest that fixes it, and what it rests on.
+
+    Three refusals, all at construction, because a claim is a value that travels
+    into sealed bytes and a value that cannot hold a lie is cheaper to audit than a
+    reviewer:
+
+    * no subject (:data:`RULE_EVIDENCE_UNSUPPORTED`);
+    * a ``claim_digest`` that is not a sha256 hex digest
+      (:data:`RULE_CITATION_NOT_A_DIGEST` — the same law every other citation in
+      this module obeys, applied to the claim itself rather than to its support);
+    * no support at all (:data:`RULE_EVIDENCE_UNSUPPORTED`).
+
+    ``support`` reuses the citation types Phase 2 already defined rather than
+    inventing a third: an :class:`ObservationCitation` names a record by digest, an
+    :class:`EdgeCitation` names a topology edge in full. A causal chain's own
+    citations are already values of those two types, so sealing one is a projection
+    rather than a translation.
+    """
+
+    kind: ClaimKind
+    subject: str
+    claim_digest: str
+    support: tuple[ObservationCitation | EdgeCitation, ...]
+    statement: str = ""
+    detail: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.subject.strip():
+            raise InvariantViolationError(
+                RULE_EVIDENCE_UNSUPPORTED,
+                f"a {self.kind.value} claim must name what it is about",
+            )
+        if _SHA256_HEX.fullmatch(self.claim_digest) is None:
+            raise InvariantViolationError(
+                RULE_CITATION_NOT_A_DIGEST,
+                f"a claim digest must be the sha256 of the report it claims to describe, "
+                f"got {self.claim_digest!r}",
+            )
+        if not self.support:
+            raise InvariantViolationError(
+                RULE_EVIDENCE_UNSUPPORTED,
+                f"the {self.kind.value} claim about {self.subject!r} cites neither an "
+                f"observation nor a topology edge: {NO_SUPPORT_NOTE}",
+            )
+
+    @property
+    def observations(self) -> tuple[ObservationCitation, ...]:
+        return tuple(c for c in self.support if isinstance(c, ObservationCitation))
+
+    @property
+    def edges(self) -> tuple[EdgeCitation, ...]:
+        return tuple(c for c in self.support if isinstance(c, EdgeCitation))
+
+    @property
+    def support_refs(self) -> tuple[str, ...]:
+        """Every support reference, in the order the claim cites them.
+
+        Digests for observations, ``kind:src->dst`` keys for edges — so one tuple
+        answers "what was this computed from" without the reader having to know
+        which kind of citation each entry is.
+        """
+        return tuple(
+            citation.ref if isinstance(citation, ObservationCitation) else citation.key()
+            for citation in self.support
+        )
+
+    def payload(self) -> dict[str, object]:
+        """The attested body: the claim, its statement, and its support."""
+        return {
+            "kind": self.kind.value,
+            "subject": self.subject,
+            "claim_digest": self.claim_digest,
+            "statement": self.statement,
+            "support": [citation.to_dict() for citation in self.support],
+            "support_refs": list(self.support_refs),
+            "detail": dict(sorted(self.detail.items())),
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return self.payload()
+
+
+@dataclass(frozen=True, slots=True)
+class WithheldEvidence:
+    """A report that could not be sealed because it rested on nothing.
+
+    The Phase 4 sibling of :class:`WithheldClaim`: that one is a causal chain that
+    stopped at a hop, this is a boundary or a curve or a minimal case that has no
+    observation behind it at all. Both are reported rather than dropped, because a
+    reader who counts the claims also has to be able to count what did not survive.
+    """
+
+    kind: ClaimKind
+    subject: str
+    rule_id: str
+    reason: str
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "subject": self.subject,
+            "rule_id": self.rule_id,
+            "reason": self.reason,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return self.payload()
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsEvidence:
+    """What one analysis supports, and what it had to withhold."""
+
+    run_id: str
+    claims: tuple[AnalyticsClaim, ...] = ()
+    withheld: tuple[WithheldEvidence, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """Every report in the analysis became a claim — no section was withheld."""
+        return not self.withheld
+
+    @property
+    def claim_digests(self) -> tuple[str, ...]:
+        return tuple(claim.claim_digest for claim in self.claims)
+
+    def claim_for(self, claim_digest: str) -> AnalyticsClaim | None:
+        return next(
+            (claim for claim in self.claims if claim.claim_digest == claim_digest), None
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "claims": [claim.to_dict() for claim in self.claims],
+            "withheld": [claim.to_dict() for claim in self.withheld],
+            "claim_digests": list(self.claim_digests),
+            "complete": self.complete,
+        }
+
+
+def boundary_claim(report: BoundaryReport) -> AnalyticsClaim | WithheldEvidence:
+    """The boundary report as a claim, or the reason it cannot be one.
+
+    The support is every trial the bracket was read from
+    (:attr:`BoundaryReport.trial_digests`), in order. A report over no trials at all
+    is withheld: "no impairment crossed the tolerance" over an empty history is not
+    a finding about the system's tolerance, it is a statement that nobody ran
+    anything, and sealing it would let a search that executed zero steps produce a
+    signed boundary of ``None``.
+    """
+    support = tuple(
+        ObservationCitation(
+            kind=CitationKind.TRIAL,
+            ref=ref,
+            detail=f"trial {index}",
+        )
+        for index, ref in enumerate(report.trial_digests)
+    )
+    if not support:
+        return WithheldEvidence(
+            kind=ClaimKind.BOUNDARY,
+            subject=report.policy_name,
+            rule_id=RULE_EVIDENCE_UNSUPPORTED,
+            reason=(
+                f"the search executed no trial at all, so this report rests on nothing: "
+                f"{NO_SUPPORT_NOTE}"
+            ),
+        )
+    return AnalyticsClaim(
+        kind=ClaimKind.BOUNDARY,
+        subject=report.policy_name,
+        claim_digest=digest(report.to_dict()),
+        support=support,
+        statement=report.tolerance_statement,
+        detail={
+            "boundary": report.boundary,
+            "bracket_low": report.bracket_low,
+            "bracket_high": report.bracket_high,
+            "resolved": report.resolved,
+            "resolution": report.resolution,
+            "trials": report.trials,
+            "highest_tried": report.highest_tried,
+            "insufficient_trials": list(report.insufficient_trials),
+            "confidence_statement": report.confidence_statement,
+        },
+    )
+
+
+def _recovery_claim(curve: RecoveryCurve) -> AnalyticsClaim | WithheldEvidence:
+    """One recovery curve as a claim, or withheld when there were no samples.
+
+    ``graded`` travels in the detail rather than deciding the claim: a curve that
+    could not be separated from noise is still a record of what was measured, and
+    sealing it with ``graded: false`` keeps it out of the set of findings while
+    leaving it in the evidence. Only the absence of samples withholds it.
+    """
+    if not curve.samples_digest:
+        return WithheldEvidence(
+            kind=ClaimKind.RECOVERY,
+            subject=curve.name,
+            rule_id=RULE_EVIDENCE_UNSUPPORTED,
+            reason=(
+                f"no post-fault sample was recorded for {curve.name!r}: {NO_SUPPORT_NOTE}"
+            ),
+        )
+    return AnalyticsClaim(
+        kind=ClaimKind.RECOVERY,
+        subject=curve.name,
+        claim_digest=digest(curve.to_dict()),
+        support=(
+            ObservationCitation(
+                kind=CitationKind.METRIC,
+                ref=curve.samples_digest,
+                detail=f"{curve.name}: baseline and cooldown samples",
+            ),
+        ),
+        statement=curve.statement,
+        detail={
+            "graded": curve.graded,
+            "recovered": curve.recovered,
+            "recovered_at_index": curve.recovered_at_index,
+            "residual_pct": curve.residual_pct,
+            "samples": len(curve.points),
+            "verdict": None if curve.verdict is None else curve.verdict.value,
+        },
+    )
+
+
+def _minimal_claim(case: MinimalFailureCase) -> AnalyticsClaim | WithheldEvidence:
+    """One minimal-failure-case reduction as a claim, or withheld.
+
+    The support is every measurable case that was tried — reproductions *and*
+    clearances — because minimality is a claim about the subsets that were tried
+    and did not reproduce. ``minimal`` travels in the detail so a reader can tell a
+    certified minimal case from the smallest *tried* one without re-deriving the
+    subset walk.
+    """
+    if not case.case_digests:
+        return WithheldEvidence(
+            kind=ClaimKind.MINIMAL_FAILURE_CASE,
+            subject=case.case.key() if case.case is not None else "(none)",
+            rule_id=RULE_EVIDENCE_UNSUPPORTED,
+            reason=(
+                f"no measurable fault/target combination was tried, so the reduction "
+                f"rests on nothing: {NO_SUPPORT_NOTE}"
+            ),
+        )
+    return AnalyticsClaim(
+        kind=ClaimKind.MINIMAL_FAILURE_CASE,
+        subject=case.case.key() if case.case is not None else "(none-reproduced)",
+        claim_digest=digest(case.to_dict()),
+        support=tuple(
+            ObservationCitation(
+                kind=CitationKind.TRIAL,
+                ref=ref,
+                detail=f"tried case {index}",
+            )
+            for index, ref in enumerate(case.case_digests)
+        ),
+        statement=case.note,
+        detail={
+            "found": case.found,
+            "size": case.size,
+            "minimal": case.minimal,
+            "considered": case.considered,
+            "combination": None if case.case is None else case.case.key(),
+        },
+    )
+
+
+def _chain_claim(chain: CausalChain) -> AnalyticsClaim | WithheldEvidence:
+    """One causal chain as a claim, citing the records and the edges behind it.
+
+    The chain's own citations, unchanged: every observation it was built over and
+    every topology edge it traversed. A chain cannot be sealed with fewer citations
+    than it already carries, and a chain that carries none cannot be built at all
+    (Phase 2), so this branch exists to name the failure rather than to search for
+    support.
+    """
+    support: tuple[ObservationCitation | EdgeCitation, ...] = (
+        *chain.observations,
+        *chain.edges,
+    )
+    if not support:
+        return WithheldEvidence(
+            kind=ClaimKind.CAUSAL_CHAIN,
+            subject=chain.fault_id,
+            rule_id=RULE_EVIDENCE_UNSUPPORTED,
+            reason=(
+                f"the chain from fault {chain.fault_id!r} cites neither an observation "
+                f"nor a topology edge: {NO_SUPPORT_NOTE}"
+            ),
+        )
+    return AnalyticsClaim(
+        kind=ClaimKind.CAUSAL_CHAIN,
+        subject=chain.fault_id,
+        claim_digest=digest(chain.to_dict()),
+        support=support,
+        statement=(
+            f"{chain.fault_id} → {chain.target_id} → {chain.dependency_id} → "
+            f"{chain.metric} → {chain.customer_node_id}"
+        ),
+        detail={
+            "target_id": chain.target_id,
+            "dependency_id": chain.dependency_id,
+            "metric": chain.metric,
+            "customer_node_id": chain.customer_node_id,
+            "hops": [hop.hop.value for hop in chain.hops],
+            "edge_citations": len(chain.edges),
+            "observation_citations": len(chain.observations),
+        },
+    )
+
+
+def analytics_evidence(analysis: ResilienceAnalysis, *, run_id: str = "") -> AnalyticsEvidence:
+    """Derive the claims one analysis supports, and withhold what it does not.
+
+    Pure and deterministic, and the *only* place a report becomes a claim: a
+    boundary, every recovery curve, the minimal failure case, and every causal
+    chain, in that order. Sections absent from the analysis produce nothing at all —
+    ``minimal_case is None`` is not a withheld claim, it is a section nobody ran,
+    which :class:`ResilienceAnalysis`'s own notes already say.
+
+    A report that is present but unsupported becomes a :class:`WithheldEvidence`
+    rather than a claim with an empty support list, so ``len(claims) +
+    len(withheld)`` is the number of sections the analysis actually produced — plus
+    one entry per causal chain the analysis itself withheld, whose rule id is the
+    causal rule that stopped it.
+    """
+    claims: list[AnalyticsClaim] = []
+    withheld: list[WithheldEvidence] = []
+    sections: list[AnalyticsClaim | WithheldEvidence] = [boundary_claim(analysis.boundary)]
+    sections.extend(_recovery_claim(curve) for curve in analysis.recovery)
+    if analysis.minimal_case is not None:
+        sections.append(_minimal_claim(analysis.minimal_case))
+    if analysis.causal is not None:
+        sections.extend(_chain_claim(claim) for claim in analysis.causal.claims)
+        # The causal analysis's own withholdings are sealed too, carrying their own
+        # rule ids. A chain that stopped at a hop is a finding about the graph as
+        # much as a chain that completed is a finding about the incident, and a
+        # sealed record that listed only the completed chains would read as "nothing
+        # else was considered".
+        withheld.extend(
+            WithheldEvidence(
+                kind=ClaimKind.CAUSAL_CHAIN,
+                subject=f"{claim.fault_id}:{claim.hop.value}",
+                rule_id=claim.rule_id,
+                reason=(
+                    f"the chain from fault {claim.fault_id!r} to "
+                    f"{claim.target_id or '(no target)'} was withheld at hop "
+                    f"{claim.hop.value}: {claim.reason}"
+                ),
+            )
+            for claim in analysis.causal.withheld
+        )
+    for section in sections:
+        if isinstance(section, WithheldEvidence):
+            withheld.append(section)
+        else:
+            claims.append(section)
+    return AnalyticsEvidence(run_id=run_id, claims=tuple(claims), withheld=tuple(withheld))
+
+
+def analytics_chain_id(run_id: str) -> str:
+    """The synthetic run id one analysis's chain hangs off.
+
+    The subject run id travels in the payload instead, for the reason
+    :mod:`mayhem.controller.certification_evidence` names its own: plan 12's
+    verifier requires one ``run_id`` per chain, and an analysis spans whatever runs
+    produced its trials.
+    """
+    return f"{ANALYTICS_CHAIN_PREFIX}:{run_id}"
+
+
+def analytics_manifest_id(run_id: str) -> str:
+    """The manifest id for ``run_id``'s analytics chain."""
+    return f"{analytics_chain_id(run_id)}:manifest"
+
+
+def _reading(recorded_at: AttestedTimestamp | None) -> AttestedTimestamp:
+    """The caller's reading, or a wall-clock + monotonic pair.
+
+    The monotonic half comes from :func:`time.monotonic_ns` rather than the wall
+    clock, so a host whose clock steps mid-analysis still orders these events
+    correctly — the same clock policy :mod:`mayhem.infra.attestation_store` and
+    :mod:`mayhem.infra.audit_stream` both use, so a run event and an analytics
+    event taken together are ordered by one rule.
+    """
+    if recorded_at is not None:
+        return recorded_at
+    return AttestedTimestamp(
+        wall_clock=utc_now(),
+        monotonic_ns=time.monotonic_ns(),
+        uncertainty_ms=0.0,
+        source="system",
+    )
+
+
+def analytics_evidence_events(
+    evidence: AnalyticsEvidence,
+    *,
+    recorded_at: AttestedTimestamp,
+) -> tuple[AttestedEvent, ...]:
+    """The events one analysis seals, in chain order (pure).
+
+    Always three or more: what was analysed (:data:`CHAIN_EVENT_ANALYTICS_RECORDED`),
+    then one :data:`CHAIN_EVENT_ANALYTICS_CLAIM` per supported report and one
+    :data:`CHAIN_EVENT_ANALYTICS_WITHHELD` per unsupported one, then the seal that
+    closes the chain. Withholding is sealed too: a reader who reloads the chain sees
+    what was *not* claimed and why, which is the difference between "the search
+    found nothing" and "the search established nothing".
+
+    Event ids carry the claim's digest, so re-sealing a *different* analysis for the
+    same run cannot collide with this one's ids, and the chain verifier would catch
+    a genuine collision rather than silently dropping a claim.
+    """
+    chain_id = analytics_chain_id(evidence.run_id)
+    events: list[AttestedEvent] = [
+        AttestedEvent(
+            event_id=f"{chain_id}:recorded",
+            event_kind=CHAIN_EVENT_ANALYTICS_RECORDED,
+            run_id=chain_id,
+            sequence=0,
+            payload={
+                "run_id": evidence.run_id,
+                "claims": len(evidence.claims),
+                "withheld": len(evidence.withheld),
+                "claim_digests": list(evidence.claim_digests),
+                "complete": evidence.complete,
+            },
+            recorded_at=recorded_at,
+        )
+    ]
+    for claim in evidence.claims:
+        events.append(
+            AttestedEvent(
+                event_id=f"{chain_id}:claim:{claim.claim_digest[:16]}",
+                event_kind=CHAIN_EVENT_ANALYTICS_CLAIM,
+                run_id=chain_id,
+                sequence=len(events),
+                payload=claim.payload(),
+                recorded_at=recorded_at,
+            )
+        )
+    for index, withheld in enumerate(evidence.withheld):
+        events.append(
+            AttestedEvent(
+                event_id=f"{chain_id}:withheld:{index}",
+                event_kind=CHAIN_EVENT_ANALYTICS_WITHHELD,
+                run_id=chain_id,
+                sequence=len(events),
+                payload=withheld.payload(),
+                recorded_at=recorded_at,
+            )
+        )
+    events.append(
+        AttestedEvent(
+            event_id=f"{chain_id}:sealed",
+            event_kind=CHAIN_EVENT_ANALYTICS_SEALED,
+            run_id=chain_id,
+            sequence=len(events),
+            payload={
+                "run_id": evidence.run_id,
+                "claims": len(evidence.claims),
+                "withheld": len(evidence.withheld),
+            },
+            recorded_at=recorded_at,
+        )
+    )
+    return tuple(events)
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsSeal:
+    """What sealing an analysis produced, plus the verdicts that prove it."""
+
+    run_id: str
+    chain_id: str
+    manifest_id: str
+    evidence: AnalyticsEvidence
+    events: tuple[AttestedEvent, ...]
+    manifest: Manifest
+    chain_verification: ChainVerification
+    manifest_verification: ManifestVerification
+    signature_state: str
+    signature_reason: str
+
+    @property
+    def chain_root(self) -> str:
+        """The root the manifest commits to."""
+        return chain_root(self.events)
+
+    @property
+    def verified(self) -> bool:
+        """Both the chain and its manifest verified.
+
+        The only thing that makes a claim *back* a decision. An unsealed analysis
+        verifies nothing, and :func:`require_sealed_claim` reads this rather than
+        trusting the caller's word that it sealed it.
+        """
+        return self.chain_verification.valid and self.manifest_verification.valid
+
+    @property
+    def signed(self) -> bool:
+        """Always ``False``. Integrity is sealed; authorship is not claimed."""
+        return False
+
+    @property
+    def claims(self) -> tuple[AnalyticsClaim, ...]:
+        return self.evidence.claims
+
+    @property
+    def withheld(self) -> tuple[WithheldEvidence, ...]:
+        return self.evidence.withheld
+
+    def describe(self) -> str:
+        return (
+            f"{self.run_id}: {len(self.claims)} claim(s), {len(self.withheld)} withheld, "
+            f"sealed as {self.manifest_id} (root {self.chain_root[:12]}…, "
+            f"{len(self.events)} event(s), {'verified' if self.verified else 'UNVERIFIED'}, "
+            f"{self.signature_state})"
+        )
+
+
+def seal_analytics_evidence(
+    store: Store,
+    analysis: ResilienceAnalysis,
+    *,
+    run_id: str,
+    recorded_at: AttestedTimestamp | None = None,
+    retention_class: RetentionClass = RetentionClass.HOT,
+) -> AnalyticsSeal:
+    """Seal one analysis's evidence into a persisted chain and manifest.
+
+    Delegates every part of the sealing to plan 12's machinery: this function decides
+    *what* is attested and nothing else. :func:`~mayhem.domain.attestation.seal_events`
+    and :func:`~mayhem.domain.attestation.build_manifest` do the hashing,
+    :meth:`~mayhem.infra.attestation_store.AttestationRepository` does the
+    persistence and the evidence-boundary gate, and both verdicts are checked
+    **before** anything is written — so an analysis that does not hold leaves no row
+    behind to be mistaken for evidence.
+
+    The unsigned state and the reason for it are carried on the returned seal and are
+    the plan 12 strings, imported rather than restated: this module attests
+    integrity, and nothing here may read as though it attests authorship.
+
+    Args:
+        store: The migrated store.
+        analysis: The analysis whose sections become claims.
+        run_id: The run this analysis describes. Travels in the payload; the chain
+            itself hangs off :func:`analytics_chain_id`.
+        recorded_at: The reading to stamp the events with (tests inject one).
+        retention_class: The class the retention ladder will enforce.
+
+    Returns:
+        The sealed chain, its manifest, the claims and withholdings, and both
+        verification verdicts.
+
+    Raises:
+        AttestationError: If the derived chain or the manifest fails verification.
+            Nothing is written.
+        InvariantViolationError: From the evidence boundary inside the plan 12
+            writers, if a derived document carries a secret-classified field or a
+            value this run resolved.
+    """
+    if not run_id.strip():
+        raise InvariantViolationError(
+            RULE_EVIDENCE_UNSUPPORTED,
+            "sealing analytics evidence needs the run id it describes: a chain nobody "
+            "can attribute to a run is not evidence about one",
+        )
+    evidence = analytics_evidence(analysis, run_id=run_id)
+    reading = _reading(recorded_at)
+    events = seal_events(analytics_evidence_events(evidence, recorded_at=reading))
+    chain_id = analytics_chain_id(run_id)
+    manifest = build_manifest(
+        events,
+        manifest_id=analytics_manifest_id(run_id),
+        run_id=chain_id,
+        signer_identity="",
+        trust_root_ref="",
+        retention_class=retention_class,
+        created_at=reading,
+        previous_manifest_digest=GENESIS_DIGEST,
+    )
+    chain_verification = verify_chain(events)
+    if not chain_verification.valid:
+        raise AttestationError(
+            f"refusing to seal an invalid analytics chain for run {run_id!r}: "
+            f"{'; '.join(chain_verification.errors)}"
+        )
+    manifest_verification = verify_manifest(manifest, events)
+    if not manifest_verification.valid:
+        raise AttestationError(
+            f"refusing to seal an invalid analytics manifest for run {run_id!r}: "
+            f"{'; '.join(manifest_verification.errors)}"
+        )
+    repository = AttestationRepository(store)
+    repository.save_chain(chain_id, events, sealed_at=reading.wall_clock)
+    repository.save_manifest(manifest)
+    return AnalyticsSeal(
+        run_id=run_id,
+        chain_id=chain_id,
+        manifest_id=manifest.manifest_id,
+        evidence=evidence,
+        events=events,
+        manifest=manifest,
+        chain_verification=chain_verification,
+        manifest_verification=manifest_verification,
+        signature_state=SIGNATURE_UNSIGNED_NO_SIGNING,
+        signature_reason=UNSIGNED_REASON_NO_SIGNING,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsEvidenceVerdict:
+    """What a reloaded analytics chain says, from its stored bytes alone."""
+
+    run_id: str
+    chain_id: str
+    present: bool
+    verified: bool
+    claims: tuple[AnalyticsClaim, ...] = ()
+    withheld: tuple[WithheldEvidence, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def backing(self, claim_digest: str) -> str | None:
+        """The digest of the claim with that digest, or ``None`` if absent.
+
+        ``None`` means *not in a verified chain*, which is what a decision path must
+        treat as a refusal: the report may be perfectly true and still be unusable
+        as evidence, because nothing sealed it.
+        """
+        if not (self.present and self.verified):
+            return None
+        claim = next(
+            (claim for claim in self.claims if claim.claim_digest == claim_digest), None
+        )
+        return None if claim is None else claim.claim_digest
+
+    def describe(self) -> str:
+        if not self.present:
+            return f"{self.run_id}: no analytics chain stored"
+        if not self.verified:
+            return f"{self.run_id}: analytics chain does NOT verify — {'; '.join(self.errors)}"
+        return (
+            f"{self.run_id}: {len(self.claims)} claim(s), {len(self.withheld)} withheld, "
+            "chain verified"
+        )
+
+
+def verify_analytics_evidence(store: Store, run_id: str) -> AnalyticsEvidenceVerdict:
+    """Reload a run's analytics chain and re-verify it with plan 12's own verifier.
+
+    The persisted counterpart of :func:`analytics_evidence_events`: a report that a
+    caller still holds in memory proves nothing months later, and this is what turns
+    it back into evidence — or reports that it no longer is. Both the chain and the
+    manifest are re-verified, and the claims are rebuilt from the stored payloads
+    rather than from the caller's objects, so a claim only comes back if its own
+    bytes carry it.
+
+    A run with no stored chain reports ``present=False`` and the absence named,
+    rather than an empty claim list a reader could mistake for "nothing was claimed".
+    """
+    chain_id = analytics_chain_id(run_id)
+    repository = AttestationRepository(store)
+    events = repository.load_chain(chain_id)
+    if not events:
+        return AnalyticsEvidenceVerdict(
+            run_id=run_id,
+            chain_id=chain_id,
+            present=False,
+            verified=False,
+            errors=(f"no analytics chain stored for run {run_id!r}",),
+        )
+    verification = repository.verify_run_chain(chain_id)
+    errors = list(verification.errors)
+    try:
+        manifest = repository.load_manifest(analytics_manifest_id(run_id))
+    except KeyError:  # pragma: no cover -- load_manifest returns None, not KeyError
+        manifest = None
+    if manifest is None:
+        errors.append(
+            f"the chain for run {run_id!r} is stored but carries no manifest, so nothing "
+            "commits to it"
+        )
+    else:
+        manifest_verification = verify_manifest(manifest, events)
+        errors.extend(manifest_verification.errors)
+    claims: list[AnalyticsClaim] = []
+    withheld: list[WithheldEvidence] = []
+    for event in events:
+        if event.event_kind == CHAIN_EVENT_ANALYTICS_CLAIM:
+            claims.append(_claim_from_payload(event.payload))
+        elif event.event_kind == CHAIN_EVENT_ANALYTICS_WITHHELD:
+            withheld.append(_withheld_from_payload(event.payload))
+    return AnalyticsEvidenceVerdict(
+        run_id=run_id,
+        chain_id=chain_id,
+        present=True,
+        verified=not errors,
+        claims=tuple(claims),
+        withheld=tuple(withheld),
+        errors=tuple(errors),
+    )
+
+
+def _claim_from_payload(payload: Mapping[str, object]) -> AnalyticsClaim:
+    """Rebuild a claim from its attested bytes.
+
+    The support is rebuilt as citations, so a claim that comes back from storage
+    carries the same digests and edge keys it was sealed with — and a payload whose
+    support is empty cannot be rebuilt, because :class:`AnalyticsClaim` refuses it
+    (again). That is deliberate: a stored payload that lost its support makes
+    :func:`verify_analytics_evidence` raise rather than hand back a claim with
+    nothing behind it.
+    """
+    support: list[ObservationCitation | EdgeCitation] = []
+    raw_support = payload.get("support", ())
+    for raw in raw_support if isinstance(raw_support, Sequence) else ():
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind", ""))
+        if "edge" in raw and kind not in {item.value for item in CitationKind}:
+            support.append(
+                EdgeCitation(
+                    src=str(raw.get("src", "")),
+                    dst=str(raw.get("dst", "")),
+                    kind=_edge_kind(raw),
+                    detail=str(raw.get("detail", "")),
+                )
+            )
+            continue
+        support.append(
+            ObservationCitation(
+                kind=CitationKind(kind),
+                ref=str(raw.get("ref", "")),
+                detail=str(raw.get("detail", "")),
+            )
+        )
+    detail = payload.get("detail")
+    return AnalyticsClaim(
+        kind=ClaimKind(str(payload.get("kind", ""))),
+        subject=str(payload.get("subject", "")),
+        claim_digest=str(payload.get("claim_digest", "")),
+        support=tuple(support),
+        statement=str(payload.get("statement", "")),
+        detail=detail if isinstance(detail, Mapping) else {},
+    )
+
+
+def _edge_kind(raw: Mapping[str, object]) -> EdgeKind:
+    """Rebuild an edge citation's kind from its attested ``edge`` key.
+
+    The key is ``kind:src->dst``, so the kind is its first segment. Falls back to
+    the plain ``kind`` field a payload written by an older shape would carry, and
+    raises on anything else — a citation whose kind cannot be rebuilt is a payload
+    that is not the shape this module sealed.
+    """
+    prefix = str(raw.get("edge", "")).split(":", 1)[0]
+    return EdgeKind(prefix or str(raw.get("kind", "")))
+
+
+def _withheld_from_payload(payload: Mapping[str, object]) -> WithheldEvidence:
+    return WithheldEvidence(
+        kind=ClaimKind(str(payload.get("kind", ""))),
+        subject=str(payload.get("subject", "")),
+        rule_id=str(payload.get("rule_id", "")),
+        reason=str(payload.get("reason", "")),
+    )
+
+
+def require_sealed_claim(seal: AnalyticsSeal | None, claim: AnalyticsClaim) -> str:
+    """The claim's digest, if a **verified** chain sealed it. Otherwise a refusal.
+
+    This is the gate a decision path calls. Three refusals, all
+    :data:`RULE_EVIDENCE_NOT_SEALED`, because an unsealed report cannot back a
+    decision and the three ways that happens are different:
+
+    * ``seal is None`` — nobody sealed this analysis at all;
+    * the chain does not verify — the bytes are there but the integrity check failed;
+    * the claim is absent from the chain — the seal covers something else.
+
+    What it does *not* do is re-grade the claim. The claim was built by the function
+    that owns its kind, and a second opinion here would be a second definition of
+    what a boundary or a chain is. This gate asks one question — is this exact
+    finding in sealed, verified bytes — and answers it from the chain.
+    """
+    if seal is None:
+        raise InvariantViolationError(
+            RULE_EVIDENCE_NOT_SEALED,
+            f"the {claim.kind.value} claim about {claim.subject!r} is not sealed: no "
+            "analytics evidence was sealed for this analysis, and an unsealed report "
+            "cannot back a decision",
+        )
+    if not seal.verified:
+        errors = (*seal.chain_verification.errors, *seal.manifest_verification.errors)
+        raise InvariantViolationError(
+            RULE_EVIDENCE_NOT_SEALED,
+            f"the analytics chain for run {seal.run_id!r} does not verify "
+            f"({'; '.join(errors)}): the {claim.kind.value} claim about "
+            f"{claim.subject!r} cannot back a decision",
+        )
+    if seal.evidence.claim_for(claim.claim_digest) is None:
+        raise InvariantViolationError(
+            RULE_EVIDENCE_NOT_SEALED,
+            f"the {claim.kind.value} claim about {claim.subject!r} (digest "
+            f"{claim.claim_digest[:12]}…) is not in the chain sealed for run "
+            f"{seal.run_id!r}, which carries {len(seal.claims)} other claim(s): a report "
+            "someone else sealed does not evidence this one",
+        )
+    return claim.claim_digest
+
+
+def boundary_decision_support(seal: AnalyticsSeal | None, report: BoundaryReport) -> str:
+    """The sealed digest of a boundary report, for a decision that reads it.
+
+    The boundary is the claim most likely to be quoted out of context, so it gets
+    the named entry point rather than making every caller assemble a claim first.
+    :func:`boundary_claim` derives the claim from the report and
+    :func:`require_sealed_claim` refuses it if this report's bytes are not the ones
+    that were sealed — including the case where the report was *edited* after the
+    seal, because the edit changes the digest the chain recorded.
+    """
+    claim = boundary_claim(report)
+    if isinstance(claim, WithheldEvidence):
+        raise InvariantViolationError(
+            RULE_EVIDENCE_NOT_SEALED,
+            f"the boundary report about {claim.subject!r} rests on no trial and cannot "
+            f"back a decision: {claim.reason}",
+        )
+    return require_sealed_claim(seal, claim)
 
 
 # =======================================================================================
@@ -1623,6 +2694,50 @@ class StepAdmission:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetDivergence:
+    """The planner planned against a budget the runner was not spending.
+
+    Phase 4's answer to Phase 2's open note. :attr:`planner_remaining` is what
+    :func:`~mayhem.domain.search.plan_next_step` saw and stamped into
+    :attr:`~mayhem.domain.search.SearchStep.budget_remaining`;
+    :attr:`runner_remaining` is what the runner could actually pay with. They differ
+    because the caller passed a ``planner_budget`` that is not the runner's running
+    total — and once they differ, the runner's own per-step check is no longer
+    redundant with the planner's, because the planner is answering a different
+    question.
+
+    ``stopped`` says whether the divergence is what ended the search. When it is
+    ``False`` the two budgets happened to agree on every step that was taken, and
+    the record exists only to say the caller asked for a planner budget at all.
+    """
+
+    step_index: int
+    step_value: float
+    planner_remaining: float
+    runner_remaining: float
+    stopped: bool
+    rule_id: str = RULE_PLANNER_BUDGET_DIVERGED
+    reason: str = ""
+
+    @property
+    def shortfall(self) -> float:
+        """How much of the step's cost the runner could not cover, at least."""
+        return max(0.0, self.planner_remaining - self.runner_remaining)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "step_index": self.step_index,
+            "step_value": self.step_value,
+            "planner_remaining": self.planner_remaining,
+            "runner_remaining": self.runner_remaining,
+            "shortfall": self.shortfall,
+            "stopped": self.stopped,
+            "rule_id": self.rule_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AdaptiveRun:
     """The result of walking a search policy forward.
 
@@ -1630,6 +2745,13 @@ class AdaptiveRun:
     :data:`~mayhem.domain.search.StopReason.NO_REMAINING_BUDGET` and an admission
     refusal. That is the acceptance criterion: a search that halts reports the
     boundary it established, it does not throw the findings away with the run.
+
+    ``record`` is always present (Phase 4): a boundary search perturbs a system in
+    escalating steps, so the run is a privileged action and describes itself even
+    when nobody wired a recorder to it. ``recorded`` says whether a recorder actually
+    took it — see :func:`record_boundary_search` for the one that writes it to the
+    cross-run audit stream, and :func:`require_recorded_search` for the gate that
+    refuses a search the stream cannot show.
     """
 
     policy_name: str
@@ -1638,9 +2760,12 @@ class AdaptiveRun:
     history: SearchHistory
     boundary: float | None
     report: BoundaryReport
+    record: SearchRecord
     admissions: tuple[StepAdmission, ...] = ()
+    divergence: BudgetDivergence | None = None
     budget_remaining: float = 0.0
     executed: int = 0
+    recorded: bool = False
 
     @property
     def stopped_on_budget(self) -> bool:
@@ -1651,6 +2776,11 @@ class AdaptiveRun:
         """True when a halt still carries what the search established."""
         return self.boundary is not None or self.history.steps_used > 0
 
+    @property
+    def stops_on_divergent_budget(self) -> bool:
+        """The runner's own per-step check stopped this run, not the planner's."""
+        return self.divergence is not None and self.divergence.stopped
+
     def to_dict(self) -> dict[str, object]:
         return {
             "policy_name": self.policy_name,
@@ -1660,7 +2790,11 @@ class AdaptiveRun:
             "budget_remaining": self.budget_remaining,
             "executed": self.executed,
             "stopped_on_budget": self.stopped_on_budget,
+            "stops_on_divergent_budget": self.stops_on_divergent_budget,
             "findings_preserved": self.findings_preserved,
+            "recorded": self.recorded,
+            "record": self.record.to_dict(),
+            "divergence": None if self.divergence is None else self.divergence.to_dict(),
             "history": self.history.to_dict(),
             "report": self.report.to_dict(),
             "admissions": [admission.to_dict() for admission in self.admissions],
@@ -1678,17 +2812,138 @@ def adaptive_run(
     origin: SearchOrigin = SearchOrigin.AUTHORED,
     history: SearchHistory | None = None,
     combination: str = "default",
+    planner_budget: SafetyBudget | None = None,
+    search_record: Callable[[SearchRecord], None] | None = None,
 ) -> AdaptiveRun:
     """Walk ``policy`` forward as a sequence of approved, admitted, budgeted steps.
 
-    The order inside one iteration is the safety order, and it is not
-    interchangeable:
+    The per-step order is the safety order and is not interchangeable: plan → approve
+    → compile → admit → budget → execute → record. :func:`_walk` is where it lives
+    and documents each step; this function composes the walk, builds the audit
+    record, and returns the run.
+
+    ``history`` may be supplied to resume a search walked in an earlier call; the
+    boundary found so far is then carried into the report rather than rediscovered.
+
+    ``planner_budget`` is Phase 4's deliberate API change, and the reason
+    :func:`step_affordable` is live rather than decorative. **It is the budget the
+    planner plans against; ``budget`` is the budget the runner spends.** By default
+    they are the same value and the two checks cannot disagree. Pass a
+    ``planner_budget`` and the runner is deliberately planning against a number it
+    is not spending — which is exactly the situation the per-step check exists for:
+
+    * a damage ledger drained by a concurrent step or another run, after the caller
+      read its remaining allowance;
+    * a resumed search handed the full original allowance while the runner carries
+      only what the earlier call left;
+    * a caller that wants the *policy* (how far it would search if it could) decided
+      without the *ledger* (how far it may), so the report says "the ladder would
+      have gone this far" and the run says "it stopped here".
+
+    The default is deliberately the safe one: a divergence requires a caller to ask
+    for it, so a run that never asked cannot quietly plan against a budget it does
+    not have. A ``planner_budget`` drawn on another ledger is refused by
+    :func:`~mayhem.domain.search.plan_next_step` on the first iteration — before any
+    step is approved, compiled, or admitted — with the domain's own
+    ``search.budget_reference_mismatch``; there is deliberately no second check here,
+    for the reason :func:`_approve_step` gives about its own authority checks.
+
+    Either way the divergence is *recorded*, not merely possible:
+    :class:`~mayhem.domain.search.SearchStep` stamps ``budget_remaining`` from
+    whatever the planner saw, so it lands in the sealed trial history, and
+    :attr:`AdaptiveRun.divergence` names both numbers and the step they disagreed on.
+
+    ``search_record`` is handed the run's :class:`SearchRecord` exactly once, on
+    every path including a refusal, and its return value is ignored. Wire
+    :func:`record_boundary_search` to it to put the search in the cross-run audit
+    stream. An exception from the recorder **propagates** rather than being
+    swallowed: a search nobody can find afterwards is not a result, and the same
+    reasoning :func:`mayhem.infra.audit_stream.seal_run_evidence_at_run_close` gives
+    for a seal whose audit entry could not be written. The run is on
+    :attr:`AdaptiveRun.record` either way, so a caller that prefers to record it
+    afterwards can.
+    """
+    walked = _walk(
+        policy,
+        budget=budget,
+        planner_budget=planner_budget,
+        history=history,
+        combination=combination,
+        origin=origin,
+        compile_step=compile_step,
+        admit=admit,
+        execute=execute,
+        approve=approve,
+    )
+    record = search_record_of(
+        policy,
+        history=walked.history,
+        admissions=walked.admissions,
+        stop=walked.stop,
+        stop_note=walked.stop_note,
+        budget_remaining=walked.remaining.remaining,
+        origin=origin,
+        divergence=walked.divergence,
+    )
+    if search_record is not None:
+        search_record(record)
+    return AdaptiveRun(
+        policy_name=policy.name,
+        stop=walked.stop,
+        stop_note=walked.stop_note,
+        history=walked.history,
+        boundary=walked.history.boundary,
+        report=boundary_report(policy, walked.history),
+        record=record,
+        admissions=tuple(walked.admissions),
+        divergence=walked.divergence,
+        budget_remaining=walked.remaining.remaining,
+        executed=sum(1 for admission in walked.admissions if admission.admitted),
+        recorded=search_record is not None,
+    )
+
+
+@dataclass(slots=True)
+class _Walk:
+    """The mutable state of one walk, so the loop and its caller can share it.
+
+    A plain mutable holder rather than a return tuple: six values come back out of
+    the loop and three of them are read again by the caller, and unpacking seven
+    positional values at every return path is how a field silently gets crossed.
+    """
+
+    history: SearchHistory
+    remaining: SafetyBudget
+    admissions: list[StepAdmission] = field(default_factory=list)
+    divergence: BudgetDivergence | None = None
+    stop: StopReason = StopReason.LADDER_EXHAUSTED
+    stop_note: str = ""
+    exhausted_guard: bool = False
+
+
+def _walk(
+    policy: SearchPolicy,
+    *,
+    budget: SafetyBudget,
+    compile_step: Callable[[SearchStep], ExecutionPlan],
+    admit: Callable[[ExecutionPlan], None],
+    execute: Callable[[ExecutionPlan, SearchStep], StepOutcome],
+    approve: Callable[[SearchPlan], Approval | None],
+    origin: SearchOrigin,
+    history: SearchHistory | None,
+    combination: str,
+    planner_budget: SafetyBudget | None,
+) -> _Walk:
+    """The search loop itself, in the safety order, stopping at the first refusal.
+
+    One iteration, in this order and no other:
 
     1. **Plan.** :func:`~mayhem.domain.search.plan_next_step` — pure, and the first
        thing that can stop the search (combinations spent, no budget, unmeasurable
-       last trial, steps exhausted, bracket resolved).
+       last trial, steps exhausted, bracket resolved). It is handed ``planner_budget``
+       when the caller supplied one, and the runner's running total otherwise.
     2. **Approve.** ``approve`` is asked for a token bound to *this* plan's digest.
-       ``None`` stops the run with :data:`RULE_STEP_NOT_APPROVED`, and a
+       ``None`` stops the walk with :data:`RULE_STEP_NOT_APPROVED`, and a
        ``generated`` plan cannot produce a token at all, because
        :class:`~mayhem.domain.search.SearchPlan` refuses to be constructed with an
        approval on a generated origin. This is before compilation on purpose: a
@@ -1696,54 +2951,59 @@ def adaptive_run(
     3. **Compile.** ``compile_step`` turns the abstract step into a frozen
        :class:`~mayhem.domain.experiments.ExecutionPlan`.
     4. **Admit.** ``admit`` is the real gate — ``validate_plan`` in production — and
-       a refusal stops the run with the rule id it refused on.
-    5. **Budget.** The runner re-checks its own running budget before charging,
-       because a caller may have handed the planner a budget that was not the one
-       the runner is actually spending. A refusal here stops with
-       ``NO_REMAINING_BUDGET`` and keeps the findings.
+       a refusal stops the walk with the rule id it refused on.
+    5. **Budget.** :func:`step_affordable` re-checks the runner's own running budget
+       before charging. With no ``planner_budget`` this is redundant with step 1 by
+       construction; with one it is the only line of defence, because the planner is
+       answering about a different number. A refusal stops with
+       ``NO_REMAINING_BUDGET``, keeps the findings, and is recorded as
+       :data:`RULE_PLANNER_BUDGET_DIVERGED` rather than the plain
+       :data:`RULE_STEP_UNAFFORDABLE` — the two are different failures and an
+       operator reading the admission record has to be able to tell them apart.
     6. **Execute and record.** The outcome becomes a :class:`Trial`, and the budget is
        charged.
 
-    ``history`` may be supplied to resume a search walked in an earlier call; the
-    boundary found so far is then carried into the report rather than rediscovered.
+    A ``guard``-length ``for``/``else`` bounds the loop: a search that neither
+    proceeds nor stops would otherwise hang, and ``exhausted_guard`` says the guard
+    is what ended it rather than the policy.
     """
-    walked = SearchHistory() if history is None else history
-    admissions: list[StepAdmission] = []
-    remaining = budget
-    stop = StopReason.LADDER_EXHAUSTED
-    stop_note = ""
+    walked = _Walk(
+        history=SearchHistory() if history is None else history,
+        remaining=budget,
+    )
+    admissions = walked.admissions
     guard = policy.max_steps * 4 + 8
     for _ in range(guard):
+        planned_against = (
+            walked.remaining if planner_budget is None else planner_budget
+        )
         decision: SearchDecision = plan_next_step(
-            policy, walked, budget=remaining, combination=combination
+            policy, walked.history, budget=planned_against, combination=combination
         )
         if not decision.proceed:
-            stop = decision.stop if decision.stop is not None else StopReason.MAX_STEPS
-            stop_note = decision.note
+            walked.stop = decision.stop if decision.stop is not None else StopReason.MAX_STEPS
+            walked.stop_note = decision.note
             break
         step = decision.step
         if step is None:  # unreachable while `proceed` holds; tested rather than asserted
-            stop = StopReason.MAX_STEPS
-            stop_note = "the planner returned a proceeding decision with no step"
+            walked.stop = StopReason.MAX_STEPS
+            walked.stop_note = "the planner returned a proceeding decision with no step"
             break
         approval = _approve_step(approve, step, origin=origin)
         if isinstance(approval, str):
             admissions.append(
-                StepAdmission(
-                    index=step.index,
-                    value=step.value,
+                _refused(
+                    step,
                     origin=origin,
                     approved_by="",
                     plan_digest="",
-                    admitted=False,
-                    charged=0.0,
-                    budget_remaining=remaining.remaining,
+                    remaining=walked.remaining,
                     rule_id=RULE_STEP_NOT_APPROVED,
                     reason=approval,
                 )
             )
-            stop = StopReason.NO_FURTHER_VALUE
-            stop_note = approval
+            walked.stop = StopReason.NO_FURTHER_VALUE
+            walked.stop_note = approval
             break
         plan = approval
         micro_plan = compile_step(step)
@@ -1751,49 +3011,60 @@ def adaptive_run(
             admit(micro_plan)
         except InvariantViolationError as exc:
             admissions.append(
-                StepAdmission(
-                    index=step.index,
-                    value=step.value,
+                _refused(
+                    step,
                     origin=plan.origin,
                     approved_by=_approver_of(plan),
                     plan_digest=plan.plan_digest,
-                    admitted=False,
-                    charged=0.0,
-                    budget_remaining=remaining.remaining,
-                    rule_id=getattr(exc, "rule", RULE_ADMISSION_REFUSED),
+                    remaining=walked.remaining,
+                    rule_id=str(getattr(exc, "rule", RULE_ADMISSION_REFUSED)),
                     reason=str(exc),
                 )
             )
-            stop = StopReason.NO_FURTHER_VALUE
-            stop_note = (
+            walked.stop = StopReason.NO_FURTHER_VALUE
+            walked.stop_note = (
                 f"admission refused the micro-plan for step {step.index} at value "
                 f"{step.value:g}: {exc}"
             )
             break
-        unaffordable = step_affordable(remaining, step)
+        unaffordable = step_affordable(walked.remaining, step)
         if unaffordable:
+            walked.divergence = _divergence(
+                step, remaining=walked.remaining, reason=unaffordable, stopped=True
+            )
             admissions.append(
-                StepAdmission(
-                    index=step.index,
-                    value=step.value,
+                _refused(
+                    step,
                     origin=plan.origin,
                     approved_by=_approver_of(plan),
                     plan_digest=plan.plan_digest,
-                    admitted=False,
-                    charged=0.0,
-                    budget_remaining=remaining.remaining,
-                    stop_reason=StopReason.NO_REMAINING_BUDGET,
-                    rule_id=RULE_STEP_UNAFFORDABLE,
+                    remaining=walked.remaining,
+                    rule_id=(
+                        RULE_STEP_UNAFFORDABLE
+                        if walked.divergence is None
+                        else RULE_PLANNER_BUDGET_DIVERGED
+                    ),
                     reason=unaffordable,
+                    stop_reason=StopReason.NO_REMAINING_BUDGET,
                 )
             )
-            stop = StopReason.NO_REMAINING_BUDGET
-            stop_note = (
-                "the remaining budget no longer covers a step; search halts with the "
-                "findings so far"
-            )
+            walked.stop = StopReason.NO_REMAINING_BUDGET
+            walked.stop_note = _unaffordable_note(step, walked.divergence)
             break
-        charged = remaining.charge(step.expected_cost)
+        if walked.divergence is None:
+            # Recorded even when it costs nothing this time: a caller that asked for
+            # a planner budget should be able to see from the run that it did.
+            walked.divergence = _divergence(
+                step,
+                remaining=walked.remaining,
+                reason=(
+                    f"the planner planned step {step.index} against "
+                    f"{step.budget_remaining} of {step.budget_ref.kind.value} while the "
+                    f"runner had {walked.remaining.remaining} to spend"
+                ),
+                stopped=False,
+            )
+        charged = walked.remaining.charge(step.expected_cost)
         outcome = execute(micro_plan, step)
         admissions.append(
             StepAdmission(
@@ -1807,39 +3078,119 @@ def adaptive_run(
                 budget_remaining=charged.remaining,
             )
         )
-        walked = walked.record(step, breached=outcome.breached, sufficient=outcome.sufficient)
-        remaining = charged
+        walked.history = walked.history.record(
+            step, breached=outcome.breached, sufficient=outcome.sufficient
+        )
+        walked.remaining = charged
     else:
-        stop = StopReason.MAX_STEPS
-        stop_note = (
+        walked.stop = StopReason.MAX_STEPS
+        walked.stop_note = (
             f"the runner hit its own guard after {guard} iterations without the search "
             "reporting a stop"
         )
-    report = boundary_report(policy, walked)
-    return AdaptiveRun(
-        policy_name=policy.name,
-        stop=stop,
-        stop_note=stop_note,
-        history=walked,
-        boundary=walked.boundary,
-        report=report,
-        admissions=tuple(admissions),
+        walked.exhausted_guard = True
+    return walked
+
+
+def _divergence(
+    step: SearchStep,
+    *,
+    remaining: SafetyBudget,
+    reason: str,
+    stopped: bool,
+) -> BudgetDivergence | None:
+    """The divergence record for this step, or ``None`` when there is none.
+
+    ``None`` in the ordinary wiring, and that is the point: with no
+    ``planner_budget`` the planner and the runner read the same number, so the
+    runner's second check is unreachable and there is nothing to record. Returning
+    ``None`` rather than a zero record keeps "no divergence" and "a divergence of
+    zero" from being the same value in :attr:`AdaptiveRun.divergence`.
+    """
+    if step.budget_remaining == remaining.remaining:
+        return None
+    return BudgetDivergence(
+        step_index=step.index,
+        step_value=step.value,
+        planner_remaining=step.budget_remaining,
+        runner_remaining=remaining.remaining,
+        stopped=stopped,
+        reason=reason,
+    )
+
+
+def _refused(
+    step: SearchStep,
+    *,
+    origin: SearchOrigin,
+    approved_by: str,
+    plan_digest: str,
+    remaining: SafetyBudget,
+    rule_id: str,
+    reason: str,
+    stop_reason: StopReason | None = None,
+) -> StepAdmission:
+    """The admission record for a step that did not run.
+
+    One constructor for every refusal in the loop, so a refused step always costs
+    ``0.0``, always carries the runner's *own* ``budget_remaining`` (not the
+    planner's reading of it), and always names the rule it was refused on. A search
+    that halted on a refusal is exactly the run whose audit trail matters most, and
+    four hand-written literals are four chances for one of them to forget a field.
+    """
+    return StepAdmission(
+        index=step.index,
+        value=step.value,
+        origin=origin,
+        approved_by=approved_by,
+        plan_digest=plan_digest,
+        admitted=False,
+        charged=0.0,
         budget_remaining=remaining.remaining,
-        executed=sum(1 for admission in admissions if admission.admitted),
+        stop_reason=stop_reason,
+        rule_id=rule_id,
+        reason=reason,
+    )
+
+
+def _unaffordable_note(
+    step: SearchStep, divergence: BudgetDivergence | None
+) -> str:
+    """The stop note for a step the runner could not pay for.
+
+    Names the two budgets when they disagreed, because "the remaining budget no
+    longer covers a step" is a different story from "the planner thought 100 was
+    left and the runner had 0.5" and an operator needs to know which one happened.
+    """
+    if divergence is None:
+        return (
+            "the remaining budget no longer covers a step; search halts with the "
+            "findings so far"
+        )
+    return (
+        f"the remaining budget no longer covers a step; the planner was working from "
+        f"{divergence.planner_remaining} of {step.budget_ref.kind.value} and the runner "
+        f"had {divergence.runner_remaining} to spend ({RULE_PLANNER_BUDGET_DIVERGED}); "
+        "search halts with the findings so far"
     )
 
 
 def step_affordable(budget: SafetyBudget, step: SearchStep) -> str:
     """Why this step cannot be charged, or ``""`` when it can.
 
-    The runner's own per-step budget check, as a pure predicate. It is a *second*
-    line of defence rather than the first: the runner hands its running budget to
-    :func:`~mayhem.domain.search.plan_next_step`, so in the ordinary wiring the
-    planner refuses before this is reached and the two can never disagree about
-    whether a step was affordable. It exists for the case where the budget the
-    runner is spending is not the one the planner saw — a resumed search, a caller
-    that charged a step itself, a budget swapped mid-run — where a runner that
-    trusted the planner would execute a step it cannot pay for.
+    The runner's own per-step budget check, as a pure predicate. **The runner never
+    charges a step this says it cannot pay for, whatever the planner decided.**
+
+    In the ordinary wiring it is redundant with
+    :func:`~mayhem.domain.search.plan_next_step` by construction: the runner hands
+    the planner its running budget, so the planner refuses first and the two can
+    never disagree. It is reachable when ``adaptive_run`` is given a
+    ``planner_budget`` different from the budget it spends — a ledger drained by a
+    concurrent step, a resumed search carrying less than the caller declared, a
+    caller separating "how far the policy would search" from "how far it may" — and
+    a runner that trusted the planner there would execute a step it cannot pay for.
+    :attr:`AdaptiveRun.divergence` is the record of that case, and the refusal it
+    carries is why this check is live rather than decorative.
 
     Returns the refusal message rather than a boolean so the stop note names the
     numbers the decision was made on, and the admission record carries it.
@@ -1904,6 +3255,331 @@ def _approve_step(
             f"does not bind to it: {exc}"
         )
     return approved
+
+
+# =======================================================================================
+# The search as a privileged action (Phase 4) — the audit record
+# =======================================================================================
+
+
+def search_policy_digest(policy: SearchPolicy) -> str:
+    """The digest an approval or an audit entry binds a search policy by.
+
+    Over :meth:`SearchPolicy.to_dict`, the policy's own canonical form — so the same
+    policy always hashes to the same value and any change to the ladder, the budget
+    reference, the step cost, or the resolution changes it. This is the one place a
+    search policy is named by digest; :func:`record_boundary_search` puts it in the
+    stream's ``policy_digest`` column and an approval may name it as the artifact it
+    authorised.
+    """
+    return digest(policy.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class SearchStepTrace:
+    """One rung of the ladder, as the audit stream records it.
+
+    ``planned_against`` is the *planner's* reading of the budget at that moment, not
+    the runner's, because it is the number the step was decided on. Keeping the two
+    distinguishable here is what lets a later reader tell an ordinary ladder from one
+    that was walked against a budget the runner did not have.
+    """
+
+    index: int
+    value: float
+    phase: SearchPhase
+    combination: str
+    breached: bool
+    sufficient: bool
+    charged: float
+    approved_by: str
+    planned_against: float
+    admitted: bool
+    rule_id: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "value": self.value,
+            "phase": self.phase.value,
+            "combination": self.combination,
+            "breached": self.breached,
+            "sufficient": self.sufficient,
+            "charged": self.charged,
+            "approved_by": self.approved_by,
+            "planned_against": self.planned_against,
+            "admitted": self.admitted,
+            "rule_id": self.rule_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRecord:
+    """One boundary search, as the thing an operator can later read back.
+
+    A resilience-boundary search perturbs a system in escalating steps until it finds
+    where the system stops tolerating anything. That is a privileged act with a
+    budget attached, so it is recorded in the cross-run audit stream that already
+    exists — not in a log of this module's own.
+
+    What it deliberately does **not** carry is any authority. There is no field an
+    approval could travel in: ``approved_by`` names who signed the individual steps
+    that were admitted (it is a read-back of
+    :attr:`StepAdmission.approved_by``, which is itself derived from a token that
+    bound to a plan digest), and it grants nothing. A ``generated`` origin is
+    recorded as ``generated``, so a search whose candidates came from an advisor is
+    visible as one in the stream — the AI boundary is unchanged by being logged.
+    """
+
+    policy_name: str
+    policy_digest: str
+    run_id: str
+    origin: SearchOrigin
+    strategy: str
+    ladder: tuple[SearchStepTrace, ...]
+    boundary: float | None
+    bracket_low: float
+    stop: StopReason
+    stop_note: str
+    budget_remaining: float
+    executed: int
+    divergence: BudgetDivergence | None = None
+
+    @property
+    def approved_by(self) -> tuple[str, ...]:
+        """Every distinct approver whose token admitted a step, in order."""
+        return tuple(
+            dict.fromkeys(
+                trace.approved_by for trace in self.ladder if trace.admitted and trace.approved_by
+            )
+        )
+
+    @property
+    def perturbations(self) -> tuple[float, ...]:
+        """The impairment values actually charged — what the system was asked to absorb."""
+        return tuple(trace.value for trace in self.ladder if trace.admitted)
+
+    @property
+    def decision_digest(self) -> str:
+        """The digest of this record's own bytes.
+
+        The identity :func:`record_boundary_search` writes into the stream's
+        ``decision_digest`` and :func:`require_recorded_search` looks for, so a
+        search cannot be shown to be recorded by pointing at a *different* search's
+        entry. Taken over :meth:`payload` — not over :meth:`to_dict`, which includes
+        this digest — for the reason :class:`~mayhem.domain.attestation.AttestedEvent`
+        takes its digest over its *other* fields.
+        """
+        return digest(self.payload())
+
+    def payload(self) -> dict[str, object]:
+        """The attested body. Names, digests, and the ladder — never a copy of a plan."""
+        return {
+            "policy_name": self.policy_name,
+            "policy_digest": self.policy_digest,
+            "run_id": self.run_id,
+            "origin": self.origin.value,
+            "strategy": self.strategy,
+            "boundary": self.boundary,
+            "bracket_low": self.bracket_low,
+            "stop": self.stop.value,
+            "stop_note": self.stop_note,
+            "budget_remaining": self.budget_remaining,
+            "executed": self.executed,
+            "approved_by": list(self.approved_by),
+            "ladder": [trace.to_dict() for trace in self.ladder],
+            "divergence": None if self.divergence is None else self.divergence.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        payload = self.payload()
+        payload["decision_digest"] = self.decision_digest
+        return payload
+
+
+def search_record_of(
+    policy: SearchPolicy,
+    *,
+    history: SearchHistory,
+    admissions: Sequence[StepAdmission],
+    stop: StopReason,
+    stop_note: str,
+    budget_remaining: float,
+    origin: SearchOrigin = SearchOrigin.AUTHORED,
+    divergence: BudgetDivergence | None = None,
+    run_id: str = "",
+) -> SearchRecord:
+    """Build the audit record for one walked search (pure).
+
+    Every trial contributes a rung, and every admission record is matched onto it by
+    index — so a rung records both *what was tried* (the trial) and *who allowed it*
+    (the admission), and a step that was refused before execution still appears with
+    its ``rule_id`` and ``admitted: false``. A ladder that hides its refusals is not
+    the record of a search that perturbs a system.
+
+    ``run_id`` is empty when the caller has not told the runner which run this
+    belongs to; :func:`record_boundary_search` requires one, because an audit entry
+    whose subject is unnamed cannot answer "what was done to this run".
+    """
+    by_index = {admission.index: admission for admission in admissions}
+    ladder = tuple(
+        SearchStepTrace(
+            index=trial.step.index,
+            value=trial.step.value,
+            phase=trial.step.phase,
+            combination=trial.step.combination,
+            breached=trial.breached,
+            sufficient=trial.sufficient,
+            charged=(
+                by_index[trial.step.index].charged
+                if trial.step.index in by_index
+                else trial.step.expected_cost
+            ),
+            approved_by=(
+                by_index[trial.step.index].approved_by if trial.step.index in by_index else ""
+            ),
+            planned_against=trial.step.budget_remaining,
+            admitted=bool(
+                trial.step.index in by_index and by_index[trial.step.index].admitted
+            ),
+            rule_id=by_index[trial.step.index].rule_id if trial.step.index in by_index else "",
+        )
+        for trial in history.trials
+    )
+    return SearchRecord(
+        policy_name=policy.name,
+        policy_digest=search_policy_digest(policy),
+        run_id=run_id,
+        origin=origin,
+        strategy=policy.strategy.value,
+        ladder=ladder,
+        boundary=history.boundary,
+        bracket_low=history.bracket_low,
+        stop=stop,
+        stop_note=stop_note,
+        budget_remaining=budget_remaining,
+        executed=sum(1 for trace in ladder if trace.admitted),
+        divergence=divergence,
+    )
+
+
+def record_boundary_search(
+    audit: AuditStream,
+    record: SearchRecord,
+    *,
+    principal: str,
+    run_id: str = "",
+    approval_digest: str = "",
+    detail: Mapping[str, object] | None = None,
+    recorded_at: AttestedTimestamp | None = None,
+) -> AttestedEvent:
+    """Append one boundary search to the cross-run audit stream.
+
+    The one call that makes an adaptive run findable. A resilience-boundary search is
+    a privileged action with a budget attached, so it goes into
+    :mod:`mayhem.infra.audit_stream` — the append-only, integrity-chained, cross-run
+    log this repository already has — under
+    :data:`KIND_RESILIENCE_BOUNDARY_SEARCHED`. There is no second logger here and no
+    search-specific table: the entry is a
+    :class:`~mayhem.infra.audit_stream.AuditEntry`, verified by the same
+    :func:`~mayhem.domain.attestation.verify_chain` as every other entry.
+
+    What the entry carries, and why each is there:
+
+    * ``principal`` — who ran the search. A *recorded claim*, not an authenticated
+      identity: nothing in this repository signs, and the audit module says so in its
+      own docstring.
+    * ``policy_digest`` — :func:`search_policy_digest`, so the entry names the ladder,
+      the budget reference, and the step cost that were authorised rather than
+      asserting "a search happened".
+    * ``approval_digest`` — the artifact that authorised it, when the caller has one
+      (the approvals are also readable per rung from ``ladder[*].approved_by``).
+    * ``decision_digest`` — :attr:`SearchRecord.decision_digest` over the run's own
+      bytes, which is what :func:`require_recorded_search` matches on.
+    * ``detail`` — the escalating ladder: what impairment was applied at each step,
+      whether it breached, and whether it was admitted. A boundary search that
+      perturbed a system in twenty steps and left no record of the nineteen that
+      cleared is not auditable, and the ladder is the whole point of the action.
+
+    Args:
+        audit: The stream to append to.
+        record: The run's record, from :attr:`AdaptiveRun.record`.
+        principal: Who is running the search.
+        run_id: The run this search belongs to. Required in practice — an entry with
+            no subject cannot answer "what was done to this run" — and it defaults to
+            ``record.run_id`` so a caller who passed it to ``adaptive_run`` does not
+            repeat it.
+        approval_digest: Digest of whatever authorized the search, if anything.
+        detail: Caller-supplied extras, merged under ``detail.search``.
+        recorded_at: The reading to stamp the entry with (tests inject one).
+
+    Returns:
+        The sealed :class:`~mayhem.domain.attestation.AttestedEvent` that was
+        appended.
+
+    Raises:
+        InvariantViolationError: If no run id is available. A boundary search with no
+            named subject is refused rather than recorded unattributed.
+        AuditStreamAppendError: If the append was refused. The stream is unchanged,
+            and the error propagates so the caller is never told a search was
+            recorded when it was not.
+    """
+    subject = run_id or record.run_id
+    if not subject.strip():
+        raise InvariantViolationError(
+            RULE_SEARCH_NOT_RECORDED,
+            "recording a boundary search needs the run it perturbed: an audit entry "
+            "with no subject cannot answer what was done to a run",
+        )
+    payload: dict[str, object] = {
+        "search": record.payload(),
+        "perturbations": list(record.perturbations),
+    }
+    if detail:
+        payload.update(dict(detail))
+    return audit.record(
+        AuditEntry(
+            principal=principal,
+            action=KIND_RESILIENCE_BOUNDARY_SEARCHED,
+            target=f"{subject}:{record.policy_name}",
+            subject_run_id=subject,
+            policy_digest=record.policy_digest,
+            approval_digest=approval_digest,
+            decision_digest=record.decision_digest,
+            detail=payload,
+        ),
+        recorded_at=recorded_at,
+    )
+
+
+def require_recorded_search(audit: AuditStream, record: SearchRecord) -> str:
+    """This search's decision digest, if the audit stream holds its entry.
+
+    The fail-closed counterpart of :func:`record_boundary_search`: a search that
+    perturbed a system and left no entry behind is refused
+    (:data:`RULE_SEARCH_NOT_RECORDED`). Matching is on
+    :attr:`SearchRecord.decision_digest` — the run's own bytes — rather than on a
+    policy name or a run id, so a different search under the same policy does not
+    stand in for this one.
+
+    The stream is **not** re-verified here. This gate answers "is the entry there",
+    which is the question a decision path has; :meth:`AuditStream.verify` answers
+    "do the stored bytes still hash and link", and an operator runs that on the
+    stream. Re-verifying an append-only log on every lookup would make this a second
+    verification path with its own rules, which is the duplication the audit module
+    exists to avoid.
+    """
+    for entry in audit.load():
+        if entry.event_kind != KIND_RESILIENCE_BOUNDARY_SEARCHED:
+            continue
+        if str(entry.payload.get("decision_digest", "")) == record.decision_digest:
+            return record.decision_digest
+    raise InvariantViolationError(
+        RULE_SEARCH_NOT_RECORDED,
+        f"the boundary search {record.policy_name!r} on run {record.run_id or '(unnamed)'!r} "
+        "is not in the audit stream: a search that perturbs a system in escalating steps "
+        "has to be recorded before anything it found can be acted on",
+    )
 
 
 # =======================================================================================

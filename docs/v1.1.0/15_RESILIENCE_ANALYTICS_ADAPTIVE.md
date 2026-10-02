@@ -60,8 +60,12 @@ Statistics interpretation guide (what "no material effect" does and does not mea
 - Phase 1 (domain model): DONE — `domain/analytics.py` (distribution summaries, effect size, 95% CIs, sufficiency, warm-up/cooldown) and `domain/search.py` (`SearchPolicy`, pure step planning with stop conditions, untrusted AI drafts) landed with unit and negative-control tests
 - Phase 2 (engine): DONE — `controller/analytics_service.py` (boundary brackets with a confidence statement, recovery curves, minimal failure cases, gap-53 causal chains where an uncited hop is withheld, the adaptive runner with per-step approval + admission + budget, and `compile_stages` for the single-target → 5% → 10% → 25% → 50% gated ladder)
 - Phase 3: not started
-- Phase 4: not started
+- Phase 4 (safety and evidence): DONE — the runner's own per-step budget check is live via a documented `planner_budget` (the budget the planner plans against, separate from the budget the runner spends) with the divergence recorded on the run and in the step's own stamped reading; every boundary report, recovery curve, minimal failure case, and causal chain now carries its support (trial digests, sample digest, tried-case digests, observation citations plus topology edges) and seals through `infra/attestation_store` with `require_sealed_claim` refusing an unsealed report; a claim with no support cannot be constructed (`analytics.evidence_unsupported`) and a report with no support is sealed as a withholding beside the claims that survived; an adaptive run carries a `SearchRecord` and `record_boundary_search` writes it to `infra/audit_stream` as `audit.resilience_boundary.searched` with the policy digest and the escalating ladder, and `require_recorded_search` refuses a search the stream cannot show; the AI boundary is unchanged — `AUTHORITY_FIELDS`/`_authority_keys` are still the single authority scan and neither `AnalyticsClaim` nor `SearchRecord` has a field an approval could travel in
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 2 of 6 phases complete.
+Overall: 3 of 6 phases complete.
+
+### Open items Phase 4 could not close in its own files
+- `KIND_RESILIENCE_BOUNDARY_SEARCHED` is declared in `controller/analytics_service.py`, not in `infra/audit_stream.py`'s closed `KIND_*` vocabulary. It belongs there; the audit module is not owned by this phase.
+- Four new gate rule ids need entries in `controller/safety_proof.py`'s `OBLIGATION_FOR_RULE`, or a refusal carrying them voids the proof by that module's own fail-closed rule: `analytics.planner_budget_diverged` → `damage_budget`, `analytics.step_unaffordable` → `damage_budget`, `analytics.evidence_not_sealed` → `required_approvals`, `analytics.search_not_recorded` → `required_approvals`. `analytics.evidence_unsupported` is a construction refusal on a report rather than a gate refusal and needs no line.
