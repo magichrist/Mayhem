@@ -1,24 +1,28 @@
 """Distributed dispatch engine: fencing, idempotent retries, error normalisation.
 
-Plan ``docs/v1.1.0/03_EXECUTION_FABRIC.md``, Phase 2. Phase 1 gave the fabric
-its *words* (:mod:`mayhem.domain.fabric`); this module is the machinery that
-drives them. It is a **dispatch layer**, not a second run engine: the run shape
-is still ``RunEngine.execute``'s (intent -> gate -> open run -> grouped steps ->
-recover -> verdict -> close, :mod:`mayhem.controller.executor`) and nothing here
-reorders it. What this module adds is the one thing the run engine cannot
-express — *who* is allowed to act on a step right now, and what to believe when
-they come back.
+Plan ``docs/v1.1.0/03_EXECUTION_FABRIC.md``. Phase 1 gave the fabric its *words*
+(:mod:`mayhem.domain.fabric`); Phase 2 built this dispatch layer on top of them;
+Phase 4 added *verification* and *evidence* to the dispatch path. It is a
+**dispatch layer**, not a second run engine: the run shape is still
+``RunEngine.execute``'s (intent -> gate -> open run -> grouped steps -> recover
+-> verdict -> close, :mod:`mayhem.controller.executor`) and nothing here reorders
+it. What this module adds is the one thing the run engine cannot express — *who*
+is allowed to act on a step right now, and what to believe when they come back.
 
 Five properties, in the order they are checked on every dispatch:
 
-1. **Signature claims are honoured as claims, not proofs.**
-   :data:`FABRIC_UNDERSIGNED` is wired (:meth:`FabricEngine._require_signed`)
-   even though the Phase 1 envelope makes it unreachable in-process: a command
-   with a blank or absent signature cannot be *constructed*. The check is the
-   seam the future wire path of plan 19 (mTLS, identities, trust roots) decodes
-   into, and it is deliberately a named code rather than a comment, so the wire
-   receiver does not have to invent a spelling. Verification itself is **not**
-   implemented and is not in scope for this phase.
+1. **A command is verified before it acts, and the signature claim is honoured
+   as a claim until it is checked.** Phase 2 wired
+   :data:`FABRIC_UNDERSIGNED` at :meth:`FabricEngine._require_signed` even though
+   the Phase 1 envelope makes it unreachable in-process. Phase 4 gives the code
+   its real raise sites by *actually verifying*: the engine takes a
+   :class:`FabricCommandVerifierPort` — plan 19's
+   :class:`~mayhem.infra.agent_identity_verifier.AgentCommandVerifier` satisfies
+   it, and no verification logic is reimplemented here. A signature that does not
+   verify under a key the agent's current credential names is refused by
+   :data:`FABRIC_UNDERSIGNED`; an envelope that fails its own field constraints on
+   the wire is refused by :data:`FABRIC_MALFORMED_ENVELOPE` (see
+   :func:`mayhem.controller.fabric_evidence.decode_wire_command`).
 2. **Only the highest epoch dispatches.** A claim is served only when its
    fencing token is at least as new as the highest one already *claimed* for the
    step. A deposed owner is refused by :data:`FABRIC_STALE_FENCE`; a second
@@ -64,9 +68,10 @@ journal, which records which envelope claimed which step under which epoch:
   in a safe terminal state, so the resumed controller knows what to compensate
   before it re-dispatches anything.
 
-The journal itself is a :class:`FabricJournal` protocol here; the controller
-binds a durable implementation in the same store as the lease sink. No SQLite
-schema ships in this phase (see the module's known limits in the plan ledger).
+The journal itself is a :class:`FabricJournal` protocol here. Phase 4 bound it to
+a durable implementation: :class:`mayhem.controller.fabric_evidence.SqliteFabricJournal`
+over :mod:`mayhem.infra.fabric_journal`'s table, in the same store as the lease
+sink.
 """
 
 from __future__ import annotations
@@ -100,11 +105,17 @@ from mayhem.domain.fabric import (
 )
 from mayhem.domain.leases import FaultLease
 from mayhem.domain.outcomes import StepOutcome, TargetOutcome
+from mayhem.infra.agent_identity_verifier import (
+    CommandRefusedError,
+    SignaturePortUnavailableError,
+    VerificationCheck,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mayhem.agents.sinks import LeaseSink
+    from mayhem.infra.agent_identity_verifier import VerifiedCommand
 
 #: Raised when a second *effect* is claimed for one step at one epoch. The domain
 #: owns the wire-facing vocabulary; this code is dispatch-layer state, so it
@@ -115,6 +126,21 @@ FABRIC_DUPLICATE_DISPATCH = "fabric_duplicate_dispatch"
 #: owner may have died mid-dispatch, so whether the effect happened is unknown —
 #: and an unknown effect is never retried into a *second* effect.
 FABRIC_INFLIGHT_UNRESOLVED = "fabric_inflight_unresolved"
+
+#: Raised when a command fails verification for a reason the fabric has no
+#: narrower code for — an unenrolled or revoked agent, a superseded signing
+#: credential, a signature port that cannot verify its own algorithm. **The
+#: verification checks that failed are named on
+#: :attr:`FabricCommandRefused.details["failed_checks"]`**, because "unverified"
+#: without the list is exactly the bare boolean plan 19 refuses to report.
+FABRIC_COMMAND_UNVERIFIED = "fabric_command_unverified"
+
+#: Raised when a frame off the wire does not satisfy the envelope's own field
+#: constraints at all. Distinct from :data:`FABRIC_UNDERSIGNED` on purpose: a
+#: frame missing its fencing token is malformed, and calling that "undersigned"
+#: would spend the one code that means *the signature did not verify* on a
+#: question about a different field.
+FABRIC_MALFORMED_ENVELOPE = "fabric_malformed_envelope"
 
 _REMEDIATION_RETRY = (
     "reuse the idempotency key of the original command, mint a fresh nonce, and "
@@ -494,11 +520,215 @@ class FabricJournal(Protocol):
     lease sink; ``entries`` is the only read, which is what lets a *new* engine
     instance resume with nothing but this object. Entries are returned in
     append order.
+
+    Phase 4's implementation is
+    :class:`mayhem.controller.fabric_evidence.SqliteFabricJournal`, over
+    :mod:`mayhem.infra.fabric_journal`'s table. It stores the whole entry (never
+    a projection) and re-checks every row against its own payload on read, so a
+    journal can never disagree with the command it is a record of.
     """
 
     def append(self, entry: JournalEntry) -> None: ...
 
     def entries(self, run_id: str, step_id: str | None = None) -> tuple[JournalEntry, ...]: ...
+
+
+class FabricCommandVerifierPort(Protocol):
+    """What the engine needs from a command verifier — and nothing else.
+
+    Satisfied by plan 19's
+    :class:`~mayhem.infra.agent_identity_verifier.AgentCommandVerifier`: same
+    keyword arguments, same return type, same refusal type. The protocol exists
+    so the *dispatch layer* depends on a shape rather than on a class, and so a
+    test can assert the real verifier satisfies it instead of a stand-in.
+
+    The engine adds no cryptographic check of its own. Verification is HMAC (or,
+    once plan 19 Phase 3 lands, a CA-backed chain) over the canonical envelope,
+    and re-deriving any of it here would be the second verifier this phase
+    explicitly does not build.
+    """
+
+    @property
+    def algorithm(self) -> str:
+        """The algorithm actually in use, recorded on every verification."""
+        ...
+
+    def verify(
+        self,
+        command: FabricCommand,
+        *,
+        expected_plan_digest: str | None = None,
+        served_fence: FencingToken | None = None,
+        now: datetime | None = None,
+    ) -> VerifiedCommand:
+        """Verify ``command``, or raise :class:`CommandRefusedError`.
+
+        Raises:
+            CommandRefusedError: Naming every check that did not pass.
+            SignaturePortUnavailableError: When the port cannot verify its own
+                algorithm — nothing was checked, which is a different fact from
+                "checked and refused".
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class VerifiedCheck:
+    """One verification check's outcome, flattened for the sealed record.
+
+    A dispatch record has to survive the verifier's own lifetime: the details
+    string is the observation, and the check name is what a later reader routes
+    on. Both are copied out rather than referenced so the evidence cannot be
+    edited by mutating the object that produced it.
+    """
+
+    check: str
+    passed: bool
+    detail: str
+
+    def evidence(self) -> dict[str, object]:
+        return {"check": self.check, "passed": self.passed, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class VerifiedDispatch:
+    """What verification established about one command, in the dispatch layer's shape.
+
+    **Not** a re-verification and **not** a cache of a decision: it is the
+    transcription of plan 19's :class:`~mayhem.infra.agent_identity_verifier.VerifiedCommand`
+    into something the journal and the sealed chain can carry. ``algorithm`` and
+    ``envelope_digest`` are the two fields that make the record answer *how* the
+    command was checked rather than merely *that* it was.
+
+    The ``signature`` itself is **not** carried, and neither is any key material:
+    plan 19's store holds no secret, and a MAC copied into a journal row would be
+    the one artefact this system must not duplicate. The digest of the signed
+    payload plus the credential id already identify exactly which bytes were
+    checked.
+    """
+
+    command_id: str
+    agent_id: str
+    algorithm: str
+    envelope_digest: str
+    identity_version: int
+    verified_at: datetime
+    checks: tuple[VerifiedCheck, ...]
+
+    @classmethod
+    def of(cls, verified: VerifiedCommand) -> VerifiedDispatch:
+        """Transcribe plan 19's verification result."""
+        return cls(
+            command_id=verified.command.command_id,
+            agent_id=verified.agent_id,
+            algorithm=verified.algorithm,
+            envelope_digest=verified.envelope_digest,
+            identity_version=verified.identity_version,
+            verified_at=verified.verified_at,
+            checks=tuple(
+                VerifiedCheck(
+                    check=outcome.check.value,
+                    passed=outcome.passed,
+                    detail=outcome.detail,
+                )
+                for outcome in verified.outcomes
+            ),
+        )
+
+    @property
+    def failed(self) -> tuple[str, ...]:
+        """Names of the checks that did not pass (empty — we only record successes)."""
+        return tuple(check.check for check in self.checks if not check.passed)
+
+    def evidence(self) -> dict[str, object]:
+        """The sealed payload for this verification."""
+        return {
+            "algorithm": self.algorithm,
+            "envelope_digest": self.envelope_digest,
+            "identity_version": self.identity_version,
+            "verified_at": self.verified_at.isoformat(),
+            "checks": [check.evidence() for check in self.checks],
+        }
+
+
+class FabricEvidenceRecorder(Protocol):
+    """Where a dispatch decision goes once it has been *made*.
+
+    Deliberately narrow and deliberately optional. The engine raises refusals and
+    returns outcomes; it does not decide how a run's evidence is stored, and it
+    must not grow a second writer for it. Phase 4's implementation is
+    :class:`mayhem.controller.fabric_evidence.SealingFabricEvidence`, which writes
+    into the sealed chain plan 12 already owns.
+
+    Every method is called *after* the journal append it describes, so a sealed
+    event can never claim a row that did not land.
+    """
+
+    def dispatch_recorded(
+        self, claim: DispatchClaim, *, verification: VerifiedDispatch | None = None
+    ) -> None:
+        """A claim landed. ``verification`` is ``None`` when no verifier was bound."""
+        ...
+
+    def settlement_recorded(
+        self, settlement: DispatchSettlement, *, result: DispatchResult | None = None
+    ) -> None:
+        """A settlement landed. ``result`` is ``None`` for a reconciled claim."""
+        ...
+
+    def refusal_recorded(self, command: FabricCommand, *, code: str, reason: str) -> None:
+        """A command was refused before it could act."""
+        ...
+
+
+#: Which of plan 19's verification checks map to which fabric refusal code. A
+#: refusal that crosses the dispatch boundary has to be spelled in the fabric's
+#: vocabulary or a caller would have to know which plan raised it; the check name
+#: is preserved on ``details["failed_checks"]`` either way, so nothing is lost.
+_VERIFICATION_CODE_BY_CHECK: dict[VerificationCheck, str] = {
+    VerificationCheck.SIGNATURE: FABRIC_UNDERSIGNED,
+    VerificationCheck.PLAN_BINDING: FABRIC_PLAN_MISMATCH,
+    VerificationCheck.FENCE: FABRIC_STALE_FENCE,
+    VerificationCheck.NONCE_FRESHNESS: FABRIC_REPLAYED_NONCE,
+}
+
+_REFUSED_REMEDIATION = (
+    "a fabric command is dispatched only after plan 19's verifier accepts it: a "
+    "resolvable signing key bound to the agent's current credential, a usable "
+    "identity, the frozen plan digest, a fence at least as new as the served one, "
+    "and an unspent nonce"
+)
+
+
+def translate_verification_refusal(exc: CommandRefusedError) -> FabricCommandRefused:
+    """Re-spell a plan 19 refusal in the fabric's vocabulary.
+
+    Picks the narrowest code among the checks that failed — a command whose
+    signature does not verify *and* whose plan digest is stale is
+    :data:`FABRIC_UNDERSIGNED`, because the signature is the earlier and the more
+    serious fact. Checks with no fabric counterpart (key binding, identity
+    usability, certificate lifetime) roll up to :data:`FABRIC_COMMAND_UNVERIFIED`,
+    which always carries ``failed_checks`` so the refusal never degrades to a
+    bare "no".
+    """
+    failed = tuple(exc.failed)
+    for check in failed:
+        code = _VERIFICATION_CODE_BY_CHECK.get(check)
+        if code is not None:
+            break
+    else:
+        code = FABRIC_COMMAND_UNVERIFIED
+    return FabricCommandRefused(
+        code,
+        f"command '{exc.command_id}' refused by verification: "
+        f"{', '.join(check.value for check in failed)}",
+        details={
+            "command_id": exc.command_id,
+            "code": exc.code,
+            "failed_checks": [check.value for check in failed],
+        },
+        remediation=_REFUSED_REMEDIATION,
+    )
 
 
 class FabricEngine:
@@ -514,6 +744,12 @@ class FabricEngine:
         controller_id: Who is dispatching. Recorded on every claim so a
             post-mortem can name the owner of an epoch.
         clock: Time source, injected so expiry and ordering are reproducible.
+        verifier: Command verification (plan 19). **Optional, and additive**: with
+            no verifier bound the engine behaves exactly as Phase 2 did, and a
+            caller that means to verify asserts
+            :attr:`FabricEngine.verification_enabled` rather than discovering it.
+        evidence: Where decisions are sealed. Optional for the same reason; see
+            :class:`FabricEvidenceRecorder`.
 
     The instance keeps no dispatch state. Every decision below is recomputed
     from ``journal`` and ``lease_sink`` on each call, so constructing a second
@@ -528,12 +764,35 @@ class FabricEngine:
         lease_sink: LeaseSink,
         controller_id: str,
         clock: Callable[[], datetime] = utc_now,
+        verifier: FabricCommandVerifierPort | None = None,
+        evidence: FabricEvidenceRecorder | None = None,
     ) -> None:
         self._session = session
         self._journal = journal
         self._sink = lease_sink
         self._controller_id = controller_id
         self._clock = clock
+        self._verifier = verifier
+        self._evidence = evidence
+
+    @property
+    def verification_enabled(self) -> bool:
+        """Whether a verifier is bound, so a caller can assert rather than assume."""
+        return self._verifier is not None
+
+    @property
+    def verification_algorithm(self) -> str:
+        """The algorithm the bound verifier actually uses, or ``""`` when unbound.
+
+        Fail-closed in spirit: naming an algorithm when none is bound would be
+        the kind of claim this codebase keeps refusing to make.
+        """
+        return "" if self._verifier is None else self._verifier.algorithm
+
+    @property
+    def evidence_enabled(self) -> bool:
+        """Whether decisions are being sealed into a chain."""
+        return self._evidence is not None
 
     # -- projections (read-only; safe to call from a recovering controller) ------
 
@@ -634,14 +893,21 @@ class FabricEngine:
         3. reservations — a step that cannot have the lock does not act;
         4. the nonce (single-use, per envelope), then duplicate effect at this
            epoch, then an unresolved prior claim of the same key;
-        5. the claim is appended — *now* the nonce is spent and the fence served
+        5. **verification** — plan 19's real check over the envelope's bytes.
+           Last, and that placement is a decision: every check above can only
+           *refuse*, never act, so an unauthenticated command cannot make any of
+           them spend anything on its way to the verifier. Putting verification
+           earlier would mean a command refused for a deposed fence had already
+           burned its nonce in plan 19's ledger, and a legitimate retry of that
+           same intent could never be minted.
+        6. the claim is appended — *now* the nonce is spent and the fence served
            — and only then does the provider hear about the step.
 
         Raises:
             FabricCommandRefused: With :data:`FABRIC_UNDERSIGNED`,
                 :data:`FABRIC_PLAN_MISMATCH`, :data:`FABRIC_STALE_FENCE`,
                 :data:`FABRIC_RESERVATION_EXPIRED`,
-                :data:`FABRIC_RESOURCE_CONFLICT`,
+                :data:`FABRIC_RESOURCE_CONFLICT`, ``FABRIC_COMMAND_UNVERIFIED``,
                 ``FABRIC_DUPLICATE_DISPATCH``, ``FABRIC_INFLIGHT_UNRESOLVED``,
                 or :data:`FABRIC_REPLAYED_NONCE`. Nothing was dispatched in any
                 of those cases.
@@ -649,34 +915,21 @@ class FabricEngine:
                 scope — a controller that minted an inconsistent command is a
                 bug, and it fails loudly rather than being normalised away.
         """
-        step, command = request.step, request.command
+        command = request.command
         now = self._clock()
-        self._require_signed(command)
-        self._require_scope(step, command)
-        assert_plan_digest_matches(command, current_plan_digest=request.current_plan_digest)
+        try:
+            verification = self._preflight(request, now=now)
+        except FabricCommandRefused as exc:
+            # A refusal is evidence too: the plan's Phase 4 acceptance asks for
+            # it by name, and a refusal nobody recorded is a refusal the next
+            # controller cannot tell from a command that never arrived.
+            self._record_refusal(command, exc)
+            raise
 
-        served = self.served_fence(command.run_id, step.step_id)
-        if served is not None:
-            assert_fence_current(command, served_fence=served)
-        self._require_reservations(request, now=now)
-        # Used as the decision function so the code, message and remediation are
-        # the domain's; the claim appended below is what spends the nonce.
-        self.nonce_ledger(command.run_id, step.step_id).accept(command)
-        self._require_single_effect(request)
+        claim = DispatchClaim(command=command, controller_id=self._controller_id, claimed_at=now)
+        self._journal.append(claim)
+        self._record_claim(claim, verification)
         recorded = self._recorded_outcome(command)
-        if self._has_open_claim(command):
-            raise FabricCommandRefused(
-                FABRIC_INFLIGHT_UNRESOLVED,
-                f"command '{command.command_id}' re-dispatches key "
-                f"'{command.idempotency_key}' while an earlier claim of that key is unsettled",
-                details={"command_id": command.command_id, "step_id": step.step_id},
-                remediation="reconcile the open claim (settle_claim) after recovering any "
-                "lease it created; an in-flight effect is never retried into a second one",
-            )
-
-        self._journal.append(
-            DispatchClaim(command=command, controller_id=self._controller_id, claimed_at=now)
-        )
         if recorded is not None:
             return self._settle(
                 command,
@@ -695,6 +948,43 @@ class FabricEngine:
             refusal_code=refusal_code,
             lease_id=lease.id if lease is not None else None,
         )
+
+    def _preflight(self, request: DispatchRequest, *, now: datetime) -> VerifiedDispatch | None:
+        """Every check that must pass before the step may act, in order.
+
+        Returns the verification record, or ``None`` when no verifier is bound.
+        The served fence is *not* returned even though it is read here: it is
+        the journal's projection, and handing it back would invite a caller to
+        cache it. ``_verify`` is given it directly, so both the fence check and
+        the verifier compare against the same value.
+
+        Raises:
+            FabricCommandRefused: Naming the first check that refused.
+            InvariantViolationError: On an envelope/step scope disagreement.
+        """
+        step, command = request.step, request.command
+        self._require_signed(command)
+        self._require_scope(step, command)
+        assert_plan_digest_matches(command, current_plan_digest=request.current_plan_digest)
+
+        served = self.served_fence(command.run_id, step.step_id)
+        if served is not None:
+            assert_fence_current(command, served_fence=served)
+        self._require_reservations(request, now=now)
+        # Used as the decision function so the code, message and remediation are
+        # the domain's; the claim appended by ``dispatch`` is what spends the nonce.
+        self.nonce_ledger(command.run_id, step.step_id).accept(command)
+        self._require_single_effect(request)
+        if self._has_open_claim(command):
+            raise FabricCommandRefused(
+                FABRIC_INFLIGHT_UNRESOLVED,
+                f"command '{command.command_id}' re-dispatches key "
+                f"'{command.idempotency_key}' while an earlier claim of that key is unsettled",
+                details={"command_id": command.command_id, "step_id": step.step_id},
+                remediation="reconcile the open claim (settle_claim) after recovering any "
+                "lease it created; an in-flight effect is never retried into a second one",
+            )
+        return self._verify(request, served_fence=served, now=now)
 
     def settle_claim(
         self,
@@ -735,27 +1025,110 @@ class FabricEngine:
             settled_at=self._clock(),
         )
         self._journal.append(settlement)
+        self._record_settlement(settlement, result=None)
         return settlement
 
     # -- internals ----------------------------------------------------------------
 
+    def _verify(
+        self,
+        request: DispatchRequest,
+        *,
+        served_fence: FencingToken | None,
+        now: datetime,
+    ) -> VerifiedDispatch | None:
+        """Verify the envelope with plan 19's verifier, or refuse it by name.
+
+        Returns ``None`` when no verifier is bound — the additive Phase 2
+        behaviour, unchanged.
+
+        Raises:
+            FabricCommandRefused: With the narrowest code among the checks that
+                failed (:data:`FABRIC_UNDERSIGNED` for a signature that does not
+                verify, and so on), or :data:`FABRIC_COMMAND_UNVERIFIED` with the
+                failing checks named. A
+                :class:`~mayhem.infra.agent_identity_verifier.SignaturePortUnavailableError`
+                also lands here and is refused as unverifiable: nothing was
+                checked, and "nothing was checked" is never "checked and passed".
+        """
+        if self._verifier is None:
+            return None
+        try:
+            verified = self._verifier.verify(
+                request.command,
+                expected_plan_digest=request.current_plan_digest,
+                served_fence=served_fence,
+                now=now,
+            )
+        except CommandRefusedError as exc:
+            raise translate_verification_refusal(exc) from exc
+        except SignaturePortUnavailableError as exc:
+            raise FabricCommandRefused(
+                FABRIC_COMMAND_UNVERIFIED,
+                f"command '{request.command.command_id}' was not checked: {exc.reason}",
+                details={
+                    "command_id": request.command.command_id,
+                    "failed_checks": [VerificationCheck.SIGNATURE.value],
+                    "algorithm": exc.algorithm,
+                },
+                remediation=_REFUSED_REMEDIATION,
+            ) from exc
+        return VerifiedDispatch.of(verified)
+
+    def _record_claim(
+        self, claim: DispatchClaim, verification: VerifiedDispatch | None
+    ) -> None:
+        """Seal a landed claim. Never raises into the dispatch path silently."""
+        if self._evidence is not None:
+            self._evidence.dispatch_recorded(claim, verification=verification)
+
+    def _record_settlement(
+        self, settlement: DispatchSettlement, *, result: DispatchResult | None
+    ) -> None:
+        """Seal a landed settlement, with the dispatch reading when there is one."""
+        if self._evidence is not None:
+            self._evidence.settlement_recorded(settlement, result=result)
+
+    def _record_refusal(self, command: FabricCommand, exc: FabricCommandRefused) -> None:
+        """Seal a refusal.
+
+        Failures here are the recorder's problem and are never allowed to mask the
+        refusal that actually happened: a broken evidence sink must not turn a
+        clean, named ``FABRIC_STALE_FENCE`` into an ``AttributeError``.
+        """
+        if self._evidence is None:
+            return
+        try:
+            self._evidence.refusal_recorded(command, code=exc.code, reason=str(exc))
+        except Exception:
+            # The refusal is the fact; a broken evidence sink is a separate
+            # problem and must not replace it.
+            return
+
     def _require_signed(self, command: FabricCommand) -> None:
         """Refuse a command whose signature claim is empty.
 
-        Unreachable in-process by construction (Phase 1: no field on the envelope
-        has a default, so an unsigned command cannot be built), which is exactly
-        why the check is kept rather than deleted: it is the decision function
-        the plan-19 wire receiver calls when a decoded frame fails the envelope's
-        own signature constraints. Verification — proving the signature against a
-        key and a trust root — is *not* implemented in this phase.
+        Still unreachable in-process by construction (Phase 1: no field on the
+        envelope has a default, so an unsigned command cannot be built), and still
+        kept rather than deleted — but its role changed in Phase 4. It is now the
+        *first* of two raise sites for :data:`FABRIC_UNDERSIGNED`, and the cheap
+        one: it reads a claim the envelope already made. The expensive one is
+        :meth:`_verify`, which asks plan 19 whether the signature actually proves
+        anything, and
+        :func:`mayhem.controller.fabric_evidence.decode_wire_command`, which is
+        where an untrusted frame that fails the envelope's own constraints lands.
+
+        Checking the empty case first and the cryptographic case second is
+        deliberate: a blank signature should not cost a key lookup, and a
+        forged one should never be reported as "blank".
         """
         if not command.is_signed:
             raise FabricCommandRefused(
                 FABRIC_UNDERSIGNED,
                 f"command '{command.command_id}' carries no signature",
                 details={"command_id": command.command_id, "run_id": command.run_id},
-                remediation="mTLS identities and trust roots arrive with plan 19; until then a "
-                "signature is a claim, not a proof",
+                remediation="a fabric command carries a signature over signing_payload() "
+                "produced by the agent's current credential",
             )
 
     def _require_scope(self, step: StepSpec, command: FabricCommand) -> None:
@@ -922,7 +1295,7 @@ class FabricEngine:
             settled_at=self._clock(),
         )
         self._journal.append(settlement)
-        return DispatchResult(
+        reading = DispatchResult(
             run_id=command.run_id,
             step_id=command.step_id,
             command_id=command.command_id,
@@ -934,3 +1307,5 @@ class FabricEngine:
             retried=retried,
             lease_id=settlement.lease_id,
         )
+        self._record_settlement(settlement, result=reading)
+        return reading

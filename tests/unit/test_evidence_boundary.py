@@ -55,6 +55,18 @@ document: the replay capsule (``spec``/``plan``, the document an operator is
 handed in order to reproduce a run) and the coverage observation (``verdict`` and
 ``metadata``). :class:`TestReplayAndCoverageBoundary` covers those.
 
+Plan 03 then added a fifth surface, ``infra/fabric_journal.py``: the append-only
+table every dispatch claim and settlement is journalled into. It is persisted,
+replayed after a crash, and read back by the same export and retention machinery
+that covers the audit stream, so the argument that binds those binds it — and its
+one writer, :meth:`~mayhem.infra.fabric_journal.FabricJournalTable.append`, gates
+the document the columns receive. What makes the recurrence worth naming is that
+it arrived from a different direction again: not a new writer in a module the
+boundary already knew about, but a brand-new module in ``infra`` whose *own*
+docstring had already reasoned its way to ``require_persistable_document`` and then
+registered nowhere. The completeness guard below caught it on its first run, which
+is the only reason it is a row here rather than a report.
+
 What this suite still cannot prove
 ----------------------------------
 
@@ -1392,6 +1404,18 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
         {"require_persistable_document"}
     ),
     ("mayhem.infra.coverage_repository", "SQLiteCoverageRepository.record"): frozenset(
+        {"require_persistable_document"}
+    ),
+    # Plan 03's execution-fabric journal is the fourth recurrence of this defect
+    # class and lands in infra rather than the controller layer, so it arrives here
+    # with no route from the module it lives in to the reasoning above: an
+    # append-only journal of every dispatch claim and settlement is persisted,
+    # replayed, and read back by exactly the machinery that covers the audit
+    # stream, so it is evidence by the same argument. Its only writer is
+    # ``FabricJournalTable.append`` — ``rows``/``count`` are readers — so one row
+    # is the complete set for this module, and adding a second writer later fails
+    # the guard above rather than passing on a partially registered module.
+    ("mayhem.infra.fabric_journal", "FabricJournalTable.append"): frozenset(
         {"require_persistable_document"}
     ),
 }
