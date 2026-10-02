@@ -863,6 +863,216 @@ def _ceilings_configured(ctx: SafetyContext) -> dict[str, Any] | None:
     }
 
 
+def _names_a_limit(value: Any) -> bool:
+    """Whether a configured ceiling field asks for a limit at all.
+
+    Two shapes say "nobody asked for this" and neither is a satisfied ceiling: a
+    ``None`` — the model default for every field — and an *empty* collection,
+    which is what ``protected_node_ids`` looks like when nothing is protected.
+
+    Deliberately not ``bool(value)``. ``bool(0)`` is ``False``, and a zero is a
+    real and very tight limit: ``max_customer_facing_services=0`` is the
+    front-doors-must-not-fall-over ceiling, and treating it as unconfigured would
+    drop the one configured ceiling most likely to have just been measured
+    against. The count of configured ceilings is a safety claim about what was
+    checked, so it is not allowed to be wrong in the flattering direction.
+    """
+    if value is None:
+        return False
+    if isinstance(value, (str, bytes)):
+        return bool(value)
+    if isinstance(value, (frozenset, set, list, tuple, dict)):
+        return len(value) > 0
+    return True
+
+
+#: ``ceiling_*`` stat name -> the configured field it was compared against, for
+#: the one pair whose two names share no words.
+#:
+#: Four of the five are paired by :func:`_ceiling_field`'s word test without
+#: being written down here, and that is the point: this is a record of the
+#: *exception*, not an enumeration of the ceilings. The gate measures the
+#: protected list by counting what it hit, so it reports ``ceiling_protected_hits``
+#: where the ceiling it enforces is ``protected_node_ids`` — no shared word, so
+#: no derivation can recover it, and a derivation that guessed instead would risk
+#: pairing a measurement with the wrong limit. A sixth ceiling added to the gate
+#: still needs no entry here: its stat reaches :func:`_ceiling_field` first, and
+#: if it also cannot be derived it lands in the disclosed-unpaired clause rather
+#: than disappearing.
+_CEILING_STAT_FIELD: dict[str, str] = {"protected_hits": "protected_node_ids"}
+
+
+def _ceiling_field(limits: dict[str, Any], stat: str) -> str | None:
+    """The configured ceiling a ``ceiling_<stat>`` observation was compared to.
+
+    Matched by shared words rather than by an enumerated table, because the two
+    sides do not spell the same ceiling the same way — the gate reports
+    ``ceiling_dependency_depth`` and ``ceiling_affected_pct`` where the ceilings
+    it enforces are ``max_dependency_depth`` and ``max_affected_pct`` — and
+    pairing them positionally would be a second vocabulary for the same five
+    ceilings that would drift silently the moment the gate reordered or inserted
+    one.
+
+    A stat that shares *no* word with a field is not paired by guessing; only
+    :data:`_CEILING_STAT_FIELD` may pair it. An ambiguous match is likewise
+    refused rather than resolved by sort order, because reporting a number next
+    to the wrong limit is worse than reporting it next to none.
+
+    ``None`` when no configured ceiling claims the stat, which is a real case and
+    not an error: ``_check_blast_ceilings`` emits ``ceiling_protected_hits``
+    unconditionally, so an empty ``protected_node_ids`` yields a measurement with
+    no configured limit behind it. The caller reports that separately rather than
+    folding it into the configured list, because "0 hits" against a limit nobody
+    set is not a ceiling that held.
+
+    Returns ``None`` rather than raising so an unpaired stat stays *disclosed*
+    (see :func:`_ceilings_note`) instead of vanishing.
+    """
+    aliased = _CEILING_STAT_FIELD.get(stat)
+    if aliased is not None and aliased in limits:
+        return aliased
+    stat_words = set(stat.split("_"))
+    matches = [
+        field for field in sorted(limits) if stat_words <= set(field.split("_"))
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _ceilings_note(blast: _BlastProbe) -> str:
+    """The plan-14 ceilings, each beside the number the gate measured against it.
+
+    Counts alone are not a measurement. "4 ceiling(s) configured" would render
+    identically for a plan that ran every comparison, for one where a single
+    measurement was taken, and for one where the ceilings were configured and
+    then skipped because the graph was empty — so the note pairs every
+    configured ceiling with the observed value the gate returned for it, on the
+    allow path, where nothing is refusing and the artifact is the only evidence
+    the check ran.
+
+    The three shapes it can report are the three things that are true:
+
+    * **No ceilings carried at all.** ``ctx.blast_ceilings is None``. Nothing was
+      compared, and the note says so in words rather than in a count, because a
+      count of zero here reads as "nothing breached".
+    * **A ceiling block that names no limit.** Every field ``None`` or empty.
+      Distinct from the case above, and *not* a measurement either: the gate ran
+      its block and the block contained no limits. Rendering it as "0 configured
+      ceiling(s)" would be true and useless; rendering it as "all ceilings held"
+      would be a pass nobody earned.
+    * **At least one limit.** Then each one is rendered as observed-against-limit,
+      and anything the gate reported with no configured limit behind it is named
+      separately so it cannot be mistaken for a ceiling that held.
+
+    Numbers come from :attr:`_BlastProbe.ceiling_observations`, which is the
+    ``check_blast_radius`` call's own ``stats``. Nothing here recomputes a blast
+    measurement: a second computation is a second chance to disagree with the
+    run the proof is about.
+    """
+    if blast.ceilings is None:
+        return (
+            "; no plan-14 blast ceilings configured, so those five limits were "
+            "unchecked rather than satisfied"
+        )
+    limits = {name: value for name, value in blast.ceilings.items() if _names_a_limit(value)}
+    if not limits:
+        return (
+            "; a plan-14 blast-ceiling block was carried but named no limit, so no "
+            "ceiling was compared against anything and none is reported as satisfied"
+        )
+
+    worst: dict[str, float] = {}
+    unpaired: dict[str, float] = {}
+    measured_steps = 0
+    for observation in blast.ceiling_observations:
+        paired_here = False
+        for key, value in observation.items():
+            if not key.startswith(_CEILING_STAT_PREFIX):
+                continue
+            stat = key[len(_CEILING_STAT_PREFIX) :]
+            field = _ceiling_field(limits, stat)
+            if field is None:
+                unpaired[stat] = _worst(unpaired.get(stat), value)
+                continue
+            paired_here = True
+            worst[field] = _worst(worst.get(field), value)
+        # A step counts as measured only if a *configured* ceiling was actually
+        # compared on it. ``_ceiling_observation`` always carries ``step`` and
+        # ``fault_id``, so testing the observation for truth would count every
+        # step as measured and report a number that cannot be 0 — including for
+        # the step whose one configured ceiling was unmeasurable, which is the
+        # step an operator most needs counted honestly.
+        measured_steps += paired_here
+
+    pairings = ", ".join(
+        _ceiling_pairing(name, limit, worst.get(name)) for name, limit in sorted(limits.items())
+    )
+    note = (
+        f"; {measured_steps}/{len(blast.ceiling_observations)} step(s) measured against the "
+        f"{len(limits)} configured plan-14 ceiling(s): {pairings}"
+    )
+    if unpaired:
+        note += (
+            "; the gate also reported "
+            + ", ".join(
+                f"{stat} {_ceiling_number(value)}" for stat, value in sorted(unpaired.items())
+            )
+            + " against no configured ceiling"
+        )
+    return note
+
+
+def _worst(seen: float | None, value: Any) -> float:
+    """The larger of a running maximum and a new observation.
+
+    Every admitted step was compared and none exceeded its limit, so the largest
+    value across steps is the tightest comparison the ceilings actually faced.
+    Reporting that number is reporting what was measured; reporting a per-step
+    list instead would imply the aggregate was one step's reading.
+    """
+    as_float = float(value)
+    return as_float if seen is None else max(seen, as_float)
+
+
+def _ceiling_pairing(name: str, limit: Any, observed: float | None) -> str:
+    """One configured ceiling and the number it was compared against.
+
+    Three renderings, because three things can be true and the difference is the
+    whole report: the ceiling was measured and held, the ceiling was configured
+    but nothing on any admitted step could measure it, or — for the protected
+    list, whose "limit" is a set rather than a number — it was measured as a
+    count of hits against a count of configured entries.
+    """
+    if isinstance(limit, (frozenset, set, list, tuple)):
+        # A list limit has no single number to compare against, so the
+        # "unmeasured" half of this branch names what was configured instead of
+        # trying to render the set as a scalar.
+        if observed is None:
+            return (
+                f"{name} configured with {len(limit)} protected node(s) but "
+                "unmeasured on every admitted step"
+            )
+        return f"{name} {_ceiling_number(observed)} hit(s) against {len(limit)} configured"
+    if observed is None:
+        return (
+            f"{name} configured at {_ceiling_number(limit)} but unmeasured on every "
+            "admitted step"
+        )
+    return f"{name} {_ceiling_number(observed)} <= {_ceiling_number(limit)}"
+
+
+def _ceiling_number(value: Any) -> str:
+    """A ceiling reading as a short number.
+
+    ``:g`` because every ``ceiling_*`` stat is a ``dict[str, float]`` the gate
+    typed as float, and ``3.0`` next to a configured ``3`` reads like two
+    different numbers in an artifact whose entire job is to show that they were
+    compared.
+    """
+    return f"{float(value):g}"
+
+
 # --------------------------------------------------------------------------------
 # line builders
 # --------------------------------------------------------------------------------
@@ -1118,23 +1328,7 @@ def _line_target_policy(
                 f"{', '.join(sorted(policy.rule_ids))}{note}"
             ),
         )
-    ceilings_note = ""
-    if blast.ceilings is None:
-        ceilings_note = (
-            "; no plan-14 blast ceilings configured, so those five limits were "
-            "unchecked rather than satisfied"
-        )
-    else:
-        configured = sum(
-            1
-            for value in blast.ceilings.values()
-            if value is not None and bool(value)
-        )
-        held = sum(1 for o in blast.ceiling_observations if o)
-        ceilings_note = (
-            f"; {held}/{len(blast.ceiling_observations)} step(s) measured against the "
-            f"{configured} configured plan-14 ceiling(s)"
-        )
+    ceilings_note = _ceilings_note(blast)
     return _Line(
         name=ObligationName.TARGET_POLICY.value,
         gates=("controller.safety.validate_plan", "controller.safety.check_fault_admission"),
