@@ -24,7 +24,8 @@ from mayhem.agents.impact import OBSERVATION_BLIND
 from mayhem.agents.k8s_resolve import KubernetesRuntimeResolver
 from mayhem.agents.lease_client import LeaseClient
 from mayhem.agents.probes import run_probe, verify_all
-from mayhem.controller.k8s_runtime import K8S_MUTATION_FAULTS
+from mayhem.controller.k8s_evidence import plan_phase_admission, seal_k8s_admission
+from mayhem.controller.k8s_runtime import K8S_MUTATION_FAULTS, make_k8s_resolver
 from mayhem.controller.observability_collector import (
     SourceCollection,
     collect_observability,
@@ -533,10 +534,39 @@ class RunEngine:
             # The gate sits *before* _open_run so an unapproved plan can never
             # reach the store, and therefore can never reach a lease.
             self._require_execution_intent(plan)
-        if self._safety is not None:
+        safety_ctx = self._safety
+        k8s_events: tuple[Event, ...] = ()
+        if safety_ctx is not None:
             graph = self._live_graph() if self._live_graph else None
             if graph is not None:
-                validate_plan(plan, graph, self._safety)  # G1+G2, raises SafetyRefusedError
+                # v1.1.0 plan 02 Phase 4 — the one call that gives the Kubernetes
+                # admission gate something to read. With no ``k8s_admission`` on the
+                # context (the production default, and the default every existing
+                # test runs under) this resolves to a no-op wrapper around
+                # ``validate_plan`` and the call below is byte-for-byte what it was:
+                # the resolver factory is not called, so a Docker-only run does not
+                # probe for kubectl either. Configured, it resolves every
+                # pod-resolved Kubernetes step through ``resolve_many``, keys the
+                # admission requests by *step id*, collects the drift observations
+                # and the admission decisions as events in the existing vocabulary,
+                # and seals the decision into the attestation chain — so the "which
+                # pods was this step allowed to touch, and why" question has an
+                # answer after the run instead of only a refusal string on screen.
+                with plan_phase_admission(
+                    plan,
+                    safety_ctx,
+                    lambda: make_k8s_resolver(self._k8s_resolver, self._k8s_context),
+                    seal=lambda outcomes: seal_k8s_admission(
+                        self._store, plan.run_id, outcomes
+                    ),
+                ) as k8s_phase:
+                    # ``phase.safety`` is this context, or a copy of it carrying
+                    # the resolved requests; the ``or`` is the inert path, where the
+                    # hook hands the caller's own context straight back.
+                    validate_plan(
+                        plan, graph, k8s_phase.safety or safety_ctx
+                    )  # G1+G2, raises SafetyRefusedError
+                k8s_events = k8s_phase.events
         # Plan 23 Phase 3 — resource-budget ADMISSION, beside validate_plan and
         # before _open_run, which is the last moment at which a refusal still
         # prevents *every* mutation rather than some: no run row, no step row, no
@@ -548,6 +578,13 @@ class RunEngine:
             self._admit_budget()
         started = utc_now().timestamp()
         self._open_run(plan)
+        # The Kubernetes plan-phase events, now that the run row they reference
+        # exists (``events.run_id`` REFERENCES ``runs(id)``). They precede
+        # ``run.started`` because that is when the work they describe was decided.
+        # On the refusal path none of this is reached: the plan was refused before
+        # the run opened, and its decision lives in the sealed chain instead.
+        for event in k8s_events:
+            self._emit(event)
         self._emit(Event(kind=EventKind.RUN_STARTED, run_id=plan.run_id))
         reports: list[StepReport] = []
         dirty: list[str] = []

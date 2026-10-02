@@ -473,6 +473,7 @@ def verdict_inputs(verdict: K8sAdmissionVerdict) -> dict[str, object]:
 
 # ── the gate ────────────────────────────────────────────────────────────────
 def _provenance_refusal(
+    step_id: str,
     fault: PlannedFault,
     workload: K8sWorkload,
     request: K8sAdmissionRequest,
@@ -484,8 +485,14 @@ def _provenance_refusal(
     targets; step 3 asks whether it holds anything admissible. Neither needs
     the cluster, which is the point: a plan whose provenance is wrong is
     refused without spending a read on it.
+
+    Every message here names the **step** as well as the fault, because a plan
+    may carry the same fault twice against one workload with two resolutions: a
+    refusal that named only the fault would be true of both steps and actionable
+    for neither.
     """
     subject = f"{workload.namespace}/{workload.name}"
+    step = f"step {step_id}"
     if request.workload != workload:
         return (
             RULE_REQUEST_MISMATCH,
@@ -518,7 +525,8 @@ def _provenance_refusal(
     if not request.targets:
         return (
             RULE_NO_LIVE_TARGET,
-            f"{subject}: {fault.fault_id} resolved to no live pod — {_exclusion_summary(request)}",
+            f"{subject}: {fault.fault_id} ({step}) resolved to no live pod — "
+            f"{_exclusion_summary(request)}",
             dict(identity),
             keys,
         )
@@ -526,9 +534,9 @@ def _provenance_refusal(
     if uidless:
         return (
             RULE_NO_LIVE_TARGET,
-            f"{subject}: resolved record(s) {uidless} carry no pod uid, so they are not "
-            "evidence of a live pod — admission does not re-read pods, so it cannot tell "
-            "a deposed pod from a live one without that uid",
+            f"{subject}: {fault.fault_id} ({step}) resolved record(s) {uidless} carry no "
+            "pod uid, so they are not evidence of a live pod — admission does not re-read "
+            "pods, so it cannot tell a deposed pod from a live one without that uid",
             {**identity, "uidless": uidless},
             keys,
         )
@@ -605,7 +613,7 @@ def admit_k8s_fault(
     # defaults to an empty one over the planned workload, so "no resolved live
     # target" is one refusal with one message rather than two paths to it.
     request = admission.requests.get(step_id, K8sAdmissionRequest(workload=workload))
-    provenance = _provenance_refusal(fault, workload, request, identity)
+    provenance = _provenance_refusal(step_id, fault, workload, request, identity)
     if provenance is not None:
         rule_id, reason, inputs, keys = provenance
         return _deny(rule_id, reason, inputs, targets=keys)
