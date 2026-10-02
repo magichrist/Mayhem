@@ -64,4 +64,14 @@ Advisor methodology doc (criteria declaration, trace reading), replay guide, sce
 - Phase 5 (tests/negative controls): not started
 - Phase 6 (docs/rollout): not started
 
-Overall: 4 of 6 phases complete.
+Overall: 3 of 6 phases complete (Phases 1, 2, and 4).
+
+**Why the count was corrected down from 4.** This line previously read `4 of 6`
+while the ledger above it marked exactly three phases done (1, 2 and 4), with
+Phase 3 (surface) not started and Phases 5 and 6 not started. The count was
+wrong in the flattering direction and nothing above it supported the fourth
+phase. Corrected against the phase list rather than the other way round: a
+summary that disagrees with its own ledger is the ledger lying, not the ledger
+being miscounted. Phase 4 additionally records that nothing maps an advisor
+artifact onto a proof obligation, which is a real gap inside a phase that is
+otherwise delivered — it is not a fourth completed phase.
