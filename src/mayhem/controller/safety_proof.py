@@ -43,6 +43,28 @@ would have to say. ``tests/unit/test_proof_compiler.py`` parses this module and
 ``controller/approval_gate.py`` and asserts every rule either can raise is owned
 by a line, so the next lane's unmapped refusal fails a test by name instead.
 
+**Phase 4's second half paid the debt plan 14 recorded.** Its five blast-radius
+ceilings — affected nodes, affected share, dependency depth, customer-facing
+services, and the protected-node list — were enforced by
+:func:`mayhem.controller.safety.check_blast_radius` from the moment they landed,
+but owned by no line, so a run refused on one compiled to a whole-proof ``VOID``
+naming a rule this compiler could not place: fail-closed, and strictly worse than
+the ``FAIL`` an operator reading the artifact is actually looking for. All five
+now map to :data:`ObligationName.TARGET_POLICY`, beside the two target-side caps
+the same function raises, and :data:`GATE_RULE_IDS` gained them so a *prediction*
+that flags a breached ceiling is blamed rather than quietly dropped — which was
+the same gap in the opposite direction and just as silent.
+
+No tenth obligation name was invented for them. :class:`ObligationName` is the
+fixed nine-name spine Phase 1 shipped, and widening what a ``PASS``-shaped proof
+must contain is a change to every consumer of the artifact, taken on for a rule
+that an existing line already describes accurately: "which targets this plan may
+touch, and how much of the system with them". The line *reads* the ceilings rather
+than restating them — :func:`_blast_probe` returns the configured limits and the
+gate's own per-step measurements, and distinguishes "measured and within" from
+"never checked", because a ``None`` ceiling is unchecked and reporting it as
+satisfied would be the artifact claiming a pass nobody earned.
+
 ## Why the probes clone the context
 
 :func:`mayhem.controller.safety.validate_plan` and
@@ -92,8 +114,10 @@ obligation                    gates that feed it
 ``target_policy``             ``validate_plan``'s identity/environment/k8s/remote
                               checks, ``check_fault_admission``,
                               ``pre_exec_assertion`` (G3 drift), the target-side
-                              blast caps and forbidden fault pairs, and the
-                              plan-07 policy gate (or a
+                              blast caps and forbidden fault pairs, the five
+                              plan-14 blast-radius ceilings with their measured
+                              per-step values (Phase 4), and the plan-07 policy
+                              gate (or a
                               :class:`~mayhem.domain.policy.PolicyDecision` when
                               one is supplied directly)
 ``max_concurrent_faults``     ``check_blast_radius`` stat ``concurrent_faults``
@@ -122,9 +146,10 @@ obligation                    gates that feed it
 Three of the budget's six limits (``max_services_pct``, ``max_hosts``,
 ``forbidden_fault_pairs``) have no line of their own in the nine-name spine, so
 they are owned by ``target_policy``: all three are statements about *which
-targets this plan may touch and in which combination*. The mapping is data
-(:data:`OBLIGATION_FOR_RULE`), not folklore, so it can be read and checked in
-one place.
+targets this plan may touch and in which combination*. The five plan-14 ceilings
+are owned there for the same reason and by the same argument — they bound the same
+question from a second direction. The mapping is data (:data:`OBLIGATION_FOR_RULE`),
+not folklore, so it can be read and checked in one place.
 
 A line's ``PASS`` means "this line's own gates produced output and nothing in it
 was over its cap" — not "the plan is fine". Only the proof verdict says that, and
@@ -195,10 +220,15 @@ from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.observations import CriterionKind, CriterionOperator, SloCriterion
 from mayhem.domain.prediction import (
     RULE_FORBIDDEN_FAULT_PAIRS,
+    RULE_MAX_AFFECTED_NODES,
+    RULE_MAX_AFFECTED_PCT,
     RULE_MAX_CONCURRENT_FAULTS,
+    RULE_MAX_CUSTOMER_FACING_SERVICES,
+    RULE_MAX_DEPENDENCY_DEPTH,
     RULE_MAX_DURATION_PER_FAULT_S,
     RULE_MAX_HOSTS,
     RULE_MAX_SERVICES_PCT,
+    RULE_PROTECTED_NODE,
     approval_refusal_reason,
     is_never_permissive,
     is_stale_against,
@@ -231,6 +261,15 @@ if TYPE_CHECKING:
 #: prediction's findings are attributable to a rule the gate actually knows —
 #: a prediction that flags a plan-14 *ceiling* nobody enforces yet is reporting a
 #: rule this compiler cannot blame on a line.
+#:
+#: The five plan-14 ceilings joined this set when the ceiling rules became
+#: blameable (Phase 4, second half). Before that they were filtered out here even
+#: though :func:`mayhem.controller.safety.validate_plan` refuses on them, which
+#: is the mirror image of the ``VOID`` problem and strictly quieter: a prediction
+#: that flagged a breached ceiling contributed no blame entry at all, so the
+#: artifact simply did not mention it. Both directions of the same gap are now
+#: closed — the rules are enforceable (:data:`OBLIGATION_FOR_RULE`) *and*
+#: predictable (:data:`GATE_RULE_IDS`).
 GATE_RULE_IDS: frozenset[str] = frozenset(
     {
         RULE_MAX_SERVICES_PCT,
@@ -240,6 +279,28 @@ GATE_RULE_IDS: frozenset[str] = frozenset(
         RULE_FORBIDDEN_FAULT_PAIRS,
         RULE_BUDGET,
         RULE_PER_FAULT_CEILING,
+        RULE_MAX_AFFECTED_NODES,
+        RULE_MAX_AFFECTED_PCT,
+        RULE_MAX_CUSTOMER_FACING_SERVICES,
+        RULE_MAX_DEPENDENCY_DEPTH,
+        RULE_PROTECTED_NODE,
+    }
+)
+
+#: The five plan-14 ceilings, narrowed out of :data:`GATE_RULE_IDS`.
+#:
+#: A subset for one reporting reason: the ceilings and the budget's own caps are
+#: enforced by the same function and blamed on the same line, so the only thing
+#: that tells them apart in the artifact is the rule id. Without this set the
+#: ``target_policy`` line would say a ceiling breach happened somewhere in its
+#: blast output and leave the reader to guess which number it was.
+CEILING_RULE_IDS: frozenset[str] = frozenset(
+    {
+        RULE_MAX_AFFECTED_NODES,
+        RULE_MAX_AFFECTED_PCT,
+        RULE_MAX_CUSTOMER_FACING_SERVICES,
+        RULE_MAX_DEPENDENCY_DEPTH,
+        RULE_PROTECTED_NODE,
     }
 )
 
@@ -264,6 +325,27 @@ OBLIGATION_FOR_RULE: dict[str, str] = {
     RULE_MAX_SERVICES_PCT: ObligationName.TARGET_POLICY.value,
     RULE_MAX_HOSTS: ObligationName.TARGET_POLICY.value,
     RULE_FORBIDDEN_FAULT_PAIRS: ObligationName.TARGET_POLICY.value,
+    # -- the five plan-14 blast-radius ceilings -----------------------------------
+    # Phase 4, second half, closing the debt plan 14 recorded. Same owner as the
+    # two target-side caps above and for the reason that block already gives: the
+    # nine-name spine has no line of its own for *how much of the system may this
+    # plan touch*, and these five are exactly that question — a node count, a
+    # dependency depth, a share of the fleet, a count of front doors, and a
+    # protected list of ids this plan may not be pointed at. They are also raised
+    # by the same function (``check_blast_radius``), so they belong beside
+    # ``RULE_MAX_HOSTS`` rather than beside the three budget lines, which are
+    # about concurrency, duration and damage and would misdescribe all five.
+    #
+    # A tenth obligation name was considered and rejected on the type, not the
+    # taste: :class:`~mayhem.domain.safety_proof.ObligationName` is the *fixed*
+    # nine-name spine Phase 1 shipped, and adding a line to it changes what a
+    # ``PASS``-shaped proof must contain for every consumer of the artifact, for
+    # a rule that is already perfectly describable on an existing line.
+    RULE_MAX_AFFECTED_NODES: ObligationName.TARGET_POLICY.value,
+    RULE_MAX_AFFECTED_PCT: ObligationName.TARGET_POLICY.value,
+    RULE_MAX_CUSTOMER_FACING_SERVICES: ObligationName.TARGET_POLICY.value,
+    RULE_MAX_DEPENDENCY_DEPTH: ObligationName.TARGET_POLICY.value,
+    RULE_PROTECTED_NODE: ObligationName.TARGET_POLICY.value,
     "k8s.unsupported": ObligationName.TARGET_POLICY.value,
     "remote.unsupported": ObligationName.TARGET_POLICY.value,
     "target.drift": ObligationName.TARGET_POLICY.value,
@@ -389,6 +471,17 @@ class _BlastProbe:
     #: can raise the quorum the same way :func:`validate_plan` does rather than
     #: re-deriving the requirements from a second bundle evaluation.
     requirements: tuple[RequiredApproval, ...] = ()
+    #: The plan-14 blast ceilings the caller's context carried, or ``None`` when
+    #: it carried none. Separate from the ``steps`` because it is the difference
+    #: between "these limits were measured and held" and "these limits were never
+    #: looked at", and an artifact that cannot tell those apart is claiming a
+    #: pass it did not earn.
+    ceilings: dict[str, Any] | None = None
+    #: Per-step ``ceiling_*`` stats as :func:`mayhem.controller.safety
+    #.check_blast_radius` returned them. These are the gate's own measurements,
+    #: not a second computation: the ceilings are enforced *inside* that call, so
+    #: a step either carries them or raised instead.
+    ceiling_observations: tuple[dict[str, Any], ...] = ()
 
     @property
     def rule_ids(self) -> frozenset[str]:
@@ -672,6 +765,15 @@ def _blast_probe(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext) 
     would be wrong here, because a step refused by the real budget produces no
     ``stats`` and probing it through an unlimited budget would let this module
     report a passing number for a cap the gate refuses.
+
+    **The plan-14 ceilings are read off this same call, not off a second one.**
+    :func:`mayhem.controller.safety.check_blast_radius` enforces them internally,
+    after the budget's caps and before the damage charge, so a ceiling breach
+    arrives here as an ordinary refusal with the gate's own rule id and reason and
+    is attributable to ``target_policy`` by :data:`OBLIGATION_FOR_RULE`. Probing
+    them separately would mean calling the gate twice on the same step and
+    reporting whichever answer came back second — and a second call is a second
+    chance to disagree with the run the proof is about.
     """
     probe = _probe_context(ctx)
     ledger = DamageLedger()
@@ -708,7 +810,57 @@ def _blast_probe(plan: ExecutionPlan, graph: TopologyGraph, ctx: SafetyContext) 
         refusals=tuple(refusals),
         ledger=ledger,
         first_refused_step=first,
+        ceilings=_ceilings_configured(ctx),
+        ceiling_observations=tuple(_ceiling_observation(s) for s in steps),
     )
+
+
+#: ``stats`` keys :func:`mayhem.controller.safety._check_blast_ceilings` returns.
+#: Matched by prefix rather than enumerated because the gate owns that spelling: a
+#: sixth ceiling added there is reported on ``target_policy`` without this module
+#: being edited, and editing this module to enumerate them is exactly how the two
+#: would drift.
+_CEILING_STAT_PREFIX = "ceiling_"
+
+
+def _ceiling_observation(step: dict[str, Any]) -> dict[str, Any]:
+    """One step's ``ceiling_*`` stats, as the gate returned them.
+
+    An empty observation is meaningful and is kept rather than filtered out: a
+    step with no ceiling keys is a step the ceilings did not measure, and dropping
+    it would make "measured nothing" indistinguishable from "not a step".
+    """
+    return {
+        "step": step["step"],
+        "fault_id": step["fault_id"],
+        **{
+            key: value
+            for key, value in step.items()
+            if key.startswith(_CEILING_STAT_PREFIX)
+        },
+    }
+
+
+def _ceilings_configured(ctx: SafetyContext) -> dict[str, Any] | None:
+    """The plan-14 ceilings admission will enforce, as the context carries them.
+
+    ``None`` — not an empty dict — when nothing is configured, because that
+    difference is the entire reason this is reported. ``BlastCeilings()`` with
+    every field ``None`` *is* a configuration that names no limit, and the gate
+    then checks none; rendering it as ``{}`` would let a reader mistake "no
+    ceilings" for "every ceiling satisfied", which is the failure mode plan 14's
+    own docstring calls out for a prediction that cannot measure a limit.
+    """
+    ceilings = ctx.blast_ceilings
+    if ceilings is None:
+        return None
+    return {
+        "max_affected_nodes": ceilings.max_affected_nodes,
+        "max_dependency_depth": ceilings.max_dependency_depth,
+        "max_customer_facing_services": ceilings.max_customer_facing_services,
+        "max_affected_pct": ceilings.max_affected_pct,
+        "protected_node_ids": sorted(ceilings.protected_node_ids),
+    }
 
 
 # --------------------------------------------------------------------------------
@@ -887,6 +1039,24 @@ def _line_target_policy(
             }
             for s in blast.steps
         ],
+        # The plan-14 ceilings, reported from the same ``check_blast_radius``
+        # call that enforced them. Two keys and a basis, because the question a
+        # reader of this line actually has is "what was checked", and "configured"
+        # and "measured" answer different halves of it: a ceiling left at ``None``
+        # is *unchecked*, not satisfied, so the two cannot be collapsed into one
+        # number without the artifact claiming a pass nobody earned.
+        "plan14_blast_ceilings": {
+            "configured": blast.ceilings,
+            "measured": [dict(o) for o in blast.ceiling_observations],
+            "refused_on": sorted(blast.rule_ids & CEILING_RULE_IDS),
+            "basis": (
+                "no ceilings configured: controller.safety.check_blast_radius checked "
+                "none, so these limits are unmeasured rather than satisfied"
+                if blast.ceilings is None
+                else "controller.safety._check_blast_ceilings, per fault step, through "
+                "the same check_blast_radius call that refused on them"
+            ),
+        },
         "forbidden_fault_pairs": sorted(
             sorted(pair) for pair in ctx.budget.forbidden_fault_pairs
         ),
@@ -948,6 +1118,23 @@ def _line_target_policy(
                 f"{', '.join(sorted(policy.rule_ids))}{note}"
             ),
         )
+    ceilings_note = ""
+    if blast.ceilings is None:
+        ceilings_note = (
+            "; no plan-14 blast ceilings configured, so those five limits were "
+            "unchecked rather than satisfied"
+        )
+    else:
+        configured = sum(
+            1
+            for value in blast.ceilings.values()
+            if value is not None and bool(value)
+        )
+        held = sum(1 for o in blast.ceiling_observations if o)
+        ceilings_note = (
+            f"; {held}/{len(blast.ceiling_observations)} step(s) measured against the "
+            f"{configured} configured plan-14 ceiling(s)"
+        )
     return _Line(
         name=ObligationName.TARGET_POLICY.value,
         gates=("controller.safety.validate_plan", "controller.safety.check_fault_admission"),
@@ -958,6 +1145,7 @@ def _line_target_policy(
             f"{len(admission.steps)} admission decision(s), "
             f"{len(drift.steps)} frozen target(s) re-resolved, "
             f"{len(blast.steps)} step(s) within the target-side caps"
+            f"{ceilings_note}"
             f"{', policy bundle permits the plan' if policy.steps else ''}{note}"
         ),
     )

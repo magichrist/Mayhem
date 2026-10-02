@@ -179,10 +179,15 @@ from mayhem.domain.pipeline import (
 )
 from mayhem.domain.prediction import (
     RULE_FORBIDDEN_FAULT_PAIRS,
+    RULE_MAX_AFFECTED_NODES,
+    RULE_MAX_AFFECTED_PCT,
     RULE_MAX_CONCURRENT_FAULTS,
+    RULE_MAX_CUSTOMER_FACING_SERVICES,
+    RULE_MAX_DEPENDENCY_DEPTH,
     RULE_MAX_DURATION_PER_FAULT_S,
     RULE_MAX_HOSTS,
     RULE_MAX_SERVICES_PCT,
+    RULE_PROTECTED_NODE,
 )
 from mayhem.domain.quota import RULE_BUDGET, RULE_PER_FAULT_CEILING
 from mayhem.domain.safety_proof import ObligationName, ObligationStatus, ProofVerdict
@@ -302,6 +307,22 @@ RULE_CHECK: Final[dict[str, CheckScope]] = {
     RULE_MAX_CONCURRENT_FAULTS: CheckScope.BLAST_RADIUS,
     RULE_MAX_DURATION_PER_FAULT_S: CheckScope.BLAST_RADIUS,
     RULE_FORBIDDEN_FAULT_PAIRS: CheckScope.BLAST_RADIUS,
+    # -- plan-14 blast-radius ceilings -------------------------------------------
+    # The five ceilings `check_blast_radius` enforces on a seventh, optional
+    # input. They are enumerated here rather than left to `DEFAULT_RULE_CHECK`
+    # even though the default would resolve them: the default is the right answer
+    # for a *bundle-authored* rule name, whose scope nobody can know, and the
+    # wrong answer here — these are the gate's own rule ids, raised by the same
+    # function as the five above, and their blast radius is not a safety-policy
+    # finding. Note that the obligation that owns them is `target_policy` while
+    # the check that reports them is `blast_radius`; that split is already how
+    # `RULE_MAX_SERVICES_PCT` and `RULE_MAX_HOSTS` work, and it is deliberate —
+    # the check an operator reads is the one about the quantity that broke.
+    RULE_MAX_AFFECTED_NODES: CheckScope.BLAST_RADIUS,
+    RULE_MAX_AFFECTED_PCT: CheckScope.BLAST_RADIUS,
+    RULE_MAX_CUSTOMER_FACING_SERVICES: CheckScope.BLAST_RADIUS,
+    RULE_MAX_DEPENDENCY_DEPTH: CheckScope.BLAST_RADIUS,
+    RULE_PROTECTED_NODE: CheckScope.BLAST_RADIUS,
     # -- cumulative damage: the quota, the only sequence-level limit ------------
     RULE_BUDGET: CheckScope.DAMAGE_BUDGET,
     RULE_PER_FAULT_CEILING: CheckScope.DAMAGE_BUDGET,
