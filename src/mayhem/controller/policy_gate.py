@@ -45,6 +45,33 @@ mint, bind, or check an approval — it cannot, and it stays a pure function of
 runs immediately after this gate and hands the outstanding levels to: a level
 this gate names raises the quorum there. Which *named group* satisfies which
 level is still unbound, because nothing on an approval says so.
+
+Phase 4 — two budget systems, one answer, and no exceptions
+----------------------------------------------------------
+
+**Two budget systems, reconciled.** ``BlastRadiusBudget.damage_quota``
+(:class:`mayhem.domain.quota.DamageQuota`, enforced per step by
+``safety.check_blast_radius`` against a per-target ledger) and the hierarchical
+:class:`mayhem.domain.policy.BudgetNode` tree are independent, measure different
+things over different horizons, and until now knew nothing about each other.
+:func:`reconcile_budgets` is the single authoritative answer to "is this plan
+within budget?" and it is a **pure conjunction**: the plan is within budget if and
+only if *both* systems permit it. Neither wins, because there is nothing to win —
+see :func:`reconcile_budgets` for why arithmetic reconciliation is not merely
+unnecessary but wrong here. Reporting precedence (hierarchy first) is a
+*reporting* preference and is fixed so the refusal reads in the order the
+refusal is about.
+
+**A broken policy config refuses; it does not raise.** Phase 2's contract was that
+a drifted pin, a missing parent, an inheritance cycle, and an unmappable budget
+path all raise :class:`~mayhem.domain.errors.InvariantViolationError`. That is
+still true of the primitives — :func:`effective_rules` and :func:`probe_budget`
+raise, and their own callers and tests depend on it. What changed is that the
+*gate* no longer lets those exceptions escape: a malformed bundle is an operator
+error, and the useful answer to it is a typed, named refusal carrying the fix,
+not a traceback that ends somebody's run. :func:`detect_config_defect` converts
+each one to a :class:`PolicyConfigDefect` — the refusal reason is preserved
+verbatim, the defect is classified, and the remediation is authored per defect.
 """
 
 from __future__ import annotations
@@ -52,6 +79,7 @@ from __future__ import annotations
 import string
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from mayhem.domain.catalog import definition_for
@@ -62,6 +90,7 @@ from mayhem.domain.policy import (
     BUDGET_SCOPE_ORDER,
     DAMAGE_PRECISION,
     BudgetScope,
+    PolicyDecision,
     PolicyDimension,
     PolicyFacts,
     ResourceLock,
@@ -71,7 +100,7 @@ from mayhem.domain.policy import (
     evaluate_compatibility,
     resolve_precedence,
 )
-from mayhem.domain.quota import damage_weight
+from mayhem.domain.quota import DamageLedger, damage_weight
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.runtime_adapter import CapabilityRequirements
 
@@ -86,9 +115,9 @@ if TYPE_CHECKING:
         CompatibilityOutcome,
         LockVerdict,
         PolicyBundle,
-        PolicyDecision,
         PolicyRule,
     )
+    from mayhem.domain.quota import DamageQuota, QuotaCharge
 
 # -- rule ids ---------------------------------------------------------------------
 # The existing gate names each refusal by the rule that produced it
@@ -104,8 +133,178 @@ RULE_COMPAT_CONFLICT = "policy.compatibility_conflict"
 RULE_BUNDLE_ALLOW = "policy.bundle_allow"
 RULE_APPROVAL_REQUIRED = "policy.approval_required"
 
+#: A bundle or budget hierarchy that cannot be evaluated at all. Phase 4: every
+#: authoring defect the Phase 1 contract said would raise now arrives here as a
+#: refusal instead, so a malformed policy layer ends a run with a remediation
+#: rather than a traceback. See :func:`detect_config_defect`.
+RULE_POLICY_CONFIG = "policy.config_invalid"
+
 _LOCK_CHARS = frozenset(string.ascii_lowercase + string.digits + "._:-")
 _LOCK_LEAD = frozenset(string.ascii_lowercase + string.digits)
+
+
+# =============================================================================
+# Broken configuration (Phase 4)
+#
+# The domain primitives still raise — ``PolicyBundle.verify_pin``,
+# ``inherited_rules``, ``BudgetNode.post_charge`` are all documented to, and
+# their direct callers depend on it. What Phase 4 changes is the *gate's* edge:
+# nothing raised by evaluating a policy configuration escapes ``evaluate_gate``
+# as an exception. Each one is classified, named, and given a remediation here,
+# and the gate returns a refusal carrying it.
+# =============================================================================
+
+
+class ConfigDefect(StrEnum):
+    """What is wrong with the policy configuration, at the granularity a fix needs."""
+
+    #: ``content_digest`` no longer matches the content it is pinning.
+    PIN_DRIFTED = "pin_drifted"
+    #: ``parents`` names a bundle the index does not hold.
+    PARENT_MISSING = "parent_missing"
+    #: ``parents`` forms a loop.
+    INHERITANCE_CYCLE = "inheritance_cycle"
+    #: ``budget_path`` names no level of the budget tree, so no charge could be
+    #: attributed to any budget.
+    BUDGET_PATH_UNMAPPABLE = "budget_path_unmappable"
+    #: Any other ``InvariantViolationError`` raised while reading the bundle's
+    #: own structure. Exists so an unforeseen authoring error refuses with a
+    #: named defect instead of escaping as an exception.
+    MALFORMED = "malformed"
+
+
+@dataclass(frozen=True)
+class PolicyConfigDefect:
+    """One authoring defect, classified, with the reason preserved and a fix.
+
+    ``reason`` is the raised invariant's own message, verbatim — the evidence
+    somebody needs to find the typo is the one the primitive produced, not a
+    paraphrase. ``defect`` is what the gate can act on and ``remediation`` is the
+    fix, written for whoever authored the bundle rather than for whoever ran it.
+    """
+
+    defect: ConfigDefect
+    reason_code: str
+    reason: str
+    remediation: str
+    inputs: dict[str, Any] = field(default_factory=dict)
+
+    def describe(self) -> str:
+        return f"{self.defect.value}: {self.reason}"
+
+
+#: ``reason_code`` of the raised invariant -> (defect, remediation). Keyed on the
+#: code rather than the message so a rewording upstream cannot silently reclassify
+#: a defect or drop it into the :attr:`ConfigDefect.MALFORMED` bucket.
+_CONFIG_DEFECTS: dict[str, tuple[ConfigDefect, str]] = {
+    "policy.bundle_digest_mismatch": (
+        ConfigDefect.PIN_DRIFTED,
+        "re-pin the bundle: rebuild it from its authored content and set "
+        "content_digest with PolicyBundle.pin(); a bundle whose content no longer "
+        "matches its pin cannot decide anything, and no rule of it can be trusted "
+        "to still be the rule that was reviewed",
+    ),
+    "policy.bundle_parent_missing": (
+        ConfigDefect.PARENT_MISSING,
+        "publish the named parent bundle into the policy index this bundle is "
+        "resolved against, or drop the dangling entry from `parents`; a bundle "
+        "that inherits from a bundle nobody can load has an unknown rule set",
+    ),
+    "policy.bundle_cycle": (
+        ConfigDefect.INHERITANCE_CYCLE,
+        "break the inheritance cycle in `parents` — inheritance has to be a "
+        "partial order, and a cycle has no last writer, so no version can be "
+        "resolved or pinned",
+    ),
+    "policy.budget_path_missing": (
+        ConfigDefect.BUDGET_PATH_UNMAPPABLE,
+        "correct budget_path so every level it names exists in the budget tree, "
+        "or widen the tree to that depth; a charge that cannot be attributed to "
+        "any budget is damage nobody is accountable for, so the gate refuses "
+        "rather than skip the charge",
+    ),
+    "budget.path_missing": (
+        ConfigDefect.BUDGET_PATH_UNMAPPABLE,
+        "correct budget_path so every level it names exists in the budget tree, "
+        "or widen the tree to that depth; a charge that cannot be attributed to "
+        "any budget is damage nobody is accountable for, so the gate refuses "
+        "rather than skip the charge",
+    ),
+    "budget.path_order": (
+        ConfigDefect.BUDGET_PATH_UNMAPPABLE,
+        "author budget_path in hierarchy order (team → environment → service → "
+        "experiment); the budget tree is walked by scope, so a path whose levels "
+        "are out of order names no budget",
+    ),
+    "budget.scope_order": (
+        ConfigDefect.MALFORMED,
+        "rebuild the budget tree so each node holds only children of the next "
+        "scope down; the hierarchy is team → environment → service → experiment "
+        "→ fault and a node cannot hold a child out of order",
+    ),
+    "budget.duplicate_child": (
+        ConfigDefect.MALFORMED,
+        "give each budget node one child per key; two siblings with the same name "
+        "make the spend ambiguous and the charge unaccountable",
+    ),
+    "budget.negative_charge": (
+        ConfigDefect.MALFORMED,
+        "author only non-negative fault durations; a negative charge is a typo, "
+        "and posting one would refund a budget nobody agreed to give back",
+    ),
+}
+
+
+def _defect_from_exception(
+    exc: InvariantViolationError, context: dict[str, Any]
+) -> PolicyConfigDefect:
+    """Classify a raised invariant as a named, fixable configuration defect."""
+    defect, remediation = _CONFIG_DEFECTS.get(
+        exc.rule,
+        (
+            ConfigDefect.MALFORMED,
+            "repair the policy bundle or budget hierarchy named above so it can be "
+            "read; the gate refuses a configuration it cannot evaluate rather than "
+            "deciding against an unreadable rule set",
+        ),
+    )
+    return PolicyConfigDefect(
+        defect=defect,
+        reason_code=exc.rule,
+        reason=str(exc),
+        remediation=remediation,
+        inputs={**context, "reason_code": exc.rule},
+    )
+
+
+def detect_config_defect(inputs: PolicyGateInputs) -> PolicyConfigDefect | None:
+    """Classify whatever makes this bundle unreadable, or ``None`` when it is fine.
+
+    Covers the two defects that make the *rule set* unreachable — a drifted pin
+    and an inheritance that cannot be resolved — and it is total: it returns a
+    defect instead of propagating the :class:`InvariantViolationError` its
+    primitives raise. The budget-path defect is found later, by
+    :func:`probe_budget_safely`, because it needs the plan's fault ids to be
+    answerable at all.
+
+    ``PolicyGateInputs`` itself still raises in ``__post_init__`` for a naive
+    clock, a lock request with no experiment identity, and a non-positive lock
+    window. Those are *caller* errors in the wiring, not authoring errors in the
+    policy, they are raised at construction where the traceback points at the
+    call site that made the mistake, and no bundle is involved. Phase 4 narrows
+    "refuse rather than raise" to the bundle, where the mistake is somebody's
+    authored YAML rather than the line above.
+    """
+    context = {"bundle": inputs.bundle.describe(), "bundle_id": inputs.bundle.bundle_id}
+    try:
+        inputs.bundle.verify_pin()
+    except InvariantViolationError as exc:
+        return _defect_from_exception(exc, context)
+    try:
+        effective_rules(inputs.bundle, inputs.index)
+    except InvariantViolationError as exc:
+        return _defect_from_exception(exc, context)
+    return None
 
 
 # =============================================================================
@@ -136,6 +335,15 @@ class PolicyGateInputs:
     budget: BudgetNode | None = None
     budget_path: tuple[str, ...] = ()
     compatibility: tuple[CompatibilityEdge, ...] = ()
+    #: The per-target cumulative damage quota, so the gate can answer "is this
+    #: plan within budget?" without deferring half the question to the per-step
+    #: loop in ``safety.check_blast_radius``. ``None`` — the default — means this
+    #: gate is not configured with the quota system at all, and that loop stays
+    #: its sole enforcer, byte-for-byte as before. Supplying it is what makes
+    #: :func:`reconcile_budgets` a conjunction of two live systems rather than a
+    #: conjunction of one and a silence; see :func:`probe_quota` for exactly what
+    #: a gate-side probe can and cannot see.
+    damage_quota: DamageQuota | None = None
     # Dimensions the gate cannot read off a plan — team, schedule, cloud cost,
     # deployment/incident state, approval level. Fills only what the gate does
     # not derive; a derived dimension is never overridden (see
@@ -171,9 +379,11 @@ class MutationSink:
     Phase 2's gate is read-only by construction, so nothing here is ever
     written and a simulation's sink is provably empty — the purity test asserts
     ``len(sink) == 0`` against a real object rather than against a comment.
-    The type exists so the boundary is a name in the API: Phase 4's budget
-    posting and lock granting are the calls that will appear here, and they are
-    the only writes the gate will ever make.
+    The type exists so the boundary is a name in the API: the only writes the
+    gate will ever make are budget posting and lock granting, and Phase 4
+    deliberately added neither — posting spends a ledger and granting takes a
+    lock, so both belong to a commit path that has a store, not to a pure
+    evaluator. The sink stays empty.
     """
 
     calls: tuple[tuple[str, str], ...] = ()
@@ -235,6 +445,27 @@ class PolicyGateResult:
     compatibility: tuple[CompatibilityOutcome, ...] = ()
     required_approvals: tuple[RequiredApproval, ...] = ()
     simulated: bool = False
+    #: Both budget systems' answers and the verdict they combine into. Phase 4.
+    #: Carried whole so a reader never has to re-derive which system said what,
+    #: and so the conjunction survives into the evidence record.
+    budget: BudgetReconciliation | None = None
+    #: Non-empty only when the policy configuration could not be evaluated. Its
+    #: presence is what makes ``decision``'s empty digests honest rather than
+    #: missing: nothing was read, so nothing could be digested.
+    config_defect: PolicyConfigDefect | None = None
+    #: The bundle this decision was reached under. Carried so a decision can
+    #: never be separated from the thing it was decided about:
+    #: :mod:`mayhem.controller.policy_evidence` re-derives the bundle's digest and
+    #: refuses any record whose ``policy_digest`` disagrees with it, and a
+    #: hand-built :class:`PolicyDecision` paired with the wrong bundle cannot slip
+    #: past that check by omitting it.
+    bundle: PolicyBundle | None = None
+    #: The instant this verdict was reached as of — ``inputs.now``, never a clock
+    #: read. Carried so the evidence layer can re-check currency
+    #: (:func:`verify_decision_binding`) without the caller having to remember
+    #: which clock the gate used, and so a record says *when* it was decided
+    #: rather than leaving an auditor to infer it.
+    now: datetime | None = None
 
     @property
     def allowed(self) -> bool:
@@ -262,6 +493,8 @@ class PolicyGateResult:
                 for charge in self.pending_charges
             ],
             "simulated": self.simulated,
+            "budget": self.budget.inputs() if self.budget is not None else {},
+            "config_defect": self.config_defect.defect.value if self.config_defect else "",
         }
 
     def describe(self) -> str:
@@ -523,8 +756,14 @@ def probe_budget(plan: ExecutionPlan, inputs: PolicyGateInputs) -> tuple[BudgetC
     running tree below is a local rebinding and ``inputs.budget`` is never
     spent — the probe-then-commit shape ``check_blast_radius`` already uses
     with ``DamageQuota.unrestricted()``. The returned charges are what a commit
-    (Phase 4) would post, in the order a refusal would read them: widest level
-    first, per step.
+    would post, in the order a refusal would read them: widest level first,
+    per step.
+
+    This is the raising form and it stays raising: an unmappable ``budget_path``
+    is an :class:`InvariantViolationError` here, exactly as
+    :meth:`BudgetNode.post_charge` is, because silently skipping the charge is
+    the failure mode both are written against. :func:`probe_budget_safely` is
+    the gate's edge over it.
     """
     if inputs.budget is None:
         return ()
@@ -536,6 +775,250 @@ def probe_budget(plan: ExecutionPlan, inputs: PolicyGateInputs) -> tuple[BudgetC
         tree, posted = tree.post_charge(path, amount)
         charges.extend(posted)
     return tuple(charges)
+
+
+def probe_budget_safely(
+    plan: ExecutionPlan, inputs: PolicyGateInputs
+) -> tuple[tuple[BudgetCharge, ...], PolicyConfigDefect | None]:
+    """:func:`probe_budget`, with a misconfiguration returned instead of raised.
+
+    Returns ``(charges, defect)``. Exactly one is meaningful: a non-empty
+    ``defect`` means nothing was charged and nothing was spent, because the path
+    could not be resolved at all — there is no partial answer to give.
+
+    ``BudgetNode``'s own ``InvariantViolationError`` covers more than the path
+    lookup (a scope order the tree was authored against, a duplicate child, a
+    negative charge), so the whole exception is classified rather than just the
+    one case :func:`probe_budget` documents. Any invariant raised while walking
+    the tree is a malformed hierarchy, and a malformed hierarchy refuses.
+    """
+    try:
+        return probe_budget(plan, inputs), None
+    except InvariantViolationError as exc:
+        context: dict[str, Any] = {
+            "budget_root": inputs.budget.key if inputs.budget is not None else "",
+            "budget_path": list(inputs.budget_path),
+        }
+        return (), _defect_from_exception(exc, context)
+
+
+# =============================================================================
+# The two budget systems, and the one answer
+#
+# Phase 2 left these unreconciled: ``probe_budget`` answered "has this run's
+# hierarchy exhausted?" and ``safety.check_blast_radius`` answered "is this
+# target over its quota?", each over its own arithmetic, neither knowing the other
+# existed. Everything below is the reconciliation.
+# =============================================================================
+
+
+class BudgetAuthority(StrEnum):
+    """Which system decided the combined answer, and by what rule.
+
+    The values are a truth table, not a ranking. ``NONE`` is the only answer that
+    means "nobody spoke"; everything else either permitted or refused, and a
+    refusal never has a *winner* because a refusal is not contested.
+    """
+
+    #: Neither system is configured with this plan.
+    NONE = "none"
+    #: Both configured systems permitted the plan.
+    BOTH_PERMIT = "both_permit"
+    #: Only the hierarchical tree was configured and it permitted the plan.
+    HIERARCHY_PERMITS = "hierarchy_permits"
+    #: Only the per-target quota was configured and it permitted the plan.
+    QUOTA_PERMITS = "quota_permits"
+    #: The hierarchical budget refused.
+    HIERARCHY = "hierarchy"
+    #: The per-target quota refused.
+    QUOTA = "quota"
+    #: Both refused. Reported as the hierarchy's refusal, with both in the inputs.
+    BOTH_REFUSE = "both_refuse"
+
+
+@dataclass(frozen=True)
+class HierarchyBudgetView:
+    """What the five-level budget tree says about this plan."""
+
+    configured: bool
+    charges: tuple[BudgetCharge, ...] = ()
+    breached: tuple[BudgetCharge, ...] = ()
+
+    @property
+    def refused(self) -> bool:
+        return bool(self.breached)
+
+
+@dataclass(frozen=True)
+class QuotaBudgetView:
+    """What the per-target cumulative damage quota says about this plan.
+
+    ``charges`` is the ledger's running record, one entry per charged step, and
+    ``refusal`` is the *first* charge that exceeded — which is the one
+    ``check_blast_radius`` would have raised on, since it stops at the first
+    breach.
+    """
+
+    configured: bool
+    charges: tuple[QuotaCharge, ...] = ()
+    refusal: QuotaCharge | None = None
+
+    @property
+    def refused(self) -> bool:
+        return self.refusal is not None
+
+
+@dataclass(frozen=True)
+class BudgetReconciliation:
+    """Both systems' answers, and the one verdict they combine into."""
+
+    authority: BudgetAuthority
+    hierarchy: HierarchyBudgetView
+    quota: QuotaBudgetView
+    refusal: PolicyRefusal | None = None
+
+    @property
+    def within_budget(self) -> bool:
+        """The one answer. ``True`` only when nothing refused."""
+        return self.refusal is None
+
+    def inputs(self) -> dict[str, Any]:
+        """The machine-readable half, for ``PolicyGateResult``."""
+        breach = self.hierarchy.breached[0] if self.hierarchy.breached else None
+        return {
+            "budget_authority": self.authority.value,
+            "hierarchy_configured": self.hierarchy.configured,
+            "quota_configured": self.quota.configured,
+            "hierarchy_scope": breach.scope.value if breach is not None else "",
+            "hierarchy_key": breach.key if breach is not None else "",
+            "hierarchy_after_s": breach.after_s if breach is not None else 0.0,
+            "hierarchy_limit_s": breach.limit_s if breach is not None else None,
+            "quota_rule_id": self.quota.refusal.rule_id if self.quota.refusal else "",
+            "quota_worst_target": self.quota.refusal.worst_node if self.quota.refusal else "",
+            "quota_after_s": self.quota.refusal.worst_node_s if self.quota.refusal else 0.0,
+            "quota_limit_s": self.quota.refusal.limit_s if self.quota.refusal else 0.0,
+        }
+
+    def describe(self) -> str:
+        if self.within_budget:
+            return f"budget: within ({self.authority.value})"
+        return f"budget: refused ({self.authority.value})"
+
+
+def probe_quota(plan: ExecutionPlan, inputs: PolicyGateInputs) -> QuotaBudgetView:
+    """The per-target quota system's answer, probed on a fresh ledger.
+
+    **Why the gate can answer this without a topology graph.**
+    ``safety.check_blast_radius`` charges the target set unioned with its
+    dependents closure, and compares the *worst single target's* accumulated
+    damage against the budget.
+    The closure widens *which* nodes are charged, never *how much* each one is:
+    every affected node accrues the same ``duration_s x damage_weight`` for that
+    step. So the worst node's running total is a sum over steps that does not
+    depend on the closure at all, and the per-fault ceiling compares one step's
+    per-node term, which does not depend on it either. Both comparisons are
+    reproducible from the plan alone.
+
+    **The one-way invariant that makes this safe.** Because the closure is a
+    superset of the plan's own resolved targets, every node's accumulated total
+    under the authoritative ledger is at least the total this probe computes, so
+    ``worst_node_s`` there is at least ``worst_node_s`` here. Therefore:
+
+    * a *refusal* from this probe is final — ``check_blast_radius`` will reach the
+      same verdict with the closure-exact numbers, and refuses sooner;
+    * a *permit* from this probe is not by itself sufficient, because the
+      authoritative ledger can refuse on closure-widened damage.
+
+    Neither half loses a refusal, which is the property that matters: this probe
+    can only move a refusal earlier, never past one. ``tests/unit/
+    test_policy_evidence.py`` pins the direction against the real ledger.
+
+    A step whose targets resolved to nothing charges nothing here, which is what
+    ``check_blast_radius`` does too — it passes the affected set straight
+    through, and an empty set accrues nothing.
+    """
+    if inputs.damage_quota is None:
+        return QuotaBudgetView(configured=False)
+    ledger = DamageLedger()
+    charges: list[QuotaCharge] = []
+    for fault in plan_faults(plan):
+        node_ids = frozenset().union(*(target.node_ids for target in fault.targets))
+        if not node_ids:
+            continue
+        charge = ledger.charge(
+            fault_id=fault.fault_id,
+            duration_s=float(fault.duration),
+            node_ids=node_ids,
+            quota=inputs.damage_quota,
+        )
+        charges.append(charge)
+        if charge.exceeded:
+            # ``check_blast_radius`` raises on the first breach, so nothing after
+            # it would ever be charged by the authoritative ledger either.
+            break
+    return QuotaBudgetView(
+        configured=True,
+        charges=tuple(charges),
+        refusal=next((charge for charge in charges if charge.exceeded), None),
+    )
+
+
+def reconcile_budgets(
+    hierarchy: HierarchyBudgetView, quota: QuotaBudgetView
+) -> BudgetReconciliation:
+    """The single authoritative answer to "is this plan within budget?".
+
+    **Neither system wins, because there is nothing to win.** The plan is within
+    budget if and only if both systems permit it — the conjunction is the whole
+    rule, and it is symmetric on purpose. The two are not two measurements of one
+    quantity:
+
+    * the hierarchy answers "has this *team / service / experiment* spent its
+      window?", over spend that is **persisted across runs**;
+    * the quota answers "has *this target* been impaired for too long inside
+      this plan?", over a ledger that ``validate_plan`` starts fresh on every
+      pass.
+
+    Summing them, taking the minimum, or letting either relax the other would all
+    be wrong: the two count overlapping damage-seconds at different horizons, so
+    any arithmetic combination double-counts, and "whichever is stricter" would
+    let a system that cannot see the other's scope answer for it. A plan refused
+    by either is refused; a plan allowed by both is allowed. There is no
+    configuration of limits under which those two sentences are false.
+
+    **Which one reports.** A refusal is reported by the hierarchy when both
+    refused (:attr:`BudgetAuthority.BOTH_REFUSE`), for two reasons that are about
+    the reader rather than the arithmetic. It is the plan-level aggregate, so it
+    names the scope whose limit an operator would go and change; and it is
+    evaluated first inside ``evaluate_gate``, which keeps the refusal ordering
+    Phase 2 established. The other system's numbers travel in the refusal's
+    inputs, so a reader is told what the quota thought too.
+
+    Both refusals are retained on the result, so nothing here is lost by
+    reporting only one of them.
+    """
+    breached_hierarchy = hierarchy.breached
+    quota_refusal = quota.refusal
+    if hierarchy.refused and quota.refused:
+        authority = BudgetAuthority.BOTH_REFUSE
+    elif hierarchy.refused:
+        authority = BudgetAuthority.HIERARCHY
+    elif quota_refusal is not None:
+        authority = BudgetAuthority.QUOTA
+    elif not hierarchy.configured and not quota.configured:
+        authority = BudgetAuthority.NONE
+    elif hierarchy.configured and quota.configured:
+        authority = BudgetAuthority.BOTH_PERMIT
+    elif quota.configured:
+        authority = BudgetAuthority.QUOTA_PERMITS
+    else:
+        authority = BudgetAuthority.HIERARCHY_PERMITS
+    return BudgetReconciliation(
+        authority=authority,
+        hierarchy=hierarchy,
+        quota=quota,
+        refusal=_budget_refusal(breached_hierarchy, quota_refusal),
+    )
 
 
 def check_compatibility(
@@ -674,30 +1157,108 @@ def _lock_refusal(verdicts: tuple[LockVerdict, ...]) -> PolicyRefusal | None:
     )
 
 
-def _budget_refusal(charges: tuple[BudgetCharge, ...]) -> PolicyRefusal | None:
-    breached = [charge for charge in charges if charge.exceeded]
-    if not breached:
+def _budget_refusal(
+    breached: tuple[BudgetCharge, ...], quota_refusal: QuotaCharge | None
+) -> PolicyRefusal | None:
+    """The single budget refusal, reported by the hierarchy when both fired.
+
+    Phase 4 replaced "the hierarchy's answer" with "both systems' answers". The
+    hierarchy's rule id, wording, and remediation are unchanged, so a refusal that
+    only the hierarchy produces reads byte-for-byte as it did in Phase 2; what is
+    new is the quota's numbers in ``inputs`` and the two rule ids in
+    ``budget_rule_ids``, which is what lets a reader see that the other system
+    agreed rather than that the other system was never consulted.
+    """
+    offenders = [charge for charge in breached if charge.exceeded]
+    if not offenders and quota_refusal is None:
         return None
-    first = breached[0]
-    return PolicyRefusal(
-        rule_id=RULE_BUDGET_EXHAUSTED,
-        reason=(
-            f"damage budget: {first.scope.value} budget {first.key!r} reaches "
-            f"{first.after_s:.0f}s of damage, over its {first.limit_s:.0f}s budget "
-            f"[{RULE_BUDGET_EXHAUSTED}]"
-        ),
-        remediation=(
-            "split the plan across more runs, shorten the faults, or raise the "
-            f"limit at {first.scope.value} level {first.key!r}"
-        ),
-        inputs={
+    rule_ids = []
+    inputs: dict[str, Any] = {}
+    if offenders:
+        first = offenders[0]
+        rule_ids.append(RULE_BUDGET_EXHAUSTED)
+        inputs |= {
             "scope": first.scope.value,
             "key": first.key,
             "before_s": first.before_s,
             "after_s": first.after_s,
             "limit_s": first.limit_s,
             "headroom_s": first.headroom_s,
-        },
+        }
+        reason = (
+            f"damage budget: {first.scope.value} budget {first.key!r} reaches "
+            f"{first.after_s:.0f}s of damage, over its {first.limit_s:.0f}s budget "
+            f"[{RULE_BUDGET_EXHAUSTED}]"
+        )
+        remediation = (
+            "split the plan across more runs, shorten the faults, or raise the "
+            f"limit at {first.scope.value} level {first.key!r}"
+        )
+    else:
+        # Narrowed by the guard at the top: no hierarchy breach and a quota
+        # refusal is the only way to reach here.
+        assert quota_refusal is not None
+        rule_ids.append(quota_refusal.rule_id)
+        inputs |= dict(quota_refusal.inputs())
+        reason = quota_refusal.reason
+        remediation = quota_refusal.remediation
+    if offenders and quota_refusal is not None:
+        # Both refused. The hierarchy reports — see ``reconcile_budgets`` — and
+        # the quota's own numbers and rule id ride along so the record shows a
+        # conjunction rather than a single system's opinion.
+        rule_ids.append(quota_refusal.rule_id)
+        inputs |= {
+            "also_refused_by": quota_refusal.rule_id,
+            "quota_fault_id": quota_refusal.fault_id,
+            "quota_step_index": quota_refusal.step_index,
+            "quota_worst_node": quota_refusal.worst_node,
+            "quota_worst_node_s": round(quota_refusal.worst_node_s, 3),
+            "quota_budget_s": quota_refusal.limit_s,
+        }
+    return PolicyRefusal(
+        rule_id=rule_ids[0],
+        reason=reason,
+        remediation=remediation,
+        inputs={**inputs, "budget_rule_ids": rule_ids},
+    )
+
+
+def _config_refusal(defect: PolicyConfigDefect) -> PolicyRefusal:
+    """The refusal for a policy configuration that cannot be evaluated at all.
+
+    Its own rule id, distinct from every other refusal here, because no bundle
+    rule spoke and none could: the refusal is about the *policy layer*, not about
+    this plan. A reader who sees ``policy.config_invalid`` knows the answer is
+    "fix the configuration", not "change the plan".
+    """
+    return PolicyRefusal(
+        rule_id=RULE_POLICY_CONFIG,
+        reason=f"policy config: {defect.reason} [{RULE_POLICY_CONFIG}]",
+        remediation=defect.remediation,
+        inputs={**defect.inputs, "config_defect": defect.defect.value},
+    )
+
+
+def _config_decision(inputs: PolicyGateInputs, defect: PolicyConfigDefect) -> PolicyDecision:
+    """The deny a broken configuration reaches, with no rule set behind it.
+
+    ``rule_digest``, ``policy_digest`` and ``facts_digest`` are all empty, and
+    that is the honest value rather than a placeholder: the bundle could not be
+    read, so no rule set was resolved, no bundle content was digested, and no
+    facts were compared against anything. A consumer that requires a non-empty
+    ``policy_digest`` before it will seal a decision — which is what
+    :mod:`mayhem.controller.policy_evidence` does — refuses this record for free,
+    and correctly: there is nothing here to attest.
+    """
+    return PolicyDecision(
+        outcome="deny",
+        reasons=(f"{defect.reason} [{RULE_POLICY_CONFIG}]",),
+        matched_rules=(),
+        bundle_id=inputs.bundle.bundle_id,
+        bundle_version=inputs.bundle.version,
+        rule_digest="",
+        policy_digest="",
+        facts_digest="",
     )
 
 
@@ -761,27 +1322,49 @@ def evaluate_gate(
 ) -> PolicyGateResult:
     """Evaluate ``inputs`` against ``plan`` and return the verdict with its evidence.
 
-    Pure, and refused configurations raise rather than degrade: a bundle whose
-    pin has drifted, one that inherits from a missing parent, and one caught in
-    an inheritance cycle all raise :class:`InvariantViolationError`, matching the
-    phase-1 contract that a broken policy layer is never silently dropped. Those
-    are authoring errors; the *decisions* a bundle reaches are what the gate
-    returns.
+    Pure, and **total over broken configurations**: a drifted pin, an unresolvable
+    inheritance, and an unmappable budget path all return a refusal named by
+    :data:`RULE_POLICY_CONFIG` instead of raising. Phase 2's contract was that
+    these raise, and that is still true of the primitives — ``verify_pin``,
+    ``effective_rules`` and ``probe_budget`` all raise, and their direct callers
+    and tests depend on it. What Phase 4 removed is the *gate's* willingness to
+    let them escape: an operator's typo in a policy bundle ends a run with a
+    remediation somebody can act on, not with a traceback. The defect, the
+    primitive's own reason string, and the fix are all on the result
+    (:attr:`PolicyGateResult.config_defect`).
+
+    A broken configuration refuses *first*, before expiry, locks, and the bundle's
+    own verdict, because none of those can be evaluated without a readable rule
+    set. That is the only ordering change from Phase 2 and it can only move a
+    refusal earlier onto a more fundamental cause.
 
     ``sink`` is accepted and never written — see :class:`MutationSink`.
     """
-    inputs.bundle.verify_pin()
+    defect = detect_config_defect(inputs)
+    if defect is None:
+        charges, defect = probe_budget_safely(plan, inputs)
+    else:
+        charges = ()
+    if defect is not None:
+        return _refused_by_config(plan, inputs, defect, environment=environment)
     rules = effective_rules(inputs.bundle, inputs.index)
     facts = derive_facts(plan, inputs, environment=environment)
     decision = evaluate_bundle(inputs.bundle, facts, now=inputs.now, index=inputs.index)
     approvals = required_approvals(rules, facts)
     verdicts = check_locks(plan, inputs)
-    charges = probe_budget(plan, inputs)
     outcomes = check_compatibility(plan, inputs, facts)
+    budget = reconcile_budgets(
+        HierarchyBudgetView(
+            configured=inputs.budget is not None,
+            charges=charges,
+            breached=tuple(charge for charge in charges if charge.exceeded),
+        ),
+        probe_quota(plan, inputs),
+    )
     for candidate in (
         _expiry_refusal(inputs, decision),
         _lock_refusal(verdicts),
-        _budget_refusal(charges),
+        budget.refusal,
         _compatibility_refusal(outcomes),
         _decision_refusal(rules, decision, approvals),
     ):
@@ -794,6 +1377,9 @@ def evaluate_gate(
                 pending_charges=charges,
                 compatibility=outcomes,
                 required_approvals=approvals,
+                budget=budget,
+                bundle=inputs.bundle,
+                now=inputs.now,
             )
     return PolicyGateResult(
         decision=decision,
@@ -803,6 +1389,41 @@ def evaluate_gate(
         pending_charges=charges,
         compatibility=outcomes,
         required_approvals=approvals,
+        budget=budget,
+        bundle=inputs.bundle,
+        now=inputs.now,
+    )
+
+
+def _refused_by_config(
+    plan: ExecutionPlan,
+    inputs: PolicyGateInputs,
+    defect: PolicyConfigDefect,
+    *,
+    environment: str | None = None,
+) -> PolicyGateResult:
+    """The whole result for a policy configuration that cannot be evaluated.
+
+    Facts are still derived: they come from the plan and the caller's ``observed``
+    and never from the bundle, so a reader can see what *would* have been
+    evaluated once the configuration is repaired. Everything that needed a
+    readable rule set is empty — the decision's digests, the approval
+    requirements, the lock verdicts, the compatibility outcomes, the budget
+    reconciliation — and the decision itself is the deny from
+    :func:`_config_decision`.
+
+    ``facts_digest`` on that deny is deliberately empty too, even though the facts
+    were derived: a digest there would claim the facts were *compared* against a
+    rule set, and no rule set was read. The facts are on the result for a human;
+    the digests are for machines, and a machine is told "nothing was evaluated".
+    """
+    return PolicyGateResult(
+        decision=_config_decision(inputs, defect),
+        facts=derive_facts(plan, inputs, environment=environment),
+        refusal=_config_refusal(defect),
+        config_defect=defect,
+        bundle=inputs.bundle,
+        now=inputs.now,
     )
 
 

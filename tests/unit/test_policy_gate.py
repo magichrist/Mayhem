@@ -32,11 +32,20 @@ from mayhem.controller.policy_gate import (
     RULE_BUNDLE_EXPIRED,
     RULE_COMPAT_CONFLICT,
     RULE_LOCK_CONTENDED,
+    RULE_POLICY_CONFIG,
+    BudgetAuthority,
+    ConfigDefect,
+    HierarchyBudgetView,
     MutationSink,
     PolicyGateInputs,
+    QuotaBudgetView,
     _risk_of,
     derive_facts,
+    detect_config_defect,
     evaluate_gate,
+    probe_budget,
+    probe_quota,
+    reconcile_budgets,
     simulate_gate,
 )
 from mayhem.controller.safety import (
@@ -56,6 +65,7 @@ from mayhem.domain.experiments import (
     ResolvedTarget,
 )
 from mayhem.domain.policy import (
+    BudgetCharge,
     BudgetNode,
     BudgetScope,
     CompatibilityCondition,
@@ -69,6 +79,7 @@ from mayhem.domain.policy import (
     PolicyRule,
     ResourceLock,
 )
+from mayhem.domain.quota import DamageQuota
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import (
     Edge,
@@ -170,11 +181,13 @@ def _bundle(
     version: int = 1,
     expires_at: datetime | None = None,
     bundle_id: str = "gate-test",
+    parents: tuple[str, ...] = (),
 ) -> PolicyBundle:
     return PolicyBundle(
         bundle_id=bundle_id,
         version=version,
         rules=rules,
+        parents=parents,
         default_effect=default,
         created_at=T0 - timedelta(days=1),
         expires_at=expires_at,
@@ -519,10 +532,29 @@ def test_budget_charges_accumulate_across_steps():
     assert [c.after_s for c in team] == [10.0, 20.0, 30.0]
 
 
-def test_unmappable_budget_path_raises_rather_than_skipping_the_charge():
+def test_unmappable_budget_path_refuses_rather_than_skipping_the_charge():
+    """Phase 4: the *gate* refuses an unmappable path; the primitive still raises.
+
+    Phase 2 asserted that ``evaluate_gate`` raised here. That was a defect
+    surfacing correctly through the wrong layer: skipping the charge would lose
+    the damage, and raising told whoever ran the plan nothing they could act on.
+    The gate now names the defect and the fix. The raising contract is not
+    withdrawn from ``probe_budget`` — it is what the gate's own conversion is
+    built on, and a caller that reaches past the gate still gets the loud failure.
+    """
     gate = _inputs(budget=_budget_tree(1e6, "proc.pause"), budget_path=("typo",))
+    result = evaluate_gate(_plan("proc.pause"), gate)
+    assert result.denied
+    assert result.refusal is not None
+    assert result.refusal.rule_id == RULE_POLICY_CONFIG
+    assert result.refusal.inputs["config_defect"] == ConfigDefect.BUDGET_PATH_UNMAPPABLE.value
+    assert result.refusal.inputs["budget_path"] == ["typo"]
+    assert "no level of" in result.refusal.reason
+    assert result.pending_charges == ()
+    assert result.budget is None
+    # The primitive keeps raising: the gate converts, it does not swallow.
     with pytest.raises(InvariantViolationError, match="no level of"):
-        evaluate_gate(_plan("proc.pause"), gate)
+        probe_budget(_plan("proc.pause"), gate)
 
 
 def test_compatibility_conflict_refuses_per_pair():
@@ -871,3 +903,139 @@ def test_shared_risk_resolution_prices_a_known_critical_fault_at_critical():
     ``check_fault_admission`` keys on.
     """
     assert _risk_of("k8s.node_drain") is RiskLevel.CRITICAL
+
+
+# -- Phase 4: broken configurations refuse, they do not raise ----------------------
+
+
+def _drifted_pin_bundle() -> PolicyBundle:
+    """A bundle whose content moved after it was pinned.
+
+    ``model_copy`` does not re-run validators, which is the only way to produce
+    one: constructing a bundle whose ``content_digest`` disagrees with its content
+    raises at construction, by design. Drift is what happens to a bundle *in
+    flight*, so it has to be reachable from a well-formed object.
+    """
+    return _bundle(_prod_deny()).pin().model_copy(update={"version": 2})
+
+
+def test_drifted_pin_refuses_instead_of_raising():
+    gate = _inputs(_drifted_pin_bundle())
+    result = evaluate_gate(_plan("proc.pause"), gate)
+    assert result.denied
+    assert result.refusal is not None
+    assert result.refusal.rule_id == RULE_POLICY_CONFIG
+    assert result.config_defect is not None
+    assert result.config_defect.defect is ConfigDefect.PIN_DRIFTED
+    assert result.config_defect.reason_code == "policy.bundle_digest_mismatch"
+    assert "re-pin" in result.refusal.remediation
+    # Nothing was evaluated, so nothing claims to have been digested.
+    assert result.decision.policy_digest == ""
+    assert result.decision.rule_digest == ""
+    assert result.decision.facts_digest == ""
+    # …but the facts the plan carries are still on the record, for whoever fixes it.
+    assert result.facts.observed(PolicyDimension.TARGET) == frozenset({"n-web"})
+
+
+def test_a_broken_bundle_never_escapes_the_admission_gate():
+    """A refused admission, not a traceback: ``validate_plan`` speaks ``SafetyRefusedError``."""
+    for label, gate in (
+        ("pin", _inputs(_drifted_pin_bundle())),
+        ("parent", _inputs(_bundle(parents=("absent",)))),
+        ("cycle", _inputs(_bundle(parents=("loop-b",)))),
+    ):
+        ctx = _ctx(gate, environment="production")
+        with pytest.raises(SafetyRefusedError, match=r"policy\.config_invalid"):
+            validate_plan(_plan("proc.pause"), _graph(), ctx)
+        denial = [d for d in ctx.decisions if d.rule_id == RULE_POLICY_CONFIG]
+        assert len(denial) == 1, label
+        assert denial[0].outcome == "deny"
+        assert denial[0].remediation
+
+
+def test_detect_config_defect_is_none_for_a_readable_bundle():
+    assert detect_config_defect(_inputs()) is None
+    parent = _bundle(_prod_deny(), bundle_id="parent")
+    index = {"parent": parent}
+    assert detect_config_defect(_inputs(_bundle(), index=index)) is None
+
+
+# -- Phase 4: the gate asks one budget question of both systems ----------------------
+
+
+def test_gate_refuses_on_the_quota_alone_when_no_hierarchy_is_configured():
+    """One system configured and refusing is enough: the conjunction has no escape."""
+    gate = _inputs(damage_quota=DamageQuota(budget_s=1.0, per_fault_ceiling_s=1e6))
+    result = evaluate_gate(_plan("proc.pause"), gate)
+    assert result.denied
+    assert result.refusal is not None
+    # The quota's own rule id, so a log line reads the same whichever half spoke.
+    assert result.refusal.rule_id == "damage_quota.budget"
+    assert result.budget is not None
+    assert result.budget.authority is BudgetAuthority.QUOTA
+    assert not result.budget.within_budget
+
+
+def test_gate_reconciles_both_systems_and_reports_the_hierarchy_first():
+    gate = _inputs(
+        budget=_budget_tree(1.0, "proc.pause"),
+        budget_path=BUDGET_PATH,
+        damage_quota=DamageQuota(budget_s=1.0, per_fault_ceiling_s=1e6),
+    )
+    result = evaluate_gate(_plan("proc.pause"), gate)
+    assert result.refusal is not None
+    assert result.refusal.rule_id == RULE_BUDGET_EXHAUSTED
+    assert result.budget is not None
+    assert result.budget.authority is BudgetAuthority.BOTH_REFUSE
+    # The other system's verdict is in the record, not discarded by the reporting
+    # preference.
+    assert result.refusal.inputs["also_refused_by"] == "damage_quota.budget"
+    assert result.refusal.inputs["budget_rule_ids"] == [
+        RULE_BUDGET_EXHAUSTED,
+        "damage_quota.budget",
+    ]
+
+
+def test_reconciliation_is_a_pure_function_of_two_views():
+    """The matrix, at the level the decision is actually made."""
+    permitting = HierarchyBudgetView(configured=True)
+    breaching = HierarchyBudgetView(
+        configured=True,
+        breached=(
+            BudgetCharge(
+                scope=BudgetScope.TEAM,
+                key="sre",
+                amount_s=5.0,
+                before_s=0.0,
+                after_s=5.0,
+                limit_s=1.0,
+            ),
+        ),
+    )
+    assert reconcile_budgets(permitting, QuotaBudgetView(configured=True)).authority is (
+        BudgetAuthority.BOTH_PERMIT
+    )
+    assert reconcile_budgets(permitting, QuotaBudgetView(configured=False)).authority is (
+        BudgetAuthority.HIERARCHY_PERMITS
+    )
+    assert reconcile_budgets(permitting, QuotaBudgetView(configured=False)).within_budget
+    assert reconcile_budgets(
+        HierarchyBudgetView(configured=False), QuotaBudgetView(configured=False)
+    ).authority is BudgetAuthority.NONE
+    assert reconcile_budgets(breaching, QuotaBudgetView(configured=True)).authority is (
+        BudgetAuthority.HIERARCHY
+    )
+
+
+def test_quota_probe_is_absent_unless_a_quota_is_configured():
+    """Default-absent is what keeps the no-bundle golden byte-identical."""
+    assert probe_quota(_plan("proc.pause"), _inputs()) == QuotaBudgetView(configured=False)
+
+
+def test_gate_damage_budget_fact_is_independent_of_the_quota_system():
+    """Two budget systems, one dimension: ``damage_budget`` still reads the plan total."""
+    facts = derive_facts(
+        _plan("proc.pause"),
+        _inputs(damage_quota=DamageQuota(budget_s=1.0, per_fault_ceiling_s=1e6)),
+    )
+    assert facts.observed(PolicyDimension.DAMAGE_BUDGET) is None
