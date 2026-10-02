@@ -58,10 +58,25 @@ API reference generated from OpenAPI (never hand-maintained), UI operator guide,
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/api.py` lands the resource vocabulary as digest-bound projections of the existing domain types (experiments, plans, plan steps, runs, outcomes, approvals, policy decisions, schedules, evidence references), the derived timeline over stored events (32), the withholding failure explanation over the recorded graded verdict (60), and the provenance-carrying executive summary (59)
-- Phase 2: not started
+- Phase 2 (engine): DONE — `infra/api_store.py` persists all nine Phase 1 resources behind `M0030_API_RESOURCES` (nested `resource_json` is authoritative; the denormalised filter/sort columns are a *query index* with an auditor, `ApiStore.audit_indexes`, so drift is a refusal rather than a wrong answer), and `infra/replication.py` lands the SQLite-plus-replication strategy: WAL archiving, snapshot shipping over SQLite's online backup API, and **fenced** standby promotion on plan 03's `FencingToken`. Resource shape decision: **nested on disk, flat at the query boundary** — the ledger's response shape stays Phase 1's nested one and the flat columns exist only so `WHERE status = ?` never parses JSON, with every one of them re-derived and checked on read.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+### What the Phase 2 failover drill proved, and what it did not
+
+`tests/unit/test_replication.py` runs the drill the plan asks for — a **fencing test, not faith**. A primary is genuinely killed with `SIGKILL` mid-step in a child process (no cleanup, no `atexit`, nothing flushed), a standby is promoted from a shipped snapshot, and the assertion is over an effect log the *child process itself* wrote: each step completes exactly once, the two steps the dead primary had already completed are provably not re-driven, the in-flight step is re-driven under a strictly newer step fence, and no `running` row is left behind.
+
+Two mechanisms, deliberately kept apart because they fail differently:
+
+- **Fencing** stops a *superseded writer*, via `repl_fences` (monotone by schema — an UPDATE that does not increase the epoch RAISEs, DELETE RAISEs) plus `FencingToken.next_fence` as the only way to grow one. A standby whose last-seen fence is behind the ledger cannot promote; a snapshot or WAL segment from a deposed primary is refused **by the receiver, against the receiver's own ledger, before the first byte moves**; a promotion whose replicated step ledger names a step the plan does not contain is refused rather than completed with a footnote.
+- **The partial unique index** on `repl_step_ledger` stops a *second completion of one step* as a constraint violation. Either mechanism alone leaves a hole: fencing without the index still lets two epochs each believe they completed the same step, and the index without fencing lets a deposed primary complete one the promoted primary already re-drove.
+
+What the drill does **not** prove, stated plainly because the difference matters for the rollout decision:
+
+1. **Two nodes are two files in one interpreter, not two hosts.** No network, no separate page cache, no process-boundary latency, no clock skew. It says nothing about RPO/RTO in real time.
+2. **The fence ledger is replicated, not quorum-witnessed.** Promotion mints `recorded_epoch + 1` from the ledger that arrived with the snapshot, which is correct whenever the snapshot is at least as new as every epoch the previous primary ever issued — a property of the shipping discipline, not of this code. A *partitioned* standby whose snapshot predates a later promotion would mint an epoch already in use. Consequently **a deposed primary's own database file is a divergent copy and nothing here can refuse its writes**; what is refused is every write and every shipped byte checked against a ledger that has seen the newer epoch, which is the check that happens in a real deployment. Closing the remaining gap needs an external witness for the epoch counter (etcd/consul, or a single arbiter process) — a deployment decision Phase 6 owns. The refusal paths are all implemented and all tested; the end-to-end guarantee is honest only once the witness exists.
+3. **No service facades yet.** The seam they need is in place (`ApiStore.plan_for_run` hands `controller.safety_proof` the exact `ExecutionPlan` whose digest the API displays, and `explain`/`summarise`/`timeline` run Phase 1's report functions over what is stored), but the planner/policy/scheduler/orchestrator/evidence facades and the gateway are Phase 3's.
+
+Overall: 2 of 6 phases complete.

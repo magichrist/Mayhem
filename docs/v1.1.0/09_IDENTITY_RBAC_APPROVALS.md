@@ -60,9 +60,31 @@ Identity configuration guide, RBAC role reference, approval policy examples. Rol
 ## STATUS
 - Phase 1 (domain model): DONE — `Principal`/`TeamMembership`/`EnvironmentScope`/`Role`/`RoleGrant` in `domain/identity.py`, plus `domain/approval.py` (`Approval`, `ApprovalState`, `InvalidationReason`) and the pure `evaluate_approvals` predicate that enumerates every invalidation trigger
 - Phase 2 (engine): DONE — `controller/approval_gate.py` (`ApprovalGateInputs`, `verify_approvals`, `ApprovalLedger`, sealed `evidence()`) wired into `controller/safety.validate_plan` behind the additive `SafetyContext.approval_gate`; executor role + environment scope authorized before any approval counts, separation of duties switchable by policy, and an emergency override that executes while sealing principal and reason into the evidence record
-- Phase 3: not started
+- Phase 3 (surface: authentication and authorization service): DONE — `infra/identity_store.py` (migration `M0031_IDENTITY`, reversible; principals, PBKDF2-only local credentials, memberships, role grants, sessions, scoped API keys, and an append-only revocation log whose triggers refuse UPDATE/DELETE) and `controller/auth_service.py`. Local auth is implemented for real (PBKDF2-HMAC-SHA256, per-credential salt, constant-time compare) with **no new dependency**; OIDC/OAuth/SAML/SCIM are `IdentityProviderPort` seams plus `CallableIdentityProvider`/`StaticIdentityProvider`, exercised by an end-to-end walkthrough (authenticate → policy → approve → execute) against a faked IdP. Tokens issue, rotate, revoke, and expire, with `IssuedToken`/`IssuedApiKey` redacting their own secret in `__repr__`; API keys are short-lived (900s default), scoped at issue, revocable, and never readable out of the store (schema `CHECK`s make a plaintext credential unrepresentable). The service **supplies** principals, grants, memberships, and consumed ids to `approval_gate` via `gate_inputs()` and defines no second role or approval model — `effective_roles`/`has_role`/`Approval.bind` still decide. Revocation propagation is bounded at `REVOCATION_PROPAGATION_BOUND_S` (5s) on an injected monotonic clock, and cached decisions are additionally capped by the subject's own expiry so an expired credential is never served from cache
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 2 of 6 phases complete.
+Overall: 3 of 6 phases complete.
+
+### Phase 3 — what this phase does *not* claim
+
+- **No UI or CLI surface.** The plan's Phase 3 heading says "login, teams, approval
+  flows ... in CLI and UI (08)". What landed here is the service those surfaces
+  call; no `mayhem login` command and no screen exists yet, and nothing in
+  `src/mayhem/cli/` was touched. Phase 6 owns the rollout surfaces.
+- **No MFA, password reset, refresh tokens, OAuth client registration, SAML
+  metadata, or SCIM sync state.** Their formats belong to provider libraries this
+  project does not depend on, and the migration deliberately has no column where
+  an unverified assertion could be parked.
+- **No policy on who may call which service method.** `AuthService` has no
+  `ADMINISTER`-gated admin operations; authorization exists for *acting on a
+  target*, and administration of the identity store itself is Phase 6's
+  question.
+- **Approval levels (`sre`, `service_owner`) are still unbound to roles/teams.**
+  Phase 2's `quorum_from_requirements` enforces their *count* only; Phase 3
+  supplies grants so a level-bearing quorum can eventually be attributed, but
+  nothing here maps a level to a required team.
+- **The API-key scope is a narrowing on top of RBAC, not a replacement for it.**
+  A scoped key can only ever reach where its scopes reach; it confers nothing on
+  its own.

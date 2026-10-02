@@ -1247,6 +1247,47 @@ _MAPPINGS: Final[tuple[FaultFailureMapping, ...]] = (
         "refused at plan time rather than injected",
     ),
     _m(
+        "fs.read_delay",
+        FailureMode.LATENCY,
+        also=(FailureMode.STORAGE,),
+        mechanism="reads issued against one mount would complete later than they did, while the "
+        "bytes returned stay correct — the same shape as fs.write_delay on the read side, and "
+        "for that reason not a duplicate of it",
+        symptom=_REFUSED_NOTHING_INJECTED
+        + "; the expected outcome is the plan-time refusal naming the FUSE-delay-shim gap",
+        risk=RiskLevel.MEDIUM,
+        method=VerificationMethod.STORAGE_ACCESS,
+        recovery="none from this entry — it is refused. fs.write_delay is the executable path to "
+        "delay a target's IO in this release, and it adds write contention from a burner "
+        "process rather than delaying a read the target issues",
+        verification="the plan-time refusal is the result: an experiment naming this fault is "
+        "refused with the read-delay reason and never reaches a target",
+        refusal="catalog-only: delaying reads on one mount needs a FUSE passthrough daemon, a "
+        "fuse device passed into the target container, and mount tooling, and mayhem "
+        "provisions none of them, so the entry is refused at plan time rather than injected",
+    ),
+    _m(
+        "fs.block_device_delay",
+        FailureMode.STORAGE,
+        also=(FailureMode.LATENCY,),
+        mechanism="IO below the filesystem would be held at the block device, so every path "
+        "over that device waits — reads and writes alike, not one mount and not one syscall",
+        symptom=_REFUSED_NOTHING_INJECTED
+        + "; the expected outcome is the plan-time refusal naming the device-mapper-delay-target "
+        "gap",
+        risk=RiskLevel.HIGH,
+        method=VerificationMethod.STORAGE_ACCESS,
+        recovery="none from this entry — it is refused. Device state mayhem cannot construct "
+        "leaves nothing to release, and fs.io_stress changes how much load a device sees "
+        "rather than how long a target's own IO waits",
+        verification="the plan-time refusal is the result: an experiment naming this fault is "
+        "refused with the block-device-delay reason and never reaches a target",
+        refusal="catalog-only: delaying IO below the filesystem needs a device-mapper delay "
+        "target over a loop device plus a read-only snapshot to reactivate, and no "
+        "capability-bit row exists to evaluate either, so the entry is refused at plan time "
+        "rather than injected",
+    ),
+    _m(
         "fs.permission_failure",
         FailureMode.SECURITY_CONTROL_FAILURE,
         also=(FailureMode.STORAGE,),
@@ -2049,6 +2090,46 @@ _MAPPINGS: Final[tuple[FaultFailureMapping, ...]] = (
         "refused with the external-OOM-kill reason and never reaches a target",
         refusal="catalog-only: killing a process from the outside is not implemented, so the entry "
         "is refused at plan time rather than injected",
+    ),
+    _m(
+        "process.syscall_error",
+        FailureMode.AVAILABILITY,
+        also=(FailureMode.RUNTIME,),
+        mechanism="a named syscall would return an errno to its caller, so the operation fails "
+        "at the kernel boundary while the value returned is an honest error rather than a "
+        "wrong answer — which is why this is availability and not correctness",
+        symptom=_REFUSED_NOTHING_INJECTED
+        + "; the expected outcome is the plan-time refusal naming the eBPF-kprobe-loader gap",
+        risk=RiskLevel.HIGH,
+        method=VerificationMethod.PROCESS_SIGNAL,
+        recovery="none from this entry — it is refused. There is no kprobe to detach and no "
+        "return value to restore; net.latency covers delay below the syscall and "
+        "fs.read_only covers a write-side failure that is not syscall-scoped",
+        verification="the plan-time refusal is the result: an experiment naming this fault is "
+        "refused with the syscall-error reason and never reaches a target",
+        refusal="catalog-only: making a named syscall return an errno needs an eBPF kprobe "
+        "loader mayhem does not ship, and there is no probe-bin row and no capability-bit "
+        "row to evaluate one, so the entry is refused at plan time rather than injected",
+    ),
+    _m(
+        "process.syscall_return_mutation",
+        FailureMode.CORRECTNESS,
+        also=(FailureMode.RUNTIME,),
+        mechanism="a traced syscall's return register would be rewritten, so the call reports "
+        "success while handing back a value the target never computed — the corruption is "
+        "below the process and above every integrity check it owns",
+        symptom=_REFUSED_NOTHING_INJECTED
+        + "; the expected outcome is the plan-time refusal naming the return-value-rewrite gap",
+        risk=RiskLevel.HIGH,
+        method=VerificationMethod.PROCESS_SIGNAL,
+        recovery="none from this entry — it is refused. A value the target itself produced "
+        "cannot be put back by any undo mayhem can drive; http.header_inject mutates bytes "
+        "inside a proxy mayhem owns, which cannot reach a value the target computed",
+        verification="the plan-time refusal is the result: an experiment naming this fault is "
+        "refused with the return-value-rewrite reason and never reaches a target",
+        refusal="catalog-only: rewriting a traced syscall's return register needs a return-value "
+        "rewrite that CO-RE programs perform and a kprobe loader alone does not give, so the "
+        "entry is refused at plan time rather than injected",
     ),
     # -- clock -------------------------------------------------------------------
     _m(

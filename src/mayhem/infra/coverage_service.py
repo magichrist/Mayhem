@@ -135,6 +135,7 @@ __all__ = [
     "ChangeEventKind",
     "ComparisonService",
     "CoverageDimensionRepository",
+    "CoverageDimensions",
     "CoverageEvidenceKind",
     "CoverageReport",
     "CoverageSighting",
@@ -686,30 +687,21 @@ class CoverageDimensionRepository:
         This is the honest reading of "we have written a checkout journey for
         this service": the cell now exists, addressed by its five dimensions, and
         its state is whatever the accounting says it is — which, until something
-        runs, is :data:`~mayhem.domain.coverage.CellState.UNKNOWN`. No sighting
-        is written, so :attr:`CoverageReport.catalog_only_count` can tell this
-        cell apart from one that was executed.
+        runs, is :data:`~mayhem.domain.coverage.CellState.UNKNOWN`. No *evidence*
+        sighting is written, so :attr:`CoverageReport.catalog_only_count` can tell
+        this cell apart from one that was executed.
+
+        A ``catalog`` sighting is written precisely because somebody declared the
+        cell. The internal callers that merely need the dimension row to exist
+        (recording evidence, moving the certification attribute) use
+        :meth:`_ensure_cell_row` instead, so executing a cell can never
+        manufacture the catalog presence that says "we claimed to test this" —
+        the two are different claims and inflating the second from the first
+        would overstate how much of the landscape the team has actually authored.
         """
         now = utc_now().isoformat()
         with self._store.write() as conn:
-            conn.execute(
-                """
-                INSERT INTO coverage_dimension_cells (
-                    service, dependency, fault, environment, version,
-                    probe_class, certification_state, cell_key, declared_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (service, dependency, fault, environment, version)
-                DO UPDATE SET probe_class = excluded.probe_class, updated_at = excluded.updated_at
-                """,
-                (
-                    *cell.dimensions.as_tuple(),
-                    cell.probe_class,
-                    cell.certification_state,
-                    cell.cell_key,
-                    now,
-                    now,
-                ),
-            )
+            self._ensure_cell_row(conn, cell, now)
             conn.execute(
                 """
                 INSERT INTO coverage_dimension_sightings (
@@ -719,6 +711,28 @@ class CoverageDimensionRepository:
                 """,
                 (*cell.dimensions.as_tuple(), now),
             )
+
+    @staticmethod
+    def _ensure_cell_row(conn: Any, cell: DimensionCell, stamp: str) -> None:
+        """Upsert the dimension row itself, adding no sighting of any kind."""
+        conn.execute(
+            """
+            INSERT INTO coverage_dimension_cells (
+                service, dependency, fault, environment, version,
+                probe_class, certification_state, cell_key, declared_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (service, dependency, fault, environment, version)
+            DO UPDATE SET probe_class = excluded.probe_class, updated_at = excluded.updated_at
+            """,
+            (
+                *cell.dimensions.as_tuple(),
+                cell.probe_class,
+                cell.certification_state,
+                cell.cell_key,
+                stamp,
+                stamp,
+            ),
+        )
 
     def declare_journey(
         self,
@@ -776,9 +790,11 @@ class CoverageDimensionRepository:
         * ``CERTIFIED`` evidence requires a ``certification_ref`` and a
           ``PASSED`` state, and it also sets the cell's certification attribute.
 
-        Declaring the cell first is not required (the sighting is upserted), but
-        a cell with no dimension row is invisible to :meth:`cells`, so callers
-        that want it reported should :meth:`declare` it.
+        Declaring the cell first is not required — the dimension row is upserted
+        here — but recording a run is *not* declaring the cell, so this leaves
+        :attr:`DimensionCoverage.catalog_presence` at whatever the team actually
+        authored. Callers that want the cell counted as catalog-present (the
+        "we claim to test this" number) should :meth:`declare` it explicitly.
         """
         _require_evidence_citation(run_id, evidence_digest)
         if state not in EVIDENCE_OUTCOME_STATES:
@@ -806,9 +822,9 @@ class CoverageDimensionRepository:
                     "and accepting a weaker state would let a failing cell be "
                     "certified",
                 )
-        self.declare(cell)
         now = utc_now().isoformat()
         with self._store.write() as conn:
+            self._ensure_cell_row(conn, cell, now)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO coverage_dimension_sightings (
@@ -841,6 +857,11 @@ class CoverageDimensionRepository:
             # pending by re-recording evidence.
             self._write_certification_state(cell, CertificationState.PENDING.value, "", now=now)
 
+    def _ensure_cell(self, cell: DimensionCell) -> None:
+        """Make the cell addressable without asserting that anybody declared it."""
+        with self._store.write() as conn:
+            self._ensure_cell_row(conn, cell, utc_now().isoformat())
+
     def set_certification_state(
         self,
         cell: DimensionCell,
@@ -869,7 +890,7 @@ class CoverageDimensionRepository:
                 "reference: the two states that mean 'this is certified' have to "
                 "say which certification",
             )
-        self.declare(cell)
+        self._ensure_cell(cell)
         self._write_certification_state(cell, state, certification_ref)
 
     def stored_certification_state(self, cell: DimensionCell) -> str:

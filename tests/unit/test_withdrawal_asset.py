@@ -91,8 +91,26 @@ def test_no_withdrawal_command_is_dispatchable() -> None:
 
 
 def test_no_withdrawal_fault_is_catalogued() -> None:
+    """No catalogued fault id contains ``withdraw``.
+
+    The catalogue size below is a deliberate tripwire, not an incidental pin: when
+    the catalogue grows, this test fails and the audit has to be re-read, because
+    the only thing it establishes is what the catalogue *does not* contain. That
+    argument has to be re-made against the new catalogue rather than inherited.
+
+    Audit re-read when the count moved 141 -> 145. The four new ids are
+    ``process.syscall_error``, ``process.syscall_return_mutation``,
+    ``fs.read_delay`` and ``fs.block_device_delay`` — all four ``catalog_only``
+    refusals naming a missing mechanism (an eBPF kprobe loader, a return-value
+    rewrite, a FUSE delay shim, a device-mapper delay target), so none of them is
+    a declaration of a ``withdrawal`` capability. Verified against the live
+    catalogue: 0 of 145 ids contain "withdraw"; the audit's other two enumerations
+    still hold exactly as written — 2 definitions carry a ``deprecation_path``
+    (``k8s.image_pull_slow``, ``k8s.nvidia_smi_error``) and all 13
+    ``catalog_only`` ids §2.3 lists are still catalog-only, now 17 in total.
+    """
     definitions = all_definitions()
-    assert len(definitions) == 141, "catalogue size moved; re-read the audit"
+    assert len(definitions) == 145, "catalogue size moved; re-read the audit"
     assert not [d.id for d in definitions if "withdraw" in d.id.lower()]
 
 

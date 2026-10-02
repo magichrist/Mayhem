@@ -19,8 +19,8 @@ The rest exists because a mapping table can be complete and still be useless:
   cross-checks the mapping's risk against the catalog's, and one negative-control
   test proves the check has teeth by handing it a mapping that *did* downgrade
   ``process.kill`` from high to low.
-* **A refused fault may not describe an outage.** The 13 ``catalog_only`` entries
-  inject nothing, so their expected symptom is the plan-time refusal. A test
+* **A refused fault may not describe an outage.** Every ``catalog_only`` entry
+  injects nothing, so their expected symptom is the plan-time refusal. A test
   asserts every one of them carries a refusal note and that an executable fault
   carrying one is refused too.
 * **A compliance template cannot assert compliance.** The negative control sets
@@ -63,6 +63,13 @@ from mayhem.domain.risks import RiskLevel
 
 CATALOG_IDS = tuple(sorted(definition.id for definition in all_definitions()))
 
+#: The two refusal populations, read from the live catalog rather than pinned to
+#: a literal. A refusal the catalog gains is a refusal this table must gain a
+#: mapping for, and a count written down here would only ever be a number that
+#: goes stale; the assertions that matter are the per-fault ones below.
+REFUSED_IDS = tuple(sorted(d.id for d in all_definitions() if d.catalog_only))
+EXECUTABLE_IDS = tuple(sorted(d.id for d in all_definitions() if not d.catalog_only))
+
 
 def mapping_without(fault_id: str, **overrides: object) -> FaultFailureMapping:
     """The real mapping for ``fault_id`` with fields replaced, for negative controls."""
@@ -88,7 +95,11 @@ def test_every_catalog_fault_maps_to_at_least_one_failure_mode() -> None:
 
 
 def test_the_table_has_one_entry_per_catalog_fault_and_no_others() -> None:
-    assert len(mapped_fault_ids()) == len(CATALOG_IDS) == 141
+    # Head-agnostic: the table is derived from CATALOG, so the sizes are compared
+    # to each other rather than pinned to a literal. A catalog addition fails the
+    # *other* assertions in this file (the completeness and coverage checks), not
+    # this one, and it fails with the fault ids in the message.
+    assert len(mapped_fault_ids()) == len(CATALOG_IDS) == len(CATALOG)
     assert mapped_fault_ids() == frozenset(CATALOG_IDS)
     validate_mappings()  # raises on any inconsistency; does not raise today
 
@@ -194,7 +205,10 @@ def test_every_catalog_only_fault_carries_a_refusal_note() -> None:
     """Nothing is injected for these, so their expected symptom is the refusal."""
     refused = [d for d in all_definitions() if d.catalog_only]
 
-    assert len(refused) == 13
+    assert REFUSED_IDS, "the catalog has no refusals at all; this probe is broken, not the table"
+    # The two populations partition the catalog exactly: a fault is either refused
+    # or executable, never both and never neither.
+    assert tuple(sorted(REFUSED_IDS + EXECUTABLE_IDS)) == CATALOG_IDS
     for definition in refused:
         mapping = mapping_for(definition.id)
         assert mapping.refusal_note.strip(), definition.id
@@ -206,7 +220,7 @@ def test_every_catalog_only_fault_carries_a_refusal_note() -> None:
 def test_every_executable_fault_carries_no_refusal_note() -> None:
     executable = [d for d in all_definitions() if not d.catalog_only]
 
-    assert len(executable) == 128
+    assert EXECUTABLE_IDS
     for definition in executable:
         assert not mapping_for(definition.id).refusal_note, definition.id
 
@@ -318,7 +332,7 @@ def test_no_taxonomy_member_is_empty() -> None:
 def test_coverage_counts_the_whole_live_catalog() -> None:
     coverage = taxonomy_coverage()
 
-    assert coverage.mapped == coverage.total == 141
+    assert coverage.mapped == coverage.total == len(CATALOG)
     # A fault presenting as three modes counts once per mode, so the counts sum
     # to more than the fault count — that is what "presents as" means.
     assert sum(coverage.by_mode.values()) > coverage.total

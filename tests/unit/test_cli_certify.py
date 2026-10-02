@@ -11,9 +11,9 @@ accordingly:
   drifts out of the registry is a command nobody is reviewing.
 * **the honest default.** On a fresh database ``certify matrix`` reports zero
   certified faults, and every maturity it reports is at or below
-  ``verified-unit``. Nothing seeds a record, so the README's 0-of-141 stays
-  true. This is the assertion that keeps the release honest while the pipeline
-  is still being built out.
+  ``verified-unit``. Nothing seeds a record, so the README's 0-of-N (N being
+  the live catalogue size) stays true. This is the assertion that keeps the
+  release honest while the pipeline is still being built out.
 * **the gate is armed, not optional.** Every maturity this surface prints is
   computed with the record store supplied. The test proves the *arming* by
   planting a record and watching the answer change, and proves the shape by
@@ -58,6 +58,7 @@ from mayhem.cli.certify import (
 )
 from mayhem.cli.command_registry import COMMAND_HELP, COMMAND_SPECS
 from mayhem.domain.capabilities import Capability
+from mayhem.domain.catalog import CATALOG
 from mayhem.domain.certification import (
     DEFAULT_CERTIFICATION_TTL,
     DEFAULT_EXPIRY_WARNING,
@@ -255,11 +256,11 @@ def test_the_database_is_migrated_to_the_head_before_anything_is_reported(
 
 
 def test_a_fresh_database_certifies_nothing_and_promotes_nothing(tmp_path: Path) -> None:
-    """0 of 141, and nothing above ``verified-unit`` — with no record store seeded."""
+    """0 of N, and nothing above ``verified-unit`` — with no record store seeded."""
     result = _run("--db", _db(tmp_path), "certify", "matrix", "--all", "--json")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["faults_total"] == 141
+    assert payload["faults_total"] == len(CATALOG)
     assert payload["certified_faults"] == 0
     assert all(row["certification"]["live"] is False for row in payload["faults"])
     assert all(

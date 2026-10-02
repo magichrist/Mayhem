@@ -72,13 +72,33 @@ demotion is written **before** the new attempt is appended, so a reader can
 never see a new record next to a still-certified old one.
 
 Re-certification is a new row
------------------------------
+----------------------------
 A lapsed claim is terminal by design, so re-certifying after expiry appends a
 new record rather than transitioning the old one. The runner never promotes by
 transition: it constructs a fresh ``pending`` record and hands it to
 :func:`~mayhem.domain.certification.certify`, or hands it back un-certified with
 a reason. The store (a per-fault sequence) and the domain agree on that by
 construction.
+
+Sealing the evidence (Phase 4)
+------------------------------
+Everything above is arithmetic over bytes the process was handed. Phase 4 adds
+the last step between a good run and a live claim: the evidence must also be
+**sealed** — hash-linked into a chain a later reader can re-verify with no
+control plane — and the seal must cover the residue scan, the recovery probe, and
+any regression demotion, not merely the bundle's digests. That is
+:class:`EvidenceSealer`, the one new seam here, and it is optional for the same
+reason every other seam in this module is: a caller that does not seal is making
+a weaker claim, and the runner does not pretend otherwise.
+
+The seal runs *after* the digest cross-check and *before* the record is minted,
+and any failure — a raised error, an unverified chain, a receipt naming a
+different bundle — becomes
+:data:`RefusalClass.EVIDENCE_UNSEALABLE`. That is the rule rather than an extra
+precaution: a bundle nothing has attested is not evidence, in the same way that a
+bundle whose digests do not match the run is not evidence for that run. The
+bundle stays on the record either way, because the attempt happened and is worth
+recording; what it does not do is grant anything.
 """
 
 from __future__ import annotations
@@ -130,6 +150,8 @@ __all__ = [
     "DemotionEvent",
     "DisposableCell",
     "EvidenceCapturer",
+    "EvidenceSealReceipt",
+    "EvidenceSealer",
     "RecoveryEvidence",
     "RecurrenceVerdict",
     "RefusalClass",
@@ -187,6 +209,9 @@ class RefusalClass(StrEnum):
     RESIDUE = "refused:residue"
     NO_EVIDENCE = "refused:no_evidence"
     EVIDENCE_MISMATCH = "refused:evidence_mismatch"
+    #: Phase 4. The bundle matched the run but could not be sealed into a chain a
+    #: later reader can re-verify, so there is no evidence to certify on.
+    EVIDENCE_UNSEALABLE = "refused:evidence_unsealable"
 
 
 class AttemptOutcome(StrEnum):
@@ -584,6 +609,59 @@ class CertificationSink(Protocol):
     def latest_on_cell(self, fault_id: str, cell: MatrixCell) -> StoredCertification | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceSealReceipt:
+    """What sealing a certification's evidence produced, as the runner sees it.
+
+    Deliberately small. The runner needs to know one thing — whether the bytes it
+    is about to have a record cite are *sealed somewhere that verifies* — and
+    needs the identities a report will quote. Everything else (the manifest, both
+    verification verdicts, the retention row) stays with the sealer, because the
+    runner has no use for it and duplicating it would be a second copy of the
+    same facts.
+
+    ``verified=False`` is a refusal, not a warning: the runner turns it into a
+    non-certified record.
+    """
+
+    bundle_hash: str
+    manifest_id: str
+    chain_root: str
+    verified: bool
+
+
+class EvidenceSealer(Protocol):
+    """Seals a certification's evidence so a later reader can re-verify it.
+
+    Phase 4's seam, and the same shape as every other seam here: injected,
+    structural, and implemented outside this module. The production
+    implementation is
+    :class:`mayhem.controller.certification_evidence.CertificationEvidenceStore`,
+    which delegates the sealing itself to plan 12's attestation machinery — this
+    module names *that* a seal has to happen, and never asks how.
+
+    Omitting the sealer is not refused and is not silently equivalent to passing
+    one. It means "this caller does not seal", which is what the unit suite and
+    the pre-Phase-4 surfaces do; the consequence is stated in the module
+    docstring rather than hidden, because a certification whose evidence is only
+    referenced is exactly the weaker claim Phase 4 exists to remove.
+    """
+
+    def seal_evidence(
+        self,
+        *,
+        bundle: EvidenceBundleRef,
+        request: CertificationRequest,
+        cell: MatrixCell,
+        injector_version: str,
+        run: CertifiedRun,
+        residue: ResidueScan,
+        recovery: RecoveryEvidence | None,
+        demotions: tuple[DemotionEvent, ...] = (),
+        now: datetime,
+    ) -> EvidenceSealReceipt: ...
+
+
 # ── evidence digests ────────────────────────────────────────────────────────
 
 
@@ -703,6 +781,7 @@ def certify_fault(
     capture: EvidenceCapturer,
     sink: CertificationSink,
     now: datetime,
+    evidence_sealer: EvidenceSealer | None = None,
 ) -> CertificationAttempt:
     """Run one fault on one cell and record what the cell said about it.
 
@@ -728,6 +807,10 @@ def certify_fault(
        derived from the run's own facts.
     7. **Regression demotion**, when the cell already held a live claim and this
        run contradicts it.
+    8. **Sealing** (Phase 4, when a sealer is supplied). The evidence must be
+       sealed into a chain that re-verifies before a record may cite it — and
+       the demotion from step 7 travels *inside* that chain, so it is attested
+       rather than merely described.
 
     The cell is disposed in a ``finally``, so a run that raises cannot leak a
     disposable environment. A provisioner that raises propagates: provisioning
@@ -744,6 +827,12 @@ def certify_fault(
         sink: Where records are written and where a prior claim is looked up.
         now: The certification instant. Explicit, so expiry policy is testable
             instead of waited for.
+        evidence_sealer: Phase 4's seam. When supplied, the attempt's evidence is
+            sealed into a chain that can be re-verified before the record cites it,
+            and a bundle that cannot be sealed becomes a refusal rather than a
+            live claim. When omitted the attempt is recorded exactly as Phase 2
+            recorded it — the digests are still cross-checked, but nothing
+            attests that the bytes survive.
 
     Returns:
         The attempt, including the stored record and any demotions.
@@ -829,6 +918,22 @@ def certify_fault(
             # is dropped rather than attached to the refused record. Keeping it
             # would leave a hash on a record that no longer claims anything.
             bundle = None if problems else captured
+
+    if bundle is not None and evidence_sealer is not None:
+        refusals.extend(
+            _seal_refusals(
+                evidence_sealer,
+                bundle=bundle,
+                request=request,
+                cell=matrix_cell,
+                injector_version=injector_version,
+                run=run,
+                residue=residue,
+                recovery=recovery,
+                demotions=demotions,
+                now=now,
+            )
+        )
 
     record = _mint(
         definition=definition,
@@ -1186,6 +1291,69 @@ def _evidence_refusals(bundle: EvidenceBundleRef, *, expected: dict[str, str]) -
                 "bundle is not evidence for this run"
             )
     return refusals
+
+
+def _seal_refusals(
+    sealer: EvidenceSealer,
+    *,
+    bundle: EvidenceBundleRef,
+    request: CertificationRequest,
+    cell: MatrixCell,
+    injector_version: str,
+    run: CertifiedRun,
+    residue: ResidueScan,
+    recovery: RecoveryEvidence | None,
+    demotions: tuple[DemotionEvent, ...],
+    now: datetime,
+) -> list[str]:
+    """Seal the attempt's evidence, turning every failure into a refusal.
+
+    A certification whose evidence cannot be sealed is not a certification, so a
+    refusal here is not a precaution bolted onto step 6 — it is the same rule one
+    layer out. Three things are checked, and each is a way a sealer could report
+    success dishonestly:
+
+    * it did not raise;
+    * it reports ``verified``;
+    * it sealed *this* bundle, not some other one.
+
+    The exception arm is deliberately broad. A sealer is the one dependency in
+    this pipeline that touches a database, a retention ladder, and an evidence
+    boundary; any failure in it must land the attempt in the same refusal column
+    rather than propagate an infrastructure error out of a function whose entire
+    job is to answer "was this certified?". The refusal text names the cause, so
+    the operator sees the failure rather than a bare class name.
+    """
+    try:
+        receipt = sealer.seal_evidence(
+            bundle=bundle,
+            request=request,
+            cell=cell,
+            injector_version=injector_version,
+            run=run,
+            residue=residue,
+            recovery=recovery,
+            demotions=demotions,
+            now=now,
+        )
+    except Exception as exc:
+        return [
+            f"{RefusalClass.EVIDENCE_UNSEALABLE}: the evidence for this attempt could not be "
+            f"sealed, so there is nothing a later reader could re-verify: {exc}"
+        ]
+    if not receipt.verified:
+        return [
+            f"{RefusalClass.EVIDENCE_UNSEALABLE}: sealing {receipt.bundle_hash[:12]}… reported "
+            f"an unverified chain (manifest {receipt.manifest_id!r}); an unsealed claim is not "
+            "a certification"
+        ]
+    if receipt.bundle_hash != bundle.bundle_hash:
+        return [
+            f"{RefusalClass.EVIDENCE_UNSEALABLE}: the sealer returned a receipt for bundle "
+            f"{receipt.bundle_hash[:12]}… but this attempt's bundle is "
+            f"{bundle.bundle_hash[:12]}…; evidence must be sealed for the run that produced it"
+        ]
+    return []
 
 
 def _mint(

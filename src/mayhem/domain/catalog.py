@@ -2191,6 +2191,119 @@ CATALOG: tuple[FaultDefinition, ...] = (
             "cgroup limit"
         ),
     ),
+    # ── plan 04 Phase 2 — catalog-only refusals for the low-level primitives ──
+    #
+    # ``domain/lowlevel.py`` declares 22 primitive descriptors; 18 of them cannot
+    # be injected by mayhem's current substrate, and each names its
+    # ``MissingMechanism``. These four entries are the ones where a user would
+    # plausibly type the id and must be told it does not exist.
+    #
+    # The selection rule (stated once here so the *absent* ids are as auditable
+    # as the present ones) — an id is added iff all four hold:
+    #
+    #   R1 name reachable: the catalog is the discovery surface, so the refusal
+    #      only earns a row if the id is one an operator would actually reach
+    #      for from plan 04's family list or the catalog's own vocabulary;
+    #   R2 no existing refusal owns it: when a descriptor's
+    #      ``MissingMechanism.anchor_fault_id`` is set, the authoritative refusal
+    #      is already a ``catalog_only`` row (``fs.read_error``,
+    #      ``fs.permission_failure``, ``app.exception``, ``clock.freeze``) and a
+    #      second copy of one refusal drifts;
+    #   R3 buildable: a ``catalog_only`` entry is a promotion ticket, so a
+    #      ``NOT_STEPPABLE`` descriptor (``clock.monotonic_offset``,
+    #      ``clock.monotonic_freeze``) is descriptor-only — no amount of
+    #      mechanism work makes it injectable on Linux;
+    #   R4 expressible: no new ``FaultCategory`` and no new prefix, so the six
+    #      ``jvm.*`` descriptors have no legal id here (``jvm`` is absent from
+    #      ``_PREFIX_TO_CATEGORY``, and reusing ``app.*`` would invent a name
+    #      nothing in the taxonomy produces).
+    #
+    # Two more descriptor-only shapes, both structural rather than editorial:
+    # ``io.write_delay`` names the same FUSE shim as ``fs.read_delay`` but the id
+    # ``fs.write_delay`` is already an *active* entry whose mechanism is a
+    # burner-process contention fault, so there is no honest id left to refuse
+    # under; and ``io.torn_write`` is CRITICAL and container-scoped while the
+    # catalog reserves CRITICAL for pod/node faults, so publishing it would
+    # either understate the risk or misfile the scope.
+    #
+    # One refusal per mechanism, not one per primitive: ``fs.read_delay`` also
+    # carries ``io.write_delay``'s refusal, and ``process.syscall_error`` also
+    # covers the same loader's syscall-latency primitive.
+    _define(
+        id="process.syscall_error",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        # Named even though nothing consumes it yet: the capability the
+        # mechanism would need is the whole reason the impact gate cannot
+        # evaluate the demand today.
+        required_caps=frozenset({Capability.SYS_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=120.0,
+        params_schema=(),
+        observable_effect="a named syscall on the target returns an error to its caller",
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: making a named syscall return an errno needs an eBPF kprobe "
+            "loader mayhem does not ship, and bpftool has no probe-bin row while SYS_ADMIN has "
+            "no capability-bit row, so the impact gate could not evaluate the demand even with "
+            "one; use net.latency for delay below the syscall or fs.read_only for a "
+            "write-side failure that is not syscall-scoped"
+        ),
+    ),
+    _define(
+        id="process.syscall_return_mutation",
+        category=FaultCategory.PROCESS,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.SYS_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.PROCESS, NodeKind.SERVICE, NodeKind.CONTAINER}),
+        max_duration_s=60.0,
+        params_schema=(),
+        observable_effect=(
+            "a named syscall on the target succeeds while reporting a value it did not produce"
+        ),
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: rewriting a traced syscall's return register needs a "
+            "return-value rewrite, which CO-RE programs have to perform and a kprobe loader "
+            "alone does not give; use http.header_inject for byte-level mutation inside a "
+            "proxy mayhem owns, which cannot reach a value the target computed for itself"
+        ),
+    ),
+    _define(
+        id="fs.read_delay",
+        category=FaultCategory.STORAGE,
+        risk=RiskLevel.MEDIUM,
+        required_caps=frozenset({Capability.SYS_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(),
+        observable_effect="reads issued against one mount complete later than they did",
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: delaying reads on one mount needs a FUSE delay shim — a "
+            "passthrough daemon, a fuse device passed into the target container, and mount "
+            "tooling in the probe set — and mayhem provisions none of the three; fs.write_delay "
+            "only adds write contention from a burner process, which never delays a read the "
+            "target issues"
+        ),
+    ),
+    _define(
+        id="fs.block_device_delay",
+        category=FaultCategory.STORAGE,
+        risk=RiskLevel.HIGH,
+        required_caps=frozenset({Capability.SYS_ADMIN}),
+        applicable_node_kinds=frozenset({NodeKind.SERVICE, NodeKind.CONTAINER, NodeKind.HOST}),
+        max_duration_s=120.0,
+        params_schema=(),
+        observable_effect="IO on one block device completes later than it did, for every path",
+        catalog_only=True,
+        refusal_reason=(
+            "catalog.unsupported: delaying IO below the filesystem needs a device-mapper delay "
+            "target over a loop device plus a read-only snapshot to reactivate, and the "
+            "capability-bit table has no SYS_ADMIN row to evaluate any of it; fs.io_stress "
+            "changes how much load the device sees, not how long a target's own IO waits"
+        ),
+    ),
 )
 
 

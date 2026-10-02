@@ -57,10 +57,10 @@ Coverage methodology (what counts as tested), journey authoring guide, regressio
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/journeys.py` (versioned, per-step-asserted journey programs with citable business-metric criteria, projecting untested coverage cells) and `domain/comparison.py` (pin equivalence predicate, delta report with improved/regressed/unchanged/insufficient-data/incomparable outcomes, two-run-cited regression findings) landed with unit tests.
-- Phase 2: not started
+- Phase 2: DONE — largely landed by a prior lane, then verified and completed. `infra/coverage_service.py` provides the five-dimension accounting (`CoverageDimensions` → existing `CoverageCell`: service→target, fault→fault_kind, environment→execution_context, version|dependency→parameter_band; probe class and certification state as cell attributes), the `ComparisonService`, and the `TriggerEngine`, over `M0027_COVERAGE_FINDINGS` — which already covered the schema, so no migration was added. Coverage is counted only from cited `EXECUTED`/`CERTIFIED` evidence: `CoverageEvidenceKind` has no `catalog` member, the sighting table's CHECK refuses an uncited or laundered row, and `DimensionCoverage.counted` requires a covering state *and* a cited sighting, so a declared-but-unrun cell renders untested. `ComparisonService.score` delegates comparability to `comparison.equivalent_pins` and cross-checks it against `compare()`, refusing to serve when the two disagree; `open_finding` persists both run ids and both evidence digests. Trigger suggestions are advisory `Literal[True]` data over a schema with no run/status column, and the engine holds no runner or gate handle. Two defects found during verification were fixed: `CoverageDimensions` was missing from `__all__` despite being `DimensionCell`'s required constructor argument, and `record_evidence`/`set_certification_state` called `declare()`, so executing a cell inflated `catalog_presence` — recording a run now upserts the dimension row without manufacturing a catalog sighting. Regression tests added for both, plus a re-scoped chain-contiguity assertion (contiguity up to M0027 only; whole-chain contiguity stays in `test_additive_schema.py`).
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.

@@ -78,7 +78,7 @@ specific page corrupted in a specific process, or a specific syscall blocked
 while the rest of the process stays healthy, is out of scope for mayhem's
 substrate — not unimplemented, *unsupported*.
 
-Thirteen catalog entries are `catalog_only` for exactly this reason. Mayhem has
+Seventeen catalog entries are `catalog_only` for exactly this reason. Mayhem has
 no primitive to inject them, and their refusal text is the feature: it names the
 missing mechanism instead of quietly substituting a weaker fault.
 
@@ -91,10 +91,14 @@ missing mechanism instead of quietly substituting a weaker fault.
 | `cpu.steal` | hypervisor / host-scheduler control (KVM) |
 | `fs.permission_failure` | a permission-preserving executor |
 | `fs.read_error` | a device-mapper error target, or a FUSE shim needing `SYS_ADMIN` and a loop device |
+| `fs.read_delay` | a FUSE passthrough daemon plus a `fuse` device and mount tooling in the target |
+| `fs.block_device_delay` | a device-mapper delay target over a loop device, plus a read-only snapshot to reactivate |
 | `mem.fragment` | buddy-allocator, `MADV_FREE`, or hugepage control |
 | `mem.oom_kill` | an irreversible kill with no supervisor, which the compensation contract forbids |
 | `process.oom_kill` | likewise; `mem.exhaust` deliberately caps at 95% of the cgroup limit |
 | `process.startup_delay` | an application-aware readiness hook |
+| `process.syscall_error` | an eBPF kprobe loader that can make a named syscall return an `errno` |
+| `process.syscall_return_mutation` | a CO-RE return-value rewrite; a kprobe loader alone does not give one |
 | `dependency.malformed_response` | a protocol-aware response proxy |
 | `k8s.image_pull_slow` | a registry-pacing runtime |
 
@@ -110,8 +114,8 @@ claimed anywhere. See [Kubernetes status](#kubernetes-status).
 working. It means that fault id's parameter grammar, refusal path, and
 compensation contract are deterministic and covered by recorded unit evidence.
 It says nothing about whether the fault has ever perturbed a running system.
-Of the **141** catalog faults, **128** are `verified-unit` and **13** are
-`experimental`. **0 of 141 are `verified-live`**, and none is `stable`.
+Of the **145** catalog faults, **128** are `verified-unit` and **17** are
+`experimental`. **0 of 145 are `verified-live`**, and none is `stable`.
 Reading `verified-unit` as "this works" is a misreading, and this README
 previously invited it.
 
@@ -126,7 +130,7 @@ The reported maturity level is **derived at read time** from the evidence
 store, not stamped onto the catalog entry. Delete the evidence for a fault and
 its reported level drops with it. Two consequences follow, and both are
 statements about what mayhem has *not* done. The absence of
-`verified-live` across the whole catalog — 0 of 141 — is a **missing**
+`verified-live` across the whole catalog — 0 of 145 — is a **missing**
 verification program, not a **failed** one: nothing here has been shown to work
 against a real system, and nothing has been shown not to. And because the
 derived level is only ever a function of recorded evidence, a fault that drops
@@ -386,7 +390,7 @@ Root options precede the command. Unique prefixes work at the root and in the wo
 | `mayhem bundle` | Verify a portable evidence bundle offline. |
 | `mayhem completion` | Print a bash/zsh/fish completion script. |
 | `mayhem campaign`, `mayhem commands`, `mayhem init`, `mayhem doctor`, `mayhem verify` | Manage campaigns, inspect the command map, onboard, diagnose, and verify evidence. |
-| `mayhem certify` | Certify a fault on one live runtime cell, or ask whether it can run there — **0-of-141 faults are live-verified, because no live cell has been certified yet.** `certify run` provisions a disposable container, executes the drill through the normal run path, residue-scans the cell, and records a certification record; a refused attempt is recorded as a refusal, never as a pass. `certify matrix` answers compatibility questions without executing. Every maturity it reports is gated by the certification record store, so nothing is presented as live-verified without a stored record behind it. |
+| `mayhem certify` | Certify a fault on one live runtime cell, or ask whether it can run there — **0-of-145 faults are live-verified, because no live cell has been certified yet.** `certify run` provisions a disposable container, executes the drill through the normal run path, residue-scans the cell, and records a certification record; a refused attempt is recorded as a refusal, never as a pass. `certify matrix` answers compatibility questions without executing. Every maturity it reports is gated by the certification record store, so nothing is presented as live-verified without a stored record behind it. |
 
 Use each command's current `--help` output for accepted arguments. `mayhem commands show`
 prints the live command map, and `tests/unit/test_cli_exhaustive_matrix.py` fails
@@ -449,7 +453,7 @@ means:
 - **No live verification is claimed without a live run.** The capability
   dashboard reports `live=false` for every row in this repository; `live=true`
   can only come from a recorded live run.
-- **No fault is live-verified in this repository either.** 0 of 141 catalog
+- **No fault is live-verified in this repository either.** 0 of 145 catalog
   faults hold `verified-live`. `verified-unit` is a statement about mayhem's own
   parameter, refusal, and compensation code — not evidence that a fault works.
   See [No fault in this repository is `verified-live`](#no-fault-in-this-repository-is-verified-live).
@@ -581,9 +585,9 @@ is as small as possible:
 | Live Kubernetes cluster acceptance | Not claimed by repository documentation |
 | Catalog-only Kubernetes faults | `k8s.image_pull_slow`; excluded from the available-fault register and refused before mutation |
 | **Kernel / eBPF / BPF fault injection** | **Not implemented and not planned for 1.0.0.** No eBPF program, no kernel module, no in-kernel primitive. See [What mayhem cannot do](#what-mayhem-cannot-do) |
-| **`verified-live` faults** | **0 of 141.** The rung is derivable from recorded live-run evidence and no such evidence exists. See [No fault in this repository is `verified-live`](#no-fault-in-this-repository-is-verified-live) |
-| **`verified-unit` faults** | 128 of 141 — a claim about mayhem's own parameter/refusal/compensation code, not about the fault working |
-| **`catalog_only` faults** | 13, all refused before mutation. Refusal text names the missing mechanism; it is not a weaker substitute |
+| **`verified-live` faults** | **0 of 145.** The rung is derivable from recorded live-run evidence and no such evidence exists. See [No fault in this repository is `verified-live`](#no-fault-in-this-repository-is-verified-live) |
+| **`verified-unit` faults** | 128 of 145 — a claim about mayhem's own parameter/refusal/compensation code, not about the fault working |
+| **`catalog_only` faults** | 17, all refused before mutation. Refusal text names the missing mechanism; it is not a weaker substitute |
 | **Fault-pack signatures** | **Cannot be verified.** Integrity (SHA-256) only; authorship is an unverified claim |
 | v0.9.0 core truth work (intent, admission, capability truth, replay, redaction) | Implemented; unit + integration tested |
 | v0.9.0 expansion work (coverage graph, SLOs, scenarios, resume, residual, game day, sandbox, connectors, bundles) | Implemented; plan-only until executed |

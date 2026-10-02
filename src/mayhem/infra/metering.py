@@ -117,13 +117,16 @@ if TYPE_CHECKING:
 __all__ = [
     "CONTINUITY_PAUSE",
     "EVIDENCE_BYTES",
+    "MEMORY_RESIDENT_SEAM",
     "NEGATIVE_CONTROL_RULES",
+    "NETWORK_EGRESS_SEAM",
     "RULE_BUDGET_NOT_GOVERNED",
     "RULE_ESTIMATE_UNMEASURED",
     "RULE_METER_CONTRACT",
     "RULE_METER_SINK_FAILED",
     "RULE_METHODOLOGY_REQUIRED",
     "STORE_GROWTH_BYTES",
+    "TARGET_COUNT_SEAM",
     "AdmissionDecision",
     "BudgetAdmissionRefused",
     "ContinuityDecision",
@@ -159,6 +162,24 @@ CONTINUITY_PAUSE = "budget.continuity_pause"
 
 EVIDENCE_BYTES = "evidence_bytes"
 STORE_GROWTH_BYTES = "store_growth_bytes"
+
+MEMORY_RESIDENT_SEAM = "memory_resident"
+"""The seam the MEMORY dimension reads: an integrated resident-set reading.
+
+Added in Phase 3. The dimension is declared in ``mebibyte_seconds``, so the seam
+integrates a resident set over elapsed time rather than reporting an
+instantaneous size; see :meth:`RunMeter.sample_memory`.
+"""
+
+NETWORK_EGRESS_SEAM = "network_egress"
+"""The seam the NETWORK dimension reads: bytes a call site already knows it moved.
+
+Added in Phase 3, and deliberately *declared* rather than intercepted — see
+:data:`mayhem.infra.budget_enforcement.DIMENSION_LEDGER`.
+"""
+
+TARGET_COUNT_SEAM = "targets"
+"""The seam the TARGET_COUNT dimension reads: a whole-number target counter."""
 
 NEGATIVE_CONTROL_RULES: dict[str, str] = {
     "negative_limit": "budget.negative_limit",
@@ -516,6 +537,18 @@ def _reject_bad_count(n_bytes: float, *, subject: str) -> None:
         raise InvariantViolationError(RULE_METER_CONTRACT, msg)
 
 
+def _require_whole_count(n_items: int, *, subject: str) -> None:
+    """Refuse a count that is not a non-negative whole number.
+
+    ``bool`` is excluded explicitly because ``isinstance(True, int)`` is true in
+    Python: a ``count_api_calls(True)`` that silently charged one call would be a
+    bug that reads as a passing test.
+    """
+    if isinstance(n_items, bool) or not isinstance(n_items, int) or n_items < 0:
+        msg = f"{subject} must be a non-negative whole number, got {n_items!r}"
+        raise InvariantViolationError(RULE_METER_CONTRACT, msg)
+
+
 # -- publication gate ----------------------------------------------------------
 
 
@@ -596,6 +629,14 @@ class RunMeter:
     _discoveries: list[float] = field(default_factory=list)
     _policy_evaluations: list[float] = field(default_factory=list)
     _commands: dict[str, list[float]] = field(default_factory=dict)
+    # -- Phase 3 state: the four dimensions Phase 2 left budgeted but unmetered.
+    # ``_resident_mib``/``_resident_at``/``_resident_seen`` integrate the resident
+    # set over the injected clock into mebibyte_seconds; the rest are plain
+    # cumulative counters. All default, so a Phase 2 construction is unaffected.
+    _resident_mib: float = 0.0
+    _resident_at: float = 0.0
+    _resident_seen: bool = False
+    _resident_samples: int = 0
 
     # -- internals ------------------------------------------------------------
     def _emit(
@@ -803,9 +844,7 @@ class RunMeter:
         fractional count outright rather than rounding a number the caller never
         wrote.
         """
-        if isinstance(n_calls, bool) or not isinstance(n_calls, int) or n_calls < 0:
-            msg = f"api call count must be a non-negative whole number, got {n_calls!r}"
-            raise InvariantViolationError(RULE_METER_CONTRACT, msg)
+        _require_whole_count(n_calls, subject="api call count")
         running = self.totals.get("api_calls", 0.0) + float(n_calls)
         self.totals["api_calls"] = running
         return self._emit(
@@ -813,6 +852,93 @@ class RunMeter:
             kind="cumulative",
             value=running,
             unit=unit_for(ResourceDimension.API_CALLS),
+            now=now,
+        )
+
+    # -- Phase 3 seams: the four dimensions Phase 2 left unmetered -----------
+    def sample_memory(self, rss_mib: float, *, now: datetime | None = None) -> MeterReading:
+        """Record a resident-set reading; returns the running mebibyte_seconds integral.
+
+        The ``memory`` dimension's meter, and the only *derived* one: the
+        dimension is declared in ``mebibyte_seconds``, which is a size integrated
+        over time, so a single instantaneous RSS number is not a reading of it.
+        Each sample closes the interval since the previous one at the *previous*
+        sample's resident size (the left rectangle rule — an honest upper bound,
+        since a page resident but untouched still counts for the interval).
+
+        The interval comes from the injected ``clock``, never from ``now``: an
+        elapsed duration is a measurement, not a timestamp, and the two would
+        disagree the moment a clock were adjusted mid-run. ``max(0.0, ...)``
+        because a clock that went backwards yields zero elapsed rather than a
+        negative integral that would poison every total downstream.
+
+        The first sample establishes the baseline and contributes nothing, so it
+        legitimately reads ``0.0`` — there is no interval to integrate yet, and a
+        caller that samples once and never again gets a memory reading that stays
+        at zero, which is why
+        :meth:`mayhem.infra.budget_enforcement.RunBudgetGuard.read` refuses to
+        report *no* reading as zero rather than the reverse.
+        """
+        _reject_bad_count(rss_mib, subject="resident set size in mebibytes")
+        tick = self.clock()
+        accumulated = 0.0
+        if self._resident_seen:
+            accumulated = self._resident_mib * max(0.0, tick - self._resident_at)
+        else:
+            self._resident_seen = True
+        self._resident_at = tick
+        self._resident_mib = rss_mib
+        self._resident_samples += 1
+        running = self.totals.get(MEMORY_RESIDENT_SEAM, 0.0) + accumulated
+        self.totals[MEMORY_RESIDENT_SEAM] = running
+        return self._emit(
+            seam=MEMORY_RESIDENT_SEAM,
+            kind="cumulative",
+            value=running,
+            unit=unit_for(ResourceDimension.MEMORY),
+            now=now,
+            note=f"resident={rss_mib:g}MiB sample={self._resident_samples}",
+        )
+
+    def add_network_bytes(self, n_bytes: float, *, now: datetime | None = None) -> MeterReading:
+        """Record ``n_bytes`` of egress this call site knows it moved.
+
+        The ``network`` dimension's meter, and the deliberately *declared* one.
+        Total egress is kernel-accounted and has no portable userspace read, so
+        the only honest counter is one fed by the code that already knows the
+        size: a payload it sent, a response body it received. Anything not
+        reported here is not zero — it is unmeasured, and
+        :data:`mayhem.infra.budget_enforcement.DIMENSION_LEDGER` says so.
+        """
+        _reject_bad_count(n_bytes, subject="network egress byte count")
+        running = self.totals.get(NETWORK_EGRESS_SEAM, 0.0) + n_bytes
+        self.totals[NETWORK_EGRESS_SEAM] = running
+        return self._emit(
+            seam=NETWORK_EGRESS_SEAM,
+            kind="cumulative",
+            value=running,
+            unit=unit_for(ResourceDimension.NETWORK),
+            now=now,
+        )
+
+    def add_targets(self, n_targets: int = 1, *, now: datetime | None = None) -> MeterReading:
+        """Record ``n_targets`` targets touched; returns the running total.
+
+        The ``target_count`` dimension's meter. Counted as the run *touches*
+        targets rather than as the plan intends to, because a target-count budget
+        exists to bound the blast radius actually reached — a plan that names ten
+        targets and reaches three has consumed three.
+
+        Indivisible like :meth:`count_api_calls`, and refused on the same terms.
+        """
+        _require_whole_count(n_targets, subject="target count")
+        running = self.totals.get(TARGET_COUNT_SEAM, 0.0) + float(n_targets)
+        self.totals[TARGET_COUNT_SEAM] = running
+        return self._emit(
+            seam=TARGET_COUNT_SEAM,
+            kind="cumulative",
+            value=running,
+            unit=unit_for(ResourceDimension.TARGET_COUNT),
             now=now,
         )
 
@@ -828,6 +954,31 @@ class RunMeter:
     @property
     def total_api_calls(self) -> float:
         return self.totals.get("api_calls", 0.0)
+
+    @property
+    def total_network_bytes(self) -> float:
+        """Declared egress bytes this run reported; unmeasured elsewhere, not zero."""
+        return self.totals.get(NETWORK_EGRESS_SEAM, 0.0)
+
+    @property
+    def total_targets(self) -> float:
+        """Targets touched so far this run."""
+        return self.totals.get(TARGET_COUNT_SEAM, 0.0)
+
+    @property
+    def memory_resident_mib_seconds(self) -> float:
+        """The resident-set integral so far, in mebibyte_seconds."""
+        return self.totals.get(MEMORY_RESIDENT_SEAM, 0.0)
+
+    @property
+    def memory_sample_count(self) -> int:
+        """How many resident-set samples have been taken.
+
+        ``1`` means the baseline was established and no interval has closed yet —
+        which is why the integral is ``0.0`` and why a caller must not read that
+        as "this run used no memory".
+        """
+        return self._resident_samples
 
     @property
     def plan_compilation_latencies(self) -> tuple[float, ...]:

@@ -164,10 +164,11 @@ Three traps:
 - A bin with no `_PM_PACKAGES` row (`:533-561`) is classified `manual` by
   `compile_requirements` (`:767-768`) and can never be auto-installed.
 
-Catalog-only ids must be added to `_CATALOG_ONLY_FAULTS` (`:148-154`) or
-`gate_fault` reports them as impact-possible — a silent contradiction. This set
-currently has 3 entries while the catalog has 4 `catalog_only` ids (the `k8s.*`
-one is intentionally excluded).
+Catalog-only ids must be added to `_CATALOG_ONLY_FAULTS` (`:185-205`) or
+`gate_fault` reports them as impact-possible — a silent contradiction. Recomputed
+from the live source after the four low-level refusals landed: this set now has
+16 entries while the catalog has 17 `catalog_only` ids (`k8s.image_pull_slow` is
+still intentionally excluded).
 
 ## 5. Tests that derive from `CATALOG`
 

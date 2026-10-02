@@ -46,7 +46,8 @@ Honesty properties this surface inherits and re-exports
   proves nothing is not a pass, and not a pass must not look like success.
 * **The live-verified count is zero until a real runtime says otherwise.** No
   code path here seeds a record, so ``certify matrix`` reports zero on a fresh
-  database and the README's 0-of-141 stays true.
+  database and the README's 0-of-N stays true (N is the live catalogue size,
+  asserted against ``CATALOG`` rather than written down here).
 
 The live path is exercised only by a real container engine
 ----------------------------------------------------------
@@ -56,7 +57,8 @@ implemented here rather than stubbed, and they are honest about being untested â
 ``tests/unit/test_cli_certify.py`` asserts the *shape* of the binding (that the
 cell's ``execute`` is ``RunEngine.execute`` and that nothing else in this module
 can execute a plan) rather than pretending to have certified anything. Until a
-real cell is certified, the README live-verified count must stay 0-of-141.
+real cell is certified, the README live-verified count must stay 0-of-N, with
+N the live catalogue size.
 
 Kubernetes cells are **not** implemented: plan 01 defers them to plan 02, so
 ``--engine kubernetes`` is refused here with a pointer rather than silently

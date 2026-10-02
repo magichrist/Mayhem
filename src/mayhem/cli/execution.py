@@ -12,14 +12,117 @@ from mayhem.toolkit.hashing import canonical_json
 #: import site; the definition lives in ``mayhem.infra.report`` because
 #: ``infra.evidence`` needs it too and must not reach upward into ``cli``
 #: (layered-architecture contract).
-__all__ = ["artifact_name", "plan_hash_from_file"]
+__all__ = [
+    "artifact_name",
+    "attach_resource_budget",
+    "budget_admission",
+    "plan_hash_from_file",
+    "resource_budget_guard",
+]
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
+    from datetime import datetime
 
+    from mayhem.controller.executor import RunEngine
     from mayhem.controller.steady_state import SteadyStateReport
+    from mayhem.domain.budgets import (
+        ResourceBudget,
+        ResourceEstimate,
+        ResourceScope,
+    )
     from mayhem.domain.steady_state import SteadyStateSpec
+    from mayhem.infra.budget_enforcement import ConcurrentRunReservations, RunBudgetGuard
+    from mayhem.infra.metering import AdmissionDecision, RunMeter
     from mayhem.infra.store import Store
+
+
+# -- resource budgets (plan 23 Phase 3) -----------------------------------------
+# The two call sites ``mayhem.infra.metering.ResourceBudgetEnforcer`` documented
+# and could not reach itself. Both are here, at the CLI edge, plus the attach
+# helper — and the executor consults the same guard from inside ``execute``, so a
+# caller that attaches one gets admission *and* continuity without any CLI change.
+
+
+def resource_budget_guard(
+    *,
+    budgets: Sequence[ResourceBudget],
+    scope: ResourceScope,
+    anchor: datetime,
+    run_id: str,
+    meter: RunMeter | None = None,
+    reservations: ConcurrentRunReservations | None = None,
+    estimates: Sequence[ResourceEstimate] = (),
+) -> RunBudgetGuard:
+    """Build the run's resource-budget guard: budgets + meter + concurrency.
+
+    The one constructor a caller needs. ``meter`` and ``reservations`` are the
+    run's measurement surfaces; a dimension whose seam has produced no reading
+    is reported **unmeasured** rather than zero, so omitting one of these
+    degrades a guard to "no opinion about that dimension", never to "that
+    dimension cost nothing".
+
+    Pre-execution estimates are *not* a parameter here: an ``ExecutionPlan``
+    carries none, and deriving them in this module would mean inventing the basis
+    :class:`~mayhem.domain.budgets.ResourceEstimate` requires. Pass them to
+    :func:`budget_admission`, or let the check inside ``RunEngine.execute`` admit
+    vacuously — which it reports through
+    :attr:`~mayhem.infra.budget_enforcement.RunBudgetGuard.admission_is_vacuous`
+    rather than as a pass.
+
+    Exact call site for the CLI run path:
+    ``mayhem.cli.lifecycle`` executes a compiled plan at
+    ``result = run_engine.execute(compiled.plan)``. Build the guard there and
+    :func:`attach_resource_budget` it onto the engine it just built from
+    ``mayhem.cli.services.build_run_engine``; the admission check then runs
+    inside ``execute`` before the run row is opened.
+    """
+    from mayhem.infra.budget_enforcement import RunBudgetGuard
+    from mayhem.infra.metering import ResourceBudgetEnforcer
+
+    return RunBudgetGuard(
+        enforcer=ResourceBudgetEnforcer(
+            budgets=budgets,
+            scope=scope,
+            anchor=anchor,
+            run_id=run_id,
+        ),
+        meter=meter,
+        reservations=reservations,
+        estimates=tuple(estimates),
+    )
+
+
+def attach_resource_budget(engine: RunEngine, guard: RunBudgetGuard) -> RunEngine:
+    """Attach ``guard`` to ``engine``; returns the engine.
+
+    The additive attach point. ``build_run_engine`` is shared by every CLI
+    surface, so requiring each of them to thread a budget keyword through would
+    make budgeting a per-surface decision; attaching after construction keeps it
+    one decision at one place and leaves every surface that does not attach one
+    exactly as it was.
+    """
+    return engine.with_budget_guard(guard)
+
+
+def budget_admission(
+    guard: RunBudgetGuard,
+    *,
+    now: datetime,
+    estimates: Sequence[ResourceEstimate] | None = None,
+) -> AdmissionDecision:
+    """Judge the estimates against the run's budgets *before* the engine runs.
+
+    The admission seam for a caller that wants to fail fast — before it builds an
+    engine, a lease sink, or anything else — rather than relying on the check
+    inside ``RunEngine.execute``. Same enforcer, same refusal, same numbers; this
+    is a second door to one decision, not a second decision.
+
+    Raises:
+        BudgetAdmissionRefused: When an estimate breaches a limit, naming the
+            dimension, the number, the limit, and the overage.
+    """
+    return guard.admit(estimates, now=now)
 
 
 def evaluate_steady_state(

@@ -37,6 +37,14 @@ Add `domain/lowlevel.py`: `KernelPrimitive` (syscall target, errno/latency mode,
 ## Phase 2 — Engine: provider-side mechanisms
 Implement mechanisms behind the 17 provider SDK (eBPF loader, device-mapper/FUSE shims, JVM agent attach), each paired with its compensation template in `controller/compensation.py` — the planner refuses any fault without one. Acceptance: each primitive demonstrates inject → observe → undo → verify on a dev cell before catalog entry.
 
+> **Outcome (see STATUS).** No mechanism was implemented. 18 of the 22 Phase 1
+> primitives have no substrate to run on, so this phase closed with four
+> `catalog_only` refusals that name the missing mechanism rather than with
+> provider SDK work, and the acceptance bar above ("demonstrates inject → observe
+> → undo → verify on a dev cell") is unmet for all 22. The remaining mechanism
+> work is what would let `process.syscall_error`, `process.syscall_return_mutation`,
+> `fs.read_delay` and `fs.block_device_delay` be promoted out of `catalog_only`.
+
 ## Phase 3 — Surface: catalog entries and explanations
 Add catalog definitions with full metadata (failure domain, target kinds, engine lanes, risk, reversibility, observable effect, verification method, maturity and date policy) plus `discover faults -e` explanations naming the mechanism and its limits. Acceptance: contract-checklist walk passes; the six deriving test files sweep the new ids automatically.
 
@@ -54,43 +62,141 @@ Per-fault parameter catalogue entries in drill-spec style, substrate-ceiling not
 
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/lowlevel.py` landed `KernelPrimitive`, `IOPrimitive`, `JVMPrimitive` and `ClockPrimitive` on a shared `LowLevelPrimitive` base, each carrying required capabilities, an impact-gate-checkable demand set, a `ReversibilityStatement` (rung + undo + verification + Phase-2 compensation template + reconciliation), a maximum safe duration, non-empty residue checks, an incompatibility set, and a `MissingMechanism` where one applies; 22 descriptors declared, 341 tests in `tests/unit/test_lowlevel.py`.
-- Phase 2: not started
+- Phase 2 (engine: provider-side mechanisms): DONE **as refusals, not as mechanisms** — 18 of the 22 primitives cannot be injected by mayhem's current substrate, so this phase landed four `catalog_only` catalog entries whose `refusal_reason` names the missing mechanism, plus a written rule for each of the fourteen that stay descriptor-only. 106 tests in `tests/unit/test_lowlevel_refusals.py`. **No provider-side mechanism was built**: the eBPF loader, the FUSE and device-mapper shims, the JVM attach agent and the clock-interception preload are all still absent, so Phase 4's REQUIREMENTS rows and Phase 5's wire-execution tests have nothing to gate yet. The plan's own Phase 3 line — "each primitive demonstrates inject → observe → undo → verify on a dev cell before catalog entry" — is not met for any of them, which is precisely why they are refusals and not catalog entries with mechanisms.
 - Phase 3: not started
 - Phase 4: not started
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 1 of 6 phases complete.
+Overall: 2 of 6 phases complete.
 
-**No new `FaultCategory` and no new fault id was added in this phase, on purpose.**
-
-*No category.* Every descriptor reuses an existing category through
-`REUSED_CATEGORY_BY_FAMILY` (kernel→`PROCESS`, io→`STORAGE`, jvm→`PROCESS`,
-clock→`CLOCK`), and a model validator refuses any other value. A `FaultCategory`
-is not one line: `_FAILURE_DOMAIN_BY_CATEGORY`, `_VERIFICATION_BY_CATEGORY` and
-`_EFFECT_BY_CATEGORY` in `domain/catalog.py` are three TOTAL maps indexed by
+**Still no new `FaultCategory`, and no new fault mechanism.** Phase 2 added
+four fault *ids*, all of them `catalog_only` refusals. The category rule from
+Phase 1 is unchanged: `_FAILURE_DOMAIN_BY_CATEGORY`, `_VERIFICATION_BY_CATEGORY`
+and `_EFFECT_BY_CATEGORY` in `domain/catalog.py` are three TOTAL maps indexed by
 `_define` at import time, so a category missing from any of them raises
-`KeyError` and breaks `import mayhem` for the entire package, not one command.
-`tests/unit/test_fault_catalog_exhaustive.py` also asserts category-set equality.
-A test here re-checks every reused category against all three maps, so Phase 1
-cannot become the commit that adds the fourth.
+`KeyError` and breaks `import mayhem` for the entire package. Phase 2's four
+entries reuse `PROCESS` (kernel) and `STORAGE` (io) and live under the `process.`
+and `fs.` prefixes that already map to those categories.
 
-*No fault id.* The five-registry contract (catalog entry → executor routing →
-compensation template → impact REQUIREMENTS → deriving tests) is untouched: this
-lane adds no `CATALOG` entry, no `_register_fault_executor` override, no
-compensation builder, no `REQUIREMENTS` row and no executor routing. A test
-asserts every descriptor id is absent from `CATALOG`, and that the four ids the
-descriptors *reference* (`fs.fill`, `fs.inode_exhaust`, `fs.read_only`,
-`clock.skew`) resolve through `catalog.definition_for` and are **not**
-`catalog_only`.
+### Phase 2: the honest catalog outcome
 
-The existing `catalog_only` refusals stay authoritative. `clock.freeze`,
-`fs.read_error` and `fs.permission_failure` each have a descriptor whose
-`MissingMechanism.anchor_fault_id` points at that refusal, and a test asserts the
-anchor is still a `catalog_only` entry whose reason starts `catalog.unsupported`.
-`MissingMechanism` has **no substitute field**; `near_misses` records the ids a
-reader is likely to reach for together with why each is not equivalent, so "here
-is a weaker thing you could use instead" is not expressible.
+Four `catalog_only` refusals, one per **missing mechanism** rather than one per
+primitive:
+
+| catalog id | descriptor(s) it answers for | missing mechanism named in the refusal |
+| --- | --- | --- |
+| `process.syscall_error` | `kernel.syscall_errno`, `kernel.syscall_latency` | `ebpf_kprobe_loader` |
+| `process.syscall_return_mutation` | `kernel.syscall_return_mutation` | `ebpf_return_value_rewrite` |
+| `fs.read_delay` | `io.read_delay`, `io.write_delay` | `fuse_delay_shim` |
+| `fs.block_device_delay` | `io.block_device_delay` | `device_mapper_delay_target` |
+
+Each refusal names the mechanism, names why the substrate cannot satisfy it
+today (`bpftool` has no `_PROBE_BINS` row, `SYS_ADMIN` has no `_CAP_BITS` row,
+no `/dev/fuse` passthrough, no loop device or `/dev/mapper/control`), and points
+at what exists instead — naming the *difference* between that fault and the one
+pointed at, never presenting it as equivalent.
+
+All four are recorded in `agents/impact.py`'s `_CATALOG_ONLY_FAULTS`. That is
+load-bearing, not bookkeeping: an id absent from that set makes `gate_fault` fall
+through to "no in-image tooling required" and report `impact_possible=True` about
+a fault that cannot physically take effect.
+`tests/unit/test_lowlevel_refusals.py` contains the negative control that
+*observes* the contradiction by removing an id from the set at runtime.
+
+### The selection rule, and the fourteen that stay descriptor-only
+
+A blocked primitive gets an id iff **all four** hold:
+
+- **R1 — the name is one a user would type.** The catalog is the discovery
+  surface (`mayhem discover faults`), so a refusal only earns a row if the id is
+  reachable from plan 04's family list or the catalog's own vocabulary. A refusal
+  under a name nothing produces is unreachable.
+- **R2 — no existing refusal already owns it.** When a descriptor's
+  `MissingMechanism.anchor_fault_id` is set, the authoritative refusal is already
+  a `catalog_only` row. Two refusals for one failure drift.
+- **R3 — the mechanism is buildable.** A `catalog_only` entry is a *promotion
+  ticket*: it says "keep this until the mechanism exists". A `NOT_STEPPABLE`
+  descriptor can never be promoted, so publishing one would put a permanent
+  "keep until built" row in the catalog for something unbuildable.
+- **R4 — the id is expressible.** No new `FaultCategory` and no new prefix.
+
+Two further descriptor-only shapes, both structural:
+
+- **R5a** — the id a user would type is occupied by an *active* entry with a
+  different mechanism.
+- **R5b** — the descriptor's risk rung has no catalog row for its scope.
+
+What that leaves, with the reason for each:
+
+| primitive(s) | rule | why no id |
+| --- | --- | --- |
+| `io.read_error`, `io.permission_error`, `jvm.exception_injection`, `clock.realtime_freeze` | R2 | `fs.read_error`, `fs.permission_failure`, `app.exception` and `clock.freeze` are already the authoritative `catalog_only` refusals; each is the descriptor's `anchor_fault_id` and is left untouched |
+| `clock.monotonic_offset`, `clock.monotonic_freeze` | R3 | `NOT_STEPPABLE` on Linux: `adjtimex` steps `CLOCK_REALTIME` only and monotonic time can merely be slewed a few hundred ppm. A refusal here would be a promise of promotion that can never be kept |
+| `jvm.method_delay`, `jvm.return_value_mutation`, `jvm.allocation_pressure`, `jvm.gc_pressure`, `jvm.thread_pressure` | R4 | `jvm` is absent from `_PREFIX_TO_CATEGORY`, and adding it means a new `FaultCategory` or a category redefinition in `domain/faults.py` — a file this lane does not own and a decision Phase 3 owns. Reusing `app.*` would invent `app.jvm_*` names that nothing in the taxonomy produces; the one JVM failure a user plausibly reaches for, exception injection, is already refused by `app.exception` |
+| `io.write_delay` | R5a | the id `fs.write_delay` is already **active**, and its mechanism is a burner process writing its own marker file — it perturbs contention, not any target's write latency. A second id would need a name the catalog's vocabulary does not produce; the honest correction of that entry is a re-scope decision, not a refusal |
+| `io.torn_write` | R5b | the descriptor is `CRITICAL` and container-scoped, while the catalog reserves the `CRITICAL` rung for pod/node faults (`test_critical_faults_are_pods_or_nodes`). Publishing the id would mean either understating the risk or misfiling the scope |
+
+`kernel.syscall_latency` and `io.write_delay` are covered by an existing
+refusal rather than an absent one — one refusal per mechanism, so there is one
+text to keep in step. That is why `process.syscall_error`'s refusal also answers
+the syscall-latency primitive and `fs.read_delay`'s also answers
+`io.write_delay`'s.
+
+**Fourteen of the eighteen blocked primitives are descriptor-only.** That is the
+honest count, not a shortfall: the plan says "the refusal_reason is the
+deliverable", and a refusal is only worth publishing where it is the one a user
+will actually meet.
+
+### Where the refusals live in the five-registry contract
+
+Four of the five registries are touched; the fifth is a deliberate absence.
+
+| registry | what Phase 2 did |
+| --- | --- |
+| catalog definition | four `_define(..., catalog_only=True, refusal_reason=...)` entries with full metadata: failure domain, target kinds, engine lanes, risk, reversibility, observable effect, verification method, maturity and date policy (stays `EXPERIMENTAL`, `verification_date` stays `None` — the catalog-only maturity contract) |
+| executor routing | **none**, deliberately. No `_register_fault_executor` override. `execution_status()` reports `catalog-only` and `_executor_name()` reports `catalog.unsupported` on all three engines |
+| compensation template | **none**, deliberately. `template_for()` returns `None` and `compensated()` refuses with `plan_uncompensated_fault` |
+| impact `REQUIREMENTS` | **none**, deliberately — a requirements row would gate a fault that has no tooling to probe. Instead each id is in `_CATALOG_ONLY_FAULTS`, which is the only row that can honestly describe it |
+| deriving tests | swept automatically: `test_fault_catalog_exhaustive`, `test_fault_catalog_all`, `test_catalog_only_refusals`, `test_impact_gate`, `test_runtime_execution_matrix` and `test_container_fault_matrix` all derive from `CATALOG` |
+
+### Known limitations of Phase 2
+
+- **Four refusals, eighteen blocked primitives.** The rule above explains each of
+  the fourteen omissions, and the test suite asserts both directions: a nineteenth
+  blocked primitive fails until someone decides, and every rule id is re-checked
+  against the fact that justifies it.
+- **The six `jvm.*` descriptors have no catalog surface at all.** They are
+  reachable only through `domain/lowlevel.py`. A user asking "how do I delay a
+  Java method?" is told about `app.exception` and nothing else. Publishing
+  `app.jvm_*` ids is a real option and a naming decision this lane deliberately
+  did not take unilaterally.
+- **`process.syscall_error` and `process.syscall_return_mutation` sit under a
+  prefix `ProcPauseExecutor` owns.** It is safe today only because every routing
+  contract derives from the active set and excludes `catalog_only` ids. If a
+  future change routes on `executor_for` presence rather than on
+  `catalog_only`, these two ids become the first things to move.
+- **`required_caps` on a refusal names a capability nothing reads.** Each entry
+  declares `SYS_ADMIN` to record *why* the gate cannot evaluate the demand; no
+  code consumes it, so it can go stale without failing anything.
+- **Refusal prose is not machine-checked against the domain.** The test suite
+  binds each refusal to its descriptor's `MissingMechanism.mechanism` string, but
+  `validate_catalog` itself only requires a non-blank refusal — it has no
+  mechanism vocabulary, because `FaultDefinition` has no field for one.
+
+
+## Phase 1 detail — unchanged by Phase 2
+
+Everything below describes Phase 1's substrate analysis and is still true. Phase 2
+did not edit a descriptor, promote a primitive, or make any of these mechanisms
+appear; it only decided which of them a user would meet in the catalog. Where the
+table below names a mechanism, the Phase 2 table above says whether it now has a
+refusal (`ebpf_kprobe_loader`, `ebpf_return_value_rewrite`, `fuse_delay_shim`,
+`device_mapper_delay_target`), whether an existing refusal already answers for it
+(`device_mapper_error_target`, `permission_preserving_executor`,
+`clock_interception_preload`, one `jvm.*` row), or whether it stays
+descriptor-only (`device_mapper_partial_write_target`, the `jvm.*` rows,
+`clock_interception_preload`'s monotonic pair).
 
 ### What today's substrate can and cannot inject
 

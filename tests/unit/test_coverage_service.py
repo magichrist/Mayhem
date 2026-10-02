@@ -452,6 +452,70 @@ def test_the_counting_evidence_enum_has_no_catalog_member() -> None:
     assert not hasattr(CoverageEvidenceKind, "CATALOG")
 
 
+def test_recording_a_run_is_not_declaring_the_cell(tmp_path: Path) -> None:
+    """Executing a cell must not manufacture the catalog presence it never had.
+
+    The inverse of the control above, and the reason ``declare`` and the internal
+    row-upsert are separate calls. If recording evidence also wrote a catalog
+    sighting, every cell somebody happened to run would count towards
+    ``catalog_only_count``, and "we have authored this test" would silently become
+    "we ran it at least once" — which is the same conflation in the other
+    direction.
+    """
+    store, repo = _open(tmp_path)
+    cell = _dimensions()
+
+    repo.record_evidence(
+        cell,
+        CoverageEvidenceKind.EXECUTED,
+        run_id="run-1",
+        evidence_digest=BASE_DIGEST,
+        state=CellState.PASSED,
+    )
+
+    coverage = repo.coverage(cell)
+    assert coverage.catalog_presence == 0, (
+        "a cell that was executed but never declared has zero catalog presence"
+    )
+    assert coverage.counted is True
+    assert coverage.catalog_only is False
+
+    # Declaring it afterwards is what actually adds catalog presence.
+    repo.declare(cell)
+    assert repo.coverage(cell).catalog_presence == 1
+    store.close()
+
+
+def test_moving_a_certification_claim_is_not_declaring_the_cell(tmp_path: Path) -> None:
+    """The certification attribute is a statement about a claim, not an authoring."""
+    store, repo = _open(tmp_path)
+    cell = _dimensions()
+
+    repo.set_certification_state(cell, "stale")
+
+    assert repo.coverage(cell).catalog_presence == 0
+    assert repo.coverage(cell).untested is True
+    store.close()
+
+
+def test_the_dimension_type_is_part_of_the_modules_public_surface() -> None:
+    """``CoverageDimensions`` is the required argument of the public ``DimensionCell``.
+
+    Exporting a cell type whose only constructor argument is unexported makes the
+    public surface unusable from a star-import and unlintable against ``__all__``,
+    so the regression is that this name is *absent* from the declared surface.
+    """
+    import mayhem.infra.coverage_service as module
+
+    assert "CoverageDimensions" in module.__all__
+    # Constructible purely from the declared public surface.
+    namespace: dict[str, Any] = {}
+    exec("from mayhem.infra.coverage_service import *", namespace)
+    assert "CoverageDimensions" in namespace
+    built = namespace["CoverageDimensions"]("checkout", "postgres", "db.slow_query", "x", "v1")
+    assert namespace["DimensionCell"](built).cell_key.startswith("checkout")
+
+
 def test_a_sighting_that_cites_no_run_or_a_malformed_digest_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -1536,18 +1600,24 @@ def test_this_migration_sits_in_the_contiguous_reversible_chain() -> None:
 
     Other v1.1.0 lanes append migrations above this one, so "is the head" is
     not a property of *this* file's migration and asserting it breaks on every
-    future append. What must hold forever is that the chain is contiguous and
-    that ours is present exactly once, reversible, and directly preceded by
-    its own predecessor.
+    future append. Contiguity of the *whole* chain is likewise not this lane's
+    property: a sibling lane that has reserved an id but not yet landed it
+    leaves a transient gap above us and would fail this test for a migration it
+    does not own. That invariant is asserted once, globally, in
+    ``tests/unit/test_additive_schema.py``.
+
+    What is this lane's property, and what must hold forever: the chain is
+    contiguous *up to and including* our migration, ours is present exactly
+    once, and its predecessor is immediately adjacent so migrating down to
+    ``version - 1`` reverses this migration and nothing below it.
     """
-    versions = [item.version for item in ALL_MIGRATIONS]
-    assert versions == list(range(1, len(versions) + 1))
+    versions = sorted(item.version for item in ALL_MIGRATIONS)
     mine = [item for item in ALL_MIGRATIONS if item.name == "coverage_findings"]
     assert len(mine) == 1
-    assert mine[0].version in versions
-    # Its predecessor is present and immediately adjacent, so migrating down to
-    # `version - 1` reverses this migration and nothing below it.
-    assert mine[0].version - 1 in versions
+    version = mine[0].version
+    assert version in versions
+    # Contiguity up to ours: nothing was renumbered or dropped beneath us.
+    assert versions[: versions.index(version) + 1] == list(range(1, version + 1))
     assert mine[0].down_statements
 
 

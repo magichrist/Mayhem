@@ -20,6 +20,15 @@ moves that are *in place* — ageing into ``expiring``/``stale``, a regression
 demotion to ``failed``, an invalidation to ``incompatible`` — and which refuses
 to write a row that was not already stored.
 
+**Phase 4: the store answers "who depends on this evidence?".**
+:meth:`records_citing_bundle` is the reverse index Phase 4's retention guard is
+built on. Without it a bundle's bytes could be deleted while a record still
+cited them, and the claim would go on reporting a level with nothing behind it —
+the one failure mode :func:`mayhem.controller.certification_evidence.expire_certification_evidence`
+exists to make impossible. It deliberately does *not* answer "which claims are
+live": that is the domain's ageing, and a second opinion about expiry in the
+persistence layer is how two implementations of one rule drift apart.
+
 **Reads are aged, writes are not.** :meth:`certification_gate` applies
 :func:`expire_by_time` in memory and returns the mapping
 :func:`mayhem.infra.promotion.evaluate_maturity` consumes. A report therefore
@@ -327,6 +336,25 @@ class CertificationRepository:
             (fault_id, cell.fingerprint),
         )
         return _hydrate(rows[0]) if rows else None
+
+    def records_citing_bundle(self, bundle_hash: str) -> tuple[StoredCertification, ...]:
+        """Every stored row whose evidence references ``bundle_hash``.
+
+        Scans the rows rather than querying the ``bundle_hash`` column, because
+        that column only carries the *first* reference: a record citing two
+        bundles would be invisible to a column query. That matters because this
+        lookup is what a retention deletion guard is built on — "invisible to the
+        guard" is precisely the failure it exists to prevent.
+
+        Stored state is returned, not aged state: the caller decides which claims
+        are still live, using the domain's own ageing rather than a second
+        opinion about expiry.
+        """
+        return tuple(
+            stored
+            for stored in self.all()
+            if any(ref.bundle_hash == bundle_hash for ref in stored.record.evidence)
+        )
 
     def live_records(
         self,

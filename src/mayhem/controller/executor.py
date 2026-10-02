@@ -52,6 +52,7 @@ from mayhem.domain.success import (
     evaluate_criteria,
     observations_for_step,
 )
+from mayhem.infra.metering import PauseForReview
 
 if TYPE_CHECKING:
     import sqlite3
@@ -65,7 +66,7 @@ from mayhem.topology.resolve import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from mayhem.agents.sinks import LeaseSink
@@ -78,6 +79,8 @@ if TYPE_CHECKING:
     from mayhem.domain.resolution import ResolvedPodTarget
     from mayhem.domain.runtime_context import RuntimeContext
     from mayhem.domain.topology import TopologyGraph
+    from mayhem.infra.budget_enforcement import RunBudgetGuard
+    from mayhem.infra.metering import AdmissionDecision
     from mayhem.infra.store import Store
     from mayhem.toolkit.tool_runner import ToolResult
 
@@ -136,6 +139,11 @@ class RunResult:
     observability: tuple[SourceCollection, ...] = ()  # collected evidence (ADR-M4-4)
     governing_decisions: tuple[DecisionRef, ...] = ()  # decision trace (ADR-M4-1)
     resilience_report: ResilienceReport | None = None  # end-of-run score + diagnosis
+    # Plan 23 Phase 3: the resource-budget breach that stopped this run, when one
+    # did. Present exactly when the run was ended by a budget rather than by its
+    # own outcome; ``status`` alone cannot say so, because the runs table admits
+    # no "paused" status and a breach is reported as an abort with this attached.
+    budget_breach: PauseForReview | None = None
 
     @property
     def wall_seconds(self) -> float:
@@ -144,6 +152,12 @@ class RunResult:
     def summary_md(self) -> str:
         lines = [f"# Run {self.run_id}", "", "## outcome"]
         lines.append(f"- **status**: {self.status}")
+        if self.budget_breach is not None:
+            breach = self.budget_breach
+            lines.append(
+                f"- **paused for review**: {breach.consumption.reason} "
+                f"(seam {breach.seam or 'unknown'})"
+            )
         if self.verdict is not None:
             lines.append(f"- **verdict**: {self.verdict.value}")
         if self.governing_decisions:
@@ -451,6 +465,7 @@ class RunEngine:
         intent: ExecutionIntent | None = None,
         require_intent: bool = False,
         allow_implicit: bool = False,
+        budget_guard: RunBudgetGuard | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -502,6 +517,14 @@ class RunEngine:
         # k-plan-4 §4.5: how long pod-lifecycle compensation waits for a
         # replacement pod to reach Ready before declaring a timeout.
         self._recovery_grace_s = max(float(recovery_grace), 10.0)
+        # Plan 23 Phase 3 — resource-budget enforcement (gap 68). Optional and
+        # off by default: with no guard this is one ``is not None`` test per run
+        # and one per step, so a run nobody budgeted behaves byte-identically to
+        # a run before this lane existed. The guard is a *resource* budget's
+        # enforcer and nothing else — it holds no damage ledger and no
+        # BudgetNode, so it cannot enforce a damage refusal.
+        self._budget_guard = budget_guard
+        self._budget_pause: PauseForReview | None = None
 
     # -- public -----------------------------------------------------------------------
 
@@ -514,13 +537,28 @@ class RunEngine:
             graph = self._live_graph() if self._live_graph else None
             if graph is not None:
                 validate_plan(plan, graph, self._safety)  # G1+G2, raises SafetyRefusedError
+        # Plan 23 Phase 3 — resource-budget ADMISSION, beside validate_plan and
+        # before _open_run, which is the last moment at which a refusal still
+        # prevents *every* mutation rather than some: no run row, no step row, no
+        # lease. After the plan-time gates, because "may this plan exist at all"
+        # is answered before "is this particular run affordable", and an approval
+        # cannot legalize a plan a budget refuses. With no guard attached this is
+        # a single ``is not None`` test and nothing below it runs.
+        if self._budget_guard is not None:
+            self._admit_budget()
         started = utc_now().timestamp()
         self._open_run(plan)
         self._emit(Event(kind=EventKind.RUN_STARTED, run_id=plan.run_id))
         reports: list[StepReport] = []
         dirty: list[str] = []
         status = "completed"
-        with _AbortMatrix(self, plan.run_id):
+        # The second half of the resource-budget contract: a mid-execution breach
+        # must PAUSE the run rather than silently continue, and the pause has to
+        # end the run the ordinary way — closed, recovered, reported — instead of
+        # unwinding past all of that with an exception in flight and leaving the
+        # leases the paused step acquired dirty. With no guard this is one more
+        # context manager that catches nothing.
+        with _AbortMatrix(self, plan.run_id), self._capture_budget_pause():
             for group in _group_by_seq(plan.steps):
                 if self._abort_requested():
                     status = "aborted"
@@ -549,6 +587,15 @@ class RunEngine:
                 if self._abort_mode == "immediate":
                     status = "aborted"
                     break
+        if self._budget_pause is not None:
+            # A budget breach is not a failed step: the step ran, and the *run*
+            # lost its authorization to continue. ``aborted`` is the honest
+            # terminal state here — the drill did not finish, and it did not break
+            # — and it is one of the statuses the runs table already admits. The
+            # run row cannot carry a status this store does not know, so the
+            # *reason* travels on RunResult.budget_breach and is rendered into the
+            # summary, rather than a status string that would not persist.
+            status = "aborted"
         ended = utc_now().timestamp()
         recovered: tuple[str, ...] = ()
         if dirty or status in ("aborted", "failed"):
@@ -592,6 +639,7 @@ class RunEngine:
             observability=collections,
             governing_decisions=plan.decision_refs,
             resilience_report=resilience,
+            budget_breach=self._budget_pause,
         )
         self._store.query(
             "UPDATE runs SET summary_md = ? WHERE id = ?",
@@ -600,6 +648,85 @@ class RunEngine:
         kind = EventKind.RUN_COMPLETED if status == "completed" else EventKind.RUN_FAILED
         self._emit(Event(kind=kind, run_id=plan.run_id))
         return result
+
+    # -- resource budgets (plan 23 Phase 3) ------------------------------------
+    # Every method in this block is inert unless a RunBudgetGuard was attached.
+    # They are kept together, away from the execution path, so the shape of the
+    # wiring is readable in one place: admit before _open_run, observe after each
+    # step's reading exists, capture the pause around the loop.
+
+    def with_budget_guard(self, guard: RunBudgetGuard) -> RunEngine:
+        """Attach this run's resource-budget guard; returns the engine.
+
+        The additive attach point for callers that build a :class:`RunEngine`
+        through a factory rather than by keyword — ``mayhem.cli.services``'s
+        ``build_run_engine`` is one, and the CLI's run path builds through it.
+        Configuring budgets must not require editing a constructor signature
+        every caller shares, and it must not require a *global* either: there is
+        no default guard, so a run nobody budgeted is unaffected.
+        """
+        self._budget_guard = guard
+        self._budget_pause = None
+        return self
+
+    @property
+    def budget_guard(self) -> RunBudgetGuard | None:
+        """The attached guard, or ``None`` when this run is not budgeted."""
+        return self._budget_guard
+
+    @property
+    def budget_admission(self) -> AdmissionDecision | None:
+        """The admission verdict, or ``None`` when admission was never consulted."""
+        return None if self._budget_guard is None else self._budget_guard.admission
+
+    @property
+    def budget_pause(self) -> PauseForReview | None:
+        """The breach that paused this run, or ``None`` when none did."""
+        return self._budget_pause
+
+    def _admit_budget(self) -> AdmissionDecision:
+        """Ask the guard whether this run may start at all.
+
+        The estimates are the guard's, configured when the guard was built:
+        ``ExecutionPlan`` carries no resource estimate, and deriving one from step
+        durations here would mean inventing the basis ``ResourceEstimate``
+        demands. A guard configured with no estimates admits vacuously and says
+        so (``admission_is_vacuous``) rather than passing silently.
+
+        Raises:
+            BudgetAdmissionRefused: The estimate breaches a resource budget.
+                Raised before ``_open_run``, so the refusal leaves no run row, no
+                step row, and no lease.
+        """
+        assert self._budget_guard is not None
+        return self._budget_guard.admit(now=utc_now())
+
+    def _observe_budget(self, step: PlannedStep) -> None:
+        """Post this step's readings to the guard; a breach pauses the run.
+
+        Placed after the step's reading exists and after its row is finished,
+        never before: a reading that does not exist yet cannot breach anything,
+        and a check raised before the step row closed would leave a started row
+        with no verdict. A *failed* step is observed too — it consumed whatever it
+        consumed, and refusing to meter a failure is how a run that fails
+        expensively comes to read as cheap.
+        """
+        if self._budget_guard is None:
+            return
+        self._budget_guard.observe_step(now=utc_now(), seam=f"step:{step.id}")
+
+    @contextlib.contextmanager
+    def _capture_budget_pause(self) -> Iterator[None]:
+        """Catch a budget :class:`PauseForReview` so the run ends as a *status*.
+
+        Catching nothing else. Every other failure inside the step loop keeps
+        propagating exactly as before, which is what makes the no-guard path
+        identical to a pre-Phase-3 run.
+        """
+        try:
+            yield
+        except PauseForReview as pause:
+            self._budget_pause = pause
 
     def recover_run(self, run_id: str) -> tuple[str, ...]:
         """Compensate any non-terminal leases a crashed run left behind."""
@@ -809,6 +936,12 @@ class RunEngine:
                 detail={"step": step.id, "detail": report.detail},
             )
         )
+        # Plan 23 Phase 3: resource-budget continuity, after the step's reading
+        # exists and after its row is closed. Outside the try above on purpose —
+        # inside it, a breach would be swallowed into a "step failed" report and
+        # the run would carry on, which is precisely the silent continuation the
+        # pause exists to prevent.
+        self._observe_budget(step)
         return report, dirty
 
     def _run_parallel(

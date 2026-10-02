@@ -10,6 +10,7 @@ criterion that can be reported unmet, and no way to show a rung being earned.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -227,8 +228,26 @@ def test_the_whole_catalog_is_not_one_uniform_badge() -> None:
 
 
 def test_coverage_report_counts_maturity_it_recomputed() -> None:
+    """The tally must equal the catalogue's own populations, split by refusal.
+
+    Derived rather than written down: the catalog's contract is that
+    ``(maturity is EXPERIMENTAL) == catalog_only``, so with no evidence and no
+    certification records the recomputed tally must be exactly the refused
+    population as ``experimental`` and the executable one as ``verified-unit``.
+    Comparing against a literal would only ever record the number at the moment
+    it was written; comparing against the catalogue's own rule keeps the check
+    meaningful on every catalogue change, and the exact-dict comparison still
+    fails if any fault reaches ``verified-live`` or ``stable``.
+    """
     coverage = catalog_report.build_coverage()
-    assert coverage["by_maturity"] == {"experimental": 13, "verified-unit": 128}
+    expected = Counter(
+        "experimental" if d.catalog_only else "verified-unit" for d in all_definitions()
+    )
+    assert expected, "the catalogue is empty; this check would pass vacuously"
+    assert coverage["by_maturity"] == dict(sorted(expected.items()))
+    assert "verified-live" not in coverage["by_maturity"]
+    assert "stable" not in coverage["by_maturity"]
+    assert coverage["verified_live"] == 0
     assert sum(coverage["by_maturity"].values()) == coverage["total"]
 
 

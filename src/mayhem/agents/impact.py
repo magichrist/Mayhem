@@ -175,6 +175,13 @@ _ENGINE_FAULTS = frozenset(
     }
 )
 
+#: Refused ids the gate must report as *probed and inert* rather than letting them
+#: fall through to ``gate_fault``'s "no in-image tooling required" default, which
+#: reports ``impact_possible=True`` about a fault that cannot physically take
+#: effect. **Adding a ``catalog_only`` entry without adding its id here is a
+#: silent contradiction**, and ``tests/unit/test_lowlevel_refusals.py`` fails on
+#: it. The only catalog-only id deliberately absent is the ``k8s.*`` one: the gate
+#: never routes kubernetes-lane faults.
 _CATALOG_ONLY_FAULTS = frozenset(
     {
         "app.deadlock",
@@ -183,12 +190,19 @@ _CATALOG_ONLY_FAULTS = frozenset(
         "cpu.interrupt_storm",
         "cpu.steal",
         "dependency.malformed_response",
+        # plan 04 Phase 2 — low-level primitives with no mechanism (see
+        # domain/lowlevel.py PRIMITIVES and the block comment in
+        # domain/catalog.py for the selection rule that produced these four).
+        "fs.block_device_delay",
+        "fs.read_delay",
         "fs.permission_failure",
         "fs.read_error",
         "mem.fragment",
         "mem.oom_kill",
         "process.oom_kill",
         "process.startup_delay",
+        "process.syscall_error",
+        "process.syscall_return_mutation",
     }
 )
 

@@ -40,6 +40,8 @@ from urllib.parse import unquote, urlsplit
 
 import pytest
 
+from mayhem.domain.catalog import CATALOG
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -292,19 +294,29 @@ def _live_verification_silence(text: str) -> list[str]:
 
 
 def test_readme_does_not_claim_any_fault_is_live_verified() -> None:
-    """Gate 2: 0 of 141 faults are ``verified-live`` and the README must say so."""
+    """Gate 2: 0 of N faults are ``verified-live`` and the README must say so.
+
+    ``N`` is read from the live catalogue rather than written into this test. The
+    denominator is the whole point of the gate — a reader has to be able to check
+    a live-verified count against the real catalogue size — and a denominator
+    frozen in the test would quietly become a smaller lie than the one it was
+    written to catch.
+    """
     text = _readme()
     silence = _live_verification_silence(text)
     assert not silence, (
         "the README mentions verified-live without stating that no fault holds "
         "it:\n" + "\n".join(silence)
     )
-    assert re.search(r"\b141\b", text), (
+    total = len(CATALOG)
+    assert re.search(rf"\b{total}\b", text), (
         "the README does not state the catalog size, so a reader cannot check a "
         "live-verified count against a denominator"
     )
-    assert re.search(r"\b0\b\W{0,4}\bof\b\W{0,4}\b141\b|\b141\b.{0,24}\b0\b", text), (
-        "the README does not state a 0-of-141 live-verified count"
+    assert re.search(
+        rf"\b0\b\W{{0,4}}\bof\b\W{{0,4}}\b{total}\b|\b{total}\b.{{0,24}}\b0\b", text
+    ), (
+        f"the README does not state a 0-of-{total} live-verified count"
     )
 
 

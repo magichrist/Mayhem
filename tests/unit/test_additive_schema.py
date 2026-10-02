@@ -159,4 +159,26 @@ def test_name_snapshot_is_stable() -> None:
         # append-only triggers it ships are what make a retention deletion
         # unable to remove the audit entry recording it.
         "audit_stream",
+        # ``api_resources`` (version 30) is the concurrent API-resources lane.
+        # It landed *below* ``identity`` in ``migrations.py`` after that lane had
+        # already appended version 31, so the ordered sequence here needs
+        # version 30's name on this line — the gate compares the whole tuple in
+        # version order, and nothing above this line is touched.
+        "api_resources",
+        # ``identity`` (version 31) is plan 09 Phase 3's identity persistence:
+        # principals, local credentials (hash only), memberships, role grants,
+        # sessions, API keys, and the append-only revocation log. Appended per
+        # the same procedure; nothing above is edited.
+        # NOTE for the concurrent agents: version 30 (``api_resources``) was
+        # appended directly above this entry and version 32 (``ha_dr``) directly
+        # below, so this one sits at its correct version-order position. Do not
+        # insert a name between ``"api_resources"`` and ``"identity"``.
+        "identity",
+        # ``ha_dr`` (version 32) is plan 19 Phase 2: spent agent-command nonces,
+        # the control-plane leadership lease, per-step dispatch fences, and the
+        # snapshot evidence a restore drill compares against. Appended per the
+        # same procedure; nothing above is edited, and the migration carries
+        # ``down_statements`` like every migration after 16. It deliberately holds
+        # no key material and no achieved-RPO column.
+        "ha_dr",
     ), "migration name sequence drifted from the snapshot — append-only."

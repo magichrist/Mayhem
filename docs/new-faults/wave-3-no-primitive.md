@@ -69,13 +69,13 @@ Much lighter than wave 2 — no executor, no compensation template, no
   catalog-only entries (`:193-195`) and `verification_date` stays `None` —
   which is exactly what `TestMaturityMetadata` requires
   (`(maturity is EXPERIMENTAL) == catalog_only`, `test_fault_catalog_exhaustive.py:332`).
-- `impact.py` — add to `_CATALOG_ONLY_FAULTS` (`impact.py:148-154`) so
+- `impact.py` — add to `_CATALOG_ONLY_FAULTS` (`impact.py:185-205`) so
   `gate_fault` returns `impact_possible=False, probed=True` with the
-  catalog-only note. There is already drift risk here: the catalog has 4
-  `catalog_only` ids but this set has 3 (it excludes the `k8s.*` one, which is
-  intentional). **Adding a catalog-only entry without updating this set means
-  `gate_fault` falls through to the "no in-image tooling required" default and
-  reports it as impact-possible** — a silent contradiction.
+  catalog-only note. There is already drift risk here: recomputed from the live
+  source, the catalog has 17 `catalog_only` ids and this set has 16 (it excludes
+  the `k8s.*` one, which is intentional). **Adding a catalog-only entry without
+  updating this set means `gate_fault` falls through to the "no in-image tooling
+  required" default and reports it as impact-possible** — a silent contradiction.
 - `planner.py` needs nothing: `definition.catalog_only` →
   `PlanningError(refusal_reason)` at `planner.py:1117-1118`.
 - Tests — the catalog-only blocks in `test_fault_catalog_exhaustive.py:706-780`

@@ -1770,6 +1770,777 @@ M0029_AUDIT_STREAM = Migration(
 )
 
 
+# Plan 09 Phase 3 — the identity service's persistence.
+#
+# **Id: 31, and why not 30.** The work item reserved `M0030_API_RESOURCES` for a
+# concurrently-running agent and reserved `M0031_IDENTITY` for this one. 30 was
+# therefore *not* a genuinely free id: taking it would mean two migrations
+# claiming one version, and `run_migrator.run_migrations` refuses duplicates
+# outright ("migrations must be strictly increasing"), which breaks every
+# migrated store in the repository rather than one test. Taking the reserved 31
+# instead kept the chain strictly increasing while 30 was still being written
+# (a gap costs one assertion; a duplicate costs the runtime) and the chain is
+# contiguous 1..31 now that `M0030_API_RESOURCES` has landed.
+#
+# What these tables hold, and what they deliberately do not:
+#
+# * **No column a plaintext credential can occupy.** The only credential-bearing
+#   columns are `identity_local_credentials.credential_hash` (PBKDF2-HMAC-SHA256,
+#   per-credential salt) and the two hash columns for session secrets and API-key
+#   secrets (pepper-salted SHA-256). Each is pinned by a CHECK to exactly 64
+#   lowercase hex characters, so a *plaintext* value is not merely discouraged —
+#   it is unrepresentable. This is the schema carrying the guarantee
+#   `infra/identity_store` documents, not the writer carrying it.
+# * **`identity_revocations` is append-only, enforced by triggers.** A
+#   `BEFORE UPDATE` / `BEFORE DELETE` pair that RAISEs means a revocation cannot
+#   be un-written even by a direct SQL writer. The `(subject_kind, subject_id)`
+#   unique index means a second revocation of the same subject is ignored rather
+#   than replacing the first — so "who revoked this, when, and why" cannot be
+#   rewritten by a later, weaker record. The session and API-key rows carry a
+#   `revoked_at` stamp as the cheap read path; the revocation row is why that
+#   cheap read cannot go stale, and a revocation written for a *principal* is
+#   what fences sessions nobody visited.
+# * **`identity_role_grants.role` is the Phase 1 vocabulary, spelled once.** The
+#   eight role values are enumerated here rather than left free text, so a typo
+#   is a migration-level refusal instead of a role that silently matches nothing.
+#   `scope_key` is `EnvironmentScope.key()` verbatim (`org/project/environment`),
+#   and `grant_json` holds the whole record so reconstruction needs no second
+#   field-mapping table that could drift from the domain model.
+# * **No `mfa_secret`, no `refresh_token`, no `saml_response`, no
+#   `scim_patch_state`.** Those are credential or provider payloads whose format
+#   belongs to a library this project does not depend on; they are Phase 6
+#   surfaces with their own tables. What exists here is what the Phase 3
+#   walkthrough needs — authenticate, resolve authority, mint, rotate, revoke —
+#   and the CHECK constraints make it impossible to grow a column where an
+#   unverified assertion can be parked under a harmless-looking name.
+# * **No foreign key from `identity_sessions`/`identity_api_keys` to
+#   `runs`.** Same gap-101 reason the audit stream gives: identity state must
+#   survive the control plane deleting the records it describes. The FKs *to*
+#   `identity_principals` are kept, so a session cannot exist for a principal
+#   nobody can resolve.
+M0031_IDENTITY = Migration(
+    version=31,
+    name="identity",
+    statements=(
+        """
+        CREATE TABLE identity_principals (
+            principal_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('human', 'service_account', 'workload')),
+            display_name TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            external_id TEXT NOT NULL DEFAULT '',
+            auth_source TEXT NOT NULL CHECK (
+                auth_source IN ('local', 'oidc', 'oauth', 'saml', 'scim', 'workload')
+            ),
+            issuer TEXT NOT NULL DEFAULT '',
+            disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_identity_principals_external "
+        "ON identity_principals(auth_source, external_id)",
+        "CREATE INDEX idx_identity_principals_kind ON identity_principals(kind)",
+        # Only a verifier lives here. 64 lowercase hex characters is what a
+        # sha256 output is and what a plaintext password never is, so the CHECK
+        # is the no-plaintext-at-rest guarantee rather than a comment about it.
+        """
+        CREATE TABLE identity_local_credentials (
+            principal_id TEXT PRIMARY KEY REFERENCES identity_principals(principal_id),
+            algorithm TEXT NOT NULL CHECK (algorithm IN ('pbkdf2_sha256')),
+            iterations INTEGER NOT NULL CHECK (iterations > 0),
+            salt_hex TEXT NOT NULL CHECK (
+                length(salt_hex) = 64 AND salt_hex NOT GLOB '*[^0-9a-f]*'
+            ),
+            credential_hash TEXT NOT NULL CHECK (
+                length(credential_hash) = 64 AND credential_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE identity_memberships (
+            principal_id TEXT NOT NULL REFERENCES identity_principals(principal_id),
+            team_id TEXT NOT NULL,
+            joined_at TEXT NOT NULL,
+            until_at TEXT,
+            PRIMARY KEY (principal_id, team_id)
+        )
+        """,
+        "CREATE INDEX idx_identity_memberships_team ON identity_memberships(team_id)",
+        """
+        CREATE TABLE identity_role_grants (
+            grant_id TEXT PRIMARY KEY,
+            role TEXT NOT NULL CHECK (
+                role IN (
+                    'view',
+                    'design',
+                    'plan',
+                    'approve',
+                    'execute',
+                    'emergency_stop',
+                    'administer',
+                    'evidence_admin'
+                )
+            ),
+            scope_key TEXT NOT NULL,
+            addressee_kind TEXT NOT NULL CHECK (addressee_kind IN ('principal', 'team')),
+            addressee_id TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            expires_at TEXT,
+            granted_by TEXT NOT NULL DEFAULT '',
+            change_ticket TEXT NOT NULL DEFAULT '',
+            grant_json TEXT NOT NULL,
+            -- A grant addressed to nobody is a template, not a grant. The domain
+            -- validator already refuses "both" and "neither"; this refuses it in
+            -- the database too, for the same reason the approval gate refuses
+            -- before the fact and the domain refuses after it.
+            CHECK (addressee_id <> '')
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_identity_grants_idempotent "
+        "ON identity_role_grants(addressee_kind, addressee_id, role, scope_key, granted_at)",
+        "CREATE INDEX idx_identity_grants_addressee "
+        "ON identity_role_grants(addressee_kind, addressee_id)",
+        """
+        CREATE TABLE identity_sessions (
+            session_id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL REFERENCES identity_principals(principal_id),
+            kind TEXT NOT NULL CHECK (kind IN ('password', 'federated', 'service_account')),
+            auth_source TEXT NOT NULL CHECK (
+                auth_source IN ('local', 'oidc', 'oauth', 'saml', 'scim', 'workload')
+            ),
+            token_hash TEXT NOT NULL CHECK (
+                length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoked_by TEXT NOT NULL DEFAULT '',
+            revocation_reason TEXT NOT NULL DEFAULT '',
+            rotated_from TEXT NOT NULL DEFAULT '',
+            rotated_to TEXT NOT NULL DEFAULT '',
+            rotated_at TEXT,
+            CHECK (expires_at > issued_at),
+            -- A revocation without an actor is unreviewable, so it is
+            -- unrepresentable: the column pair is either both empty or both set.
+            CHECK ((revoked_at IS NULL) = (revoked_by = ''))
+        )
+        """,
+        "CREATE INDEX idx_identity_sessions_principal "
+        "ON identity_sessions(principal_id, expires_at)",
+        "CREATE INDEX idx_identity_sessions_live "
+        "ON identity_sessions(expires_at) WHERE revoked_at IS NULL",
+        """
+        CREATE TABLE identity_api_keys (
+            api_key_id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL REFERENCES identity_principals(principal_id),
+            key_prefix TEXT NOT NULL UNIQUE,
+            secret_hash TEXT NOT NULL CHECK (
+                length(secret_hash) = 64 AND secret_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoked_by TEXT NOT NULL DEFAULT '',
+            revocation_reason TEXT NOT NULL DEFAULT '',
+            last_used_at TEXT,
+            CHECK (expires_at > issued_at),
+            CHECK ((revoked_at IS NULL) = (revoked_by = '')),
+            -- An API key is scoped at issue time. The service refuses to mint an
+            -- unscoped one, and `scopes_json` is non-empty here so a row inserted
+            -- around the service cannot be the permissive one either.
+            CHECK (scopes_json <> '' AND scopes_json <> '[]')
+        )
+        """,
+        "CREATE INDEX idx_identity_api_keys_principal "
+        "ON identity_api_keys(principal_id, expires_at)",
+        """
+        CREATE TABLE identity_revocations (
+            revocation_id TEXT PRIMARY KEY,
+            subject_kind TEXT NOT NULL CHECK (subject_kind IN ('session', 'api_key', 'principal')),
+            subject_id TEXT NOT NULL,
+            revoked_at TEXT NOT NULL,
+            revoked_by TEXT NOT NULL CHECK (revoked_by <> ''),
+            reason TEXT NOT NULL CHECK (reason <> '')
+        )
+        """,
+        "CREATE UNIQUE INDEX idx_identity_revocations_subject "
+        "ON identity_revocations(subject_kind, subject_id)",
+        "CREATE INDEX idx_identity_revocations_time ON identity_revocations(revoked_at)",
+        "CREATE TRIGGER identity_revocations_no_update BEFORE UPDATE ON identity_revocations "
+        "BEGIN SELECT RAISE(ABORT, 'identity_revocations is append-only: UPDATE is refused'); END",
+        "CREATE TRIGGER identity_revocations_no_delete BEFORE DELETE ON identity_revocations "
+        "BEGIN SELECT RAISE(ABORT, 'identity_revocations is append-only: DELETE is refused'); END",
+    ),
+    down_statements=(
+        "DROP TRIGGER identity_revocations_no_delete",
+        "DROP TRIGGER identity_revocations_no_update",
+        "DROP INDEX idx_identity_revocations_time",
+        "DROP INDEX idx_identity_revocations_subject",
+        "DROP TABLE identity_revocations",
+        "DROP INDEX idx_identity_api_keys_principal",
+        "DROP TABLE identity_api_keys",
+        "DROP INDEX idx_identity_sessions_live",
+        "DROP INDEX idx_identity_sessions_principal",
+        "DROP TABLE identity_sessions",
+        "DROP INDEX idx_identity_grants_addressee",
+        "DROP INDEX idx_identity_grants_idempotent",
+        "DROP TABLE identity_role_grants",
+        "DROP INDEX idx_identity_memberships_team",
+        "DROP TABLE identity_memberships",
+        "DROP TABLE identity_local_credentials",
+        "DROP INDEX idx_identity_principals_kind",
+        "DROP INDEX idx_identity_principals_external",
+        "DROP TABLE identity_principals",
+    ),
+)
+
+
+# Plan 19 Phase 2 -- command-verification state, leader election, backup evidence.
+#
+# Id note: ``M0030_API_RESOURCES`` and ``M0031_IDENTITY`` are being taken by
+# concurrent v1.1.0 lanes, so ``M0032_HA_DR`` is the id reserved for this
+# migration and the chain stays contiguous. The migrator keys on ``version`` alone
+# and refuses duplicates outright, so a collision would be a loud startup failure
+# rather than a silent overwrite -- which is why the id was reserved rather than
+# chosen by renumbering anything already shipped.
+#
+# What these tables hold, and what they deliberately do not:
+#
+# * **No key material, anywhere.** ``agent_command_nonces`` names the nonce and the
+#   command that spent it, never a secret or a MAC. The verifier resolves secrets
+#   through a port at ask time. Same rule as ``M0022_SECRET_GRANTS``: no column a
+#   credential value could occupy.
+# * **No achieved RPO/RTO, and no "restored fine" flag.** ``backup_snapshot_evidence``
+#   holds *observations* made at capture time -- row counts, the covered position,
+#   the log position -- which is the input a restore drill compares against. Whether
+#   a restore came back is still ``M0025``'s
+#   ``backup_restore_verifications.outcome``, which stores the domain's derived
+#   verdict and leaves ``data_loss_seconds`` NULL for an unmeasured drill. This
+#   table adds no second answer to that question.
+# * **``control_plane_leaders`` is a lease, not a heartbeat.** ``term`` is
+#   strictly increasing per scope and is the fencing token *for leadership itself*:
+#   a lease whose term is below the stored term is deposed and cannot dispatch,
+#   regardless of whether its own expiry has passed. Leadership expiry alone would
+#   be a timeout race; the term is what makes deposed authority detectable.
+# * **No foreign key to ``runs``** (gap 101, as in ``M0025``): fencing and nonce
+#   state must survive the control plane deleting the run it describes.
+# * ``control_plane_step_fences`` is per ``(run_id, step_id)`` and records the
+#   highest epoch *dispatched* plus the command that spent it. That pair is the
+#   no-double-dispatch mechanism: a second command at the same epoch under a
+#   different id is refused, and a leader taking over mints a strictly newer epoch
+#   via ``FencingToken.next_fence``.
+M0032_HA_DR = Migration(
+    version=32,
+    name="ha_dr",
+    statements=(
+        """
+        CREATE TABLE agent_command_nonces (
+            nonce TEXT PRIMARY KEY,
+            command_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            consumed_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_agent_nonces_step ON agent_command_nonces(run_id, step_id)",
+        "CREATE INDEX idx_agent_nonces_agent ON agent_command_nonces(agent_id, consumed_at)",
+        """
+        CREATE TABLE control_plane_leaders (
+            scope TEXT PRIMARY KEY,
+            term INTEGER NOT NULL CHECK (term >= 1),
+            leader_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_control_plane_leaders_expiry ON control_plane_leaders(expires_at)",
+        """
+        CREATE TABLE control_plane_step_fences (
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            epoch INTEGER NOT NULL CHECK (epoch >= 1),
+            holder TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            dispatched_command_id TEXT NOT NULL DEFAULT '',
+            dispatched_at TEXT NOT NULL DEFAULT '',
+            fence_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, step_id)
+        )
+        """,
+        "CREATE INDEX idx_control_plane_step_fences_holder "
+        "ON control_plane_step_fences(holder, epoch)",
+        """
+        CREATE TABLE backup_snapshot_evidence (
+            snapshot_id TEXT PRIMARY KEY,
+            datastore TEXT NOT NULL,
+            covers_through TEXT NOT NULL,
+            wal_sequence INTEGER,
+            content_digest TEXT NOT NULL,
+            table_row_counts_json TEXT NOT NULL DEFAULT '{}',
+            probe_json TEXT NOT NULL DEFAULT '{}',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            -- A row without a capture position cannot support a recovery claim.
+            CHECK (covers_through <> ''),
+            CHECK (
+                content_digest = ''
+                OR (length(content_digest) = 64 AND content_digest NOT GLOB '*[^0-9a-f]*')
+            )
+        )
+        """,
+        "CREATE INDEX idx_backup_snapshot_evidence_store "
+        "ON backup_snapshot_evidence(datastore, covers_through DESC)",
+    ),
+    down_statements=(
+        "DROP INDEX idx_backup_snapshot_evidence_store",
+        "DROP TABLE backup_snapshot_evidence",
+        "DROP INDEX idx_control_plane_step_fences_holder",
+        "DROP TABLE control_plane_step_fences",
+        "DROP INDEX idx_control_plane_leaders_expiry",
+        "DROP TABLE control_plane_leaders",
+        "DROP INDEX idx_agent_nonces_agent",
+        "DROP INDEX idx_agent_nonces_step",
+        "DROP TABLE agent_command_nonces",
+    ),
+)
+
+
+# M0030 — plan 08 Phase 2: the control plane's persistence for the API resource
+# vocabulary ``domain/api.py`` defines, plus the replication ledger its
+# crash-safety drill needs.
+#
+# Version note: the chain head was 29 when this was written, and a concurrent
+# agent took 31 for plan 09's identity store. 30 was explicitly reserved for
+# this work item, so this migration takes 30 and ``ALL_MIGRATIONS`` orders it
+# before ``M0031_IDENTITY``. Nothing about the schema depends on the number.
+#
+# What these tables are, and what they deliberately are not
+# -------------------------------------------------------
+# Each ``api_*`` table holds ONE resource's ``to_payload()`` verbatim in a
+# ``resource_json`` column. The payload is the *whole* Phase 1 wire form, and it
+# is nested exactly as Phase 1 renders it: a ``RunResource`` row carries the
+# ``RunRecord`` inside it, a ``PlanResource`` row carries the ``ExecutionPlan``,
+# an ``EvidenceReference`` row carries the sealed ``EvidenceEnvelope``. The
+# plan's API ledger calls the response shape nested, and Phase 1 already fixed
+# it nested; storing it flat would mean a second, lossy projection of the same
+# object, which is the thing this whole phase exists to avoid.
+#
+# The remaining columns on each table are NOT a second copy of the resource.
+# They are a *query index*: the handful of scalars a list endpoint filters and
+# sorts on, kept denormalised so ``WHERE status = ?`` never has to parse JSON.
+# Two properties make that safe, and both are enforced here rather than
+# trusted:
+#
+# * Every index column is CHECK-pinned to the same domain vocabulary the
+#   resource's own property is read from (a run's ``status`` must be one of the
+#   five ``RunStatus`` members, not an open string), so the index cannot hold a
+#   value the resource would refuse.
+# * ``repl_*`` below makes the index *verifiable*: a promotion checkpoint
+#   re-reads every indexed row and re-derives the column from the payload,
+#   refusing on disagreement (see ``infra.replication.checkpoint_divergence``).
+#   So the index is a cache with an auditor, not a parallel model — if it ever
+#   drifts, the drift is a refusal and not a wrong answer.
+#
+# Digest columns follow the ``M0028_MARKETPLACE`` rule: 64 lowercase hex
+# characters or empty, never prose.
+#
+# No foreign key from any ``api_*`` table to ``runs``, ``m5_runs``, ``events``,
+# or ``schedules``. Gap 101's reason: an API projection must survive the control
+# plane deleting the record it projects. ``api_runs.run_id`` is the same
+# *identifier* ``runs.id`` uses, which is what lets Phase 3 join them, but the
+# schema does not make the projection's survival depend on the executor's row
+# existing.
+#
+# ``api_schedules`` is a NEW table rather than a reuse of ``schedules``
+# (M0026). They are not the same thing and pretending they are would be worse
+# than the extra table: M0026's ``schedules`` row is a *scheduler registration*
+# — it requires ``campaign_id``, tracks ``window_index``/``run_count``/
+# ``next_fire_at``, and is keyed by the dispatch identity. A
+# ``ScheduleResource`` is a projection of the ``Schedule`` domain object and
+# names no campaign. Forcing the API resource into that table would mean
+# inventing a campaign id for a schedule that has never been registered with
+# one, which is exactly the kind of invented field this repository refuses to
+# grow. The two tables are independent projections of the same domain type and
+# neither is derived from the other.
+M0030_API_RESOURCES = Migration(
+    version=30,
+    name="api_resources",
+    statements=(
+        # -- experiments: the authored DrillSpec ------------------------------
+        """
+        CREATE TABLE api_experiments (
+            name TEXT PRIMARY KEY,
+            spec_digest TEXT NOT NULL,
+            hypothesis TEXT NOT NULL DEFAULT '',
+            signal_count INTEGER NOT NULL DEFAULT 0 CHECK (signal_count >= 0),
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)
+        )
+        """,
+        "CREATE INDEX idx_api_experiments_digest ON api_experiments(spec_digest)",
+        # -- plans: the frozen ExecutionPlan, and its steps -------------------
+        """
+        CREATE TABLE api_plans (
+            plan_digest TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            policy_id TEXT NOT NULL DEFAULT '',
+            config_snapshot_id TEXT NOT NULL DEFAULT '',
+            topology_snapshot_id TEXT NOT NULL DEFAULT '',
+            environment_fingerprint TEXT NOT NULL DEFAULT '',
+            step_count INTEGER NOT NULL DEFAULT 0 CHECK (step_count >= 0),
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_plans_run ON api_plans(run_id)",
+        "CREATE INDEX idx_api_plans_policy ON api_plans(policy_id)",
+        """
+        CREATE TABLE api_plan_steps (
+            plan_digest TEXT NOT NULL REFERENCES api_plans(plan_digest),
+            step_id TEXT NOT NULL,
+            seq INTEGER NOT NULL CHECK (seq >= 0),
+            action_type TEXT NOT NULL,
+            fault_id TEXT NOT NULL DEFAULT '',
+            logical_target_id TEXT NOT NULL DEFAULT '',
+            resolved_target_ids_json TEXT NOT NULL DEFAULT '[]',
+            step_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            -- Always 1. A plan is frozen, so its step list is rewritten whole
+            -- inside the same transaction that bumps ``api_plans.revision``;
+            -- a per-step revision would count nothing.
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            PRIMARY KEY (plan_digest, step_id),
+            UNIQUE (plan_digest, seq),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_plan_steps_seq ON api_plan_steps(plan_digest, seq)",
+        # -- runs and outcomes: what was executed, and what happened ---------
+        """
+        CREATE TABLE api_runs (
+            run_id TEXT PRIMARY KEY,
+            plan_digest TEXT NOT NULL,
+            experiment_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (status IN
+                ('pending', 'running', 'completed', 'failed', 'aborted')),
+            verdict TEXT NOT NULL CHECK (verdict IN
+                ('pass', 'fail', 'error', 'aborted', 'bypassed')),
+            started_at TEXT NOT NULL DEFAULT '',
+            ended_at TEXT NOT NULL DEFAULT '',
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_runs_status ON api_runs(status)",
+        "CREATE INDEX idx_api_runs_verdict ON api_runs(verdict)",
+        "CREATE INDEX idx_api_runs_experiment ON api_runs(experiment_name)",
+        "CREATE INDEX idx_api_runs_plan ON api_runs(plan_digest)",
+        "CREATE INDEX idx_api_runs_started ON api_runs(started_at)",
+        """
+        CREATE TABLE api_outcomes (
+            run_id TEXT PRIMARY KEY REFERENCES api_runs(run_id),
+            plan_digest TEXT NOT NULL,
+            checks_passed INTEGER NOT NULL DEFAULT 0 CHECK (checks_passed >= 0),
+            checks_failed INTEGER NOT NULL DEFAULT 0 CHECK (checks_failed >= 0),
+            body_hash TEXT NOT NULL DEFAULT '',
+            residual_effect TEXT NOT NULL DEFAULT '',
+            stability_signal TEXT NOT NULL DEFAULT '',
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (body_hash = '' OR (length(body_hash) = 64 AND body_hash NOT GLOB '*[^0-9a-f]*'))
+        )
+        """,
+        "CREATE INDEX idx_api_outcomes_plan ON api_outcomes(plan_digest)",
+        # -- approvals, policy decisions, schedules, evidence references -----
+        """
+        CREATE TABLE api_approvals (
+            approval_id TEXT PRIMARY KEY,
+            approval_digest TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            proof_digest TEXT NOT NULL,
+            approver TEXT NOT NULL,
+            valid INTEGER NOT NULL CHECK (valid IN (0, 1)),
+            reasons_json TEXT NOT NULL DEFAULT '[]',
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            UNIQUE (approval_digest),
+            CHECK (length(approval_digest) = 64 AND approval_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (length(policy_digest) = 64 AND policy_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (length(proof_digest) = 64 AND proof_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_approvals_plan ON api_approvals(plan_digest)",
+        "CREATE INDEX idx_api_approvals_valid ON api_approvals(valid)",
+        "CREATE INDEX idx_api_approvals_approver ON api_approvals(approver)",
+        """
+        CREATE TABLE api_policy_decisions (
+            decision_digest TEXT PRIMARY KEY,
+            allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+            outcome TEXT NOT NULL,
+            bundle_id TEXT NOT NULL DEFAULT '',
+            bundle_version INTEGER NOT NULL DEFAULT 0,
+            policy_digest TEXT NOT NULL DEFAULT '',
+            rule_digest TEXT NOT NULL DEFAULT '',
+            facts_digest TEXT NOT NULL DEFAULT '',
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            CHECK (length(decision_digest) = 64 AND decision_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (policy_digest = '' OR (length(policy_digest) = 64
+                AND policy_digest NOT GLOB '*[^0-9a-f]*')),
+            CHECK (rule_digest = '' OR (length(rule_digest) = 64
+                AND rule_digest NOT GLOB '*[^0-9a-f]*')),
+            CHECK (facts_digest = '' OR (length(facts_digest) = 64
+                AND facts_digest NOT GLOB '*[^0-9a-f]*'))
+        )
+        """,
+        "CREATE INDEX idx_api_policy_bundle ON api_policy_decisions(bundle_id, bundle_version)",
+        "CREATE INDEX idx_api_policy_allowed ON api_policy_decisions(allowed)",
+        """
+        CREATE TABLE api_schedules (
+            schedule_id TEXT PRIMARY KEY,
+            schedule_digest TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('cron', 'interval', 'calendar')),
+            timezone_name TEXT NOT NULL,
+            horizon TEXT NOT NULL DEFAULT '',
+            gates_json TEXT NOT NULL DEFAULT '[]',
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            UNIQUE (schedule_digest),
+            CHECK (length(schedule_digest) = 64 AND schedule_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_schedules_kind ON api_schedules(kind)",
+        "CREATE INDEX idx_api_schedules_tz ON api_schedules(timezone_name)",
+        """
+        CREATE TABLE api_evidence_refs (
+            ref_id TEXT PRIMARY KEY,
+            envelope_digest TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+            verdict TEXT NOT NULL DEFAULT '',
+            recovery_state TEXT NOT NULL DEFAULT '',
+            evidence_status TEXT NOT NULL DEFAULT '',
+            observation_count INTEGER NOT NULL DEFAULT 0 CHECK (observation_count >= 0),
+            step_report_count INTEGER NOT NULL DEFAULT 0 CHECK (step_report_count >= 0),
+            resource_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            UNIQUE (envelope_digest),
+            CHECK (length(envelope_digest) = 64 AND envelope_digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE INDEX idx_api_evidence_run ON api_evidence_refs(run_id)",
+        "CREATE INDEX idx_api_evidence_plan ON api_evidence_refs(plan_digest)",
+        "CREATE INDEX idx_api_evidence_complete ON api_evidence_refs(complete)",
+        # -- the replication ledger ------------------------------------------
+        #
+        # ``repl_fences`` is the one table in this migration that must never
+        # regress. A promoted standby that lost its lease is refused *because*
+        # this row's ``epoch`` only ever increases, so the CHECK plus the
+        # application-level ``next_fence`` are the mechanism two primaries
+        # cannot both own a run. The UPDATE trigger is conditional rather than
+        # blanket: a fence is superseded by writing a *strictly newer* epoch,
+        # which is the one legitimate update, and every other UPDATE -- a rewind,
+        # a same-epoch edit, a holder change without a new epoch -- RAISEs. So
+        # "the recorded epoch never goes down" is a schema property rather than
+        # a convention, and DELETE is refused outright because the record that
+        # an epoch once existed is the thing a deposed writer is checked
+        # against.
+        """
+        CREATE TABLE repl_fences (
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            holder TEXT NOT NULL,
+            epoch INTEGER NOT NULL CHECK (epoch >= 1),
+            issued_at TEXT NOT NULL,
+            supersedes_epoch INTEGER,
+            PRIMARY KEY (run_id, step_id),
+            CHECK (holder <> ''),
+            CHECK (supersedes_epoch IS NULL OR (supersedes_epoch >= 1 AND supersedes_epoch < epoch))
+        )
+        """,
+        "CREATE INDEX idx_repl_fences_holder ON repl_fences(holder)",
+        "CREATE TRIGGER repl_fences_no_regression BEFORE UPDATE ON repl_fences "
+        "WHEN NEW.epoch <= OLD.epoch "
+        "BEGIN SELECT RAISE(ABORT, 'repl_fences: a fence is superseded only by a "
+        "strictly newer epoch'); END",
+        "CREATE TRIGGER repl_fences_no_delete BEFORE DELETE ON repl_fences "
+        "BEGIN SELECT RAISE(ABORT, "
+        "'repl_fences is append-only by epoch: DELETE is refused'); END",
+        # ``repl_step_ledger`` is what makes "no duplicate step execution"
+        # checkable rather than asserted. One row per (run, step), and the
+        # ``UNIQUE (run_id, step_id) WHERE status='completed'`` index means a
+        # second *completed* record for the same step is a constraint violation
+        # the database refuses, not a convention a careful writer upholds.
+        #
+        # ``running`` is the state a step is in when its primary dies mid-step,
+        # and it is the reason the ledger can answer "what was in flight". A
+        # promotion reads it, re-drives exactly those steps at a strictly newer
+        # epoch, and leaves no ``running`` row behind -- an in-flight row nobody
+        # finished is orphaned state, and "no orphaned state" is half of what a
+        # failover drill has to show.
+        #
+        # The fencing is the other half: the ``no_epoch_regression`` trigger
+        # refuses any write at an epoch no newer than the recorded one, so a
+        # deposed primary that wakes up mid-run cannot complete a step the
+        # promoted primary already re-drove -- and it is the *schema* that
+        # refuses, not the writer's care.
+        """
+        CREATE TABLE repl_step_ledger (
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            epoch INTEGER NOT NULL CHECK (epoch >= 1),
+            holder TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('running', 'completed', 'failed', 'abandoned')),
+            started_at TEXT NOT NULL DEFAULT '',
+            ended_at TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (run_id, step_id),
+            CHECK (holder <> ''),
+            CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*')
+        )
+        """,
+        "CREATE UNIQUE INDEX repl_step_ledger_one_completion "
+        "ON repl_step_ledger(run_id, step_id) WHERE status = 'completed'",
+        "CREATE INDEX idx_repl_step_ledger_epoch ON repl_step_ledger(run_id, epoch)",
+        "CREATE TRIGGER repl_step_ledger_no_epoch_regression "
+        "BEFORE UPDATE ON repl_step_ledger WHEN NEW.epoch <= OLD.epoch "
+        "BEGIN SELECT RAISE(ABORT, 'repl_step_ledger: a step may not be "
+        "re-recorded at an older epoch'); END",
+        # -- standby registry, WAL segments, snapshots, promotions -----------
+        """
+        CREATE TABLE repl_standbys (
+            standby_id TEXT PRIMARY KEY,
+            last_applied_segment INTEGER NOT NULL DEFAULT 0 CHECK (last_applied_segment >= 0),
+            last_promoted_epoch INTEGER NOT NULL DEFAULT 0 CHECK (last_promoted_epoch >= 0),
+            registered_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE repl_wal_segments (
+            segment_seq INTEGER PRIMARY KEY,
+            standby_id TEXT NOT NULL,
+            source_db TEXT NOT NULL,
+            byte_size INTEGER NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
+            digest TEXT NOT NULL,
+            schema_version INTEGER,
+            shipped_at TEXT NOT NULL,
+            CHECK (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (schema_version IS NULL OR schema_version >= 0)
+        )
+        """,
+        "CREATE INDEX idx_repl_wal_segments_standby ON repl_wal_segments(standby_id, segment_seq)",
+        """
+        CREATE TABLE repl_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            standby_id TEXT NOT NULL,
+            source_db TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            byte_size INTEGER NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
+            schema_version INTEGER,
+            fenced_epoch INTEGER NOT NULL DEFAULT 0 CHECK (fenced_epoch >= 0),
+            shipped_at TEXT NOT NULL,
+            CHECK (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*'),
+            CHECK (schema_version IS NULL OR schema_version >= 0)
+        )
+        """,
+        "CREATE INDEX idx_repl_snapshots_standby ON repl_snapshots(standby_id, shipped_at)",
+        # Append-only: a promotion is the moment two nodes could both believe
+        # they are primary, so the record of who was promoted and at which
+        # epoch must not be rewritable afterwards.
+        """
+        CREATE TABLE repl_promotions (
+            promotion_id TEXT PRIMARY KEY,
+            standby_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            previous_holder TEXT NOT NULL DEFAULT '',
+            fenced_epoch INTEGER NOT NULL CHECK (fenced_epoch >= 1),
+            observed_epoch INTEGER NOT NULL DEFAULT 0 CHECK (observed_epoch >= 0),
+            reason TEXT NOT NULL DEFAULT '',
+            promoted_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_repl_promotions_run ON repl_promotions(run_id, fenced_epoch)",
+        "CREATE TRIGGER repl_promotions_no_update BEFORE UPDATE ON repl_promotions "
+        "BEGIN SELECT RAISE(ABORT, "
+        "'repl_promotions is append-only: UPDATE is refused'); END",
+        "CREATE TRIGGER repl_promotions_no_delete BEFORE DELETE ON repl_promotions "
+        "BEGIN SELECT RAISE(ABORT, "
+        "'repl_promotions is append-only: DELETE is refused'); END",
+    ),
+    down_statements=(
+        "DROP TRIGGER repl_promotions_no_delete",
+        "DROP TRIGGER repl_promotions_no_update",
+        "DROP INDEX idx_repl_promotions_run",
+        "DROP TABLE repl_promotions",
+        "DROP INDEX idx_repl_snapshots_standby",
+        "DROP TABLE repl_snapshots",
+        "DROP INDEX idx_repl_wal_segments_standby",
+        "DROP TABLE repl_wal_segments",
+        "DROP TABLE repl_standbys",
+        "DROP TRIGGER repl_step_ledger_no_epoch_regression",
+        "DROP INDEX idx_repl_step_ledger_epoch",
+        "DROP INDEX repl_step_ledger_one_completion",
+        "DROP TABLE repl_step_ledger",
+        "DROP TRIGGER repl_fences_no_delete",
+        "DROP TRIGGER repl_fences_no_regression",
+        "DROP INDEX idx_repl_fences_holder",
+        "DROP TABLE repl_fences",
+        "DROP INDEX idx_api_evidence_complete",
+        "DROP INDEX idx_api_evidence_plan",
+        "DROP INDEX idx_api_evidence_run",
+        "DROP TABLE api_evidence_refs",
+        "DROP INDEX idx_api_schedules_tz",
+        "DROP INDEX idx_api_schedules_kind",
+        "DROP TABLE api_schedules",
+        "DROP INDEX idx_api_policy_allowed",
+        "DROP INDEX idx_api_policy_bundle",
+        "DROP TABLE api_policy_decisions",
+        "DROP INDEX idx_api_approvals_approver",
+        "DROP INDEX idx_api_approvals_valid",
+        "DROP INDEX idx_api_approvals_plan",
+        "DROP TABLE api_approvals",
+        "DROP INDEX idx_api_outcomes_plan",
+        "DROP TABLE api_outcomes",
+        "DROP INDEX idx_api_runs_started",
+        "DROP INDEX idx_api_runs_plan",
+        "DROP INDEX idx_api_runs_experiment",
+        "DROP INDEX idx_api_runs_verdict",
+        "DROP INDEX idx_api_runs_status",
+        "DROP TABLE api_runs",
+        "DROP INDEX idx_api_plan_steps_seq",
+        "DROP TABLE api_plan_steps",
+        "DROP INDEX idx_api_plans_policy",
+        "DROP INDEX idx_api_plans_run",
+        "DROP TABLE api_plans",
+        "DROP INDEX idx_api_experiments_digest",
+        "DROP TABLE api_experiments",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -1800,4 +2571,22 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0027_COVERAGE_FINDINGS,
     M0028_MARKETPLACE,
     M0029_AUDIT_STREAM,
+    # ``api_resources`` (version 30) is plan 08 Phase 2's control-plane
+    # persistence: one table per ``domain/api.py`` resource plus the
+    # replication ledger (``repl_*``) its crash-safety drill needs. Appended
+    # here ahead of ``M0031_IDENTITY`` because 30 was reserved for it and the
+    # chain must stay strictly increasing.
+    M0030_API_RESOURCES,
+    # ``identity`` (version 31) is plan 09 Phase 3's identity persistence:
+    # principals, memberships, role grants, sessions, API keys, and the
+    # append-only revocation log. Version 30 was reserved for a concurrently
+    # running agent; see the migration's comment block for why this one takes
+    # the reserved 31 rather than 30.
+    M0031_IDENTITY,
+    # ``ha_dr`` (version 32) is plan 19 Phase 2: spent agent-command nonces, the
+    # control-plane leadership lease, per-step dispatch fences, and the snapshot
+    # evidence a restore drill compares against. Appended last because 30 and 31
+    # were reserved for concurrently-running lanes; see the migration's comment
+    # block for why this one takes 32 and what it deliberately does not hold.
+    M0032_HA_DR,
 )
