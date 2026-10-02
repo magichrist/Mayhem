@@ -1,5 +1,5 @@
-"""Plan 21 Phase 2 — the advisor engine: analysis over sealed inputs, and the
-incident-replay compiler.
+"""Plan 21 Phases 2 and 4 — the advisor engine: analysis over sealed inputs, the
+incident-replay compiler, and the safety/evidence integration.
 
 Phase 1 (:mod:`mayhem.domain.advisor`) is the arithmetic: a :class:`Finding` is
 the absence of a fact pointed at, a priority is the weighted mean of *declared*
@@ -29,6 +29,19 @@ what makes ``calls == 0`` a measurement rather than a constant. The reuse is
 deliberate: :class:`~mayhem.controller.prediction_service.MutationProof` already
 states exactly this, and two shapes for "nothing was mutated" is one more place
 for the two to disagree.
+
+**Phase 4 holds that line, and the sealing below is how.** Every write this
+module can perform — :func:`seal_advisory_claim`,
+:func:`record_replay_compilation`, :func:`record_advisory_seal` — is a
+*module-level* function that takes a store or an audit stream the caller supplies,
+exactly as
+:func:`~mayhem.controller.certification_evidence.seal_certification_evidence`
+does. Not one of them is a method on :class:`AdvisorService`, and the service's
+field set is unchanged from Phase 2. A caller who wants advisor output sealed must
+hold a :class:`~mayhem.infra.store.Store` themselves and pass it in; the analysis
+context still cannot obtain one, so it still cannot write. That is the structural
+claim, and tests/unit/test_advisor_evidence.py asserts it against the dataclass
+fields rather than taking a docstring's word for it.
 
 ## Every generated parameter traces to an incident fact
 
@@ -70,6 +83,90 @@ bearing part: a candidate that will not compile raises *out of* the compile
 stage, so the proof compiler and the policy gate are never reached. That is the
 claim tests/unit/test_advisor_service.py asserts by counting calls to both.
 
+:func:`submit_scenario` is that same door with the *fault set* supplied instead of
+derived, because a scenario library template (gap 49,
+:mod:`mayhem.domain.scenarios`) is a multi-fault timeline and one ``fault_id``
+cannot express it. It calls the same private core, so the compile → proof →
+policy sequence, the refusal order, and the origin-blindness are one
+implementation rather than two that agree today. What it adds is a binding check
+(:data:`RULE_SUBMISSION_SPEC_NOT_BOUND`): the plan it compiles must carry the
+recommendation's own hypothesis, so supplying a spec cannot smuggle in a plan that
+says something other than the recommendation a human read. An instantiation is
+otherwise indistinguishable downstream from an authored one, which is the point.
+
+## ``required_approvals`` is a requirement, not a grant — and that is the answer
+
+Phase 2 left a question open: the proof's ``required_approvals`` line reports
+``PASS`` with the detail "No intent presented at compile time", and should
+:meth:`AdvisorService.submit` refuse that? **No, and the ``PASS`` is the honest
+state.** The line's subject is the *requirements* — which approval levels are
+required, which critical faults need an explicit acknowledgement, and the rule
+that any approval must bind this plan digest — and its own detail says the grant
+is bound later, against the proof digest. ``PASS`` there means "the requirements
+are established and nothing has been authorised", which is exactly what an advisor
+submission should report.
+
+Refusing it would be wrong three times over. The advisor must never present an
+execution intent (that is this plan's critical invariant), so ``intent is None``
+is the *only* branch an advisor submission can reach; refusing it would make
+:meth:`submit` unusable and would create pressure to attach an intent in order to
+satisfy a line — weakening the boundary to please a status. And reporting it as a
+refusal would assert something false: there is no intent to fail
+``require_execution_intent``, which raises ``INTENT_REQUIRED`` at execution time,
+where the decision actually belongs.
+
+What would not be honest is leaving a bare ``PASS`` for a reader to
+misunderstand. So :attr:`AdvisorSubmission.authorization` names the three states
+that line can be in, read off two structural facts — whether ``ctx.approval_gate``
+was configured at all, and the line's own status — rather than from reading its
+prose, and :attr:`AdvisorSubmission.authorized` is ``True`` only when the plan-09
+approval gate actually authorised this plan. For every advisor submission it is
+``False``, and that is a field on the type rather than a sentence a reader has to
+notice.
+
+## Sealing is advisory, and the distinction is structural
+
+A recommendation is a claim a human will act on, so it belongs in the sealed chain
+beside the facts it cites — but sealing it must not hand it authority it does not
+have. How that is guaranteed here is by *what the types can carry*, not by a
+sentence in a payload:
+
+* :class:`AdvisoryClaim` has no ``approval``, ``approved_by``, ``intent``,
+  ``run_id``, ``policy_decision`` or ``approval_state`` field, and its
+  constructor refuses a recommendation that already carries an approval
+  (:data:`RULE_ADVISORY_SEAL_CARRIES_APPROVAL`) — so a sealed advisory artifact
+  can never be a decision, and a decision can never be re-attested here;
+* :class:`AdvisorySeal` deliberately has **no** ``evidence_digest`` attribute, so
+  :func:`mayhem.domain.advisor.is_certified_evidence` is ``False`` for it. That
+  existing predicate *is* the test: advisor output is correlated facts, has no
+  verdict, and can never be presented as a sealed run;
+* :attr:`AdvisorySeal.grants_authorization` is the literal ``False``. It reads
+  nothing, so no input can change it;
+* an :class:`AdvisorySeal` cannot be dressed up as a
+  :class:`~mayhem.infra.attestation_store.RunAuthorization` — the two types share
+  no constructor — and its chain id is namespaced ``advisory:…``, so a verifier
+  walking attestation chains for runs never meets one;
+* :func:`seal_advisory_claim` verifies the chain and the manifest *before* opening
+  a transaction, and refuses a recommendation whose rationale does not name the
+  criteria it was ranked by (:data:`RULE_ADVISORY_SEAL_UNTRACEABLE`): a claim
+  nobody can check is not a claim that belongs in the chain of record.
+
+Every chain member's payload repeats ``standing: advisory`` and
+``grants_approval: false`` as data, so an operator reading the persisted JSON is
+told the standing rather than left to infer it from the absence of a field.
+
+## Replay and sealing are privileged actions, and the audit stream says so
+
+An incident being turned into an experiment is exactly the kind of thing an auditor
+wants to see, so :func:`record_replay_compilation` appends one
+:class:`~mayhem.infra.audit_stream.AuditEntry` under
+:data:`KIND_ADVISORY_REPLAY_COMPILED`, carrying the incident, the cell, the
+topology pin, and every parameter with the incident fact it came from.
+:func:`record_advisory_seal` does the same for the seal. Both leave
+``approval_digest`` and ``policy_digest`` **empty**, and that emptiness is the
+point: nothing the advisor records carries a digest of an approval it did not
+receive.
+
 The draft boundary itself is Plan 15's, reused rather than reimplemented:
 :func:`~mayhem.controller.analytics_service.compile_candidate` already scans a
 raw advisor payload for an authority field at any depth
@@ -93,10 +190,12 @@ uncovered failure mode), never to decorate a finding with someone else's digest.
 
 from __future__ import annotations
 
+import re
+import time
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import isfinite
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from mayhem.controller.analytics_service import AUTHORITY_FIELDS
 from mayhem.controller.analytics_service import _authority_keys as authority_keys
@@ -106,6 +205,8 @@ from mayhem.controller.safety import SafetyContext, simulate_plan_policy
 from mayhem.controller.safety_proof import SafetyCompilation, compile_safety_evidence
 from mayhem.domain.advisor import (
     GAP_STATES,
+    AdvisorAuthority,
+    CitedFact,
     CoverageLandscape,
     CriterionReading,
     ExperimentCandidate,
@@ -113,16 +214,35 @@ from mayhem.domain.advisor import (
     IncidentFacts,
     PriorityCriteria,
     Recommendation,
+    RecommendationOrigin,
     UntrustedRecommendationDraft,
     is_certified_evidence,
     rank_drafts,
     recommendations_for,
 )
+from mayhem.domain.attestation import (
+    GENESIS_DIGEST,
+    AttestedEvent,
+    AttestedTimestamp,
+    ChainVerification,
+    Manifest,
+    ManifestVerification,
+    RetentionClass,
+    build_manifest,
+    chain_root,
+    seal_events,
+    verify_chain,
+    verify_manifest,
+)
+from mayhem.domain.common import utc_now
 from mayhem.domain.coverage import CellState, CoverageCell
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
 from mayhem.domain.hashing import digest, sha256_hex
 from mayhem.domain.prediction import graph_identity as compute_graph_identity
+from mayhem.domain.safety_proof import ObligationStatus
+from mayhem.infra.attestation_store import AttestationError, AttestationRepository
+from mayhem.infra.audit_stream import AuditEntry, AuditStream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -130,11 +250,22 @@ if TYPE_CHECKING:
     from mayhem.controller.policy_gate import MutationSink, PolicyGateResult
     from mayhem.domain.experiments import ExecutionPlan
     from mayhem.domain.runtime_adapter import RuntimeAdapter
+    from mayhem.domain.scenarios import ScenarioInstantiation
     from mayhem.domain.topology import TopologyGraph
+    from mayhem.infra.store import Store
 
 __all__ = [
+    "ADVISORY_CHAIN_PREFIX",
+    "ADVISORY_STANDING",
     "ADVISOR_ARTIFACT",
+    "APPROVAL_GATE_BLINE",
     "AUTHORITY_FIELDS",
+    "EXECUTION_INTENT_BLINE",
+    "KIND_ADVISORY_CLAIM_SEALED",
+    "KIND_ADVISORY_REPLAY_COMPILED",
+    "POLICY_GATE_BLINE",
+    "RULE_ADVISORY_SEAL_CARRIES_APPROVAL",
+    "RULE_ADVISORY_SEAL_UNTRACEABLE",
     "RULE_DRAFT_CARRIES_AUTHORITY",
     "RULE_DRAFT_UNKNOWN_FIELD",
     "RULE_NO_DECLARED_BINDINGS",
@@ -144,11 +275,14 @@ __all__ = [
     "RULE_REPLAY_TOPOLOGY_PIN_MISMATCH",
     "RULE_REPLAY_UNIT_MISMATCH",
     "RULE_REPLAY_VERSION_SUPERSEDED",
+    "RULE_SUBMISSION_SPEC_NOT_BOUND",
     "RULE_SUBMISSION_UNTRACEABLE_PARAMETER",
     "RULE_SUBMISSION_WILL_NOT_COMPILE",
     "AdvisorAnalysis",
     "AdvisorService",
     "AdvisorSubmission",
+    "AdvisoryClaim",
+    "AdvisorySeal",
     "CoveragePort",
     "DeploymentPort",
     "EvidencePort",
@@ -159,10 +293,19 @@ __all__ = [
     "ParameterTrace",
     "ReplayRequest",
     "SealedCell",
+    "SubmissionAuthorization",
     "SuppressReason",
     "SuppressedCell",
     "TopologyPort",
+    "advisory_chain_id",
+    "advisory_events",
     "authority_keys",
+    "build_draft_payload",
+    "read_draft_payload",
+    "record_advisory_seal",
+    "record_replay_compilation",
+    "seal_advisory_claim",
+    "submit_scenario",
 ]
 
 # -- names ------------------------------------------------------------------------
@@ -185,6 +328,54 @@ RULE_REPLAY_VERSION_SUPERSEDED = "advisor.replay_version_superseded"
 
 RULE_SUBMISSION_WILL_NOT_COMPILE = "advisor.submission_will_not_compile"
 RULE_SUBMISSION_UNTRACEABLE_PARAMETER = "advisor.submission_parameter_untraceable"
+RULE_SUBMISSION_SPEC_NOT_BOUND = "advisor.submission_spec_not_bound_to_recommendation"
+
+RULE_ADVISORY_SEAL_UNTRACEABLE = "advisor.seal_requires_traceable_citations"
+RULE_ADVISORY_SEAL_CARRIES_APPROVAL = "advisor.seal_refuses_to_carry_an_approval"
+
+#: The namespace an advisory chain hangs off. Plan 12's law is one chain per run
+#: starting at genesis, so an advisory claim is given a chain identity of its own
+#: rather than hung off a run that does not exist — and the prefix keeps a
+#: verifier walking attestation chains for runs from meeting one.
+ADVISORY_CHAIN_PREFIX: Final[str] = "advisory"
+
+#: The one standing a sealed advisory artifact may claim, written into every
+#: chain member's payload so an operator reading persisted JSON is told it rather
+#: than left to infer it from an absent field. There is no second member of this
+#: enumeration and no parameter that changes it, which is what makes "advisory,
+#: not authorization" a property of the artifact rather than a sentence about it.
+ADVISORY_STANDING: Final[str] = "advisory"
+
+#: The chain members, in chain order. Named here rather than spelled inline so a
+#: grep finds every advisory event kind at once.
+CHAIN_EVENT_ADVISORY_RECORDED: Final[str] = "advisory.recorded"
+CHAIN_EVENT_ADVISORY_SEALED: Final[str] = "advisory.sealed"
+
+#: Audit-stream action kinds. These are *this module's* vocabulary additions:
+#: ``mayhem.infra.audit_stream`` owns the stream and the closed list of kinds its
+#: own writers use, and its ``action`` column is deliberately free text, so an
+#: advisor action is declared here — in the module that performs it — instead of
+#: by editing a file this plan does not own. A reviewer adding a kind should add
+#: it here, next to the write that uses it.
+KIND_ADVISORY_REPLAY_COMPILED: Final[str] = "audit.advisory.incident_replayed"
+KIND_ADVISORY_CLAIM_SEALED: Final[str] = "audit.advisory.claim_sealed"
+
+#: The gates that can produce the ``required_approvals`` line, named exactly as
+#: ``mayhem.controller.safety_proof`` names them in ``_Line.gates``.
+#:
+#: :func:`_authorization_state` does **not** read these — it reads
+#: ``ctx.approval_gate`` and the line's status, which are both values rather than
+#: rule ids. They are named here for a reader who wants the full set, and
+#: :data:`EXECUTION_INTENT_BLINE` in particular is named for what is *deliberately
+#: absent*: this module never passes an ``ExecutionIntent`` to the proof compiler,
+#: so no advisor submission can be in that state and there is no enum member for it.
+POLICY_GATE_BLINE: Final[str] = "controller.policy_gate.required_approvals"
+APPROVAL_GATE_BLINE: Final[str] = "controller.approval_gate.verify_approvals"
+EXECUTION_INTENT_BLINE: Final[str] = "domain.execution_intent.require_execution_intent"
+
+#: The obligation Phase 2's author could not interpret. Named here so the answer
+#: lives in code rather than only in a status note.
+REQUIRED_APPROVALS_OBLIGATION: Final[str] = "required_approvals"
 
 #: The fields a raw advisor payload may declare. Everything else is refused
 #: before it is read, so a payload cannot smuggle a field past the boundary by
@@ -460,6 +651,68 @@ class ParameterTrace:
         }
 
 
+# -- the authorization state a submission is in ---------------------------------
+
+
+class SubmissionAuthorization(StrEnum):
+    """What the ``required_approvals`` line actually established.
+
+    Three states, and the enumeration exists because the one question Phase 2
+    could not answer was whether ``PASS`` on that line meant the plan was
+    approved. It does not, and this is the vocabulary that says so without anybody
+    having to re-read the line's detail string.
+
+    :data:`REQUIREMENTS_ONLY` is the advisor's own state and the answer to the
+    open question: the requirements are established, the plan digest any approval
+    must bind is named, and *nothing has been authorised*. A ``PASS`` there is
+    correct, because the line's subject is the requirements.
+
+    The other two are readings of the plan-09 approval gate's own verdict — a
+    decision this module can report because a caller put a gate in the context,
+    and can never make because it holds no gate itself. There is deliberately no
+    "intent verified" member: :meth:`AdvisorService.submit` never passes an
+    ``ExecutionIntent`` to the proof compiler, so the state is unreachable from
+    here and naming it would be vocabulary for something this path cannot do.
+    """
+
+    #: Requirements established, no approval gate configured, no intent presented.
+    #: The advisor's state, and the honest answer to "was this approved?" — no.
+    REQUIREMENTS_ONLY = "requirements_only"
+    #: A caller configured ``ctx.approval_gate``, it ran, and it authorised this
+    #: plan. The advisor only reports it.
+    GATE_AUTHORIZED = "gate_authorized"
+    #: The approval gate ran and refused this plan.
+    GATE_REFUSED = "gate_refused"
+
+
+def _authorization_state(
+    ctx: SafetyContext, compilation: SafetyCompilation
+) -> SubmissionAuthorization:
+    """Read the approval state off the inputs, not off the line's prose.
+
+    Two structural facts decide it, and only these two:
+
+    * ``ctx.approval_gate is None`` — the context knows nothing about approvals,
+      so nothing could have been authorised by one. That is the advisor's own
+      situation, and it is why :data:`SubmissionAuthorization.REQUIREMENTS_ONLY`
+      is the honest answer to a ``PASS`` on that line rather than a defect.
+    * the line's own status — :mod:`mayhem.controller.safety_proof` returns
+      ``FAIL`` exactly when the plan-09 gate refused, so a non-``PASS`` line with
+      a gate configured is a refusal and not an ambiguity.
+
+    Note what is *not* consulted: the line's ``detail`` string. A verdict derived
+    from prose a different module composes is a verdict that breaks when somebody
+    improves the sentence, and the sentence is the one part of a proof no test
+    should be parsing.
+    """
+    line = compilation.proof.obligation(REQUIRED_APPROVALS_OBLIGATION)
+    if ctx.approval_gate is None:
+        return SubmissionAuthorization.REQUIREMENTS_ONLY
+    if line is None or line.status is ObligationStatus.FAIL:
+        return SubmissionAuthorization.GATE_REFUSED
+    return SubmissionAuthorization.GATE_AUTHORIZED
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayRequest:
     """What a caller declares about a replay before the compiler reads anything.
@@ -722,6 +975,11 @@ class AdvisorSubmission:
     compilation: SafetyCompilation
     policy: PolicyGateResult | None
     purity: MutationProof
+    #: What the ``required_approvals`` line established, read off the inputs
+    #: (:func:`_authorization_state`) rather than off the line's prose. Carried as
+    #: a field rather than re-derived on each read so it states what was true at
+    #: the moment the proof was compiled.
+    authorization: SubmissionAuthorization = SubmissionAuthorization.REQUIREMENTS_ONLY
 
     @property
     def proof_verdict(self) -> str:
@@ -741,6 +999,25 @@ class AdvisorSubmission:
         """
         return self.policy is not None and self.policy.allowed
 
+    @property
+    def authorized(self) -> bool:
+        """Whether some *other* system authorised this plan. Never the advisor's own.
+
+        ``True`` requires :data:`SubmissionAuthorization.GATE_AUTHORIZED`, which
+        requires a caller to have configured ``ctx.approval_gate`` — a handle this
+        module holds no reference to at all. For an advisor submission it is
+        therefore ``False``, which is the answer to Phase 2's open question: the
+        ``required_approvals`` ``PASS`` is honest and needs no refusal, because
+        nothing downstream may read it as a grant.
+        """
+        return self.authorization is SubmissionAuthorization.GATE_AUTHORIZED
+
+    @property
+    def authorization_detail(self) -> str:
+        """The line's own words, for a reader who wants them — never the state."""
+        line = self.compilation.proof.obligation(REQUIRED_APPROVALS_OBLIGATION)
+        return "" if line is None else line.detail
+
     def describe(self) -> str:
         lines = [
             f"{self.recommendation.recommendation_id} "
@@ -758,6 +1035,8 @@ class AdvisorSubmission:
                 if self.policy is not None
                 else "no bundle configured"
             ),
+            f"  authorization: {self.authorization.value} "
+            f"({'authorized' if self.authorized else 'nothing granted'})",
             f"  mutation: {self.purity.calls} call(s), backend "
             f"{'attached' if self.purity.backend_attached else 'detached'}",
         ]
@@ -773,6 +1052,8 @@ class AdvisorSubmission:
             "void_reason": self.compilation.void_reason,
             "policy_allowed": self.policy_allowed,
             "admitted_by_gate": self.admitted_by_gate,
+            "authorization": self.authorization.value,
+            "authorized": self.authorized,
             "mutation": {
                 "backend_attached": self.purity.backend_attached,
                 "calls": self.purity.calls,
@@ -1116,14 +1397,49 @@ class AdvisorService:
         cluster can do. Supplying an adapter is a statement about the runtime,
         not about the incident, so it is the caller's to make and not this
         method's to assume.
+
+    A ``PASS`` on the proof's ``required_approvals`` line is *not* a refusal here,
+    and Phase 4 decided that deliberately: see
+    :attr:`AdvisorSubmission.authorization` for the four states that line can be
+    in and why the advisor's is always :data:`SubmissionAuthorization.REQUIREMENTS_ONLY`.
         """
         service = self.detached()
         _require_traced(parameters, traces)
-        graph = service.graph()
-        snapshot_id = service.topology.snapshot_id()
         fault_params: dict[str, object] = {"fault": fault_id, "duration": f"{duration_s}s"}
         fault_params.update(dict(parameters))
         spec = _submission_spec(recommendation, target, fault_params)
+        return service._run_submission(
+            recommendation,
+            ctx,
+            spec,
+            run_id=run_id,
+            config_snapshot_id=config_snapshot_id,
+            environment_fingerprint=environment_fingerprint,
+            adapter=adapter,
+        )
+
+    def _run_submission(
+        self,
+        recommendation: Recommendation,
+        ctx: SafetyContext,
+        spec: DrillSpec,
+        *,
+        run_id: str,
+        config_snapshot_id: str,
+        environment_fingerprint: str,
+        adapter: RuntimeAdapter | None,
+    ) -> AdvisorSubmission:
+        """Compile one spec and take it through proof and policy. One implementation.
+
+        Every path out of this module goes through here, which is what makes "a
+        generated candidate faces the identical gates an authored one does" one
+        piece of code rather than two that happen to agree today. The refusal
+        order lives here and is load-bearing: ``plan_drill`` raises here,
+        upstream of the proof compiler and the policy gate, so a spec that will
+        not compile never receives a safety case or a policy verdict either.
+        """
+        graph = self.graph()
+        snapshot_id = self.topology.snapshot_id()
         try:
             plan = plan_drill(
                 run_id,
@@ -1151,6 +1467,7 @@ class AdvisorService:
             compilation=compilation,
             policy=policy,
             purity=self._proof(),
+            authorization=_authorization_state(ctx, compilation),
         )
 
 
@@ -1487,3 +1804,591 @@ def _payload_str(payload: Mapping[str, object], field_name: str) -> str:
             f"{value!r}",
         )
     return value
+
+
+# -- Phase 4: the scenario library's way in --------------------------------------
+
+
+def submit_scenario(
+    service: AdvisorService,
+    instantiation: ScenarioInstantiation,
+    recommendation: Recommendation,
+    ctx: SafetyContext,
+    *,
+    run_id: str,
+    config_snapshot_id: str,
+    environment_fingerprint: str,
+    adapter: RuntimeAdapter | None = None,
+) -> AdvisorSubmission:
+    """Take a scenario-instantiated recommendation down the same road as any other.
+
+    A scenario library template (gap 49,
+    :mod:`mayhem.domain.scenarios`) is a *multi-fault timeline*, and
+    :meth:`AdvisorService.submit` takes one ``fault_id`` because that is what a
+    candidate names. Rather than add a second compile path for multi-fault specs,
+    this takes the instantiation's own
+    :meth:`~mayhem.domain.scenarios.ScenarioInstantiation.drill_spec` and hands it
+    to the same private core — so the compile → proof → policy sequence, the
+    refusal order, and the origin-blindness are one implementation.
+
+    The binding check is what keeps this from being a side channel. The spec must
+    carry ``recommendation.candidate.hypothesis``, which is the sentence the
+    draft's :meth:`~mayhem.domain.advisor.UntrustedRecommendationDraft.compile`
+    produced *from the template's* hypothesis. A caller who swaps in a plan of
+    their own is refused with :data:`RULE_SUBMISSION_SPEC_NOT_BOUND` before the
+    planner runs, so supplying a spec cannot put a plan in front of a reviewer
+    that does not say what the recommendation said.
+
+    Everything else follows from the road being shared: the returned submission
+    is an :class:`AdvisorSubmission` whose recommendation is ``generated`` and
+    unapproved, whose authorization is
+    :data:`SubmissionAuthorization.REQUIREMENTS_ONLY`, and whose proof and policy
+    artefacts were produced by the same two functions an authored recommendation
+    gets. A scenario is not a privileged kind of plan; it is a plan.
+    """
+    if instantiation.hypothesis != recommendation.candidate.hypothesis:
+        raise InvariantViolationError(
+            RULE_SUBMISSION_SPEC_NOT_BOUND,
+            f"scenario {instantiation.ref!r} proposes hypothesis "
+            f"{instantiation.hypothesis[:60]!r}… but recommendation "
+            f"{recommendation.recommendation_id!r} carries "
+            f"{recommendation.candidate.hypothesis[:60]!r}…: the plan that gets compiled "
+            "must say what the recommendation a human read says. Supplying a spec cannot "
+            "put a different experiment in front of a reviewer",
+        )
+    service = service.detached()
+    return service._run_submission(
+        recommendation,
+        ctx,
+        instantiation.drill_spec(),
+        run_id=run_id,
+        config_snapshot_id=config_snapshot_id,
+        environment_fingerprint=environment_fingerprint,
+        adapter=adapter,
+    )
+
+
+# -- Phase 4: advisory claims and their seal -------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AdvisoryClaim:
+    """One advisor claim, reduced to what can be attested about it.
+
+    This is the type that makes "advisory, not authorization" structural, and the
+    absence is the mechanism. There is no ``approval`` field, no ``approved_by``,
+    no ``intent``, no ``run_id``, no ``policy_decision`` and no ``approval_state``;
+    :meth:`from_recommendation` refuses a recommendation that already carries an
+    approval (:data:`RULE_ADVISORY_SEAL_CARRIES_APPROVAL`), so an approval can
+    never be laundered into the sealed chain by sealing the recommendation that
+    holds it.
+
+    :attr:`authority` is therefore always :attr:`AdvisorAuthority.NONE`, and the
+    constructor checks it rather than trusting the caller — a claim whose authority
+    reads ``approved`` is refused, because a type that can hold one is a type that
+    will eventually hold one.
+
+    What the claim *does* carry is the whole citation set: the finding's facts, the
+    criteria readings it was ranked by, the graph identity it was read against, and
+    — when it came from a submission — the plan digest, proof verdict, policy
+    outcome and authorization state. Those are facts *about the claim*, not powers
+    it holds.
+    """
+
+    recommendation_id: str
+    recommendation_digest: str
+    origin: RecommendationOrigin
+    authority: AdvisorAuthority
+    finding_id: str
+    cell_key: str
+    graph_identity: str
+    cited_facts: tuple[CitedFact, ...]
+    criteria_name: str
+    criteria: tuple[str, ...]
+    priority_total: float
+    plan_digest: str = ""
+    proof_verdict: str = ""
+    policy_allowed: bool | None = None
+    authorization: SubmissionAuthorization = SubmissionAuthorization.REQUIREMENTS_ONLY
+
+    def __post_init__(self) -> None:
+        if self.authority is not AdvisorAuthority.NONE:
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_CARRIES_APPROVAL,
+                f"advisory claim {self.recommendation_id!r} carries authority "
+                f"{self.authority.value!r}: a sealed advisory artifact stands only as a "
+                "claim about cited facts. An approval is bound by digest to the exact "
+                "recommendation a human read and is recorded by the approval gate's own "
+                "chain; sealing it here would re-attest a decision this module has no "
+                "standing to make",
+            )
+        if not self.recommendation_id.strip() or not self.finding_id.strip():
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"advisory claim {self.recommendation_id!r} must name both the "
+                "recommendation and the finding it rests on",
+            )
+        if not _SEALED_DIGEST_RE.fullmatch(self.recommendation_digest):
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"advisory claim {self.recommendation_id!r} carries digest "
+                f"{self.recommendation_digest!r}, which is not a sealed sha256 digest: a "
+                "claim in the chain of record has to be addressable by something that "
+                "names its own bytes",
+            )
+        if not self.cited_facts:
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"advisory claim {self.recommendation_id!r} cites no facts: a correlation "
+                "with nothing behind it is an opinion, and opinions do not belong in a "
+                "chain that a verifier will later be asked to trust",
+            )
+        blank = tuple(fact.ref for fact in self.cited_facts if not fact.ref.strip())
+        if blank:
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"advisory claim {self.recommendation_id!r} cites blank reference(s) "
+                f"{list(blank)}: a citation nobody can look up is not a citation",
+            )
+        if not isfinite(self.priority_total):
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"advisory claim {self.recommendation_id!r} carries priority "
+                f"{self.priority_total!r}: nan is an arithmetic accident, not a ranking",
+            )
+
+    @classmethod
+    def from_recommendation(cls, recommendation: Recommendation) -> AdvisoryClaim:
+        """The claim a recommendation makes, with its citations and nothing else.
+
+        Refuses a recommendation whose rationale does not name the criteria it was
+        ranked by — the same check :meth:`Recommendation.render` makes, for the
+        same reason. A reader-facing view drops an untraceable recommendation; the
+        chain of record must not accept one either, because the difference is that
+        the chain is what somebody reads *later*, with no analyst in the room.
+        """
+        if recommendation.approval is not None:
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_CARRIES_APPROVAL,
+                f"recommendation {recommendation.recommendation_id!r} already carries an "
+                f"approval from {recommendation.approval.approved_by!r}: an approval is "
+                "its own record, attested by the gate that verified it. Sealing the "
+                "recommendation that holds one here would produce a second artifact "
+                "asserting a decision the advisor did not make",
+            )
+        reason = recommendation.render_refusal_reason()
+        if reason:
+            raise InvariantViolationError(
+                RULE_ADVISORY_SEAL_UNTRACEABLE,
+                f"{reason}. An untraceable recommendation may be stored, but it does not "
+                "belong in the sealed chain: the chain is read later and cold, with no "
+                "analyst in the room to notice the omission",
+            )
+        return cls(
+            recommendation_id=recommendation.recommendation_id,
+            recommendation_digest=recommendation.recommendation_digest,
+            origin=recommendation.origin,
+            authority=recommendation.authority,
+            finding_id=recommendation.finding.finding_id,
+            cell_key=recommendation.finding.cell_key,
+            graph_identity=recommendation.finding.graph_identity,
+            cited_facts=recommendation.cited_facts,
+            criteria_name=recommendation.priority.criteria_name,
+            criteria=recommendation.priority.criteria_names,
+            priority_total=recommendation.total,
+        )
+
+    @classmethod
+    def from_submission(cls, submission: AdvisorSubmission) -> AdvisoryClaim:
+        """The claim plus the three artifacts the road produced for it.
+
+        Superset of :meth:`from_recommendation`, and the one worth sealing when
+        there is a submission: the plan digest an approval must bind, the proof's
+        verdict, the policy outcome, and the
+        :attr:`AdvisorSubmission.authorization` state are all facts about the claim
+        and none of them is authority. The authorization state travels *as data*
+        precisely so a later reader can see "requirements only" without having to
+        reconstruct it.
+        """
+        return replace(
+            cls.from_recommendation(submission.recommendation),
+            plan_digest=submission.plan_digest,
+            proof_verdict=submission.proof_verdict,
+            policy_allowed=submission.policy_allowed,
+            authorization=submission.authorization,
+        )
+
+    @property
+    def standing(self) -> str:
+        """Always :data:`ADVISORY_STANDING`. A property, not a field, on purpose."""
+        return ADVISORY_STANDING
+
+    def payload(self) -> dict[str, object]:
+        """The attested body: names and digests, plus every fact it cites.
+
+        ``grants_approval`` and ``grants_authorization`` are literal ``False`` in
+        the persisted bytes. They are not a promise — the types already forbid it —
+        but they are what an operator reading this JSON without the code needs in
+        order not to have to infer it from an absent field.
+        """
+        return {
+            "standing": ADVISORY_STANDING,
+            "grants_approval": False,
+            "grants_authorization": False,
+            "recommendation_id": self.recommendation_id,
+            "recommendation_digest": self.recommendation_digest,
+            "origin": self.origin.value,
+            "authority": self.authority.value,
+            "finding_id": self.finding_id,
+            "cell_key": self.cell_key,
+            "graph_identity": self.graph_identity,
+            "criteria_name": self.criteria_name,
+            "criteria": list(self.criteria),
+            "priority_total": self.priority_total,
+            "cited_facts": [fact.to_dict() for fact in self.cited_facts],
+            "plan_digest": self.plan_digest,
+            "proof_verdict": self.proof_verdict,
+            "policy_allowed": self.policy_allowed,
+            "authorization": self.authorization.value,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return self.payload()
+
+
+@dataclass(frozen=True, slots=True)
+class AdvisorySeal:
+    """What sealing an advisory claim produced, plus both verification verdicts.
+
+    :attr:`grants_authorization` is the literal ``False`` and reads nothing, so no
+    input can change it. :attr:`verified` is *integrity*, the same question
+    :func:`~mayhem.domain.attestation.verify_chain` answers for a run's chain and
+    no more: it says the bytes are unaltered and in order, not that the claim is
+    true and not that anybody approved it.
+
+    Note what this type does **not** have: no ``evidence_digest`` attribute, which
+    is why :func:`~mayhem.domain.advisor.is_certified_evidence` is ``False`` for
+    it, and no ``run_id``, so it can never be presented as a run's sealed evidence.
+    Both absences are the design, and tests/unit/test_advisor_evidence.py asserts
+    them rather than trusting this sentence.
+    """
+
+    chain_id: str
+    manifest_id: str
+    events: tuple[AttestedEvent, ...]
+    manifest: Manifest
+    chain_verification: ChainVerification
+    manifest_verification: ManifestVerification
+    claim: AdvisoryClaim
+
+    @property
+    def chain_root(self) -> str:
+        """The root the manifest commits to."""
+        return chain_root(self.events)
+
+    @property
+    def verified(self) -> bool:
+        """Chain integrity and manifest coverage. Not truth, and not approval."""
+        return self.chain_verification.valid and self.manifest_verification.valid
+
+    @property
+    def grants_authorization(self) -> bool:
+        """Always ``False``. Literal, derived from nothing, on purpose.
+
+        A sealed advisory claim is a record that a recommendation was generated
+        from cited facts. It approves nothing, authorises nothing, and grants no
+        execution intent — and because this property takes no input, there is no
+        value a caller could pass, store, or replay to make it say otherwise.
+        """
+        return False
+
+    @property
+    def standing(self) -> str:
+        """Always :data:`ADVISORY_STANDING`."""
+        return ADVISORY_STANDING
+
+    def describe(self) -> str:
+        return (
+            f"advisory claim {self.claim.recommendation_id!r} sealed as {self.manifest_id} "
+            f"(root {self.chain_root[:12]}…, {len(self.events)} event(s), standing "
+            f"{self.standing}, grants_authorization={self.grants_authorization}, "
+            f"{'verified' if self.verified else 'UNVERIFIED'})"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "standing": self.standing,
+            "grants_approval": False,
+            "grants_authorization": self.grants_authorization,
+            "chain_id": self.chain_id,
+            "manifest_id": self.manifest_id,
+            "chain_root": self.chain_root,
+            "verified": self.verified,
+            "claim": self.claim.to_dict(),
+        }
+
+
+#: The sha256 shape an advisory digest must have. Same regex
+#: ``mayhem.domain.advisor`` uses for a sealed-evidence citation, restated here as
+#: a module constant because this module is the one that refuses on it.
+_SEALED_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def advisory_chain_id(recommendation_digest: str) -> str:
+    """The chain an advisory claim hangs off: ``advisory:<digest prefix>``.
+
+    Derived from the *claim's own* digest rather than from its id, so two claims
+    about the same recommendation with different content are two chains, and one
+    claim re-derived from the same bytes is the same chain. Plan 12's law is one
+    chain per identity starting at genesis, and this gives an advisory claim an
+    identity of its own — it has no run.
+    """
+    if not _SEALED_DIGEST_RE.fullmatch(recommendation_digest):
+        raise InvariantViolationError(
+            RULE_ADVISORY_SEAL_UNTRACEABLE,
+            f"advisory chain id needs a sealed sha256 digest, got {recommendation_digest!r}",
+        )
+    return f"{ADVISORY_CHAIN_PREFIX}:{recommendation_digest[:16]}"
+
+
+def advisory_claim_payload(claim: AdvisoryClaim) -> dict[str, object]:
+    """The attested body of an advisory claim. One function, so tests can call it."""
+    return claim.payload()
+
+
+def advisory_events(
+    claim: AdvisoryClaim, *, recorded_at: AttestedTimestamp
+) -> tuple[AttestedEvent, ...]:
+    """The events one advisory claim seals, in chain order (pure).
+
+    Two members, and the second is what makes the standing legible from the chain
+    alone. The first records the claim with every fact it cites; the second closes
+    the chain and repeats ``standing: advisory`` with
+    ``grants_authorization: false``, so a reader who has the manifest but has not
+    read the first payload still learns what it is.
+
+    The events *reference* the recommendation by digest rather than embedding it,
+    the same rule :mod:`mayhem.infra.attestation_store` follows for a run's
+    envelope. This chain cannot become a second copy of an advisor artifact, and
+    the fact that it cannot be is what keeps it from being mistaken for one.
+    """
+    chain_id = advisory_chain_id(claim.recommendation_digest)
+    return (
+        AttestedEvent(
+            event_id=f"{chain_id}:recorded",
+            event_kind=CHAIN_EVENT_ADVISORY_RECORDED,
+            run_id=chain_id,
+            sequence=0,
+            payload=advisory_claim_payload(claim),
+            recorded_at=recorded_at,
+        ),
+        AttestedEvent(
+            event_id=f"{chain_id}:sealed",
+            event_kind=CHAIN_EVENT_ADVISORY_SEALED,
+            run_id=chain_id,
+            sequence=1,
+            payload={
+                "standing": ADVISORY_STANDING,
+                "grants_approval": False,
+                "grants_authorization": False,
+                "recommendation_digest": claim.recommendation_digest,
+                "claims_before": 1,
+            },
+            recorded_at=recorded_at,
+        ),
+    )
+
+
+def _seal_reading(recorded_at: AttestedTimestamp | None) -> AttestedTimestamp:
+    """The caller's reading, or a fresh wall-clock + monotonic pair.
+
+    Same construction :mod:`mayhem.infra.attestation_store` and
+    :mod:`mayhem.infra.audit_stream` use, so one clock policy covers plan 12 and
+    plan 21: an advisory event and a run event taken together are ordered by the
+    same rule.
+    """
+    if recorded_at is not None:
+        return recorded_at
+    return AttestedTimestamp(
+        wall_clock=utc_now(),
+        monotonic_ns=time.monotonic_ns(),
+        uncertainty_ms=0.0,
+        source="system",
+    )
+
+
+def seal_advisory_claim(
+    store: Store,
+    claim: AdvisoryClaim,
+    *,
+    recorded_at: AttestedTimestamp | None = None,
+    retention_class: RetentionClass = RetentionClass.HOT,
+) -> AdvisorySeal:
+    """Seal one advisory claim into a persisted chain and manifest.
+
+    Delegates every part of the sealing to the machinery that already exists —
+    :func:`~mayhem.domain.attestation.seal_events`,
+    :func:`~mayhem.domain.attestation.build_manifest`,
+    :func:`~mayhem.domain.attestation.verify_chain`,
+    :func:`~mayhem.domain.attestation.verify_manifest`, and
+    :class:`~mayhem.infra.attestation_store.AttestationRepository`. This function
+    decides *what* is attested and nothing else; there is no second sealer here,
+    for the same reason
+    :func:`mayhem.controller.certification_evidence.seal_certification_evidence`
+    is not one.
+
+    The chain and the manifest are verified **before** anything is written, so a
+    chain that does not hold leaves no row behind to be mistaken for a sealed
+    claim. That ordering is the difference between "the seal failed" and "there is
+    a chain that looks sealed and is not".
+
+    The ``store`` is a *parameter*, not a field on :class:`AdvisorService`. That
+    is the boundary: this function writes, the engine cannot, and the engine is
+    the thing a caller holds while reading sealed inputs. ``HOT`` is the default
+    retention class because an advisory claim is meant to be re-derivable — the
+    facts it cites are the durable part — and keeping the correlation forever
+    would outlast the reason it was made.
+
+    Raises:
+        AttestationError: If the derived chain or manifest fails verification.
+            Nothing is written.
+        InvariantViolationError: From the evidence boundary inside the plan 12
+            writers, if the derived document carries a secret-classified field.
+            Nothing is written.
+    """
+    reading = _seal_reading(recorded_at)
+    events = seal_events(advisory_events(claim, recorded_at=reading))
+    chain_id = advisory_chain_id(claim.recommendation_digest)
+    manifest = build_manifest(
+        events,
+        manifest_id=f"{chain_id}:manifest",
+        run_id=chain_id,
+        signer_identity="",
+        trust_root_ref="",
+        retention_class=retention_class,
+        created_at=reading,
+        previous_manifest_digest=GENESIS_DIGEST,
+    )
+
+    chain_verification = verify_chain(events)
+    if not chain_verification.valid:
+        raise AttestationError(
+            f"refusing to seal an invalid advisory chain for "
+            f"{claim.recommendation_id!r}: {'; '.join(chain_verification.errors)}"
+        )
+    manifest_verification = verify_manifest(manifest, events)
+    if not manifest_verification.valid:
+        raise AttestationError(
+            f"refusing to seal an invalid advisory manifest for "
+            f"{claim.recommendation_id!r}: {'; '.join(manifest_verification.errors)}"
+        )
+
+    repository = AttestationRepository(store)
+    repository.save_chain(chain_id, events, sealed_at=reading.wall_clock)
+    repository.save_manifest(manifest)
+    return AdvisorySeal(
+        chain_id=chain_id,
+        manifest_id=manifest.manifest_id,
+        events=events,
+        manifest=manifest,
+        chain_verification=chain_verification,
+        manifest_verification=manifest_verification,
+        claim=claim,
+    )
+
+
+# -- Phase 4: the audit stream ------------------------------------------------------
+
+
+def record_replay_compilation(
+    stream: AuditStream,
+    replay: IncidentReplay,
+    *,
+    principal: str,
+    subject_run_id: str = "",
+    recorded_at: AttestedTimestamp | None = None,
+) -> AttestedEvent:
+    """Append the privileged action of turning an incident into an experiment.
+
+    An incident-replay compilation is the exact thing an auditor wants to see:
+    somebody took a production failure, decided it was worth reproducing, and
+    built an experiment out of it. Before Phase 4 the answer lived only in the
+    caller's logs, if anywhere.
+
+    ``decision_digest`` carries :attr:`IncidentReplay.replay_digest`, so the entry
+    names the *value* that was compiled — the capture, the cell, the topology pin
+    and every parameter together. ``target`` is the incident, not the coverage
+    cell: a cell key joins its four parts with the unit separator, which the
+    ``audit_entries`` CHECK constraints refuse as a column value, and the incident
+    is the thing the compilation was *of*. The cell travels in ``detail`` where a
+    key is allowed.
+
+    ``approval_digest`` and ``policy_digest`` are left **empty on purpose**: no
+    approval exists and no policy decision was consulted, and writing anything
+    into either column would be a claim that the advisor holds authority it does
+    not. ``principal`` is the identity the writer *recorded*; the stream is
+    unsigned, so that is a claim and
+    :class:`~mayhem.infra.audit_stream.AuditEntry` says so.
+    """
+    return stream.record(
+        AuditEntry(
+            principal=principal,
+            action=KIND_ADVISORY_REPLAY_COMPILED,
+            target=replay.incident.incident_id,
+            subject_run_id=subject_run_id,
+            decision_digest=replay.replay_digest,
+            detail={
+                "incident_id": replay.incident.incident_id,
+                "cell_key": replay.cell.key,
+                "service": replay.incident.service,
+                "dependency": replay.incident.dependency,
+                "fault_id": replay.fault_id,
+                "topology_snapshot_id": replay.topology_snapshot_id,
+                "graph_identity": replay.graph_identity,
+                "duration_s": replay.duration_s,
+                "parameters": [
+                    {"parameter": t.parameter, "source": t.source, "unit": t.unit}
+                    for t in replay.parameters
+                ],
+                "standing": ADVISORY_STANDING,
+            },
+        ),
+        recorded_at=recorded_at,
+    )
+
+
+def record_advisory_seal(
+    stream: AuditStream,
+    seal: AdvisorySeal,
+    *,
+    principal: str,
+    recorded_at: AttestedTimestamp | None = None,
+) -> AttestedEvent:
+    """Append the privileged action of sealing an advisory claim.
+
+    The companion to :func:`record_replay_compilation`, and the same reasoning:
+    sealing puts bytes into the chain of record, so it is an action an operator
+    should be able to find. ``decision_digest`` is the chain root — the identity
+    of exactly what was sealed — and again ``approval_digest`` is empty, because
+    :attr:`AdvisorySeal.grants_authorization` is ``False`` and a log row claiming
+    otherwise would be the same overclaim the seal itself refuses to make.
+    """
+    return stream.record(
+        AuditEntry(
+            principal=principal,
+            action=KIND_ADVISORY_CLAIM_SEALED,
+            target=seal.claim.recommendation_id,
+            decision_digest=seal.chain_root,
+            detail={
+                "chain_id": seal.chain_id,
+                "manifest_id": seal.manifest_id,
+                "recommendation_digest": seal.claim.recommendation_digest,
+                "finding_id": seal.claim.finding_id,
+                "cell_key": seal.claim.cell_key,
+                "standing": seal.standing,
+                "grants_approval": False,
+                "grants_authorization": seal.grants_authorization,
+            },
+        ),
+        recorded_at=recorded_at,
+    )

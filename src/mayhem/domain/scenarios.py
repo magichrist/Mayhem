@@ -1,9 +1,32 @@
-"""Scenario variables and conditional steps (v0.9.0 expansion task 14).
+"""Scenario variables and conditional steps (v0.9.0 expansion task 14), and the
+plan 21 scenario library (gap 49).
 
 A scenario is *data*: typed variables, time windows, and conditional steps that
 are resolved at compile time. Compilation is pure and deterministic — the same
 variables and seed always produce the same plan — and the original scenario
 source is preserved so evidence can show what the operator actually wrote.
+
+Two vocabularies live here, and they answer different questions.
+
+The first (task 14, unchanged) is the **operator script**: a conditional
+program over variables, compiled to an ordered list of actions. It says *what an
+operator does*.
+
+The second (plan 21, added below) is the **scenario library**: versioned
+templates over :mod:`mayhem.domain.advisor`'s vocabulary — a hypothesis, a
+timeline, stop conditions, and a recovery expectation. It says *what a whole
+failure looks like over time*. A library entry is not a script and not a fault
+list; it is a claim, and a claim that only lists faults has not claimed anything,
+so every field that makes it a claim is required (see
+:class:`ScenarioTemplate`). The library exists because a resilience backlog
+written as "add a DNS failure test" produces experiments that pass and a system
+that still fails.
+
+The two never call each other. An instantiation is a *proposal function* over a
+:class:`~mayhem.domain.advisor.Finding`, which is the exact signature
+:func:`mayhem.domain.advisor.recommendations_for` takes, so a scenario enters
+the advisor through the same door as any other proposal and is compiled, gated,
+and sealed by the same road. There is no scenario-only planner.
 """
 
 from __future__ import annotations
@@ -15,12 +38,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import time as dtime
 from enum import StrEnum
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from mayhem.domain.advisor import ExperimentCandidate
+from mayhem.domain.coverage import CoverageCell
+from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
+from mayhem.domain.hashing import digest
+
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from mayhem.domain.advisor import Finding
 
 SCENARIO_SCHEMA_VERSION = "1.0"
 
@@ -391,3 +422,784 @@ def load_scenario(payload: dict[str, Any]) -> Scenario:
         raise ScenarioError(f"invalid scenario: {exc.errors()[0]['msg']}") from exc
     except ScenarioError:
         raise
+
+
+# =========================================================================== #
+# Plan 21 — the scenario library (gap 49)                                   #
+# =========================================================================== #
+
+#: The schema version of a *library template*. Separate from
+#: :data:`SCENARIO_SCHEMA_VERSION` because these are different documents: that
+#: one is an operator script, this one is a versioned claim about a failure
+#: mode. A template carries its version in two places — ``schema_version`` (the
+#: shape) and ``version`` (the claim) — and an instantiation records both, so a
+#: reader can tell "the format changed" from "the scenario changed".
+SCENARIO_TEMPLATE_SCHEMA_VERSION = "1.0"
+
+#: The version shape every library entry must declare. Enforced by
+#: :class:`ScenarioTemplate` rather than documented, because
+#: :meth:`ScenarioLibrary.latest` sorts lexically: without a rule, a template
+#: authored as ``1.10`` would sort below ``1.9`` and ``latest`` would quietly hand
+#: back the older claim.
+_TEMPLATE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class TimelineStep(BaseModel):
+    """One moment in a scenario: a fault, how long it lasts, and what to look at.
+
+    ``expects`` is required and is the reason this is not a fault list. A step
+    that names a fault and nothing else is a wish; a step that names a fault
+    *and what an observer should see while it is in place* is a falsifiable
+    moment in a timeline. The template author has to write that sentence, which
+    is the only place the "what would convince us this is real" question gets
+    asked before the run rather than after it.
+
+    ``at_s`` is the offset from the start of the scenario. Ordering is checked
+    on the template, so a timeline that reads backwards is a refusal rather than
+    an experiment that silently runs its faults in the wrong order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    at_s: float = Field(ge=0.0)
+    fault_id: str
+    duration_s: float = Field(gt=0.0)
+    expects: str
+
+    @model_validator(mode="after")
+    def _check(self) -> TimelineStep:
+        if not self.fault_id.strip():
+            raise ScenarioError(
+                "a timeline step must name the fault it injects: an unnamed fault is "
+                "not a moment in a scenario"
+            )
+        if not self.expects.strip():
+            raise ScenarioError(
+                f"timeline step at {self.at_s:g}s names fault {self.fault_id!r} but says "
+                "nothing about what should be observed while it is in place: a fault "
+                "with no expectation is a fault list"
+            )
+        return self
+
+
+class RecoveryPlan(BaseModel):
+    """What recovery means for this scenario, and how anybody would know.
+
+    Three required sentences, and the third is the one that usually goes
+    missing: ``verified_by`` names the observation that shows the system came
+    back. "Restore service" is an intention; "the readiness probe returns 200 for
+    three consecutive intervals with no lease outstanding" is a check, and only
+    the second can end a scenario.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    expects: str
+    compensation: str
+    verified_by: str
+
+    @model_validator(mode="after")
+    def _check(self) -> RecoveryPlan:
+        for name, value in (
+            ("expects", self.expects),
+            ("compensation", self.compensation),
+            ("verified_by", self.verified_by),
+        ):
+            if not value.strip():
+                raise ScenarioError(
+                    f"a recovery plan must state {name}: recovery that names no "
+                    "expected end state, no undo, or no way of knowing it happened is "
+                    "not a recovery plan"
+                )
+        return self
+
+
+class ScenarioTemplate(BaseModel):
+    """A versioned claim about how a whole failure looks over time (gap 49).
+
+    Plan 21's sentence — "each scenario is hypothesis plus timeline plus stop
+    conditions plus recovery, never just a fault list" — is enforced by the
+    constructor rather than by review: ``hypothesis``, ``timeline``,
+    ``stop_conditions`` and ``recovery`` are required and non-empty, so the one
+    thing this type cannot express is a fault list. Everything else is optional
+    detail about a claim that is already complete.
+
+    ``version`` is part of the identity, and the instantiation records it, so a
+    scenario that was revised keeps its history instead of silently changing the
+    meaning of a report that cites ``scenario:dns-failure@1.0.0``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    template_id: str
+    version: str
+    title: str
+    hypothesis: str
+    timeline: tuple[TimelineStep, ...]
+    stop_conditions: tuple[str, ...]
+    recovery: RecoveryPlan
+    blast_scope: str = ""
+    schema_version: str = SCENARIO_TEMPLATE_SCHEMA_VERSION
+
+    @model_validator(mode="after")
+    def _check(self) -> ScenarioTemplate:
+        for name, value in (
+            ("template_id", self.template_id),
+            ("version", self.version),
+            ("title", self.title),
+            ("hypothesis", self.hypothesis),
+        ):
+            if not value.strip():
+                raise ScenarioError(
+                    f"a scenario template must state {name}: an unnamed scenario cannot "
+                    "be cited by a report, versioned, or told apart from the next one"
+                )
+        if not _TEMPLATE_VERSION_RE.fullmatch(self.version):
+            raise ScenarioError(
+                f"scenario template version {self.version!r} is not N.N.N: "
+                ":meth:`ScenarioLibrary.latest` picks a version by sorting, and a scheme "
+                "that does not sort correctly would hand back the older claim without "
+                "saying so"
+            )
+        if not self.timeline:
+            raise ScenarioError(
+                f"scenario {self.ref!r} declares an empty timeline: a scenario with no "
+                "ordered moments is a fault list"
+            )
+        offsets = [step.at_s for step in self.timeline]
+        if any(later < earlier for earlier, later in pairwise(offsets)):
+            raise ScenarioError(
+                f"scenario {self.ref!r} declares offsets {offsets}, which run backwards: "
+                "a timeline that reads backwards is an experiment that injects its "
+                "faults in the wrong order"
+            )
+        if not self.stop_conditions:
+            raise ScenarioError(
+                f"scenario {self.ref!r} declares no stop conditions: a scenario nobody "
+                "can stop is a scenario nobody can safely run"
+            )
+        for index, condition in enumerate(self.stop_conditions):
+            if not condition.strip():
+                raise ScenarioError(
+                    f"scenario {self.ref!r} stop condition {index} is blank: the rule "
+                    "about when to stop is not present when it reads as one"
+                )
+        return self
+
+    @property
+    def ref(self) -> str:
+        """``template_id@version`` — the citation form a report uses."""
+        return f"{self.template_id}@{self.version}"
+
+    @property
+    def fault_ids(self) -> tuple[str, ...]:
+        """The timeline's faults, in timeline order."""
+        return tuple(step.fault_id for step in self.timeline)
+
+    @property
+    def duration_s(self) -> float:
+        """How long the whole timeline runs for, last fault included."""
+        return max(step.at_s + step.duration_s for step in self.timeline)
+
+    @property
+    def digest(self) -> str:
+        """Deterministic identity of this template at this version."""
+        return digest(self.to_dict())
+
+    def probes(self) -> tuple[str, ...]:
+        """One probe per timeline moment, naming the fault and what to watch.
+
+        These are *suggested* probes in the advisor's vocabulary — they travel on
+        an :class:`~mayhem.domain.advisor.ExperimentCandidate`, and plan 11 makes
+        them binding downstream. The advisor suggests; the policy gate decides.
+        """
+        return tuple(
+            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})"
+            for step in self.timeline
+        )
+
+    def instantiate(
+        self,
+        *,
+        target: str,
+        execution_context: str,
+        parameter_band: str,
+    ) -> ScenarioInstantiation:
+        """Bind this template to one declared coverage cell. Pure, and total.
+
+        Every argument is required and there is no default for any of them, for
+        the same reason :class:`~mayhem.domain.advisor.CoverageLandscape` requires
+        its identifier: a scenario instantiated with an implied execution context
+        or band lands in a cell nobody can look up, which is the one thing a
+        coverage claim must not do.
+
+        Nothing is read from a clock, and no fault parameter is invented — each
+        fault keeps the value
+        :mod:`mayhem.domain.catalog`'s own ``params_schema`` default, because
+        that default is the catalog's decision and a scenario template's whole
+        claim is about the *shape* of a failure, not about a number nobody
+        measured.
+        """
+        for name, value in (
+            ("target", target),
+            ("execution_context", execution_context),
+            ("parameter_band", parameter_band),
+        ):
+            if not value.strip():
+                raise ScenarioError(
+                    f"scenario {self.ref!r} cannot be instantiated without {name}: a "
+                    "scenario with an implied target dimension occupies a cell that "
+                    "nobody can look up"
+                )
+        return ScenarioInstantiation(
+            template_id=self.template_id,
+            template_version=self.version,
+            schema_version=self.schema_version,
+            target=target,
+            execution_context=execution_context,
+            parameter_band=parameter_band,
+            hypothesis=self.hypothesis,
+            timeline=self.timeline,
+            stop_conditions=(
+                *self.stop_conditions,
+                f"abort once the declared timeline has run for {self.duration_s:g}s",
+                f"do not call the scenario recovered until: {self.recovery.verified_by}",
+            ),
+            recovery=self.recovery,
+            blast_scope=self.blast_scope,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+class ScenarioInstantiation(BaseModel):
+    """A template bound to one cell, ready to be proposed to the advisor.
+
+    This is the whole of what a scenario library hands the engine. It carries no
+    approval, no weighting, and no execution authority — the same absence of
+    vocabulary as
+    :class:`~mayhem.domain.advisor.UntrustedRecommendationDraft`, and for the
+    same reason: the author of a scenario is not the approver of one.
+
+    The three methods are the whole surface:
+
+    * :meth:`cell` — the coverage cell this scenario occupies;
+    * :meth:`propose` — a function of a
+      :class:`~mayhem.domain.advisor.Finding`, which is precisely what
+      :func:`mayhem.domain.advisor.recommendations_for` injects, so a scenario
+      reaches the engine by the ordinary door;
+    * :meth:`drill_spec` — the ordinary
+      :class:`~mayhem.domain.experiments.DrillSpec`, which is precisely what
+      ``plan_drill`` compiles for an authored plan.
+
+    There is deliberately no fourth method. A scenario cannot compile itself,
+    cannot schedule itself, and cannot reach a runtime.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    template_id: str
+    template_version: str
+    schema_version: str
+    target: str
+    execution_context: str
+    parameter_band: str
+    hypothesis: str
+    timeline: tuple[TimelineStep, ...]
+    stop_conditions: tuple[str, ...]
+    recovery: RecoveryPlan
+    blast_scope: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> ScenarioInstantiation:
+        for name, value in (
+            ("template_id", self.template_id),
+            ("template_version", self.template_version),
+            ("target", self.target),
+            ("execution_context", self.execution_context),
+            ("parameter_band", self.parameter_band),
+            ("hypothesis", self.hypothesis),
+        ):
+            if not value.strip():
+                raise ScenarioError(f"a scenario instantiation must state {name}")
+        if not self.timeline:
+            raise ScenarioError(
+                f"scenario {self.ref!r} carries an empty timeline: an instantiated "
+                "scenario with no moments is a fault list"
+            )
+        if not self.stop_conditions:
+            raise ScenarioError(
+                f"scenario {self.ref!r} carries no stop conditions: an instantiated "
+                "scenario nobody can stop is not instantiated safely"
+            )
+        return self
+
+    @property
+    def ref(self) -> str:
+        """``template_id@version`` — travels onto every artifact derived here."""
+        return f"{self.template_id}@{self.template_version}"
+
+    @property
+    def duration_s(self) -> float:
+        return max(step.at_s + step.duration_s for step in self.timeline)
+
+    @property
+    def fault_ids(self) -> tuple[str, ...]:
+        return tuple(step.fault_id for step in self.timeline)
+
+    @property
+    def digest(self) -> str:
+        """Identity of this instantiation: template, version, cell, and timeline."""
+        return digest(self.to_dict())
+
+    @property
+    def cell(self) -> CoverageCell:
+        """The coverage cell the scenario occupies."""
+        return CoverageCell(
+            target=self.target,
+            fault_kind=self.timeline[0].fault_id,
+            execution_context=self.execution_context,
+            parameter_band=self.parameter_band,
+        )
+
+    def probes(self) -> tuple[str, ...]:
+        return tuple(
+            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})"
+            for step in self.timeline
+        )
+
+    def propose(self, finding: Finding) -> ExperimentCandidate:
+        """Propose this scenario against one finding.
+
+        Typed exactly as the ``propose`` argument of
+        :func:`mayhem.domain.advisor.recommendations_for`, so passing
+        ``instantiation.propose`` there is not a special case — it is the
+        injection point. The resulting draft is untrusted, unweighted, and
+        unapproved in exactly the way any other generated candidate is, and the
+        recommendation it compiles into is always ``generated``.
+
+        The finding is used only to name the experiment, so the candidate stays
+        traceable to the gap it was proposed for. The hypothesis is the
+        template's, unedited: it is the claim being made, and a paraphrase would
+        be a claim nobody reviewed.
+        """
+        return ExperimentCandidate(
+            experiment_id=f"exp:scenario:{self.ref}:{finding.finding_id}",
+            hypothesis=self.hypothesis,
+            suggested_probes=self.probes(),
+            stop_conditions=self.stop_conditions,
+        )
+
+    def drill_spec(self) -> DrillSpec:
+        """The ordinary drill spec, for ``plan_drill`` and nothing else.
+
+        Deliberately the same
+        :class:`~mayhem.domain.experiments.DrillSpec` shape
+        :meth:`mayhem.controller.advisor_service.AdvisorService.submit` builds for
+        any recommendation: one container, the timeline's faults in declared
+        order, one sequential execution step, and the container's own ``on_failure``
+        and ``recovery`` defaults left to inherit — because a scenario template
+        that overrode a fault's failure policy would be asserting something about
+        residue handling that nobody verified.
+
+        One honest limitation, stated rather than hidden: the planner has no
+        staggered-injection step, so the timeline's ``at_s`` offsets do **not**
+        become extra executions here. They travel as data on
+        :attr:`timeline` — and therefore into the instantiation digest, the
+        candidate's probes, and any evidence sealed from them. Turning an offset
+        into a second injection would be a fabrication about what ran.
+        """
+        container = DrillContainer(
+            faults=tuple(
+                DrillFault(
+                    fault=step.fault_id,
+                    duration=f"{step.duration_s:g}s",
+                )
+                for step in self.timeline
+            ),
+        )
+        return DrillSpec(
+            kind="drill",
+            name=f"advisor:scenario:{self.ref}",
+            hypothesis=self.hypothesis,
+            containers={self.target: container},
+            execution=(ExecutionStep(sequential=(self.target,)),),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+class ScenarioLibrary(BaseModel):
+    """A named set of versioned templates, and the only way to look one up.
+
+    A library may hold several versions of one ``template_id`` — that is the
+    point of versioning — but never two entries with the same ``(template_id,
+    version)``, because a lookup that returns one of two would make a report's
+    citation depend on iteration order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    templates: tuple[ScenarioTemplate, ...] = ()
+
+    @model_validator(mode="after")
+    def _check(self) -> ScenarioLibrary:
+        if not self.name.strip():
+            raise ScenarioError("a scenario library must be named")
+        refs = [template.ref for template in self.templates]
+        duplicates = sorted({ref for ref in refs if refs.count(ref) > 1})
+        if duplicates:
+            raise ScenarioError(
+                f"scenario library {self.name!r} holds {duplicates} twice: a template "
+                "cited by id and version must resolve to one entry, or a report's "
+                "citation depends on iteration order"
+            )
+        return self
+
+    def get(self, template_id: str, version: str) -> ScenarioTemplate | None:
+        """The template at that exact version, or ``None``."""
+        return next(
+            (t for t in self.templates if t.template_id == template_id and t.version == version),
+            None,
+        )
+
+    def latest(self, template_id: str) -> ScenarioTemplate | None:
+        """The highest ``version`` string for a template id, or ``None``.
+
+        Sorted lexically, not semantically: the versions in this library are
+        ``1.0.0``-shaped by the validator below, so lexical and numeric order
+        agree, and a version scheme nobody validated cannot silently reorder a
+        library.
+        """
+        candidates = [t for t in self.templates if t.template_id == template_id]
+        return max(candidates, key=lambda t: t.version) if candidates else None
+
+    def ids(self) -> tuple[str, ...]:
+        """Every distinct template id, sorted."""
+        return tuple(sorted({t.template_id for t in self.templates}))
+
+    def refs(self) -> tuple[str, ...]:
+        """Every ``id@version``, sorted."""
+        return tuple(sorted(t.ref for t in self.templates))
+
+
+def _template(**kwargs: Any) -> ScenarioTemplate:
+    """One shipped entry. A thin wrapper so the data reads as a list of scenarios."""
+    return ScenarioTemplate(**kwargs)
+
+
+#: The plan 21 library: the eight multi-fault scenarios the plan names, each a
+#: hypothesis plus timeline plus stop conditions plus recovery. DATA — a value
+#: the advisor may propose, never a program that runs. Every fault id here is one
+#: :mod:`mayhem.domain.catalog` actually defines, so an instantiated template
+#: compiles through ``plan_drill`` like any other plan.
+SCENARIO_TEMPLATES: tuple[ScenarioTemplate, ...] = (
+    _template(
+        template_id="regional-outage",
+        version="1.0.0",
+        title="Regional outage",
+        hypothesis=(
+            "losing an entire region's endpoints degrades checkout in the other regions "
+            "before any local budget notices"
+        ),
+        blast_scope="one availability zone; every service that fans out to it",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="node.service_stop",
+                duration_s=60.0,
+                expects="the region's endpoints stop answering and callers are re-routed",
+            ),
+            TimelineStep(
+                at_s=5.0,
+                fault_id="net.partition",
+                duration_s=60.0,
+                expects="cross-region calls hang rather than fail fast, and retry counts climb",
+            ),
+            TimelineStep(
+                at_s=30.0,
+                fault_id="dependency.timeout",
+                duration_s=30.0,
+                expects="the first dependency circuit opens on timeout rather than on error rate",
+            ),
+        ),
+        stop_conditions=(
+            "abort if any surviving region's error rate exceeds 2% for 30s",
+            "abort if the region has not rejoined within 120s",
+        ),
+        recovery=RecoveryPlan(
+            expects="every region's endpoints answer again and latency is at baseline",
+            compensation="rejoin the isolated node and clear the injected partition rules",
+            verified_by="the readiness probe returns 200 for three consecutive intervals",
+        ),
+    ),
+    _template(
+        template_id="cache-outage",
+        version="1.0.0",
+        title="Cache outage",
+        hypothesis=(
+            "a cache that stops answering turns a hot read path into a full database read, "
+            "and the database is the thing that falls over next"
+        ),
+        blast_scope="one cache service and the services that read through it",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="dependency.circuit_open",
+                duration_s=120.0,
+                expects="every cache read misses and the origin takes the whole read volume",
+            ),
+            TimelineStep(
+                at_s=10.0,
+                fault_id="db.slow_query",
+                duration_s=60.0,
+                expects="query latency rises on exactly the statements the cache was hiding",
+            ),
+            TimelineStep(
+                at_s=45.0,
+                fault_id="dependency.circuit_open",
+                duration_s=30.0,
+                expects="the origin's own dependency trips, so the fallback has nowhere to go",
+            ),
+        ),
+        stop_conditions=(
+            "abort if database p99 query latency exceeds 3x baseline for 30s",
+            "abort if the origin's connection pool reports any refused connection",
+        ),
+        recovery=RecoveryPlan(
+            expects="cache hit rate returns to baseline and origin read volume falls back",
+            compensation="close the injected circuits and restart the evicted pool consumers",
+            verified_by="cache hit rate is observed at baseline over a full interval",
+        ),
+    ),
+    _template(
+        template_id="dns-failure",
+        version="1.0.0",
+        title="DNS failure",
+        hypothesis=(
+            "name resolution failing looks like a slow application until the pools it feeds "
+            "run dry"
+        ),
+        blast_scope="the resolver and every client that resolves through it",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="dns.servfail",
+                duration_s=90.0,
+                expects="resolutions start failing after the first cache TTL expires",
+            ),
+            TimelineStep(
+                at_s=5.0,
+                fault_id="dependency.timeout",
+                duration_s=60.0,
+                expects="connection pools drain while resolvers are being retried",
+            ),
+            TimelineStep(
+                at_s=20.0,
+                fault_id="dns.resolve_delay",
+                duration_s=45.0,
+                expects="the surviving cached names resolve slowly, spreading the failure unevenly",
+            ),
+        ),
+        stop_conditions=(
+            "abort if the connection pool's available count reaches zero",
+            "abort if resolution failure rate exceeds 50% for 20s",
+        ),
+        recovery=RecoveryPlan(
+            expects="resolution succeeds again and the pools refill without an application restart",
+            compensation="restore the resolver configuration the injector replaced",
+            verified_by="a resolution probe from every zone returns an answer three times in a row",
+        ),
+    ),
+    _template(
+        template_id="payment-degradation",
+        version="1.0.0",
+        title="Payment degradation",
+        hypothesis=(
+            "a payment provider that accepts connections and then stops responding holds "
+            "requests open rather than returning errors, so the queue grows silently"
+        ),
+        blast_scope="the payment path only",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="dependency.timeout",
+                duration_s=90.0,
+                expects="in-flight payment requests stop completing but are not refused",
+            ),
+            TimelineStep(
+                at_s=10.0,
+                fault_id="app.response_5xx",
+                duration_s=60.0,
+                expects="the retries the client library issues surface as 5xx on the checkout path",
+            ),
+            TimelineStep(
+                at_s=40.0,
+                fault_id="dependency.circuit_open",
+                duration_s=30.0,
+                expects="the circuit opens and orders are declined instead of queued",
+            ),
+        ),
+        stop_conditions=(
+            "abort if the pending-order queue grows for more than 60s",
+            "abort if any order is recorded as captured without a provider confirmation",
+        ),
+        recovery=RecoveryPlan(
+            expects="pending orders drain and no order is left in an indeterminate state",
+            compensation="re-drive the held orders and reconcile against the provider's ledger",
+            verified_by="the pending-order gauge returns to zero and reconciliation reports no gap",
+        ),
+    ),
+    _template(
+        template_id="network-partition",
+        version="1.0.0",
+        title="Network partition",
+        hypothesis=(
+            "a one-way partition is worse than an outage, because both sides believe they "
+            "can still reach the other"
+        ),
+        blast_scope="one dependency pair, in one direction",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="net.partition",
+                duration_s=60.0,
+                expects="requests from the caller hang with no error on either side",
+            ),
+            TimelineStep(
+                at_s=15.0,
+                fault_id="dependency.flap",
+                duration_s=45.0,
+                expects="the caller's retries flap the connection rather than failing it cleanly",
+            ),
+        ),
+        stop_conditions=(
+            "abort if in-flight requests on the partitioned path exceed 50% of the total",
+            "abort if any lease remains held after the partition is lifted",
+        ),
+        recovery=RecoveryPlan(
+            expects="both sides see each other again and no request is still in flight",
+            compensation="remove the injected partition rules on both sides",
+            verified_by="a probe across the partition returns in under its baseline p99",
+        ),
+    ),
+    _template(
+        template_id="pod-churn",
+        version="1.0.0",
+        title="Pod churn",
+        hypothesis=(
+            "pods that are killed and restarted faster than their readiness gate accounts "
+            "for leave the service with fewer ready replicas than its own policy allows"
+        ),
+        blast_scope="one workload's replicas",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="container.kill",
+                duration_s=30.0,
+                expects="a replica disappears and the service's ready count falls",
+            ),
+            TimelineStep(
+                at_s=5.0,
+                fault_id="container.restart",
+                duration_s=30.0,
+                expects="the replacement comes back but is not ready yet",
+            ),
+            TimelineStep(
+                at_s=10.0,
+                fault_id="process.crash_loop",
+                duration_s=30.0,
+                expects="the replacement crashes on readiness, so the warm-up never settles",
+            ),
+        ),
+        stop_conditions=(
+            "abort if ready replicas fall below the workload's declared minimum",
+            "abort if any request is refused rather than queued during the churn",
+        ),
+        recovery=RecoveryPlan(
+            expects="ready replicas return to the declared count and latency returns to baseline",
+            compensation="remove the churn policy and let the scheduler settle",
+            verified_by="the ready-replica gauge holds at its declared minimum for two minutes",
+        ),
+    ),
+    _template(
+        template_id="certificate-expiry",
+        version="1.0.0",
+        title="Certificate expiry",
+        hypothesis=(
+            "an expired certificate fails closed, and a client that does not rotate is the "
+            "thing that stays down"
+        ),
+        blast_scope="every client of the expired certificate",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="tls.certificate_expired",
+                duration_s=90.0,
+                expects="TLS handshakes start failing with a verification error",
+            ),
+            TimelineStep(
+                at_s=10.0,
+                fault_id="tls.handshake_failure",
+                duration_s=60.0,
+                expects="clients that retry without reloading the certificate keep failing",
+            ),
+        ),
+        stop_conditions=(
+            "abort if any health check reports a TLS verification failure for more than 30s",
+            "abort if the error rate on the affected endpoint exceeds 5%",
+        ),
+        recovery=RecoveryPlan(
+            expects="a renewed certificate is loaded and handshakes succeed without a restart",
+            compensation="restore the certificate bundle the injector replaced",
+            verified_by="a handshake probe from every client succeeds and reports the new expiry",
+        ),
+    ),
+    _template(
+        template_id="traffic-spike",
+        version="1.0.0",
+        title="Traffic spike",
+        hypothesis=(
+            "a load step applied on top of normal traffic finds the limit that a load test "
+            "on an idle system never reaches"
+        ),
+        blast_scope="one ingress and the services behind it",
+        timeline=(
+            TimelineStep(
+                at_s=0.0,
+                fault_id="load.spike",
+                duration_s=180.0,
+                expects="request rate rises above the declared steady state",
+            ),
+            TimelineStep(
+                at_s=20.0,
+                fault_id="db.slow_query",
+                duration_s=90.0,
+                expects="the slowest statements are the ones that stop keeping up first",
+            ),
+            TimelineStep(
+                at_s=60.0,
+                fault_id="cpu.throttle",
+                duration_s=60.0,
+                expects="the throttled tier shows queueing rather than saturation",
+            ),
+        ),
+        stop_conditions=(
+            "abort if the load generator's own error rate exceeds 1%",
+            "abort if p99 latency exceeds 5x the declared steady-state budget",
+        ),
+        recovery=RecoveryPlan(
+            expects="traffic returns to the declared steady state and latency follows it down",
+            compensation="stop the injected load and remove the throttling rules",
+            verified_by="request rate and p99 latency are both at steady state for two intervals",
+        ),
+    ),
+)
+
+
+def scenario_library(name: str = "plan-21-resilience") -> ScenarioLibrary:
+    """The shipped library, by name."""
+    return ScenarioLibrary(name=name, templates=SCENARIO_TEMPLATES)
