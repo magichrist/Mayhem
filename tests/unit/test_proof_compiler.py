@@ -46,6 +46,7 @@ from mayhem.controller.approval_gate import (
 )
 from mayhem.controller.safety import SafetyContext, SafetyRefusedError, validate_plan
 from mayhem.controller.safety_proof import (
+    CEILING_RULE_IDS,
     GATE_RULE_IDS,
     OBLIGATION_FOR_RULE,
     canonical_plan_digest,
@@ -75,8 +76,14 @@ from mayhem.domain.identity import (
 )
 from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.prediction import (
+    RULE_MAX_AFFECTED_NODES,
+    RULE_MAX_AFFECTED_PCT,
     RULE_MAX_CONCURRENT_FAULTS,
+    RULE_MAX_CUSTOMER_FACING_SERVICES,
+    RULE_MAX_DEPENDENCY_DEPTH,
     RULE_MAX_DURATION_PER_FAULT_S,
+    RULE_PROTECTED_NODE,
+    BlastCeilings,
     PredictionBasis,
     predict_impact,
 )
@@ -103,6 +110,7 @@ from mayhem.domain.topology import (
     EdgeKind,
     HostNode,
     NodeKind,
+    PortBinding,
     ServiceNode,
     TargetSelector,
     TopologyGraph,
@@ -1052,6 +1060,397 @@ def test_a_configured_approval_gate_that_allows_reports_its_decision_on_the_line
     assert line.status is ObligationStatus.PASS
     assert "the approval gate authorized plan" in line.detail
     assert "u-approve" in line.detail
+
+
+# --- the five plan-14 blast-radius ceilings -------------------------------------
+#
+# ``tests/unit/test_prediction_evidence.py`` records that plan 14's ceilings were
+# enforced but unowned, and that the completeness guard was failing by name. The
+# rows landed; these tests are the half of the proof that says the mapping is not
+# merely present in a table.
+#
+# Every case runs the real gate twice and compares: once directly through
+# ``validate_plan``, to establish that the rule is actually raised rather than
+# inferred from the mapping table, and once through the compiler, to establish
+# that the compiler reports it as a ``FAIL`` on the line that owns it. A test that
+# only read ``OBLIGATION_FOR_RULE`` would pass on a table describing a gate that
+# stopped refusing in the last commit, which is the same class of defect this
+# whole wave exists to catch.
+
+
+def _ceiling_graph() -> TopologyGraph:
+    """A three-deep dependency chain ending in the front door.
+
+    Every ceiling needs a *different* number to be the tightest one, and a graph
+    that only has one measurable quantity can only exercise one of them. So the
+    chain is built to have all four measurements at once: faulting ``n-core``
+    reaches three nodes over two dependency hops, exactly one of which exposes a
+    port — 3 of 4 nodes (75%), depth 2, one customer-facing service. Those are
+    read from the graph, not asserted here, because a fixture that states its own
+    numbers stops being a fixture the moment the topology changes.
+    """
+    return TopologyGraph(
+        nodes=(
+            ServiceNode(id="n-core", name="core"),
+            ServiceNode(id="n-mid", name="mid"),
+            ServiceNode(
+                id="n-front",
+                name="front",
+                exposed_ports=(PortBinding(host_port=443, container_port=8443),),
+            ),
+            HostNode(id="h-local", name="local", transport="local"),
+        ),
+        edges=(
+            Edge(src="n-mid", dst="n-core", kind=EdgeKind.DEPENDS_ON, weight=1.0),
+            Edge(src="n-front", dst="n-mid", kind=EdgeKind.DEPENDS_ON, weight=1.0),
+        ),
+    )
+
+
+def _ceiling_plan() -> ExecutionPlan:
+    """One fault step on ``n-core``, compensated exactly as :func:`_plan` does."""
+    selector = TargetSelector(kind=NodeKind.SERVICE, expr="core")
+    return ExecutionPlan(
+        run_id="r-ceiling",
+        kind=ExperimentKind.DETERMINISTIC,
+        steps=(
+            PlannedStep(
+                id="s0",
+                seq=0,
+                raw_action=InjectFault(
+                    fault="net.latency", selectors=(selector,), duration=10.0
+                ),
+                fault=PlannedFault(
+                    fault_id="net.latency",
+                    targets=(
+                        ResolvedTarget(
+                            selector=selector, node_ids=frozenset({"n-core"})
+                        ),
+                    ),
+                    duration=10.0,
+                    undo_ops=(UndoOp(op="tc.del_qdisc"),),
+                    verify_probes=(VerifyProbe(probe="tc.qdisc_absent"),),
+                ),
+            ),
+        ),
+        config_snapshot_id="c",
+        topology_snapshot_id="t",
+        environment_fingerprint=FP,
+    )
+
+
+#: ``(label, BlastCeilings, expected rule id)``, one per plan-14 ceiling.
+#:
+#: Each ceiling is set strictly *inside* the graph's own measurement, so exactly
+#: one fires and the gate stops there. A ceiling set at the observed value would
+#: breach nothing and prove nothing, which is the same reason
+#: ``test_prediction_evidence.py`` builds its cases from measured numbers.
+CEILING_PROOF_CASES: tuple[tuple[str, BlastCeilings, str], ...] = (
+    (
+        "affected nodes",
+        BlastCeilings(max_affected_nodes=2),
+        RULE_MAX_AFFECTED_NODES,
+    ),
+    ("affected percentage", BlastCeilings(max_affected_pct=50.0), RULE_MAX_AFFECTED_PCT),
+    (
+        "dependency depth",
+        BlastCeilings(max_dependency_depth=1),
+        RULE_MAX_DEPENDENCY_DEPTH,
+    ),
+    (
+        "customer-facing services",
+        BlastCeilings(max_customer_facing_services=0),
+        RULE_MAX_CUSTOMER_FACING_SERVICES,
+    ),
+    (
+        "protected node list",
+        BlastCeilings(protected_node_ids=frozenset({"n-core"})),
+        RULE_PROTECTED_NODE,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "ceilings", "rule_id"),
+    CEILING_PROOF_CASES,
+    ids=[case[0] for case in CEILING_PROOF_CASES],
+)
+def test_a_ceiling_refusal_fails_the_target_policy_line_and_never_voids(
+    label: str, ceilings: BlastCeilings, rule_id: str
+) -> None:
+    """The debt's payoff, per ceiling: ``FAIL`` on a named line, not a bare ``VOID``.
+
+    Before the mapping, each of these five ran compiled to a proof that reported
+    "no obligation owns this rule" — fail-closed, and useless to whoever had to
+    act on it. Now the refusal is attributed: ``target_policy`` is the ``FAIL``,
+    its detail carries the gate's own reason with the rule id on it, and
+    ``void_reason`` stays empty because the compiler can place everything it was
+    told.
+
+    The first assertion is the one that keeps this honest. ``validate_plan`` is
+    run directly and must raise ``SafetyRefusedError`` naming ``rule_id``: if the
+    gate ever stopped refusing, the mapping could still sit in
+    ``OBLIGATION_FOR_RULE`` and this test would keep passing on a table describing
+    a refusal nobody can produce.
+    """
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+    ctx = dataclass_replace(_ctx(), blast_ceilings=ceilings)
+
+    with pytest.raises(SafetyRefusedError) as raised:
+        validate_plan(plan, graph, ctx)
+    assert raised.value.decision.rule_id == rule_id, label
+
+    proof = compile_safety_proof(plan, graph, ctx, adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None, label
+    assert line.status is ObligationStatus.FAIL, line.detail
+    assert rule_id in line.detail, line.detail
+    assert proof.verdict is ProofVerdict.FAIL
+    assert proof.void_reason == "", proof.void_reason
+
+
+@pytest.mark.parametrize(
+    ("label", "ceilings", "rule_id"),
+    CEILING_PROOF_CASES,
+    ids=[case[0] for case in CEILING_PROOF_CASES],
+)
+def test_a_ceiling_that_holds_reports_what_was_measured_not_that_it_exists(
+    label: str, ceilings: BlastCeilings, rule_id: str
+) -> None:
+    """The positive half: the line reads the ceilings' verdicts, not their presence.
+
+    A line that merely restated "ceilings were configured" would go green here and
+    on every run, and would say nothing about whether any limit was close to
+    breaking. This asserts the report is a measurement — every ceiling's observed
+    value is present, on the allow path, next to the limit it was compared to —
+    and that a ``PASS`` here means the gate actually ran the comparison.
+
+    Asserted against ``Obligation.detail`` because that is the whole of what an
+    ``Obligation`` carries: ``Obligation`` is a frozen, digest-bearing artifact
+    whose fields are ``name``, ``status``, ``gate_digest``, ``evidence_ref``,
+    ``evaluated_at`` and ``detail``, and there is no ``output`` on it to read.
+    Adding one to satisfy a test would change the schema of a signed proof for
+    every consumer at once, so the test reads the surface the artifact really
+    has. That is not a downgrade: ``detail`` is what an approver reads, and a
+    measurement that never reached it is a measurement nobody acted on.
+
+    The measured values are the gate's own — ``3`` affected nodes, depth ``2``,
+    ``75``% of nodes, ``1`` front door, read off ``_ceiling_graph`` — and each
+    appears beside the limit it was compared to. Two of the assertions are there
+    to catch the two ways this could pass without measuring anything:
+
+    * ``the gate also reported protected_hits 0`` names a stat
+      ``_check_blast_ceilings`` emits *unconditionally*. It is on the allow path
+      only because the ceilings block ran, so its presence is direct evidence
+      the comparison executed rather than a claim in the compiler's own words.
+    * ``"protected_node_ids" not in line.detail`` — the list is empty here, so
+      the protected ceiling is *unconfigured*. A renderer that folded the
+      unconditional ``protected_hits`` stat into the configured list would print
+      a fifth pairing for a limit nobody set, and that is exactly the "unchecked
+      read as satisfied" defect the sibling test exists to catch.
+    """
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+    # At or above the measured value on every axis, so nothing is breached.
+    wide = BlastCeilings(
+        max_affected_nodes=3,
+        max_affected_pct=100.0,
+        max_dependency_depth=2,
+        max_customer_facing_services=1,
+        protected_node_ids=frozenset(),
+    )
+    del ceilings, rule_id  # the case table names the refusal; this is its mirror
+    ctx = dataclass_replace(_ctx(), blast_ceilings=wide)
+
+    validate_plan(plan, graph, ctx)  # the real gate allows it
+    proof = compile_safety_proof(plan, graph, ctx, adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert line.status is ObligationStatus.PASS, line.detail
+    # Every configured ceiling, with the gate's own reading beside its limit.
+    assert "max_affected_nodes 3 <= 3" in line.detail, line.detail
+    assert "max_dependency_depth 2 <= 2" in line.detail, line.detail
+    assert "max_affected_pct 75 <= 100" in line.detail, line.detail
+    assert "max_customer_facing_services 1 <= 1" in line.detail, line.detail
+    assert "1/1 step(s) measured against the 4 configured plan-14 ceiling(s)" in line.detail
+    # Proof the ceilings block actually ran, not that it was merely configured.
+    assert "the gate also reported protected_hits 0" in line.detail, line.detail
+    # The empty protected list is unconfigured, so it must not be reported as a
+    # measured ceiling. It is disclosed as a stat instead.
+    assert "protected_node_ids" not in line.detail, line.detail
+    assert "against no configured ceiling" in line.detail, line.detail
+
+
+def test_a_configured_protected_list_reports_hits_against_what_it_lists():
+    """The one ceiling whose limit is a set, and the pairing that cannot be derived.
+
+    ``_check_blast_ceilings`` measures the protected list by counting what it hit,
+    so the gate reports ``ceiling_protected_hits`` where the ceiling it enforces
+    is ``protected_node_ids``. No shared word connects the two names, so the
+    pairing is written down rather than derived — and this pins that it is paired
+    to the *right* one, since a renderer that guessed here would print a front
+    door's hit count beside the wrong ceiling and nobody would notice until it
+    was wrong in the permissive direction.
+
+    ``n-front`` is in the list and is not a target, so the honest reading is a
+    hit count of zero against a list of one: the gate looked, and nothing
+    protected was in the blast. Not "the ceiling held" on its own — the count of
+    what was protected is what makes the zero meaningful.
+    """
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+    ctx = dataclass_replace(
+        _ctx(), blast_ceilings=BlastCeilings(protected_node_ids=frozenset({"n-front"}))
+    )
+
+    validate_plan(plan, graph, ctx)
+    proof = compile_safety_proof(plan, graph, ctx, adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert line.status is ObligationStatus.PASS, line.detail
+    assert "protected_node_ids 0 hit(s) against 1 configured" in line.detail, line.detail
+    assert "1/1 step(s) measured against the 1 configured plan-14 ceiling(s)" in line.detail
+    # Paired, so it is no longer disclosed as a stat with nothing behind it.
+    assert "protected_hits 0 against no configured ceiling" not in line.detail, line.detail
+
+
+def test_a_ceiling_nobody_could_measure_is_reported_unmeasured_not_held():
+    """Configured is not measured, and the empty graph is where the two differ.
+
+    ``max_affected_pct`` is a share of the graph, so on an empty graph there is
+    nothing to take a share of and the gate skips it — deliberately, in agreement
+    with ``domain.prediction``. The step is admitted, the line ``PASS``es, and
+    the artifact would be claiming a check that did not happen if the configured
+    ceiling were rendered with the same "held" shape as a measured one. It is
+    named as configured *and* unmeasured instead, and the step count drops to
+    ``0/1`` so the number of steps that were actually compared is not inflated by
+    the one that was not.
+
+    The graph here is empty on purpose, which also means the step is refused on
+    target drift first; that is why the assertion is on the ceilings clause of
+    the detail rather than on the status alone.
+    """
+    graph, plan = TopologyGraph(nodes=(), edges=()), _ceiling_plan()
+    ctx = dataclass_replace(_ctx(), blast_ceilings=BlastCeilings(max_affected_pct=10.0))
+
+    proof = compile_safety_proof(plan, graph, ctx, adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert "max_affected_pct configured at 10 but unmeasured" in line.detail, line.detail
+    assert "0/1 step(s) measured against the 1 configured plan-14 ceiling(s)" in line.detail
+
+
+def test_no_ceilings_configured_is_reported_as_unmeasured_never_as_satisfied():
+    """The absence of a limit must not read as the presence of a pass.
+
+    ``BlastCeilings`` defaults every field to ``None``, and ``None`` means *not
+    configured* — a limit nobody asked for. Rendering that as "ceilings checked"
+    would let an artifact claim a measurement that was never made, which is the
+    specific failure plan 14's own docstring calls out for a prediction that
+    cannot evaluate a limit. The line says so in words instead of in a number.
+
+    The negative assertions carry the weight here. ``<=`` is the rendering of a
+    ceiling that was *compared against a limit*, so its total absence from the
+    detail is the claim: nothing was compared, so no line may present anything as
+    having held. The same goes for "measured against", which is the count of
+    steps that ran a comparison — reporting ``0/1`` for a context that never
+    reached the ceilings at all would still be a measurement count, and would
+    still read like a passing measurement of zero.
+    """
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+
+    proof = compile_safety_proof(plan, graph, _ctx(), adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert line.status is ObligationStatus.PASS
+    assert "no plan-14 blast ceilings configured" in line.detail, line.detail
+    assert "unchecked rather than satisfied" in line.detail
+    assert "measured against" not in line.detail, line.detail
+    assert " <= " not in line.detail, line.detail
+    assert "unmeasured" not in line.detail.split("no plan-14 blast ceilings", 1)[0], line.detail
+
+
+def test_a_carried_but_empty_ceiling_block_is_still_reported_as_nothing_compared():
+    """``BlastCeilings()`` is a configuration that names no limit, not an absent one.
+
+    ``ctx.blast_ceilings is None`` and ``BlastCeilings()`` are different states
+    that both enforce nothing, and the artifact has to keep them apart: the first
+    means no ceiling block was ever supplied, the second means one was supplied
+    and it was empty. The second is the more dangerous of the two, because the
+    gate *does* run it and it *does* return a ``ceiling_*`` stat — so a renderer
+    that counted configured fields and paired the stats it found would print a
+    measurement. Before this was distinguished, the line said "1/1 step(s)
+    measured against the 0 configured plan-14 ceiling(s)", which is a step
+    reported as measured against nothing at all.
+    """
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+    ctx = dataclass_replace(_ctx(), blast_ceilings=BlastCeilings())
+
+    proof = compile_safety_proof(plan, graph, ctx, adapter=_Adapter())
+
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert line.status is ObligationStatus.PASS
+    assert "named no limit" in line.detail, line.detail
+    assert "none is reported as satisfied" in line.detail
+    assert "measured against" not in line.detail, line.detail
+    assert " <= " not in line.detail, line.detail
+
+
+def test_a_ceiling_breach_reported_only_by_a_prediction_is_still_blamed():
+    """``GATE_RULE_IDS`` is the other half of the same mapping.
+
+    Without the five in that set, ``compile_safety_evidence`` filters a
+    prediction's findings against it and a prediction that *flagged* a breached
+    ceiling contributed no blame at all — the identical gap in the opposite
+    direction, and quieter, because the artifact simply did not mention the
+    finding. The two assertions are therefore paired with the refusal tests
+    above: those prove the gate's refusals are placeable, this proves the
+    prediction's findings are too.
+
+    The compilation half stays on ``compilation.blame`` because that *is* the
+    rule-level trail and there is nothing to flatten it onto ``Obligation``. The
+    proof-level assertions added at the end are the part that has to hold on the
+    published artifact: the same breach must read as a ``FAIL`` on
+    ``target_policy`` carrying the rule's own reason, and must not become a
+    whole-proof ``VOID`` — a ``VOID`` says the compiler could not place the
+    refusal, which is a different and much worse claim than "it refused".
+    """
+    from mayhem.domain.prediction import predict_impact
+
+    graph, plan = _ceiling_graph(), _ceiling_plan()
+    breach = BlastCeilings(max_affected_nodes=2)
+    # ``predict_impact`` takes the graph first; a prediction of a different graph
+    # than the one compiled would be stale and correctly blamed for nothing.
+    prediction = predict_impact(graph, plan, ceilings=breach)
+
+    assert prediction.rule_ids & CEILING_RULE_IDS, prediction.rule_ids
+
+    compilation = compile_safety_evidence(
+        plan,
+        graph,
+        dataclass_replace(_ctx(), blast_ceilings=breach),
+        adapter=_Adapter(),
+    )
+    blamed = {
+        rule
+        for reasons in compilation.blame.get(ObligationName.TARGET_POLICY.value, ())
+        for rule in [reasons]
+    }
+    assert any(RULE_MAX_AFFECTED_NODES in reason for reason in blamed), blamed
+
+    # The same breach on the published artifact: a ``FAIL`` on the owning line
+    # carrying the gate's own reason, and no whole-proof ``VOID``.
+    proof = compilation.proof
+    line = proof.obligation(ObligationName.TARGET_POLICY.value)
+    assert line is not None
+    assert line.status is ObligationStatus.FAIL, line.detail
+    assert RULE_MAX_AFFECTED_NODES in line.detail, line.detail
+    assert proof.verdict is ProofVerdict.FAIL
+    assert proof.void_reason == "", proof.void_reason
 
 
 def _mint_approval(proof: SafetyProof, gate: ApprovalGateInputs) -> tuple[Approval, RoleGrant]:
