@@ -24,6 +24,10 @@ from mayhem.controller.policy_gate import (
 from mayhem.domain.decisions import SafetyDecision, SafetySeverity
 from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
 from mayhem.domain.identity import RuntimeLabel
+from mayhem.domain.prediction import (
+    customer_facing_node_ids,
+    dependency_fan_out,
+)
 from mayhem.domain.quota import DamageLedger, DamageQuota, QuotaCharge
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.runtime_adapter import (
@@ -40,6 +44,7 @@ if TYPE_CHECKING:
     from mayhem.controller.k8s_admission import K8sAdmissionInput
     from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
+    from mayhem.domain.prediction import BlastCeilings
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
 
@@ -117,6 +122,26 @@ class SafetyContext:
     # the constraint is about that suite's own statement rather than about
     # semantics.
     k8s_admission: K8sAdmissionInput | None = None
+    # v1.1.0 plan 14 Phase 4: the five plan-14 §"Controls" ceilings — protected
+    # service list, maximum dependency depth, maximum customer-facing services,
+    # maximum percentage, blast-radius ceiling. ``None`` — the default — means
+    # this context knows nothing about them, and admission is byte-for-byte what
+    # it was before the field existed: the five checks are behind one
+    # ``is not None`` test, they run *after* all five of the budget's per-step
+    # caps and the forbidden-pair check and *before* the damage ledger charge,
+    # and they refuse only when a limit is actually configured. With no ceiling
+    # configured a plan cannot reach them, so no decision, refusal, message,
+    # recorded ``stats`` key, or ordering moves.
+    #
+    # Additive in the same sense ``policy_gate`` is: it can only *add* a
+    # refusal. A context carrying ceilings never loses one the config-policy or
+    # budget half would have made — the ceilings are checked after those, so
+    # they are the later, more specific objection and the earlier one still
+    # speaks first.
+    #
+    # Declared before ``policy_gate`` for the same reason ``approval_gate`` and
+    # ``k8s_admission`` are.
+    blast_ceilings: BlastCeilings | None = None
     # Plan 07 Phase 2: the versioned policy bundle, plus the locks, budgets,
     # and collision graph it is evaluated against. ``None`` — the default —
     # means this context knows nothing about policy bundles, and every gate
@@ -242,6 +267,13 @@ def check_blast_radius(
     ``max_duration_per_fault_s``, ``forbidden_fault_pairs``); the sixth is the
     *cumulative* damage quota, which is the only one that can see the sequence.
 
+    Plan 14 Phase 4 added a seventh thing, on a seventh optional input: the five
+    plan-14 §"Controls" ceilings, checked by :func:`_check_blast_ceilings` after
+    the six above and before the damage charge. They are *additional* in the same
+    one-directional sense — a context with no ``blast_ceilings`` never reaches
+    them, and a context with them can only lose a refusal the six above would
+    have made, never gain one that makes a plan more acceptable.
+
     The relationship between them is deliberate and one-directional:
 
     - **The quota is additional, never a replacement.** The five per-step
@@ -329,6 +361,30 @@ def check_blast_radius(
         )
         ctx.record(dec)
         raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    # Plan 14 Phase 4: the five §"Controls" ceilings, checked here for the same
+    # reason the budget's caps are — per-step, per-fault, before any injection.
+    # Placement is load-bearing rather than cosmetic: this runs *after* all five
+    # budget checks and the forbidden-pair check and *before* the cumulative
+    # damage charge, which is exactly the order
+    # ``mayhem.domain.prediction._per_step_rules`` evaluates the same five rule
+    # ids in. The preview and the gate therefore raise the *same* rule id on the
+    # *same* step, which is what makes ``is_never_permissive`` checkable rather
+    # than aspirational.
+    #
+    # With no ``ctx.blast_ceilings`` this is one ``is None`` test and no stats
+    # key is added, so a context that configures nothing behaves exactly as
+    # before the field existed.
+    if ctx.blast_ceilings is not None:
+        stats.update(
+            _check_blast_ceilings(
+                ceilings=ctx.blast_ceilings,
+                graph=graph,
+                affected=affected,
+                target_ids=frozenset(target_node_ids),
+                new_fault_id=new_fault_id,
+                ctx=ctx,
+            )
+        )
     # Cumulative. The per-step checks above have all passed, so this is the
     # only way a step that is individually tiny can still be refused — which is
     # the entire point of a sequence-level limit.
@@ -354,6 +410,174 @@ def check_blast_radius(
         )
     )
     return stats
+
+
+#: The plan-14 §"Controls" ceiling rule ids — the gate's side of the vocabulary
+#: ``mayhem.domain.prediction`` owns.
+#:
+#: **These names are deliberately NOT used as the first argument to the
+#: ``_deny_decision`` calls in :func:`_check_blast_ceilings`; the string literals
+#: are spelled out inline there instead, and the duplication is deliberate.** The
+#: reason is that ``tests/unit/test_proof_compiler.py`` reads this module *as
+#: source* and extracts a rule id only from a ``_deny_decision`` call whose first
+#: argument is a plain literal — a bare ``Name`` is skipped as one of the module's
+#: "dynamic" refusals, precisely so the extractor does not invent values it
+#: cannot see. Passing the constants would therefore hide these five rules from
+#: ``test_every_rule_the_gates_can_raise_has_an_owning_proof_line``, which is the
+#: guard that exists so "a gate refusal no proof line owns" fails *by name*
+#: rather than compiling to a whole-proof ``VOID`` at run time. Inlining the
+#: literals puts them back inside that guard; these names exist so
+#: ``tests/unit/test_prediction_evidence.py`` can pin the two spellings equal, so
+#: the duplication cannot drift.
+#:
+#: The inlining bought the guard its chance to fire, and it did: when this phase
+#: landed, ``test_every_rule_the_gates_can_raise_has_an_owning_proof_line`` failed
+#: naming all five, which is the only reason the missing mapping was a failing
+#: test rather than a latent ``VOID``. Those five rows now exist in
+#: ``safety_proof.OBLIGATION_FOR_RULE`` (owned by ``target_policy``, beside the
+#: two target-side caps this gate raises alongside them) and in
+#: ``check_gate.RULE_CHECK``, and the guard is green because the mapping is there.
+#: The duplication stays: it is what keeps the next gate's new refusal inside
+#: that guard instead of outside it.
+RULE_CEILING_MAX_AFFECTED_NODES = "blast_radius.max_affected_nodes"
+RULE_CEILING_MAX_DEPENDENCY_DEPTH = "blast_radius.max_dependency_depth"
+RULE_CEILING_MAX_CUSTOMER_FACING_SERVICES = "blast_radius.max_customer_facing_services"
+RULE_CEILING_MAX_AFFECTED_PCT = "blast_radius.max_affected_pct"
+RULE_CEILING_PROTECTED_NODE = "blast_radius.protected_node"
+
+
+def _check_blast_ceilings(
+    *,
+    ceilings: BlastCeilings,
+    graph: TopologyGraph,
+    affected: frozenset[str],
+    target_ids: frozenset[str],
+    new_fault_id: str,
+    ctx: SafetyContext,
+) -> dict[str, float]:
+    """Enforce the five plan-14 ceilings for one fault step, or refuse it.
+
+    Additive and per-step, exactly like the budget's caps above: every ceiling is
+    optional, an unconfigured one is *unchecked* rather than satisfied, and the
+    checks can only add a refusal.
+
+    Two deliberate details, both about agreeing with the preview rather than
+    about taste:
+
+    * **The measurements are borrowed, not re-derived.** Dependency depth comes
+      from :func:`mayhem.domain.prediction.dependency_fan_out` and the
+      customer-facing set from
+      :func:`~mayhem.domain.prediction.customer_facing_node_ids` — the same two
+      functions ``domain.prediction`` uses to *predict* these breaches. A second
+      implementation here could disagree with the preview about a depth or a
+      front door, and that disagreement is precisely the failure
+      :func:`~mayhem.domain.prediction.is_never_permissive` exists to rule out.
+    * **The protected list is matched against the step's *targets*, not the
+      blast.** An unavoidable dependent of a protected service is a fact to
+      surface, not a reason to refuse; refusing on it would make the rule
+      un-satisfiable for any plan that touches anything upstream of a front door.
+
+    Returns the observed numbers to fold into the step's ``stats``, so an
+    operator sees what was measured on the allow path as well as on the refusal
+    path. Each key is named after the ceiling and is a plain float, matching the
+    ``dict[str, float]`` contract ``check_blast_radius`` documents.
+
+    Raises:
+        SafetyRefusedError: On the first ceiling breached, carrying the decision
+            that named the rule and the observed value.
+    """
+    observed: dict[str, float] = {}
+    if ceilings.max_affected_nodes is not None:
+        node_count = float(len(affected))
+        observed["ceiling_max_affected_nodes"] = node_count
+        if node_count > ceilings.max_affected_nodes:
+            dec = _deny_decision(
+                "blast_radius.max_affected_nodes",
+                {
+                    "fault_id": new_fault_id,
+                    "affected_nodes": len(affected),
+                    "ceiling": ceilings.max_affected_nodes,
+                },
+                f"blast radius: {new_fault_id} affects {len(affected)} node(s) > "
+                f"plan-14 ceiling {ceilings.max_affected_nodes} "
+                f"[{RULE_CEILING_MAX_AFFECTED_NODES}]",
+                "narrow the target set or raise the affected-node ceiling",
+            )
+            ctx.record(dec)
+            raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    if ceilings.max_dependency_depth is not None:
+        depth = float(dependency_fan_out(graph, sorted(target_ids)).max_depth)
+        observed["ceiling_dependency_depth"] = depth
+        if depth > ceilings.max_dependency_depth:
+            dec = _deny_decision(
+                "blast_radius.max_dependency_depth",
+                {
+                    "fault_id": new_fault_id,
+                    "depth": depth,
+                    "ceiling": ceilings.max_dependency_depth,
+                },
+                f"blast radius: {new_fault_id} reaches {depth:g} dependency hop(s) > "
+                f"plan-14 ceiling {ceilings.max_dependency_depth} "
+                f"[{RULE_CEILING_MAX_DEPENDENCY_DEPTH}]",
+                "target a shallower dependency, or raise the depth ceiling",
+            )
+            ctx.record(dec)
+            raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    node_total = len(graph.nodes)
+    # An empty graph has no share to divide by, so the percentage is
+    # unmeasurable rather than zero — and an unmeasurable ceiling is unchecked,
+    # which is not the same as satisfied. ``domain.prediction`` skips the rule on
+    # an empty graph for the same reason, so the two agree.
+    if ceilings.max_affected_pct is not None and node_total:
+        pct = round(len(affected) / node_total * 100.0, 3)
+        observed["ceiling_affected_pct"] = pct
+        if pct > ceilings.max_affected_pct:
+            dec = _deny_decision(
+                "blast_radius.max_affected_pct",
+                {
+                    "fault_id": new_fault_id,
+                    "pct": pct,
+                    "ceiling": ceilings.max_affected_pct,
+                },
+                f"blast radius: {new_fault_id} affects {len(affected)} of {node_total} "
+                f"nodes ({pct:g}%) > plan-14 ceiling {ceilings.max_affected_pct}% "
+                f"[{RULE_CEILING_MAX_AFFECTED_PCT}]",
+                "narrow the target set or raise the affected-percentage ceiling",
+            )
+            ctx.record(dec)
+            raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    if ceilings.max_customer_facing_services is not None:
+        facing = tuple(sorted(customer_facing_node_ids(graph).intersection(affected)))
+        observed["ceiling_customer_facing_services"] = float(len(facing))
+        if len(facing) > ceilings.max_customer_facing_services:
+            dec = _deny_decision(
+                "blast_radius.max_customer_facing_services",
+                {
+                    "fault_id": new_fault_id,
+                    "customer_facing": list(facing),
+                    "ceiling": ceilings.max_customer_facing_services,
+                },
+                f"blast radius: {new_fault_id} affects {len(facing)} customer-facing "
+                f"service(s) {list(facing)} > plan-14 ceiling "
+                f"{ceilings.max_customer_facing_services} "
+                f"[{RULE_CEILING_MAX_CUSTOMER_FACING_SERVICES}]",
+                "target an internal dependency, or raise the customer-facing ceiling",
+            )
+            ctx.record(dec)
+            raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    hit_protected = tuple(sorted(ceilings.protected_node_ids.intersection(target_ids)))
+    observed["ceiling_protected_hits"] = float(len(hit_protected))
+    if hit_protected:
+        dec = _deny_decision(
+            "blast_radius.protected_node",
+            {"fault_id": new_fault_id, "protected": list(hit_protected)},
+            f"blast radius: {new_fault_id} targets protected node(s) {list(hit_protected)} "
+            f"[{RULE_CEILING_PROTECTED_NODE}]",
+            "remove the protected node from the target set",
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    return observed
 
 
 def _first_forbidden_pair(

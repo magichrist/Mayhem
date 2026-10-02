@@ -26,6 +26,7 @@ arithmetic test still passes:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -38,14 +39,18 @@ from mayhem.controller.policy_gate import (
     derive_facts,
 )
 from mayhem.controller.prediction_service import (
+    ADMISSION_WIRING_NOTE,
+    ENFORCED_CEILING_RULE_IDS,
     PENDING_ADMISSION_WIRING,
     PREDICTION_ARTIFACT,
     RULE_PENDING_ADMISSION_WIRING,
     RULE_PREDICTION_CALMER_THAN_GATE,
+    RULE_PREDICTION_UNMODELLED_GATE_REFUSAL,
     RULE_PREVIEW_NOT_PREFLIGHT,
     SIMULATE_EXPECTED_EVIDENCE,
-    WIRING_GAP_NOTE,
+    AgreementState,
     CeilingName,
+    GateAgreement,
     PredictionConfig,
     PredictionDisagreementError,
     PredictionService,
@@ -551,6 +556,10 @@ def test_a_config_policy_denial_is_disclosed_as_unmodelled_and_blocks_approval_u
     ``unmodelled`` so a reader sees it, and the preview becomes unusable for
     approval, because a preview that cannot speak to the rule which blocked the
     plan may not be the thing an approver relies on.
+
+    Phase 4 states the second half as a named state rather than as a consequence
+    of the first set being non-empty, so it is asserted through
+    :attr:`AgreementState.UNMODELLED` as well as through the boolean.
     """
     graph = _graph()
     plan = _plan(("net.latency", "n-db", STEP_S))
@@ -560,9 +569,78 @@ def test_a_config_policy_denial_is_disclosed_as_unmodelled_and_blocks_approval_u
     assert report.agreement.unmodelled == {"policy.deny_faults"}
     assert report.agreement.modelled == frozenset()
     assert report.agreement.agrees is True  # nothing modelled was missed
+    assert report.agreement.state is AgreementState.UNMODELLED
+    assert report.agreement_state is AgreementState.UNMODELLED
+    assert report.agreement.usable_for_approval is False
     assert report.usable_for_approval is False
     assert "policy.deny_faults" in report.approval_refusal
     assert "does not model" in report.approval_refusal
+    # The refusal is named by a rule id, so a surface can render the debt as a
+    # finding rather than as prose.
+    assert RULE_PREDICTION_UNMODELLED_GATE_REFUSAL in report.approval_refusal
+    assert "[agreement: unmodelled]" in report.describe()
+
+
+def test_a_gate_that_admits_leaves_the_agreement_in_the_agrees_state():
+    """The default state, asserted so the other two cannot be reached by accident."""
+    report = _service().simulate_plan(_plan(("net.latency", "n-db", STEP_S)), _ctx())
+    assert report.agreement.gate_refused == frozenset()
+    assert report.agreement.state is AgreementState.AGREES
+    assert report.agreement.usable_for_approval is True
+    assert report.approval_refusal == ""
+    assert report.usable_for_approval is True
+
+
+def test_a_modelled_refusal_the_prediction_flagged_also_agrees():
+    """A modelled refusal that the preview *did* flag is not a disagreement."""
+    report = _service().simulate_plan(
+        _plan(("net.latency", "n-db", 300.0)), _ctx(budget=_duration_capped())
+    )
+    assert report.agreement.modelled == {RULE_MAX_DURATION_PER_FAULT_S}
+    assert report.agreement.unmodelled == frozenset()
+    assert report.agreement.state is AgreementState.AGREES
+
+
+def test_an_agreement_record_cannot_assert_a_state_its_own_sets_contradict():
+    """The negative control on the state itself.
+
+    Phase 4's complaint was that the rule lived outside the record, so the record
+    could be handed out saying anything. ``GateAgreement.__post_init__`` refuses a
+    state that its own booleans contradict, so a caller cannot build a record that
+    reads "unmodelled" beside ``agrees=False`` — or, worse, "agrees" beside a
+    modelled refusal the prediction missed.
+    """
+    fields = {
+        "gate_refused": frozenset({"policy.deny_faults"}),
+        "modelled": frozenset(),
+        "unmodelled": frozenset({"policy.deny_faults"}),
+        "flagged": frozenset(),
+        "agrees": True,
+        "reason": "",
+        "state": AgreementState.UNMODELLED,
+    }
+    assert GateAgreement(**fields).state is AgreementState.UNMODELLED
+    with pytest.raises(InvariantViolationError):
+        GateAgreement(**{**fields, "state": AgreementState.AGREES})
+    # Omitting the state entirely is a TypeError, not a silent default to AGREES:
+    # a caller who forgot to state it must not hand out a record that claims the
+    # preview agreed when its own booleans say otherwise.
+    with pytest.raises(TypeError):
+        GateAgreement(**{k: v for k, v in fields.items() if k != "state"})
+    # A disagreement claimed as agreeing is refused too, even though the sets look
+    # clean: ``agrees=False`` with nothing unmodelled can only be DISAGREES.
+    with pytest.raises(InvariantViolationError):
+        GateAgreement(
+            **{
+                **fields,
+                "gate_refused": frozenset({RULE_MAX_SERVICES_PCT}),
+                "modelled": frozenset({RULE_MAX_SERVICES_PCT}),
+                "unmodelled": frozenset(),
+                "agrees": False,
+                "reason": "missed it",
+                "state": AgreementState.AGREES,
+            }
+        )
 
 
 def test_an_environment_fingerprint_mismatch_is_drift_and_is_refused_for_approval_use():
@@ -605,6 +683,34 @@ def test_a_calmer_prediction_raises_instead_of_returning_a_report(monkeypatch):
     assert excinfo.value.rule == RULE_PREDICTION_CALMER_THAN_GATE
     assert RULE_MAX_SERVICES_PCT in str(excinfo.value)
     assert "never be calmer" in str(excinfo.value)
+
+
+def test_a_calmer_prediction_would_have_landed_in_the_disagrees_state():
+    """Why the raise exists: DISAGREES is the state, and it is not a report.
+
+    Same injected fault as above, but asserting the *state* the comparison would
+    have produced rather than only the exception. Without this, a reader could
+    believe the raise is a guard bolted on top of a working three-state machine
+    when in fact the machine is what refuses; the state is the load-bearing part.
+    """
+    from mayhem.controller import prediction_service
+
+    graph = _graph()
+    plan = _plan(("net.latency", "n-db", STEP_S))
+    # The gate would hold a 25% service cap; the injected forecast is computed
+    # through a budget nothing trips. No context is needed, because the assertion
+    # is about the *state* the comparison lands in rather than about a report.
+    too_calm = predict_impact(graph, plan, budget=_permissive())
+    monkey = prediction_service._agreement(
+        too_calm, frozenset({RULE_MAX_SERVICES_PCT})
+    )
+    assert monkey.state is AgreementState.DISAGREES
+    assert monkey.usable_for_approval is False
+    # And even a state that is not a disagreement keeps its approval answer, so
+    # the property is on the state and not only on the raise.
+    assert AgreementState.AGREES.usable_for_approval is True
+    assert AgreementState.UNMODELLED.usable_for_approval is False
+    assert AgreementState.DISAGREES.usable_for_approval is False
 
 
 def test_a_gate_refusal_the_preview_modelled_is_a_finding_and_never_hidden():
@@ -879,14 +985,19 @@ def test_breached_dimensions_lists_only_the_ceilings_that_fired():
     assert all(d.breached for d in breached)
 
 
-def test_no_ceiling_is_enforced_by_the_real_gate_yet():
-    """The Phase 4 debt, demonstrated rather than asserted.
+def test_every_plan_14_ceiling_is_now_enforced_by_the_real_gate():
+    """Phase 4's retirement of the wiring debt, asserted rather than assumed.
 
-    One plan breaching all five ceilings, run through the *real* ``validate_plan``:
-    the gate admits it, because ``validate_plan`` evaluates none of these rules.
-    The preview flags all five and says, per dimension, that nothing enforces
-    them. This test is what would fail the day Phase 4 lands the wiring — at
-    which point ``PENDING_ADMISSION_WIRING`` is stale and must be edited.
+    One plan breaching all five ceilings, run through the *real* ``validate_plan``.
+    The gate now refuses it, and refuses it on the very rule the preview flagged.
+    Phase 2 asserted the opposite — that the gate has no opinion on any of the
+    five — and said this test would be "what fails the day Phase 4 lands the
+    wiring". This is that day, so the assertion has been inverted deliberately:
+    leaving the old claim would be a test asserting the gate *cannot* emit ids it
+    now emits.
+
+    The comparison is against ``validate_plan`` rather than a hand-written rule
+    list, so it stays honest if the gate's rule ids ever move.
     """
     ceilings = BlastCeilings(
         max_affected_nodes=2,
@@ -901,42 +1012,36 @@ def test_no_ceiling_is_enforced_by_the_real_gate_yet():
     service = PredictionService(graph=graph, config=PredictionConfig(ceilings=ceilings))
     report = service.simulate_plan(plan, ctx)
 
-    # The gate has no opinion on any of the five.
-    assert _gate_refusals(plan, graph, ctx) == frozenset()
-    assert report.admitted_by_gate is True
-    assert report.agreement.unmodelled == frozenset()
+    # The gate refuses on one of the five (it stops at the first breach), and the
+    # one it names is one the preview flagged.
+    refused = _gate_refusals(plan, graph, replace(ctx, blast_ceilings=ceilings))
+    assert len(refused) == 1
+    assert refused <= ENFORCED_CEILING_RULE_IDS
+    assert refused <= report.prediction.rule_ids
+    assert report.admitted_by_gate is False
 
-    # The preview has an opinion on all five, and is honest that it is only a
-    # prediction of them.
-    assert {
-        d.rule_id
-        for d in report.breached_dimensions()
-    } == {
-        RULE_PROTECTED_NODE,
-        RULE_MAX_DEPENDENCY_DEPTH,
-        RULE_MAX_CUSTOMER_FACING_SERVICES,
-        RULE_MAX_AFFECTED_PCT,
-        RULE_MAX_AFFECTED_NODES,
-    }
-    assert all(d.enforced_by_gate is False for d in report.dimensions)
-    assert report.wiring_gaps == PENDING_ADMISSION_WIRING
-    assert {w.rule_id for w in report.wiring_gaps} == {
-        RULE_PROTECTED_NODE,
-        RULE_MAX_DEPENDENCY_DEPTH,
-        RULE_MAX_CUSTOMER_FACING_SERVICES,
-        RULE_MAX_AFFECTED_PCT,
-        RULE_MAX_AFFECTED_NODES,
-    }
-    assert all(w.owes and "validate_plan" in w.owes for w in report.wiring_gaps)
+    # …and every dimension reports itself enforced, with nothing pending.
+    assert {d.rule_id for d in report.breached_dimensions()} == ENFORCED_CEILING_RULE_IDS
+    assert all(d.enforced_by_gate is True for d in report.dimensions)
+    assert report.wiring_gaps == ()
+    assert PENDING_ADMISSION_WIRING == ()
 
 
-def test_the_wiring_gap_note_names_every_pending_rule():
-    for wiring in PENDING_ADMISSION_WIRING:
-        assert wiring.rule_id in WIRING_GAP_NOTE
-    assert RULE_PENDING_ADMISSION_WIRING in WIRING_GAP_NOTE
-    assert "Phase 4" in WIRING_GAP_NOTE
+def test_the_admission_wiring_note_names_the_enforced_rules():
+    """The note flipped with the table; it must not still claim the debt is owed.
+
+    A note reading "enforced by nobody" while the gate now refuses would be worse
+    than no note — it would be an active misstatement in every report. So the text
+    is checked for the words it asserts, not just for being present.
+    """
+    assert "enforced" in ADMISSION_WIRING_NOTE
+    assert "nobody" not in ADMISSION_WIRING_NOTE
+    assert "still owes" not in ADMISSION_WIRING_NOTE
+    for rule in sorted(ENFORCED_CEILING_RULE_IDS):
+        assert rule in ADMISSION_WIRING_NOTE
+    assert RULE_PENDING_ADMISSION_WIRING in ADMISSION_WIRING_NOTE
     report = _service().simulate_plan(_plan(("net.latency", "n-db", STEP_S)), _ctx())
-    assert any(note == WIRING_GAP_NOTE for note in report.notes)
+    assert any(note == ADMISSION_WIRING_NOTE for note in report.notes)
 
 
 def _gate_emitted_rule_ids() -> set[str]:
@@ -1001,37 +1106,45 @@ def _gate_emitted_rule_ids() -> set[str]:
 
 
 def test_the_enforced_flag_is_derived_from_the_wiring_table_not_asserted():
-    """Phase 4's job is to delete a row, and every record must follow.
+    """Phase 4's job was to delete five rows, and every record had to follow.
 
     ``enforced_by_gate`` is computed from :data:`PENDING_ADMISSION_WIRING` rather
-    than hardcoded ``False`` on each dimension, so a ceiling that *is* wired into
-    admission cannot keep claiming it is not. The other direction is the table's
+    than hardcoded per dimension, so a ceiling that *is* wired into admission
+    cannot keep claiming it is not. The other direction is the table's
     completeness: a rule id absent from it is taken to be the gate's, so an
     implementer has to add or remove a row rather than flip a field.
+
+    With the table empty that default is unfalsifiable from the table alone --
+    every rule id reads as "the gate's" -- so it is checked here against
+    :data:`ENFORCED_CEILING_RULE_IDS`, the finite set of rules this preview
+    actually reports dimensions for. The evidence suite's
+    ``test_every_enforced_ceiling_is_one_the_real_gate_can_raise`` then checks
+    *that* set against the gate's own refusals, so neither half is a bare default.
     """
-    pending = {w.rule_id for w in PENDING_ADMISSION_WIRING}
-    for wiring in PENDING_ADMISSION_WIRING:
-        assert is_enforced_by_gate(wiring.rule_id) is False
-    # A rule the gate already evaluates is reported as the gate's.
+    assert PENDING_ADMISSION_WIRING == ()
+    for rule in sorted(ENFORCED_CEILING_RULE_IDS):
+        assert is_enforced_by_gate(rule) is True
+    # A rule the gate already evaluated is reported as the gate's.
     assert is_enforced_by_gate("blast_radius.max_hosts") is True
     report = _ceiling_report(BlastCeilings())
-    assert {d.rule_id for d in report.dimensions if d.enforced_by_gate} == set()
-    assert {d.rule_id for d in report.dimensions if not d.enforced_by_gate} == pending
+    assert {d.rule_id for d in report.dimensions if d.enforced_by_gate} == (
+        ENFORCED_CEILING_RULE_IDS
+    )
+    assert {d.rule_id for d in report.dimensions if not d.enforced_by_gate} == set()
 
 
-def test_no_pending_ceiling_rule_id_is_one_the_real_gate_can_emit():
-    """The tripwire on Phase 4, and it is deliberately load-bearing.
+def test_the_phase_two_tripwire_became_its_inverse():
+    """The tripwire on Phase 4, retired by inversion rather than deleted.
 
-    ``PENDING_ADMISSION_WIRING`` claims five rules the gate does not evaluate.
-    That claim is checked against the gate's own vocabulary over a battery of
-    refusals rather than against a list someone wrote down: the day admission
-    starts refusing ``blast_radius.protected_node`` and the rest, this fails and
-    the table has to be rewritten rather than left claiming a debt that has been
-    paid. Nothing else in the suite would notice.
+    Phase 2 asserted that no rule in the wiring table is one the gate can emit --
+    a check deliberately *designed to fire* the day Phase 4 landed. It fired; the
+    rows were deleted. The surviving form is the other direction: a ceiling the
+    preview reports as enforced must be one the gate can actually raise, which is
+    what keeps ``enforced_by_gate`` from degenerating into the table's default
+    now that the table is empty.
     """
-    emitted = _gate_emitted_rule_ids()
-    assert emitted  # the battery actually refused something, or this proves nothing
-    assert emitted.isdisjoint({w.rule_id for w in PENDING_ADMISSION_WIRING})
+    assert _gate_emitted_rule_ids()  # the battery still refuses something
+    assert not {w.rule_id for w in PENDING_ADMISSION_WIRING}
 
 
 # --- drift, staleness, and what cannot back an approval ---------------------------
@@ -1309,19 +1422,42 @@ def test_a_domain_error_the_preview_cannot_see_is_reported_rather_than_raised():
     ``validate_plan`` refuses on it. The preview must neither crash on the same
     input — losing the prediction that explains the refusal — nor quietly treat
     the plan as admissible.
+
+    The rule id is read from the gate rather than hardcoded. ``policy_gate.py``
+    owns that vocabulary and has renamed ids while this suite was being extended
+    (``policy.bundle_digest_mismatch`` became ``policy.config_invalid``); pinning
+    one here would make this suite a second place that has to be updated whenever
+    the policy gate changes its mind about what to call a refusal. What this test
+    is about is the *shape* — a rule the preview has no vocabulary for, surfaced
+    as an unmodelled refusal that disqualifies the report — and that shape does
+    not depend on which word the policy gate picked.
     """
     drifted = _bundle().pin().model_copy(update={"description": "edited after pinning"})
     ctx = _ctx(gate=PolicyGateInputs(bundle=drifted, now=T0))
     graph = _graph()
     plan = _plan(("net.latency", "n-db", STEP_S))
     report = _service(graph).simulate_plan(plan, ctx)
-    assert report.agreement.gate_refused == {"policy.bundle_digest_mismatch"}
-    assert report.agreement.unmodelled == {"policy.bundle_digest_mismatch"}
+
+    refused = _gate_refusals(plan, graph, ctx)
+    assert refused, "the drifted bundle must make the real gate refuse something"
+    assert report.agreement.gate_refused == refused
+    assert report.agreement.modelled == frozenset()
+    assert report.agreement.unmodelled == refused
+    assert report.agreement.state is AgreementState.UNMODELLED
     assert report.usable_for_approval is False
-    # The policy half could not be evaluated, and the report says so rather than
-    # reporting a verdict it never reached.
-    assert report.policy is None
-    assert any("could not be evaluated" in note for note in report.notes)
+    # Whether the policy half returns ``None`` or a denial is
+    # ``policy_gate.py``'s choice and it has changed while this suite was being
+    # extended: a drifted pin used to raise out of ``evaluate_gate`` and now comes
+    # back as a refusal. What this module owes either way is stated conditionally,
+    # because the invariant is "the report says what the policy half did" rather
+    # than "the policy half raises".
+    if report.policy is None:
+        assert any("could not be evaluated" in note for note in report.notes)
+    else:
+        assert report.policy.denied is True
+        # ``simulated`` marks the read-only path, so a preview reporting a verdict
+        # means it took it through ``simulate_gate`` and touched nothing.
+        assert report.policy.simulated is True
     # …while the blast half still stands, because that is what the preview is for.
     assert report.prediction.affected_node_ids == ("n-api", "n-db", "n-edge", "n-web")
 
