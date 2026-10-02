@@ -121,16 +121,76 @@ bytes, never a class:
 so an artifact listed through a private registry still derives
 ``organization_private`` here, and a test asserts it through this module rather
 than trusting Phase 1's own suite to say it.
+
+Phase 4 — sealing, audit, and one honest correction to Phase 2
+----------------------------------------------------------------
+Phase 2 left three things open. This section records what happened to each,
+because the answers change how the module should be read.
+
+**Sealing.** :class:`MarketplaceEvidence` writes each catalog activity into
+plan 12's chain through :class:`~mayhem.infra.attestation_store.AttestationRepository`
+— the same :class:`~mayhem.domain.attestation.AttestedEvent` type, the same
+:func:`~mayhem.domain.attestation.seal_events`, the same
+:func:`~mayhem.domain.attestation.verify_chain`, the same
+:class:`~mayhem.domain.attestation.Manifest`. A *publish*, a *pin*, an
+*install*, a *revocation*, a *deprecation*, and a *federation closure* each seal
+one event and one manifest, and every one of those payloads names the artifact
+digest, the registry, and the **derived** trust class together with
+:data:`~mayhem.domain.marketplace.SIGNATURE_TRUST_NOTICE` and
+``signature_verification_implemented: False``. A consumer holding only the
+exported chain can therefore answer "which bytes were admitted, under which
+label, from which digest" without this database and without trusting a field
+nobody derived.
+
+Sealing is **not** signing. Every manifest this module writes is unsigned, and
+the reason string is stored with it exactly as plan 12 stores its own. The
+chain proves the recorded bytes are unaltered and in order; it proves nothing
+about who wrote them.
+
+**Audit.** :class:`~mayhem.infra.audit_stream.AuditStream` records the three
+privileged actions in :data:`MARKETPLACE_PRIVILEGED_ACTIONS` — installing,
+revoking, and trusting a publisher — through its own
+:meth:`~mayhem.infra.audit_stream.AuditStream.record` seam, with no second audit
+format invented here. ``principal`` is what the caller declared; nothing
+authenticates it, for the same reason nothing signs the manifest.
+
+**The no-FK correction.** Phase 2 claimed the absence of a foreign key from
+``marketplace_certifications`` to ``certification_records`` was free. It is not,
+and the claim was checked rather than restated (see
+:meth:`MarketplaceStore.certifications`). The row surviving a transition is
+the *easy* half; the pairing's **standing** staying true is the half that was
+false, because a record demoted in place to ``failed`` or ``incompatible`` left
+the catalogue promoting an artifact off a snapshot. Reads now resolve each
+pairing against the authoritative record when plan 01 knows that fault and cell,
+and fail closed when it cannot.
+
+**The one clock read that decides.** See :data:`CLOCK_DECISION_NOTE`.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
+from mayhem.domain.attestation import (
+    GENESIS_DIGEST,
+    AttestedEvent,
+    AttestedTimestamp,
+    ChainVerification,
+    Manifest,
+    ManifestVerification,
+    RetentionClass,
+    build_manifest,
+    content_digest,
+    seal_events,
+    verify_chain,
+    verify_manifest,
+)
+from mayhem.domain.certification import CertificationRecord, CertificationState
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import DomainError
 from mayhem.domain.marketplace import (
@@ -139,6 +199,7 @@ from mayhem.domain.marketplace import (
     ArtifactCertification,
     ArtifactClass,
     DeprecationNotice,
+    DigestCheckState,
     RegistryFederation,
     RegistryRef,
     Revocation,
@@ -156,6 +217,13 @@ from mayhem.domain.marketplace import (
     trust_label,
 )
 from mayhem.domain.provider import ProviderError
+from mayhem.infra.attestation_store import (
+    SIGNATURE_UNSIGNED_NO_SIGNING,
+    UNSIGNED_REASON_NO_SIGNING,
+    AttestationRepository,
+)
+from mayhem.infra.audit_stream import AuditEntry, AuditStream
+from mayhem.infra.certification_repository import CertificationRepository
 
 if TYPE_CHECKING:
     import sqlite3
@@ -169,13 +237,18 @@ if TYPE_CHECKING:
     from mayhem.providers.sandbox import SandboxAdmission, SandboxProfile
 
 __all__ = [
+    "MARKETPLACE_ACTIVITY_KINDS",
+    "MARKETPLACE_ACTIVITY_PREFIX",
+    "MARKETPLACE_PRIVILEGED_ACTIONS",
     "MARKETPLACE_TABLES",
     "SIGNATURE_TRUST_NOTICE",
     "SIGNATURE_VERIFICATION_IMPLEMENTED",
     "CompatibilityVerdict",
     "DispatchAdmission",
     "ListingEntry",
+    "MarketplaceActivity",
     "MarketplaceError",
+    "MarketplaceEvidence",
     "MarketplaceRegistry",
     "MarketplaceStore",
     "PinState",
@@ -204,6 +277,95 @@ MARKETPLACE_TABLES: Final[tuple[str, ...]] = (
     "marketplace_supply_chain",
     "marketplace_revocations",
     "marketplace_pins",
+)
+
+
+# ── Phase 4: the activity vocabulary ─────────────────────────────────────────
+
+#: Every marketplace activity that gets sealed, as the ``event_kind`` of its
+#: :class:`~mayhem.domain.attestation.AttestedEvent`.
+#:
+#: A tuple rather than prose so a test, a grep, and this module cannot disagree
+#: about the list — the same reason :mod:`mayhem.infra.audit_stream` keeps its
+#: action vocabulary in one place. Nothing here is an authenticity claim; these
+#: name *what happened to bytes in a catalog*.
+ACTIVITY_ARTIFACT_PUBLISHED = "marketplace.artifact.published"
+ACTIVITY_ARTIFACT_DEPRECATED = "marketplace.artifact.deprecated"
+ACTIVITY_ARTIFACT_PINNED = "marketplace.artifact.pinned"
+ACTIVITY_ARTIFACT_UNPINNED = "marketplace.artifact.unpinned"
+ACTIVITY_ARTIFACT_INSTALLED = "marketplace.artifact.installed"
+ACTIVITY_INSTALL_REFUSED = "marketplace.install.refused"
+ACTIVITY_ARTIFACT_REVOKED = "marketplace.artifact.revoked"
+ACTIVITY_TRUST_PUBLISHER = "marketplace.trust.publisher"
+ACTIVITY_FEDERATION_CLOSED = "marketplace.federation.closed"
+
+MARKETPLACE_ACTIVITY_KINDS: Final[tuple[str, ...]] = (
+    ACTIVITY_ARTIFACT_PUBLISHED,
+    ACTIVITY_ARTIFACT_DEPRECATED,
+    ACTIVITY_ARTIFACT_PINNED,
+    ACTIVITY_ARTIFACT_UNPINNED,
+    ACTIVITY_ARTIFACT_INSTALLED,
+    ACTIVITY_INSTALL_REFUSED,
+    ACTIVITY_ARTIFACT_REVOKED,
+    ACTIVITY_TRUST_PUBLISHER,
+    ACTIVITY_FEDERATION_CLOSED,
+)
+
+#: Prefix on every marketplace activity id and manifest id. One namespace in
+#: plan 12's two shared tables, so a consumer exporting one store's evidence can
+#: tell marketplace activity apart from run evidence and from audit entries
+#: without joining on anything else.
+MARKETPLACE_ACTIVITY_PREFIX: Final[str] = "marketplace:"
+
+#: The privileged actions this module records in
+#: :class:`~mayhem.infra.audit_stream.AuditStream`.
+#:
+#: Three, and the list is the argument for it. *Installing* grants bytes
+#: standing on a runtime, *revoking* withdraws it on every node that reads the
+#: catalogue, and *trusting a publisher* is the act that lets one publisher's
+#: certification evidence reach an artifact at all. Publishing a catalog row and
+#: recording a deprecation are **not** privileged in the same sense: neither
+#: grants nor withdraws standing on a runtime, and both are still sealed, so
+#: they leave a chain without cluttering the privileged-action log with entries
+#: no operator will ever filter for.
+MARKETPLACE_PRIVILEGED_ACTIONS: Final[tuple[str, ...]] = (
+    "audit.marketplace.artifact.installed",
+    "audit.marketplace.artifact.revoked",
+    "audit.marketplace.trust_publisher",
+)
+
+#: The principal recorded when a caller does not name one.
+#:
+#: This is a **declaration**, exactly like
+#: :class:`~mayhem.domain.marketplace.PublisherDeclaration` and exactly like the
+#: ``principal`` column in
+#: :mod:`mayhem.infra.audit_stream`: the identity the writer recorded, with
+#: nothing in this build able to check it. It says "the marketplace engine did
+#: this on someone's behalf", not "this person did this".
+MARKETPLACE_DEFAULT_PRINCIPAL: Final[str] = "marketplace.registry"
+
+#: The one clock read in this module that *decides* something, stated once so a
+#: reader does not have to infer it from a comment in a docstring.
+#:
+#: Every policy decision this module makes — resolve, verify, install, admit,
+#: list, compatibility, federation — takes ``now`` as a parameter, so a policy
+#: can be replayed and a test can prove a refusal without waiting out a
+#: deadline. :meth:`MarketplaceRegistry.guarded_factory` is the single exception
+#: and deliberately has no ``now``, because it runs at the moment a runtime is
+#: *materialised* and a caller-supplied instant is precisely the stale value
+#: that lets a revoked provider execute. Injecting a clock there would make the
+#: one safety property this phase cannot compromise opt-out-able, which is
+#: theatre in the exact sense the phrase is used elsewhere in this repository.
+#:
+#: The other wall-clock reads in this module are *stamps*, not decisions:
+#: :func:`_stamp` and the attestation reading default to the clock and are
+#: overridable by the caller on every path that takes one. Nothing about a
+#: stamp can change a verdict, and a test pins that the two categories stay
+#: apart.
+CLOCK_DECISION_NOTE: Final[str] = (
+    "guarded_factory is the only clock read that decides: every other policy "
+    "decision takes an injected now so it can be replayed, and this one runs at "
+    "runtime-materialisation time where a stale now would be the defect itself"
 )
 
 
@@ -450,6 +612,315 @@ class DispatchAdmission:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class MarketplaceActivity:
+    """One sealed marketplace activity, and the verdicts that prove it sealed.
+
+    ``signature_state`` is always :data:`SIGNATURE_UNSIGNED_NO_SIGNING` and
+    :attr:`signed` is always ``False``. They are here so a caller reading an
+    activity cannot assume otherwise by omission: this build mints no signature
+    bytes, has no key material, and no KMS/HSM custody, so a marketplace
+    manifest attests **integrity** — these bytes are unaltered and in this order
+    — and attests nothing whatsoever about who produced them.
+
+    The reason string travels beside the state for the same reason plan 12
+    stores one: a reader who finds an unsigned manifest is told why, rather
+    than left to guess whether the absence is a bug or a phase boundary.
+    """
+
+    activity_id: str
+    kind: str
+    event: AttestedEvent
+    manifest: Manifest
+    signature_state: str
+    signature_reason: str
+    chain_verification: ChainVerification
+    manifest_verification: ManifestVerification
+
+    @property
+    def sealed(self) -> bool:
+        """Both verdicts clean. Integrity of the recorded bytes, nothing more."""
+        return self.chain_verification.valid and self.manifest_verification.valid
+
+    @property
+    def signed(self) -> bool:
+        """Always ``False``. See :data:`SIGNATURE_UNSIGNED_NO_SIGNING`."""
+        return False
+
+    @property
+    def chain_root(self) -> str:
+        """The root the manifest commits to."""
+        return self.event.chain_link
+
+    @property
+    def payload(self) -> dict[str, object]:
+        """The attested body — which bytes, which label, which digest."""
+        return dict(self.event.payload)
+
+    @property
+    def notice(self) -> str:
+        """Always :data:`~mayhem.domain.marketplace.SIGNATURE_TRUST_NOTICE`."""
+        return SIGNATURE_TRUST_NOTICE
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "activity_id": self.activity_id,
+            "kind": self.kind,
+            "sealed": self.sealed,
+            "signed": self.signed,
+            "signature_state": self.signature_state,
+            "signature_reason": self.signature_reason,
+            "chain_root": self.chain_root,
+            "manifest_digest": self.manifest.manifest_digest,
+            "previous_manifest_digest": self.manifest.previous_manifest_digest,
+            "chain_verification": self.chain_verification.to_dict(),
+            "manifest_verification": self.manifest_verification.to_dict(),
+            "payload": self.payload,
+            "notice": self.notice,
+        }
+
+
+# ── sealing (plan 18 Phase 4) ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _InstallAttempt:
+    """What one install attempt *offered*, so a refusal can be sealed precisely.
+
+    Four values, and the reason they are grouped is that an install has two
+    digests on purpose: ``requested_digest`` is what the caller intended to
+    install, ``observed_digest`` is the sha256 of the bytes actually in hand. The
+    refusal that matters most — the integrity one — is exactly the disagreement
+    between them, so an evidence record of a refused install that carried only
+    one of the two would be unable to say which check failed.
+    """
+
+    artifact_id: str
+    version: str
+    requested_digest: str
+    observed_digest: str
+
+
+class MarketplaceEvidence:
+    """Seals marketplace activity into plan 12's attested chain.
+
+    Reuse, not reinvention. This class owns no event type, no encoder, no chain
+    rule and no verifier: every one of those belongs to
+    :mod:`mayhem.domain.attestation` and is reached through
+    :class:`~mayhem.infra.attestation_store.AttestationRepository`. What this
+    class adds is the *catalogue-specific content* of a marketplace event —
+    which artifact digest, which registry, which **derived** trust class — and
+    the decision about what to seal.
+
+    One activity, one chain
+    -----------------------
+    Plan 12's verifier defines a chain as starting at genesis, so
+    ``attestation_chains.run_id`` is used the way
+    :mod:`mayhem.infra.audit_stream` uses ``stream_id``: the activity id *is*
+    the chain key. Ordering across activities is not lost — it is carried by
+    the manifest chain, each manifest recording the previous marketplace
+    manifest's digest in ``previous_manifest_digest`` — so an export of the
+    manifests alone reconstructs the order the catalog moved in.
+
+    The id is derived from the payload's own content digest
+    (:func:`~mayhem.domain.attestation.content_digest`), so recording the same
+    activity twice produces the same chain and the same manifest rather than a
+    near-duplicate, and two genuinely different activities can never collide.
+    Replay is therefore idempotent by construction, and an operator replaying a
+    recorded drill gets the same digests back.
+
+    Nothing here is signed
+    ----------------------
+    :meth:`seal` writes an unsigned manifest with the reason recorded beside it,
+    exactly as :func:`~mayhem.infra.attestation_store.seal_run_evidence` does.
+    This class has no signer parameter and cannot grow one without the signing
+    lane that does not exist yet.
+    """
+
+    def __init__(
+        self,
+        store: Store,
+        *,
+        repository: AttestationRepository | None = None,
+        activity_prefix: str = MARKETPLACE_ACTIVITY_PREFIX,
+    ) -> None:
+        self._store = store
+        self._repository = repository if repository is not None else AttestationRepository(store)
+        self._prefix = activity_prefix
+
+    @property
+    def repository(self) -> AttestationRepository:
+        """Plan 12's repository, exposed so a caller can verify directly."""
+        return self._repository
+
+    @property
+    def activity_prefix(self) -> str:
+        return self._prefix
+
+    @property
+    def signature_state(self) -> str:
+        """Always :data:`SIGNATURE_UNSIGNED_NO_SIGNING`."""
+        return SIGNATURE_UNSIGNED_NO_SIGNING
+
+    @property
+    def signature_reason(self) -> str:
+        """Why every marketplace manifest is unsigned, in plan 12's own words."""
+        return UNSIGNED_REASON_NO_SIGNING
+
+    @property
+    def signed(self) -> bool:
+        """Always ``False``. Authorship is not established anywhere in here."""
+        return False
+
+    # -- writing -------------------------------------------------------------
+
+    def seal(
+        self,
+        kind: str,
+        *,
+        subject: str,
+        payload: dict[str, object],
+        recorded_at: AttestedTimestamp | None = None,
+        retention_class: RetentionClass = RetentionClass.HOT,
+    ) -> MarketplaceActivity:
+        """Seal one activity: an event, a chain, and a manifest.
+
+        ``subject`` is the human-facing identity of the thing acted on
+        (``id@version#digest12``, a revocation id, a federation seed list); it
+        goes into the payload under ``subject`` so a consumer reading only the
+        sealed bytes can name the subject without a join.
+
+        The event is verified *before* it is persisted and the manifest is
+        verified before it is persisted, by plan 12's own verifiers — this class
+        never writes bytes it has not first proved.
+
+        Raises:
+            MarketplaceError: If ``kind`` is not in
+                :data:`MARKETPLACE_ACTIVITY_KINDS`, or if the derived chain or
+                manifest fails verification. Nothing is written in either case.
+        """
+        if kind not in MARKETPLACE_ACTIVITY_KINDS:
+            raise MarketplaceError(
+                "marketplace.unknown_activity_kind",
+                f"{kind!r} is not a marketplace activity kind; the vocabulary is "
+                f"{', '.join(MARKETPLACE_ACTIVITY_KINDS)}",
+            )
+        reading = recorded_at or _reading()
+        body = {**payload, "subject": subject, "activity_kind": kind}
+        activity_id = f"{self._prefix}{kind}:{content_digest(body)[:32]}"
+        (sealed,) = seal_events(
+            (
+                AttestedEvent(
+                    event_id=f"{activity_id}:0",
+                    event_kind=kind,
+                    run_id=activity_id,
+                    sequence=0,
+                    payload=body,
+                    recorded_at=reading,
+                ),
+            )
+        )
+        chain = verify_chain((sealed,))
+        if not chain.valid:
+            raise MarketplaceError(
+                "marketplace.activity_chain_invalid",
+                f"refusing to seal marketplace activity {kind!r}: "
+                f"{'; '.join(chain.errors)}",
+            )
+        manifest = build_manifest(
+            (sealed,),
+            manifest_id=f"{activity_id}:manifest",
+            run_id=activity_id,
+            signer_identity="",
+            trust_root_ref="",
+            retention_class=retention_class,
+            created_at=reading,
+            previous_manifest_digest=self._previous_manifest_digest(),
+        )
+        manifest_check = verify_manifest(manifest, (sealed,))
+        if not manifest_check.valid:
+            raise MarketplaceError(
+                "marketplace.activity_manifest_invalid",
+                f"refusing to seal marketplace activity {kind!r}: "
+                f"{'; '.join(manifest_check.errors)}",
+            )
+        self._repository.save_chain(activity_id, (sealed,), sealed_at=reading.wall_clock)
+        self._repository.save_manifest(
+            manifest,
+            signature_state=SIGNATURE_UNSIGNED_NO_SIGNING,
+            signature_reason=UNSIGNED_REASON_NO_SIGNING,
+        )
+        return MarketplaceActivity(
+            activity_id=activity_id,
+            kind=kind,
+            event=sealed,
+            manifest=manifest,
+            signature_state=SIGNATURE_UNSIGNED_NO_SIGNING,
+            signature_reason=UNSIGNED_REASON_NO_SIGNING,
+            chain_verification=chain,
+            manifest_verification=manifest_check,
+        )
+
+    def _previous_manifest_digest(self) -> str:
+        """The newest marketplace manifest's digest, or genesis for the first.
+
+        Insertion order rather than ``created_at`` because a caller may inject
+        a ``recorded_at`` that predates an already-sealed activity; ordering by
+        the timestamp a test supplied would let a replay reorder the catalogue's
+        attested history. ``rowid`` is the write order, which is the only order
+        that cannot be back-dated.
+        """
+        rows = self._store.query(
+            "SELECT manifest_digest FROM attestation_manifests WHERE manifest_id GLOB ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (f"{self._prefix}*",),
+        )
+        return str(rows[0][0]) if rows else GENESIS_DIGEST
+
+    # -- reading -------------------------------------------------------------
+
+    def activities(self) -> tuple[str, ...]:
+        """Every sealed activity id, in the order it was written."""
+        rows = self._store.query(
+            "SELECT manifest_id FROM attestation_manifests WHERE manifest_id GLOB ? "
+            "ORDER BY rowid",
+            (f"{self._prefix}*",),
+        )
+        return tuple(str(row[0]).removesuffix(":manifest") for row in rows)
+
+    def load(self, activity_id: str) -> tuple[AttestedEvent, ...]:
+        """The stored chain for one activity, in sequence order."""
+        return self._repository.load_chain(activity_id)
+
+    def verify(self, activity_id: str) -> ChainVerification:
+        """Re-verify one activity's stored chain, offline.
+
+        Plan 12's verifier plus a check of the stored root and event count, so a
+        row edited to name a different root than its events produce is caught
+        even when every event still hashes correctly.
+        """
+        return self._repository.verify_run_chain(activity_id)
+
+    def verify_manifest(self, activity_id: str) -> ManifestVerification:
+        """Re-verify one activity's stored manifest against its stored events.
+
+        Raises:
+            KeyError: If no manifest is stored for ``activity_id``.
+        """
+        return self._repository.verify_stored_manifest(f"{activity_id}:manifest")
+
+    def signature_state_of(self, activity_id: str) -> tuple[str, str]:
+        """``(signature_state, signature_reason)`` as stored.
+
+        The reason comes back with the state so a caller reporting on the
+        activity never has to invent an explanation for the absence.
+
+        Raises:
+            KeyError: If no manifest is stored for ``activity_id``.
+        """
+        return self._repository.load_signature_state(f"{activity_id}:manifest")
+
+
 # ── the store ────────────────────────────────────────────────────────────────
 
 
@@ -467,10 +938,122 @@ class MarketplaceStore:
     no trust class column, the artifact digest in the certification primary key,
     ``signature_verified CHECK (signature_verified = 0)``, and a pin that must
     name 64 lowercase hex characters.
+
+    Phase 4's three collaborators
+    -----------------------------
+    Constructed by default over the *same* :class:`~mayhem.infra.store.Store`,
+    so sealing and audit are not opt-in and cannot be forgotten at a call site:
+
+    * :class:`MarketplaceEvidence` — every catalog write seals an attested event
+      and an unsigned manifest. See its docstring, and note that sealing is not
+      signing.
+    * :class:`~mayhem.infra.audit_stream.AuditStream` — the three actions in
+      :data:`MARKETPLACE_PRIVILEGED_ACTIONS` are recorded as privileged actions.
+    * :class:`~mayhem.infra.certification_repository.CertificationRepository` —
+      the authority that decides whether a stored pairing is still evidence.
+      See :meth:`certifications` for why the no-FK decision is not, on its own,
+      sufficient.
     """
 
-    def __init__(self, store: Store) -> None:
+    def __init__(
+        self,
+        store: Store,
+        *,
+        evidence: MarketplaceEvidence | None = None,
+        audit: AuditStream | None = None,
+        certifications: CertificationRepository | None = None,
+    ) -> None:
         self._store = store
+        self._evidence = evidence if evidence is not None else MarketplaceEvidence(store)
+        self._audit = audit if audit is not None else AuditStream(store)
+        self._certifications = (
+            certifications if certifications is not None else CertificationRepository(store)
+        )
+
+    @property
+    def evidence(self) -> MarketplaceEvidence:
+        """The sealing half, so a caller can verify what this store has attested."""
+        return self._evidence
+
+    @property
+    def audit(self) -> AuditStream:
+        """The privileged-action log this store writes into."""
+        return self._audit
+
+    @property
+    def certifications_authority(self) -> CertificationRepository:
+        """The plan-01 record store pairings are resolved against."""
+        return self._certifications
+
+    # -- sealing and audit (Phase 4) -----------------------------------------
+
+    def seal_activity(
+        self,
+        kind: str,
+        *,
+        subject: str,
+        payload: dict[str, object],
+        now: datetime | None = None,
+    ) -> MarketplaceActivity:
+        """Seal one activity, stamped at the caller's instant when supplied.
+
+        The stamp is the write's ``now``, not a fresh clock read, so a replayed
+        drill produces byte-identical activity ids. See
+        :data:`CLOCK_DECISION_NOTE` for why this is a stamp and not a decision.
+
+        ``uncertainty_ms`` is ``0`` and ``source`` is ``"caller"``: the instant
+        was supplied rather than measured, and the source string is what says so
+        to a reader. :attr:`~mayhem.domain.attestation.AttestedTimestamp.is_exact`
+        is a claim about a *measurement*, and a caller-injected instant is not
+        one.
+        """
+        return self._evidence.seal(
+            kind,
+            subject=subject,
+            payload=payload,
+            recorded_at=AttestedTimestamp(
+                wall_clock=_moment(now),
+                monotonic_ns=0,
+                uncertainty_ms=0.0,
+                source="caller",
+            ),
+        )
+
+    def audit_privileged(
+        self,
+        action: str,
+        *,
+        target: str,
+        principal: str,
+        detail: dict[str, object],
+    ) -> None:
+        """Record one privileged action through plan 12's own audit stream.
+
+        No second format and no second log: this is
+        :meth:`mayhem.infra.audit_stream.AuditStream.record` with an
+        :class:`~mayhem.infra.audit_stream.AuditEntry`, so the entry is the same
+        :class:`~mayhem.domain.attestation.AttestedEvent` type, canonicalized by
+        the same encoder and verified by the same verifier as everything else in
+        this repository.
+
+        ``principal`` is what the caller declared. Nothing here authenticates it —
+        no signature exists in this build — so it is recorded as a claim and
+        never upgraded to a fact.
+        """
+        if action not in MARKETPLACE_PRIVILEGED_ACTIONS:
+            raise MarketplaceError(
+                "marketplace.unknown_privileged_action",
+                f"{action!r} is not a marketplace privileged action; the vocabulary is "
+                f"{', '.join(MARKETPLACE_PRIVILEGED_ACTIONS)}",
+            )
+        self._audit.record(
+            AuditEntry(
+                principal=principal or MARKETPLACE_DEFAULT_PRINCIPAL,
+                action=action,
+                target=target,
+                detail=detail,
+            )
+        )
 
     # -- registries -----------------------------------------------------------
 
@@ -531,6 +1114,45 @@ class MarketplaceStore:
         artifact's own. ``marketplace_supply_chain`` CHECKs that, because a
         supply-chain record with no release history cannot answer the question a
         supply chain exists to answer: where did these bytes come from.
+
+        The publish is sealed as :data:`ACTIVITY_ARTIFACT_PUBLISHED` (Phase 4), so
+        "these bytes entered the catalog" is a fact a consumer of the exported
+        chain can read. Publishing is **not** in
+        :data:`MARKETPLACE_PRIVILEGED_ACTIONS`: it grants no standing on a
+        runtime and withdraws none, so it belongs in the sealed chain and not in
+        the privileged-action log.
+        """
+        written = self._write_artifact(artifact, supply_chain=supply_chain, now=now)
+        moment = _moment(now)
+        self.seal_activity(
+            ACTIVITY_ARTIFACT_PUBLISHED,
+            subject=artifact.label,
+            payload=_artifact_payload(
+                artifact,
+                self.label(artifact, now=moment),
+                kind=ACTIVITY_ARTIFACT_PUBLISHED,
+                supply_chain=supply_chain,
+                now=moment,
+                recorded_at=_iso(moment),
+            ),
+            now=now,
+        )
+        return written
+
+    def _write_artifact(
+        self,
+        artifact: Artifact,
+        *,
+        supply_chain: SupplyChainRecord,
+        now: datetime | None,
+    ) -> Artifact:
+        """The row writes :meth:`publish_artifact` and :meth:`deprecate` share.
+
+        Split out so a deprecation seals *one* activity naming the withdrawal
+        rather than a publish and then a deprecation: a consumer reconstructing
+        the catalogue's history from the chain should see one withdrawal, and
+        reading it as "this version was republished" would be a second thing to
+        explain away.
         """
         _require_same_bytes(artifact, supply_chain)
         stamp = _stamp(now)
@@ -593,6 +1215,12 @@ class MarketplaceStore:
         A narrow write rather than a re-publish, so withdrawing a version cannot
         quietly change the bytes, the dependencies, or the declared permissions in
         the same breath: only the notice moves.
+
+        Sealed as :data:`ACTIVITY_ARTIFACT_DEPRECATED` (Phase 4), and *not*
+        audited as a privileged action: a deprecation grants nothing and stops
+        nothing at dispatch (see the module docstring on why revocation is the
+        instrument that withdraws bytes). The sealed chain is where an operator
+        goes to find out that a version was withdrawn.
         """
         artifact = self.artifact(artifact_id, version)
         if artifact is None:
@@ -601,11 +1229,29 @@ class MarketplaceStore:
                 f"no artifact {artifact_id}@{version} is published, so there is nothing "
                 "to deprecate",
             )
-        return self.publish_artifact(
-            Artifact.model_validate({**artifact.model_dump(), "deprecation": notice}),
-            supply_chain=self.require_supply_chain(artifact_id, version),
+        withdrawn = Artifact.model_validate({**artifact.model_dump(), "deprecation": notice})
+        chain = self.require_supply_chain(artifact_id, version)
+        moment = _moment(now)
+        written = self._write_artifact(withdrawn, supply_chain=chain, now=now)
+        self.seal_activity(
+            ACTIVITY_ARTIFACT_DEPRECATED,
+            subject=withdrawn.label,
+            payload=_artifact_payload(
+                withdrawn,
+                self.label(withdrawn, now=moment),
+                kind=ACTIVITY_ARTIFACT_DEPRECATED,
+                supply_chain=chain,
+                now=moment,
+                recorded_at=_iso(moment),
+            )
+            | {
+                "deprecation_reason": notice.reason,
+                "replaced_by": notice.replaced_by,
+                "deprecation_announced_at": _iso(notice.announced_at),
+            },
             now=now,
         )
+        return written
 
     def artifact(self, artifact_id: str, version: str) -> Artifact | None:
         rows = self._store.query(
@@ -651,6 +1297,7 @@ class MarketplaceStore:
         certification: ArtifactCertification,
         *,
         now: datetime | None = None,
+        principal: str = "",
     ) -> ArtifactCertification:
         """Append a record **paired with the digest it was made against**.
 
@@ -662,6 +1309,26 @@ class MarketplaceStore:
         ``certification_records`` — a record ages in place there, and the catalog
         must be able to answer "were these bytes ever certified" without a join a
         later transition could erase.
+
+        Phase 4 corrected the second half of that sentence: the row surviving is
+        necessary but not sufficient, and :meth:`certifications` now resolves
+        each pairing against the authoritative record. Read that method before
+        trusting the docstring above as the whole design.
+
+        Linking is :data:`ACTIVITY_TRUST_PUBLISHER` — the act by which one
+        publisher's certification evidence reaches one artifact's bytes, and the
+        first of the three :data:`MARKETPLACE_PRIVILEGED_ACTIONS`. It is sealed
+        *and* audited, because an operator asking "how did these bytes become
+        evidenced?" should not have to reconstruct the answer from a diff of the
+        pairings table.
+
+        Args:
+            certification: The record paired with the digest it was made against.
+            now: Write stamp, defaulting to the wall clock.
+            principal: The identity recorded in the privileged-action log. A
+                **declaration**: nothing in this build can authenticate it, so
+                it defaults to :data:`MARKETPLACE_DEFAULT_PRINCIPAL` rather than
+                to a guess about who is calling.
         """
         record = certification.record
         stamp = _stamp(now)
@@ -688,10 +1355,82 @@ class MarketplaceStore:
                     stamp,
                 ),
             )
+        moment = _moment(now)
+        artifact = self._artifact_for_digest(certification.artifact_digest)
+        label = (
+            trust_label(artifact, (certification,), now=moment)
+            if artifact is not None
+            else None
+        )
+        payload: dict[str, object] = {
+            "activity_kind": ACTIVITY_TRUST_PUBLISHER,
+            "artifact_digest": certification.artifact_digest,
+            "fault_id": record.fault_id,
+            "certification_label": record.label,
+            "certification_state": record.state.value,
+            "certification_expires_at": _iso(record.expires_at),
+            "cell_label": record.cell.label,
+            "cell_fingerprint": record.cell.fingerprint,
+            "link_sequence": sequence,
+            "recorded_at": _iso(moment),
+            "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+            "trust_notice": SIGNATURE_TRUST_NOTICE,
+        }
+        if artifact is not None and label is not None:
+            payload |= {
+                "artifact_id": artifact.artifact_id,
+                "version": artifact.version,
+                "registry_id": artifact.registry.registry_id,
+                "registry_scope": artifact.registry.scope.value,
+                "publisher_id": artifact.publisher.publisher_id,
+                "publisher_is_declared_only": True,
+                "artifact_class": label.artifact_class.value,
+                "artifact_class_meaning": label.meaning(),
+            }
+        self.seal_activity(
+            ACTIVITY_TRUST_PUBLISHER,
+            subject=f"{certification.artifact_digest[:12]}:{record.fault_id}",
+            payload=payload,
+            now=now,
+        )
+        self.audit_privileged(
+            "audit.marketplace.trust_publisher",
+            target=f"{certification.artifact_digest[:12]}:{record.fault_id}",
+            principal=principal,
+            detail={
+                "artifact_digest": certification.artifact_digest,
+                "fault_id": record.fault_id,
+                "certification_state": record.state.value,
+                "publisher_id": artifact.publisher.publisher_id if artifact is not None else "",
+                "publisher_is_declared_only": True,
+            },
+        )
         return certification
 
+    def _artifact_for_digest(self, digest: str) -> Artifact | None:
+        """The published artifact whose bytes are ``digest``, if one is.
+
+        A pairing may legitimately be linked before the artifact is published —
+        evidence is often recorded first and the release follows — so ``None`` is
+        a real answer here rather than an error. When there is no artifact, the
+        sealed payload names the digest, the fault and the record, and omits the
+        artifact fields rather than inventing them.
+        """
+        rows = self._store.query(
+            "SELECT artifact_json FROM marketplace_artifacts WHERE digest = ? "
+            "ORDER BY artifact_id, version LIMIT 1",
+            (digest,),
+        )
+        return Artifact.model_validate_json(str(rows[0][0])) if rows else None
+
     def certifications(self, *, artifact_digest: str = "") -> tuple[ArtifactCertification, ...]:
-        """Every stored pairing, ordered by digest, fault, then sequence."""
+        """Every stored pairing, ordered by digest, fault, then sequence.
+
+        Each pairing's *record* is resolved against the plan-01 record store
+        before it is returned — see :meth:`_resolve_pairing` for why a snapshot
+        alone is not the same answer. The digest pairing is returned unchanged,
+        because that is the part this table owns.
+        """
         if artifact_digest:
             rows = self._store.query(
                 "SELECT certification_json FROM marketplace_certifications "
@@ -703,7 +1442,74 @@ class MarketplaceStore:
                 "SELECT certification_json FROM marketplace_certifications "
                 "ORDER BY artifact_digest, fault_id, sequence"
             )
-        return tuple(ArtifactCertification.model_validate_json(str(row[0])) for row in rows)
+        return tuple(
+            self._resolve_pairing(ArtifactCertification.model_validate_json(str(row[0])))
+            for row in rows
+        )
+
+    def _resolve_pairing(self, certification: ArtifactCertification) -> ArtifactCertification:
+        """Return this pairing carrying the record's *current* standing.
+
+        Phase 2 asserted that having no foreign key from
+        ``marketplace_certifications`` to ``certification_records`` was free. It
+        is only half free, and this method is the half that was wrong.
+
+        **What the no-FK decision does buy.** The row survives whatever plan 01
+        does. A record that ages, is demoted, is invalidated, or is deleted
+        cannot cascade the pairing away, so the catalog can always answer "were
+        these bytes ever certified, and by whom" — which is a question about
+        *history* and which no join could answer once the far side moved.
+
+        **What it does not buy.** Survival is not truth. A pairing stores a
+        *snapshot* of the record it was linked from, and a snapshot cannot
+        follow an in-place transition:
+        :meth:`~mayhem.infra.certification_repository.CertificationRepository.store_transition`
+        rewrites ``state`` on the same row, so a record demoted to ``failed`` or
+        moved to the terminal ``incompatible`` would leave the catalog still
+        promoting an artifact off ``certified`` — reporting ``verified_community``
+        for evidence that had been withdrawn. Time ageing is the one transition a
+        snapshot survives unaided, because :func:`is_current_record` compares
+        ``expires_at`` against the caller's ``now`` independently. Demotion and
+        invalidation have no such independent check.
+
+        **The resolution.** When the record store holds rows for this pairing's
+        ``(fault_id, cell)``, the authoritative record decides, matched by the
+        identity a transition provably cannot move. When the record store holds
+        no rows at all for that fault, the catalog is the *only* authority for
+        this pairing — it was recorded here and nowhere else — so the snapshot
+        stands and ages by time exactly as Phase 2 described.
+
+        **Fail closed.** If the record store knows the fault and the cell but
+        cannot match this pairing's identity, the claim cannot be confirmed, so
+        it is returned as ``stale`` rather than trusted. The row is still there
+        for the history question; it simply no longer counts as evidence, and
+        :func:`~mayhem.domain.marketplace.approval_refusals` reports it as
+        ``artifact.certification_not_current`` rather than as a weak artifact.
+        """
+        record = certification.record
+        stored = self._certifications.load(record.fault_id)
+        if not stored:
+            # The catalog recorded this pairing and plan 01 has never heard of
+            # the fault, so there is no authority that could move it.
+            return certification
+        identity = _claim_identity(record)
+        matches = [row for row in stored if _claim_identity(row.record) == identity]
+        if not matches:
+            return ArtifactCertification(
+                artifact_digest=certification.artifact_digest,
+                record=_withdrawn(
+                    record,
+                    f"the certification record this pairing names is no longer stored under "
+                    f"that identity in the plan-01 record store (it holds "
+                    f"{len(stored)} record(s) for {record.fault_id!r} on other cells or "
+                    f"other certifications); an unconfirmable claim is not evidence",
+                ),
+            )
+        authoritative = max(matches, key=lambda row: row.sequence).record
+        return ArtifactCertification(
+            artifact_digest=certification.artifact_digest,
+            record=authoritative,
+        )
 
     def certifications_for(self, artifact: Artifact) -> tuple[ArtifactCertification, ...]:
         """The pairings filed against ``artifact``'s own digest.
@@ -802,6 +1608,7 @@ class MarketplaceStore:
         revocation: Revocation,
         *,
         now: datetime | None = None,
+        principal: str = "",
     ) -> Revocation:
         """Record a withdrawal. One row per revocation id, replaceable.
 
@@ -809,6 +1616,14 @@ class MarketplaceStore:
         with different content is an operator correcting a typo rather than a
         revocation being lifted. Lifting one means the deadline moves into the
         future, which this upsert permits and the history does not record.
+
+        Sealed as :data:`ACTIVITY_ARTIFACT_REVOKED` and audited as
+        :data:`MARKETPLACE_PRIVILEGED_ACTIONS`' second entry. A revocation is the
+        second most consequential thing this store can do — it withdraws bytes on
+        every node reading the catalogue — so both records are written, and the
+        sealed payload carries the deadline, because "announced" and "in force"
+        are different claims and a reader reconstructing the catalogue months
+        later needs to know which one this was at the time.
         """
         stamp = _stamp(now)
         with self._store.write() as conn:
@@ -833,6 +1648,43 @@ class MarketplaceStore:
                     stamp,
                 ),
             )
+        moment = _moment(now)
+        self.seal_activity(
+            ACTIVITY_ARTIFACT_REVOKED,
+            subject=f"{revocation.revocation_id}:{revocation.names}",
+            payload={
+                "activity_kind": ACTIVITY_ARTIFACT_REVOKED,
+                "revocation_id": revocation.revocation_id,
+                "revocation_scope": revocation.scope.value,
+                "revocation_reason": revocation.reason.value,
+                "revocation_detail": revocation.detail,
+                "revocation_names": revocation.names,
+                "artifact_id": revocation.artifact_id or "",
+                "version": revocation.version or "",
+                "artifact_digest": revocation.digest or "",
+                "publisher_id": revocation.publisher_id or "",
+                "registry_id": revocation.registry_id or "",
+                "issued_at": _iso(revocation.issued_at),
+                "propagation_deadline": _iso(revocation.propagation_deadline),
+                "in_force_at_record": revocation.is_in_force_at(now=moment),
+                "recorded_at": _iso(moment),
+                "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+                "trust_notice": SIGNATURE_TRUST_NOTICE,
+            },
+            now=now,
+        )
+        self.audit_privileged(
+            "audit.marketplace.artifact.revoked",
+            target=f"{revocation.revocation_id}:{revocation.names}",
+            principal=principal,
+            detail={
+                "revocation_id": revocation.revocation_id,
+                "revocation_scope": revocation.scope.value,
+                "revocation_reason": revocation.reason.value,
+                "artifact_digest": revocation.digest or "",
+                "propagation_deadline": _iso(revocation.propagation_deadline),
+            },
+        )
         return revocation
 
     def revocations(self) -> tuple[Revocation, ...]:
@@ -869,6 +1721,14 @@ class MarketplaceStore:
         digests, because the pin is what an installed run's evidence cites and
         quietly changing it would make that evidence describe bytes that were
         never run. Remove the pin first, then install the new one.
+
+        Sealed as :data:`ACTIVITY_ARTIFACT_PINNED`. This is the *pin* — the row
+        that binds bytes to a provider id — and it is deliberately a different
+        activity from :data:`ACTIVITY_ARTIFACT_INSTALLED`, which
+        :meth:`MarketplaceRegistry.install` seals once the gates have passed. A
+        consumer holding only the chain can therefore tell "these bytes were
+        bound" from "these bytes were admitted onto this runtime", and the gap
+        between the two is exactly what the gates in between are for.
         """
         if not provider_id:
             raise MarketplaceError(
@@ -900,6 +1760,25 @@ class MarketplaceStore:
                 "state = 'installed', installed_at = excluded.installed_at, removed_at = ''",
                 (artifact_id, version, digest, registry_id, provider_id, stamp),
             )
+        moment = _moment(now)
+        self.seal_activity(
+            ACTIVITY_ARTIFACT_PINNED,
+            subject=f"{artifact_id}@{version}#{digest[:12]}",
+            payload={
+                "activity_kind": ACTIVITY_ARTIFACT_PINNED,
+                "artifact_id": artifact_id,
+                "version": version,
+                "artifact_digest": digest,
+                "registry_id": registry_id,
+                "provider_id": provider_id,
+                "pin_state": PinState.INSTALLED.value,
+                "installed_at": stamp,
+                "recorded_at": _iso(moment),
+                "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+                "trust_notice": SIGNATURE_TRUST_NOTICE,
+            },
+            now=now,
+        )
         return StoredPin(
             artifact_id=artifact_id,
             version=version,
@@ -920,7 +1799,10 @@ class MarketplaceStore:
         """Mark a live pin removed, keeping the row as history.
 
         Returns ``None`` when there was nothing installed, so a caller can tell an
-        uninstall from a no-op instead of inferring it from a count.
+        uninstall from a no-op instead of inferring it from a count. Only the
+        removal is sealed: a no-op uninstall is not an event, and sealing one
+        would put "something happened here" in the chain about something that did
+        not.
         """
         stamp = _stamp(now)
         with self._store.write() as conn:
@@ -931,7 +1813,28 @@ class MarketplaceStore:
             )
             if not cursor.rowcount:
                 return None
-        return self.pin(artifact_id, version)
+        removed = self.pin(artifact_id, version)
+        if removed is None:  # pragma: no cover — the UPDATE found the row
+            return None
+        self.seal_activity(
+            ACTIVITY_ARTIFACT_UNPINNED,
+            subject=f"{removed.ref}#{removed.digest[:12]}",
+            payload={
+                "activity_kind": ACTIVITY_ARTIFACT_UNPINNED,
+                "artifact_id": removed.artifact_id,
+                "version": removed.version,
+                "artifact_digest": removed.digest,
+                "registry_id": removed.registry_id,
+                "provider_id": removed.provider_id,
+                "pin_state": PinState.REMOVED.value,
+                "removed_at": removed.removed_at,
+                "recorded_at": stamp,
+                "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+                "trust_notice": SIGNATURE_TRUST_NOTICE,
+            },
+            now=now,
+        )
+        return removed
 
     def pin(self, artifact_id: str, version: str) -> StoredPin | None:
         """The most recent pin row for this version, live or removed."""
@@ -1081,6 +1984,67 @@ class MarketplaceRegistry:
         federation = self.federation()
         return federation is not None and federation.contains(registry_id)
 
+    def seal_federation(
+        self,
+        federation: RegistryFederation | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> MarketplaceActivity:
+        """Seal the federation closure as a Phase 4 activity.
+
+        The closure is a *read* — nothing changed when it was computed — which is
+        exactly why this is an explicit call rather than a side effect of
+        :meth:`federation`. A method that silently sealed every invocation would
+        put an attested event in the chain for every listing, every search, and
+        every screen a Phase 3 surface draws, and an evidence chain that records
+        "nothing happened" is a chain nobody can read. So an operator or a Phase
+        3 surface decides *when* the closure is worth attesting, and this method
+        is the decision point.
+
+        What the payload deliberately does **not** say: nothing about promotion.
+        A closure is a set of registry ids and this catalog shares bytes with all
+        of them. :func:`~mayhem.domain.marketplace.classify_artifact` takes no
+        registry argument, so a sealed federation cannot become standing, and the
+        payload repeats
+        :data:`~mayhem.domain.marketplace.SIGNATURE_TRUST_NOTICE` so a consumer
+        reading only the chain cannot mistake membership for trust.
+
+        Args:
+            federation: The closure to seal; the stored one is computed when
+                omitted.
+            now: Write stamp, defaulting to the wall clock.
+
+        Raises:
+            MarketplaceError: ``marketplace.no_federation`` when there is no
+                closure to seal — an empty catalog has *no* federation, and
+                sealing an empty set of registry ids would be attesting to a
+                closure that does not exist.
+        """
+        closure = self.federation() if federation is None else federation
+        if closure is None:
+            raise MarketplaceError(
+                "marketplace.no_federation",
+                "no registry has been published, so this catalog has no federation to "
+                "close over; there is nothing to attest and an empty closure would be "
+                "attesting to a set that does not exist",
+            )
+        moment = _moment(now)
+        return self._store.seal_activity(
+            ACTIVITY_FEDERATION_CLOSED,
+            subject=f"{len(closure.registry_ids)} registries",
+            payload={
+                "activity_kind": ACTIVITY_FEDERATION_CLOSED,
+                "seed_registry_ids": list(closure.seed_registry_ids),
+                "registry_ids": list(closure.registry_ids),
+                "federation_size": len(closure.registry_ids),
+                "grants_any_standing": False,
+                "recorded_at": _iso(moment),
+                "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+                "trust_notice": SIGNATURE_TRUST_NOTICE,
+            },
+            now=now,
+        )
+
     def require_registry(self, registry_id: str) -> RegistryRef:
         """The stored registry, or a refusal naming what this catalog holds.
 
@@ -1202,6 +2166,7 @@ class MarketplaceRegistry:
         observed_digest: str,
         cell: MatrixCell | None = None,
         now: datetime | None = None,
+        principal: str = "",
     ) -> ResolvedPin:
         """Install an artifact: pin it, having checked it, and record what it may not do.
 
@@ -1227,7 +2192,139 @@ class MarketplaceRegistry:
         first is what the caller *intends* to install; the second is what it
         *has*. Collapsing them into one argument is how "we checked the digest"
         becomes a claim about a file nobody hashed.
+
+        Phase 4 (evidence)
+        ------------------
+        A successful install seals :data:`ACTIVITY_ARTIFACT_INSTALLED` and is
+        audited as :data:`MARKETPLACE_PRIVILEGED_ACTIONS`' first entry. The sealed
+        payload is the answer to the phase's reconstruction question — which
+        digest, which registry, which **derived** class, with the label's own
+        ``meaning`` and :data:`SIGNATURE_TRUST_NOTICE` beside the class word.
+
+        A *refused* install seals :data:`ACTIVITY_INSTALL_REFUSED` instead, and
+        is deliberately **not** audited as a privileged action: a refusal grants
+        nothing, so putting it in the privileged-action log would dilute the log
+        with entries that mean the opposite of what the log is for. It is still
+        sealed, because "a tampered download of these bytes was offered to this
+        catalogue and refused" is exactly the fact an incident review needs and
+        cannot get from the absence of a pin.
+
+        Args:
+            principal: The identity recorded in the privileged-action log on
+                success. A **declaration** — nothing here authenticates it.
         """
+        moment = _moment(now)
+        attempt = _InstallAttempt(
+            artifact_id=artifact_id,
+            version=version,
+            requested_digest=digest,
+            observed_digest=observed_digest,
+        )
+        try:
+            resolved = self._install(
+                artifact_id,
+                version=version,
+                digest=digest,
+                provider_id=provider_id,
+                observed_digest=observed_digest,
+                cell=cell,
+                now=now,
+            )
+        except MarketplaceError as exc:
+            self._seal_refusal(attempt, exc, moment, now)
+            raise
+        self._store.seal_activity(
+            ACTIVITY_ARTIFACT_INSTALLED,
+            subject=resolved.artifact.label,
+            payload=_artifact_payload(
+                resolved.artifact,
+                resolved.label,
+                kind=ACTIVITY_ARTIFACT_INSTALLED,
+                supply_chain=resolved.supply_chain,
+                now=moment,
+                recorded_at=_iso(moment),
+            )
+            | {
+                "provider_id": provider_id,
+                "pin_state": PinState.INSTALLED.value,
+                "observed_digest": observed_digest,
+                "integrity_verified": True,
+            },
+            now=now,
+        )
+        self._store.audit_privileged(
+            "audit.marketplace.artifact.installed",
+            target=resolved.artifact.label,
+            principal=principal,
+            detail={
+                "artifact_digest": resolved.artifact.digest,
+                "artifact_class": resolved.artifact_class.value,
+                "registry_id": resolved.artifact.registry.registry_id,
+                "publisher_id": resolved.artifact.publisher.publisher_id,
+                "publisher_is_declared_only": True,
+                "provider_id": provider_id,
+            },
+        )
+        return resolved
+
+    def _seal_refusal(
+        self,
+        attempt: _InstallAttempt,
+        error: MarketplaceError,
+        moment: datetime,
+        now: datetime | None,
+    ) -> None:
+        """Seal one refused install attempt.
+
+        Deliberately narrow in what it claims. It records that an attempt was
+        made and refused, with the code and the message, and it does **not**
+        record a class: the bytes were not admitted, so there is no label to
+        report and inventing one would be the very overclaim this phase exists to
+        prevent. Both digests are recorded — the one intended and the one
+        observed — because for the integrity refusal those are the two facts that
+        make the entry useful.
+        """
+        self._store.seal_activity(
+            ACTIVITY_INSTALL_REFUSED,
+            subject=f"{attempt.artifact_id}@{attempt.version}",
+            payload={
+                "activity_kind": ACTIVITY_INSTALL_REFUSED,
+                "artifact_id": attempt.artifact_id,
+                "version": attempt.version,
+                "requested_digest": attempt.requested_digest,
+                "observed_digest": attempt.observed_digest,
+                "refusal_code": error.code,
+                "refusal_message": str(error),
+                "artifact_class": None,
+                "artifact_class_meaning": (
+                    "no label is reported for a refused install: the bytes were not admitted, "
+                    "and a refusal is not evidence"
+                ),
+                "integrity_state": (
+                    DigestCheckState.DIGEST_MISMATCHED.value
+                    if error.code == "marketplace.digest_mismatch"
+                    and attempt.observed_digest != attempt.requested_digest
+                    else "not_checked"
+                ),
+                "recorded_at": _iso(moment),
+                "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+                "trust_notice": SIGNATURE_TRUST_NOTICE,
+            },
+            now=now,
+        )
+
+    def _install(
+        self,
+        artifact_id: str,
+        *,
+        version: str,
+        digest: str,
+        provider_id: str,
+        observed_digest: str,
+        cell: MatrixCell | None,
+        now: datetime | None,
+    ) -> ResolvedPin:
+        """The gated body of :meth:`install`, with no evidence side effects."""
         pin = self.resolve(artifact_id, version=version, digest=digest, now=now)
         artifact = pin.artifact
         moment = _moment(now)
@@ -1489,10 +2586,12 @@ class MarketplaceRegistry:
         this phase exists to prevent**, and an admission-time check alone leaves
         exactly that window open.
 
-        The one clock read in this module lives here on purpose. Everything else
-        takes ``now`` so a policy can be replayed; this cannot, because it runs at
-        materialisation time and a decision made against a stale ``now`` would be
-        theatre.
+        The one clock read that *decides* lives here on purpose, and there is
+        deliberately no ``now`` parameter through which a caller could supply a
+        stale one — see :data:`CLOCK_DECISION_NOTE` for the full argument.
+        Everything else takes ``now`` so a policy can be replayed; this cannot,
+        because it runs at materialisation time and a decision made against a
+        stale ``now`` would be theatre.
 
         Raises:
             MarketplaceError: ``marketplace.not_installed``,
@@ -1579,8 +2678,121 @@ class MarketplaceRegistry:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+def _claim_identity(record: CertificationRecord) -> tuple[str, ...]:
+    """The parts of a certification record an in-place transition cannot move.
+
+    :meth:`~mayhem.infra.certification_repository.CertificationRepository.store_transition`
+    refuses to move ``fault_id`` or ``cell``, and its ``UPDATE`` touches only
+    ``state``, ``outcome``, ``reason`` and ``bundle_hash`` — so ``certified_at``
+    and the evidence bundle set are fixed for the life of a row, and together
+    with the fault and cell they identify it.
+
+    This tuple is what makes the read-time resolution in
+    :meth:`MarketplaceStore._resolve_pairing` exact rather than approximate. It
+    is deliberately **not** the record's digest: a transition *should* change
+    that, and a resolution keyed on it could never find anything.
+    """
+    return (
+        record.fault_id,
+        record.cell.fingerprint,
+        record.certified_at.isoformat() if record.certified_at is not None else "",
+        *(ref.bundle_hash for ref in record.evidence),
+    )
+
+
+def _withdrawn(record: CertificationRecord, reason: str) -> CertificationRecord:
+    """A record with its claim withdrawn in place, through the domain's validators.
+
+    Rebuilt with :meth:`~pydantic.BaseModel.model_validate` rather than
+    ``model_copy`` for the same reason :func:`mayhem.domain.certification._replace`
+    does: the validators run, so this can never produce a record that
+    construction would have refused.
+    """
+    return CertificationRecord.model_validate(
+        {**record.model_dump(), "state": CertificationState.STALE, "reason": reason}
+    )
+
+
+def _reading(recorded_at: AttestedTimestamp | None = None) -> AttestedTimestamp:
+    """The caller's reading, or a fresh wall-clock + monotonic pair.
+
+    A **stamp**, not a decision: see :data:`CLOCK_DECISION_NOTE`. The monotonic
+    half comes from :func:`time.monotonic_ns` rather than the wall clock, so a
+    host whose clock steps mid-activity still orders its readings correctly — the
+    same rule, and the same reason, as
+    :func:`mayhem.infra.attestation_store._recorded_at`, which this deliberately
+    mirrors rather than forks.
+    """
+    if recorded_at is not None:
+        return recorded_at
+    return AttestedTimestamp(
+        wall_clock=utc_now(),
+        monotonic_ns=time.monotonic_ns(),
+        uncertainty_ms=0.0,
+        source="system",
+    )
+
+
+def _artifact_payload(
+    artifact: Artifact,
+    label: TrustLabel,
+    *,
+    kind: str,
+    supply_chain: SupplyChainRecord | None,
+    now: datetime,
+    recorded_at: str,
+) -> dict[str, object]:
+    """The attested body of an activity about one artifact version.
+
+    This is the dictionary that answers the phase's question — *which bytes, under
+    which label, from which digest* — so every one of those three is here, in
+    full, alongside the two fields that stop it being read as more than it is:
+
+    * ``signature_verification_implemented`` is
+      :data:`SIGNATURE_VERIFICATION_IMPLEMENTED`, which is ``False``;
+    * ``trust_notice`` is :data:`~mayhem.domain.marketplace.SIGNATURE_TRUST_NOTICE`.
+
+    The class word travels *with* :meth:`TrustLabel.meaning`, the sentence that
+    says what it does not establish, for the same reason
+    :attr:`ListingEntry.to_dict` does: "official" on its own is the sentence this
+    repository refuses to print. And the class is derived — it is read off a
+    :class:`~mayhem.domain.marketplace.TrustLabel`, which has no class field, so
+    there is no code path here that could assert one.
+
+    ``publisher_id`` is recorded because the catalog needs to know whose bytes
+    these are, and ``publisher_is_declared_only`` is recorded beside it because
+    the honest sentence about that field is not optional.
+    """
+    return {
+        "activity_kind": kind,
+        "artifact_id": artifact.artifact_id,
+        "version": artifact.version,
+        "artifact_digest": artifact.digest,
+        "registry_id": artifact.registry.registry_id,
+        "registry_scope": artifact.registry.scope.value,
+        "publisher_id": artifact.publisher.publisher_id,
+        "publisher_is_declared_only": True,
+        "artifact_class": label.artifact_class.value,
+        "artifact_class_meaning": label.meaning(),
+        "may_display_certified_state": label.may_display_certified_state,
+        "certified_fault_ids": list(label.certified_fault_ids),
+        "deprecated": artifact.is_deprecated,
+        "integrity_state": (
+            supply_chain.verification_state.value if supply_chain is not None else "not_recorded"
+        ),
+        "label_evaluated_at": now.isoformat(),
+        "recorded_at": recorded_at,
+        "signature_verification_implemented": SIGNATURE_VERIFICATION_IMPLEMENTED,
+        "trust_notice": SIGNATURE_TRUST_NOTICE,
+    }
+
+
 def _moment(now: datetime | None) -> datetime:
-    """A timezone-aware instant, defaulting to the wall clock."""
+    """A timezone-aware instant, defaulting to the wall clock.
+
+    A stamp or a decision's *default*, never a decision's source: everything
+    that can change a verdict takes ``now`` from its caller.
+    """
     if now is None:
         return utc_now()
     _require_aware(now)
