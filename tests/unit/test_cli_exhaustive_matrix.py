@@ -43,9 +43,15 @@ ACTIVE_ROOTS = {
     "prepare",
     "recover",
     "run",
+    "stop",
     "verify",
 }
 
+#: `stop` is deliberately absent from `ACTIVE_GROUP_PATHS`: the plan's surface is
+#: ONE command with two scopes (`mayhem stop RUN_ID` and `mayhem stop
+#: --environment ENV`), not a group, so a subcommand named `stop` would be a
+#: third spelling of the same act. Its subcommand-less shape is asserted in
+#: `tests/unit/test_stop_surface.py`.
 ACTIVE_GROUP_PATHS = {
     "bundle": ("build", "show", "verify"),
     "game-day": (

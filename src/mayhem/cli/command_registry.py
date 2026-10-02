@@ -30,6 +30,7 @@ COMMAND_HELP: dict[str, str] = {
     "prepare": "Prepare configuration, dependencies, and plans.",
     "recover": "Plan or execute recovery for a run.",
     "run": "Compile, approve, execute, and record a drill.",
+    "stop": "Stop one run, or every live run in an environment, and show what happened.",
     "verify": "Verify a recorded evidence envelope without mutation.",
     "bundle": "Build and verify portable evidence bundles.",
 }
@@ -60,6 +61,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("prepare", "prepare", help_group="preparation"),
     CommandSpec("recover", "recover", help_group="recover", mutating=True),
     CommandSpec("run", "run", help_group="run", mutating=True),
+    # `stop` is mutating because it drives the emergency stop ladder: it freezes
+    # dispatch, cancels pending leases, compensates active ones, reconciles,
+    # residue-scans, verifies, and seals. It gates itself by naming the command
+    # (as `recover execute` does) and, for the environment-wide scope, by the
+    # plan 09 emergency role it resolves before writing anything. There is no
+    # `--force` and no `--no-preflight`.
+    CommandSpec("stop", "recover", help_group="recover", mutating=True),
     CommandSpec("verify", "inspect", help_group="inspect"),
     CommandSpec("bundle", "inspect", help_group="inspect"),
 )
@@ -76,6 +84,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.init import init_cmd
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
     from mayhem.cli.pack import pack
+    from mayhem.cli.stop_cmd import stop
     from mayhem.cli.verify_bundle import bundle_cmd
     from mayhem.cli.workflows import discover, extend, inspect, prepare
 
@@ -97,6 +106,7 @@ def register_commands(app: Any) -> None:
         "prepare": prepare,
         "recover": recover,
         "run": run,
+        "stop": stop,
         "verify": verify,
         "bundle": bundle_cmd,
     }

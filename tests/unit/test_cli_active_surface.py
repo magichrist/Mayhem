@@ -25,6 +25,7 @@ ACTIVE_COMMANDS = {
     "prepare",
     "recover",
     "run",
+    "stop",
     "verify",
 }
 REMOVED_COMMANDS = {

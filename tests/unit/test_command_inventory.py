@@ -23,6 +23,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "prepare",
         "recover",
         "run",
+        "stop",
         "verify",
     }
 )
