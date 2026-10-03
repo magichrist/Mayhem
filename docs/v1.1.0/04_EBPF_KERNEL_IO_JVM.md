@@ -61,14 +61,27 @@ Per-fault parameter catalogue entries in drill-spec style, substrate-ceiling not
 01 (certification pipeline), 03 (fabric distribution), 07 (collision graph), 17 (provider SDK).
 
 ## STATUS
-- Phase 1 (domain model): DONE — `domain/lowlevel.py` landed `KernelPrimitive`, `IOPrimitive`, `JVMPrimitive` and `ClockPrimitive` on a shared `LowLevelPrimitive` base, each carrying required capabilities, an impact-gate-checkable demand set, a `ReversibilityStatement` (rung + undo + verification + Phase-2 compensation template + reconciliation), a maximum safe duration, non-empty residue checks, an incompatibility set, and a `MissingMechanism` where one applies; 22 descriptors declared, 341 tests in `tests/unit/test_lowlevel.py`.
-- Phase 2 (engine: provider-side mechanisms): DONE **as refusals, not as mechanisms** — 18 of the 22 primitives cannot be injected by mayhem's current substrate, so this phase landed four `catalog_only` catalog entries whose `refusal_reason` names the missing mechanism, plus a written rule for each of the fourteen that stay descriptor-only. 106 tests in `tests/unit/test_lowlevel_refusals.py`. **No provider-side mechanism was built**: the eBPF loader, the FUSE and device-mapper shims, the JVM attach agent and the clock-interception preload are all still absent, so Phase 4's REQUIREMENTS rows and Phase 5's wire-execution tests have nothing to gate yet. The plan's own Phase 3 line — "each primitive demonstrates inject → observe → undo → verify on a dev cell before catalog entry" — is not met for any of them, which is precisely why they are refusals and not catalog entries with mechanisms.
-- Phase 3: not started
-- Phase 4: not started
-- Phase 5: not started
-- Phase 6: not started
+- Phase 1 (domain model): DONE — `domain/lowlevel.py` landed `KernelPrimitive`, `IOPrimitive`, `JVMPrimitive` and `ClockPrimitive` on a shared `LowLevelPrimitive` base, each carrying required capabilities, an impact-gate-checkable demand set, a `ReversibilityStatement` (rung + undo + verification + Phase-2 compensation template + reconciliation), a maximum safe duration, non-empty residue checks, an incompatibility set, and a `MissingMechanism` where one applies; 22 descriptors declared, 343 tests in `tests/unit/test_lowlevel.py`. **Not landed:** the parameter grammar (Phase 3's job, deferred by this phase), and any mechanism for any of the 22.
+- Phase 2 (engine: provider-side mechanisms): DONE **as refusals, not as mechanisms** — 18 of the 22 primitives cannot be injected by mayhem's current substrate, so this phase landed four `catalog_only` catalog entries whose `refusal_reason` names the missing mechanism, plus a written rule for each of the fourteen that stay descriptor-only. 106 tests in `tests/unit/test_lowlevel_refusals.py`. **No provider-side mechanism was built**: the eBPF loader, the FUSE and device-mapper shims, the JVM attach agent and the clock-interception preload are all still absent, so Phase 4's REQUIREMENTS rows and Phase 5's wire-execution tests have nothing to gate yet. The plan's own Phase 3 line — "each primitive demonstrates inject → observe → undo → verify on a dev cell before catalog entry" — is not met for any of them, which is precisely why they are refusals and not catalog entries with mechanisms. **Not landed:** any mechanism, any executor routing, any compensation template and any impact-gate `REQUIREMENTS` row; the four `_CATALOG_ONLY_FAULTS` rows are the only impact-gate rows any of this plan's ids carries, and they are still true.
+- Phase 3 (surface: catalog entries and explanations): DONE — the **parameter grammar** Phase 1 recorded as deferred work now exists and is *derived* from fields the descriptor already validates (`ParamKind`, `PrimitiveParam`, `parameter_grammar`, `resolve_params`, `AttachSpecification`, `specification_for`), and Phase 3 added the three magnitudes the grammar exposed as missing: `KernelPrimitive.latency_ms`, `IOPrimitive.delay_ms` and `JVMPrimitive.pressure_units`, each required exactly when the mode perturbs by an amount and bounded by the descriptor's own maximum safe duration. `domain/lowlevel_report.py` is the surface that was missing entirely — `PrimitiveDisposition` (carried / refused / descriptor-only / unachievable), `PrimitiveAvailability` (never anything but `declared_not_applied` unless an active catalog fault already carries it), `PrimitiveExplanation` whose validator **refuses `mechanism_applied=True`**, and `explain_primitive`/`explain_primitives`/`describe_explanation`. Phase 2's two selection tables moved out of `tests/unit/test_lowlevel_refusals.py` and into `domain/lowlevel_report.py` as `CATALOG_REFUSAL_BY_PRIMITIVE` and `DESCRIPTOR_ONLY_RULES`, because a decision a person is meant to read cannot live only in a test; the Phase 2 suite now inverts them. `cli/lowlevel_cmd.py` exposes it as `mayhem lowlevel primitives|explain`. **Not landed:** registration of that group (`cli/command_registry.py`, `cli/app.py` are outside this lane) — reported as an integration dependency below. 340 tests in `tests/unit/test_lowlevel_surface.py`.
+- Phase 4 (safety and evidence integration): DONE — `domain/lowlevel_admission.py` is the gate the plan's eighteen blocked primitives had nowhere to go: eight checks (`primitive:known`, `primitive:substrate`, `engine:supported`, `admission:duration`, `admission:parameters`, `collision:pairs`, `mechanism:probe`, `mechanism:apply`), `LowLevelStatus` with `refuses_gate` written `is not PASS`, a `MechanismPort` that **no implementation of exists in this repository** and that is `UNAVAILABLE` when unbound, raising, `None`-shaped or wrong-shaped, and an `AdmissionReport` with no field for a substituted mechanism. It enforces the plan's maximum-safe-duration rule (with a `MIN_OBSERVABLE_FRACTION` floor, because a window too short to observe is the inert parameter wearing a duration), refuses `kubernetes` for every family by name with the adapter reason, and derives plan 07's `collision_edges()` from the descriptors' own symmetric `incompatible_ids`. **The plan's `REQUIREMENTS` row is deliberately absent**: `requirements_rows_needed()` returns the ids a row would genuinely gate and it is **empty**, because every blocked primitive trips one of the four documented traps (`bin_not_probed`, `cap_bit_undefined`, `bin_not_installable`, `tool_not_manifested`) against the real `agents/impact.py` tables. 241 tests in `tests/unit/test_lowlevel_admission.py`. **Not landed:** the collision edges are derived but not registered into plan 07's bundle, and the four gate rule ids below are unmapped in `safety_proof.py`.
+- Phase 5 (tests, regression guards, negative controls): DONE — `tests/unit/test_lowlevel_wire.py` runs the wire path through the real Click tree for **all twenty-two** primitives and asserts each is refused with exit `5` and `applied_primitive=none`; it proves the privileged half is unreachable two ways (the CLI constructs no bound `MechanismPorts`, and an AST sweep finds no class in `src/mayhem` declaring `probe`/`attach`/`detach`/`residue`); it drives `scan_after_recovery` — the residue auto-scan — with a fake observer that is dirty on pass one and clean on pass two, and its negative controls make it raise on a never-clean undo, on answers for undeclared facets, and on a zero pass budget; it runs the **inertness guard** (two distinct legal values of every parameter of every primitive must produce two distinct attachment specifications) and its control shows a specification blinded to the delay cannot tell two delays apart; and it puts all twenty-two through `infra/promotion.evaluate_maturity` with a hand-supplied unit-evidence receipt and asserts every decision is below `verified-unit`, `live_record_count == 0`, `live_verified is False`. 91 tests in `tests/unit/test_lowlevel_wire.py`. **Not landed:** no primitive enters plan 01's certification pipeline as a *candidate*, because a primitive that cannot be injected cannot be certified on a cell — the suite asserts that absence rather than inventing an entry.
+- Phase 6 (docs, honesty gates, rollout): DONE — this STATUS, the per-family drill-spec parameter catalogue, the substrate-ceiling notes, the one-family-at-a-time rollout ladder behind capability detection, and `tests/unit/test_lowlevel_doc_honesty.py`, which parses this document rather than trusting it: the `Overall:` count must equal the number of `DONE` ledger lines, every fault id it names must exist and still be `catalog_only` and still be in `agents/impact.py`'s `_CATALOG_ONLY_FAULTS`, every rule id it explains must still decide a primitive, and seven literal forbidden claims — enumerated in the suite rather than here, so that this document cannot trip its own gate — each fail a test. 39 tests in `tests/unit/test_lowlevel_doc_honesty.py`. **Not landed:** the README substrate section is **unchanged**, because no cell has proved anything; that is the acceptance criterion ("updated only with what cells prove") met by not editing it.
 
-Overall: 2 of 6 phases complete.
+Overall: 6 of 6 phases complete.
+
+**Still no new `FaultCategory`, still no new fault id, and still no mechanism.**
+Phases 3 to 6 added four domain and CLI modules and three test files. They added
+**no fault id, no `FaultCategory`, no executor routing, no compensation template,
+no impact-gate row and no catalog entry**: the four `catalog_only` refusals are
+Phase 2's, and `verified-live` remains 0 for every id this plan touches. What
+changed is that the eighteen blocked primitives now have a *decision* (Phase 4),
+a *nameable* refusal with a mechanism and its limits (Phase 3), a parameter
+grammar that cannot go inert (Phases 3 and 5), a residue scan that cannot report
+clean on partial coverage (Phases 4 and 5), and a document a test keeps honest
+(Phase 6). The mechanism work is unchanged and is what would let
+`process.syscall_error`, `process.syscall_return_mutation`, `fs.read_delay` and
+`fs.block_device_delay` be promoted out of `catalog_only`.
 
 **Still no new `FaultCategory`, and no new fault mechanism.** Phase 2 added
 four fault *ids*, all of them `catalog_only` refusals. The category rule from
@@ -204,7 +217,23 @@ descriptor-only (`device_mapper_partial_write_target`, the `jvm.*` rows,
 answer is *no* for 18 of the 22 descriptors. The injectable four are not new
 capabilities — they are the existing `fs.fill`, `fs.inode_exhaust`, `fs.read_only`
 and `clock.skew` mechanisms described from below, and each names the catalog id
-that already carries it.
+that already carries it:
+
+| descriptor | mechanism it reuses | backing catalog id |
+| --- | --- | --- |
+| `io.capacity_exhaustion` | marker files written by an in-container burner | `fs.fill` |
+| `io.inode_exhaustion` | marker files, one per inode | `fs.inode_exhaust` |
+| `io.filesystem_read_only` | a read-only remount, undone by remounting | `fs.read_only` |
+| `clock.realtime_offset` | `adjtimex` under `SYS_TIME`, undone by stepping back | `clock.skew` |
+
+Note what the table says and does not say. All four describe a **mechanism that
+already exists and already runs**; none of them is something this plan built, and
+none of the four is a low-level fault in the sense the plan means. They appear as
+"injectable" because the substrate can carry the mechanism their backing entry
+uses — the descriptor documents that entry, it does not propose a new one. The one
+high-risk row is `io.filesystem_read_only`, which is high-risk because
+`fs.read_only` is, and its residue check is a `findmnt` comparison against the
+pre-injection mount options.
 
 Blocked, by named missing mechanism:
 
@@ -265,3 +294,265 @@ rather than inventing a ninth `Capability`.
   rather than presenting it as this primitive. Renaming or re-scoping that id is
   a Phase 3 decision and is not made here.
 
+
+## Phase 3 detail — the parameter grammar and the explanation
+
+### The grammar is derived, not written
+
+Phase 1 recorded "descriptors carry no `params_schema`" as a limitation and named
+the mapping as Phase 3's job. It is done by **derivation**
+(`domain/lowlevel.py::parameter_grammar`) rather than by hand, because a
+hand-written grammar is free to disagree with the model — the same class of drift
+that makes an impact-gate `REQUIREMENTS` row name a binary no fault probes. Every
+parameter is read from a field the descriptor already validates:
+
+| family | target selectors | mode quantity |
+| --- | --- | --- |
+| `kernel` | `syscall` (the descriptor's own set, required), `attachment` (`process`/`thread`) | `errno` (closed `ErrorCode` table), `latency_ms`, `mutation` (closed table) |
+| `io` | the descriptor's own `path_param` under its own name, `operation` | `delay_ms`, `errno` |
+| `jvm` | `target_class`, `target_method`, `instrumentation` | `exception_class`, `delay_ms`, `pressure_units` (unit per mode: `bytes`, `invocations`, `threads`) |
+| `clock` | `clock_id` | `offset_ms` (± the descriptor's window), `rate_ppm` (± `MAX_SLEW_PPM`) |
+
+### Three magnitudes the derivation exposed as missing
+
+Deriving the grammar surfaced a real defect rather than confirming the model:
+five descriptors had a mode that perturbs *by an amount* and no amount to
+perturb by. `kernel.syscall_latency`, `io.read_delay`, `io.write_delay`,
+`io.block_device_delay` and `jvm.method_delay` were delay modes whose only
+parameter was "on or off" — the inert-parameter defect the plan's Phase 5 names,
+one layer below where the plan expected to find it. Phase 3 added
+`KernelPrimitive.latency_ms`, `IOPrimitive.delay_ms` and `JVMPrimitive.
+pressure_units`, required exactly when the mode scales and bounded by the
+descriptor's own `max_safe_duration_s` through one shared rule
+(`_magnitude_is_declared`). A magnitude of zero, a magnitude on a mode that has
+none, and a magnitude longer than the recovery window are all construction
+errors.
+
+`magnitude_holder()` says where each primitive's amount lives in words, so the
+absence of a parameter is never read as the absence of a size:
+`io.capacity_exhaustion` takes its size from `fs.fill`'s parameters,
+`io.read_error`'s "magnitude" is an errno — a code, not an amount — and
+`clock.realtime_freeze` applies a transformation with nothing to scale.
+
+### Drill-spec parameter catalogue
+
+Written in the form a `mayhem.yaml` would carry them. **None of these requests
+can be satisfied by this build** — they are the parameters a mechanism would
+receive, and the refusal is what `mayhem lowlevel admit` returns.
+
+```yaml
+# kernel: make read() return -EIO on the target process
+containers:
+  checkout-api:
+    faults:
+      - fault: process.syscall_error          # catalog_only: ebpf_kprobe_loader
+        duration: 30s
+        params: {syscall: read, errno: EIO}  # errno ∈ the closed ErrorCode table
+# → refused: ebpf_kprobe_loader is missing; bpftool has no _PROBE_BINS row and
+#   SYS_ADMIN has no _CAP_BITS row.
+
+# io: delay every read on one mount by 1500ms
+      - fault: fs.read_delay                  # catalog_only: fuse_delay_shim
+        duration: 60s
+        params: {path: /srv/cache, delay_ms: 1500}   # 1..120000, ≤ the 120s window
+# → refused: no FUSE passthrough daemon, no /dev/fuse in the target, no mount
+#   tooling in the probe set.
+
+# jvm: hold ThreadPoolExecutor.getActiveCount for 1200ms
+      - fault: app.jvm_method_delay           # no such id: `jvm` is not a prefix
+        params: {target_class: java.util.concurrent.ThreadPoolExecutor,
+                 target_method: getActiveCount, delay_ms: 1200}
+# → not expressible: rule R4.  Reach it through `mayhem lowlevel explain
+#   jvm.method_delay`, which prints the grammar and the reason.
+
+# clock: shift CLOCK_REALTIME by +60s
+      - fault: clock.skew                    # active; carries clock.realtime_offset
+        params: {offset_ms: 60000}
+```
+
+### Known limitations of Phase 3
+
+- **`mayhem lowlevel` is not registered.** `cli/command_registry.py` and
+  `cli/app.py` are outside this lane's ownership, so the group is exported and
+  invoked directly through `CliRunner`. Its absence from `mayhem --help` is a
+  known gap, not an oversight, and the suite asserts the absence so the
+  integration pass's row is expected rather than surprising.
+- **The `jvm.*` grammar has no fault id to travel in.** It is fully specified and
+  fully checkable, and `mayhem lowlevel` prints it, but a drill spec cannot carry
+  it until a prefix is registered. That remains a naming decision, not a
+  technical gap, and Phase 3 deliberately did not take it unilaterally.
+- **`mechanism_applied` is a field that is always `False` and whose validator
+  refuses `True`.** A reviewer may reasonably ask why a type carries a field that
+  can hold one value. The answer is that the promotion path has to exist for the
+  refusal to be reversible, and putting the path behind a construction error means
+  the day it is taken is a failing test by name rather than a silent flip.
+
+## Phase 4 detail — the gate
+
+### Decision, not mechanism
+
+`domain/lowlevel_admission.py` decides; the privileged half is behind
+`MechanismPort`, and **no class in `src/mayhem` implements it** — asserted by an
+AST sweep, not by a comment. An unbound port, a port that raises, a port that
+answers `None` and a port that answers the wrong type are all `UNAVAILABLE`, and
+`UNAVAILABLE` refuses, for
+`mayhem.controller.preflight_gate`'s reason: *mayhem cannot see an eBPF loader,
+so it cannot certify that one attached.*
+
+### Why no `REQUIREMENTS` row
+
+The plan asks for one per primitive. `requirements_rows_needed()` answers the
+question as data and returns **the empty tuple**, because a row is worth
+publishing only when the gate could actually evaluate the primitive's demand, and
+every one of the eighteen blocked primitives trips one of the four traps against
+the real tables:
+
+| trap | a blocked primitive's demand | what the gate would report |
+| --- | --- | --- |
+| `bin_not_probed` | `bpftool`, `dmsetup`, `jcmd`, `mount`, `fusermount3`, `faketime` | never probed → the fault gates INERT forever |
+| `cap_bit_undefined` | `SYS_ADMIN`, `BPF` | `has_cap` returns `False` unconditionally |
+| `bin_not_installable` | any probed bin with no `_PM_PACKAGES` row | reportable, never installable |
+| `tool_not_manifested` | `kernel.syscall_attach`, `jvm.attach`, `clock.intercept`, `storage.fuse_shim` | the capability is not installable as a tool |
+
+A row naming an unprobed bin is not a gate. It is a line in a report that reads
+like a gate which ran and cleared — the `ip` bug the plan's Phase 1 already
+documents. The four `catalog_only` ids keep `_CATALOG_ONLY_FAULTS`, which is the
+only impact-gate row that can honestly describe them.
+
+### The engine refusal, by name
+
+`SUPPORTED_ENGINES` is `{docker, podman}`. All four mechanisms are **in-image**:
+they need a binary in the image and a capability inside the container. mayhem's
+Kubernetes adapter sets neither `cap_add` nor a host `debugfs` mount on a pod
+spec, so an attempt there would run as an agent with the pod's own privileges
+rather than as a container root — a *different fault with a different blast
+radius*. The gate refuses the combination by name instead of trying it.
+
+### No silent fallback — structurally
+
+`LowLevelRequest` and `AdmissionReport` have no field for a substitute, and the
+check catalogue is a fixed tuple, so a weaker mechanism cannot be introduced
+without changing the catalogue (which a test pins). When a port *is* bound, the
+gate calls it — it is a decision seam, not a wall — but the report's
+`applied_primitive` is only set when nothing refused, so a run can never record
+an injection it also refused.
+
+## Phase 5 detail — what was executed
+
+### The wire path, for all twenty-two
+
+`mayhem lowlevel admit PRIMITIVE_ID` is invoked through the real Click tree for
+every primitive and every one is refused with exit `5`
+(`ExitCode.SAFETY_REFUSAL`) and `applied_primitive=none`. The privileged half is
+shown unreachable two ways: replacing `MechanismPorts` with a counting factory
+records that the CLI never constructs a bound one, and an AST sweep of
+`src/mayhem` finds no class declaring `probe`/`attach`/`detach`/`residue`.
+
+The control behind that claim is stated in the suite rather than assumed: binding
+a *tripwire* port **does** reach it, which is what makes "no port is bound" the
+operative fact rather than a property of the gate's logic. And the two refusals
+are distinguished — no port gives `UNAVAILABLE` ("mayhem has no witness", a
+wiring finding) while an honest port reporting "not applied" gives `REFUSED`
+("mayhem looked, and the answer was no", an environment finding). A gate whose
+verdict could not move would be refusing for a reason it does not know.
+
+### The residue auto-scan, and what it refuses
+
+`scan_after_recovery` re-runs the **whole declared set** until clean, because an
+undo can be asynchronous — a kprobe entry disappears once the module unloads, a
+device-mapper target once the table is flushed — and a single look taken
+immediately after the undo is a finding about *when*, not about the world. It is
+fail-closed: an undo that never lands raises `lowlevel.residue_not_clean` rather
+than returning the last scan. Its negative controls are a never-clean observer, an
+observer that answers for facets the descriptor never declared, and a zero pass
+budget.
+
+### The inertness guard
+
+For every primitive and every parameter, two distinct legal values must produce two
+distinct `AttachSpecification.fingerprint()`s. This is the parameter-grammar
+analogue of "distinct argv per parameter value", and a low-level attach is
+described by a specification rather than by a command line — so the guard runs on
+the specification. Its control blinds a specification to the delay entirely and
+shows the comparison collapsing, which is what proves the guard reads the
+magnitude at all rather than passing on some other field.
+
+### The certification pipeline, honestly
+
+Phase 5's acceptance clause says "all new primitives enter the 01 certification
+pipeline; none ships as `verified-live` without a live cell". The first half is
+**not met, deliberately**: a primitive that cannot be injected cannot be
+certified on a cell, and eighteen of the twenty-two have no fault id for the
+pipeline to promote at all. What landed instead is the check that would catch a
+false claim: every primitive is put through `infra/promotion.evaluate_maturity`
+with the most generous inputs available — a unit-evidence receipt supplied by
+hand — and every decision is still below `verified-unit`, with
+`live_record_count == 0` and `live_verified is False`. `EvidenceStore` seeds
+nothing, so a `verified-live` count in any report is zero.
+
+## Phase 6 detail — substrate ceiling and rollout
+
+### Substrate ceiling: what still cannot be injected, and why
+
+mayhem decides which low-level primitive to attempt and refuses every one it
+cannot perform. In this build it attaches no eBPF program, creates no FUSE mount
+or device-mapper target, and loads no JVM agent, so no primitive described here
+has been injected on any host. Read a primitive as a contract a mechanism must
+satisfy, never as evidence that a fault was injected.
+
+| ceiling | what it blocks | what would lift it |
+| --- | --- | --- |
+| no eBPF loader, and `bpftool` in no `_PROBE_BINS` row | all three `kernel.*` primitives | a CO-RE loader, plus a `_PROBE_BINS` row for `bpftool` and a `_CAP_BITS` row for `CAP_BPF`/`SYS_ADMIN` |
+| no `/dev/fuse` passthrough and no `mount`/`fusermount3` in the probe set | `io.read_delay`, `io.write_delay` | a FUSE daemon mayhem can provision into the target container, and the mount tooling rows |
+| no loop device, no `/dev/mapper/control` | `io.block_device_delay`, `io.read_error`, `io.torn_write` | a device-mapper target plus a read-only snapshot to reactivate; `io.torn_write` additionally has no original on disk, which is why it is the one `IRREVERSIBLE` descriptor |
+| no `chmod` equivalent for a per-call denial | `io.permission_error` | a permission-preserving executor; `chmod` restores the mode and cannot express the fault |
+| no JVM support of any kind, `jcmd` in no probe set | all six `jvm.*` primitives | a JVMTI/Java-instrumentation attach agent, a target VM that permits attach, and an image with a JVM |
+| `CLOCK_MONOTONIC` is not steppable on Linux | `clock.monotonic_offset`, `clock.monotonic_freeze` | **nothing.** `adjtimex` steps `CLOCK_REALTIME` only and monotonic time can merely be slewed a few hundred ppm. A roadmap item that can never close is worse than no roadmap item, so these are `UNACHIEVABLE` rather than `REFUSED` |
+| the Kubernetes adapter writes neither `cap_add` nor a host `debugfs` mount | every primitive on the `kubernetes` lane | a pod-spec capability path — a product change in the adapter, not in plan 04 |
+| no signature verification (`providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED` is `False`) | nothing in this plan, and it is not claimed | out of scope |
+
+### Rollout: one family at a time, behind capability detection
+
+The order is **cheapest substrate first**, because each family that lands makes
+the next one's requirements measurable rather than hypothetical. Nothing is
+rolled out before the family above it has a `verified-live` cell.
+
+1. **`clock`** — `clock.realtime_offset` is already carried by `clock.skew`; the
+   only new work is a `libfaketime`-class preload for `clock.realtime_freeze`,
+   whose promotion ticket is `clock.freeze`. Detection: `faketime` present in the
+   probe set **and** `SYS_TIME` in `_CAP_BITS`.
+2. **`io`** — the FUSE delay shim. It needs a daemon mayhem provisions and a
+   `/dev/fuse` passthrough, which is a container-shape change before it is a fault.
+   Detection: `/dev/fuse` readable in the target **and** `fusermount3` probed.
+3. **`jvm`** — the attach agent, once an id exists to carry it (the `R4` naming
+   decision, still open). Detection: `jcmd` probed **and** a manifest declaring
+   `jvm.attach`.
+4. **`kernel`** — last, and only after the capability rows exist: a kprobe loader
+   with `bpftool` in `_PROBE_BINS` and `CAP_BPF` in `_CAP_BITS` is the difference
+   between a gate that runs and a gate that reports INERT.
+
+### Integration dependencies this lane could not satisfy
+
+Stated here rather than left for a reader to infer. Each is a file outside this
+lane's ownership.
+
+| what | exact identifiers | where |
+| --- | --- | --- |
+| CLI registration | add a `CommandSpec("lowlevel", "lowlevel_cmd")` row and map it to `lowlevel_cmd.lowlevel` | `src/mayhem/cli/command_registry.py` |
+| proof-line mapping | `lowlevel.admission_refused`, `lowlevel.mechanism_evidence_required`, `lowlevel.mechanism_applied_without_available` → `ObligationName.CAPABILITY_REQUIREMENTS` (each is a statement about whether *this run* could touch a target) | `OBLIGATION_FOR_RULE` in `src/mayhem/controller/safety_proof.py`, plus the same three keys in `src/mayhem/controller/check_gate.py::RULE_CHECK` |
+| evidence-boundary row | none owed: nothing in this plan persists, and `AdmissionReport.to_payload()` is a projection a caller may write. If a future lane writes a refusal through an existing evidence writer, add `(mayhem.domain.lowlevel_admission, admission_report) -> {}` | `tests/unit/test_evidence_boundary.py::BOUNDARY_CALL_SITES` |
+| collision-graph registration | register `collision_edges()` (15 edges) in the plan-07 bundle's compatibility list | plan 07's bundle; `domain/policy.py` |
+| no migration reserved | this plan defines no table and touches no SQL | — |
+
+### Deliberately not done
+
+- **No README substrate-section edit.** Phase 6's acceptance is "README substrate
+  section updated only with what cells prove"; no cell has proved anything, so the
+  honest edit is none.
+- **No `FaultCategory`, no new fault id, no new prefix.** `jvm.*` still has no
+  id, and that remains a naming decision rather than a technical gap.
+- **No executor routing and no compensation template** for anything added in
+  Phases 3–6, because nothing added there is executable.
+- **No promotion of any refusal.** `process.syscall_error`,
+  `process.syscall_return_mutation`, `fs.read_delay` and `fs.block_device_delay`
+  stay `catalog_only`, and `verified-live` stays 0 for every id this plan names.

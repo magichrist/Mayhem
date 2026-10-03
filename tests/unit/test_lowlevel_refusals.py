@@ -44,6 +44,12 @@ mechanism is checked test-side, not by ``validate_catalog``. The validator only
 knows a refusal must be non-blank, and it cannot know a mechanism vocabulary —
 ``FaultDefinition`` has no field to hold one and ``domain/faults.py`` is outside
 this lane's ownership.
+
+Phase 3 changed one thing in this file: the two selection tables are now read
+from :mod:`mayhem.domain.lowlevel_report` rather than declared here, so the
+reason a primitive has no catalog id is readable by the ``mayhem lowlevel``
+surface and cannot drift from what the tests check. Everything asserted below is
+unchanged, and now runs against the table the product prints.
 """
 
 from __future__ import annotations
@@ -83,6 +89,10 @@ from mayhem.domain.lowlevel import (
     MissingMechanism,
     descriptor_for,
 )
+from mayhem.domain.lowlevel_report import (
+    CATALOG_REFUSAL_BY_PRIMITIVE,
+    DESCRIPTOR_ONLY_RULES,
+)
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.topology import NodeKind, ServiceNode, TopologyGraph
 
@@ -90,19 +100,23 @@ from mayhem.domain.topology import NodeKind, ServiceNode, TopologyGraph
 
 #: The Phase 2 refusals: catalog id -> the descriptor ids it answers for.
 #:
-#: One refusal per *mechanism*, not per primitive. ``process.syscall_error``
-#: covers the syscall-latency primitive too because both name
-#: ``ebpf_kprobe_loader``, and two refusals for one loader is one refusal to keep
-#: in step. ``fs.read_delay`` covers ``io.write_delay`` for the same reason — the
-#: id ``fs.write_delay`` is already an *active* entry, so there is no name left.
-COVERED_BY_CATALOG: dict[str, tuple[str, ...]] = {
-    "process.syscall_error": ("kernel.syscall_errno", "kernel.syscall_latency"),
-    "process.syscall_return_mutation": ("kernel.syscall_return_mutation",),
-    "fs.read_delay": ("io.read_delay", "io.write_delay"),
-    "fs.block_device_delay": ("io.block_device_delay",),
-}
+#: **Inverted from the domain table, not restated.** Phase 3 moved the selection
+#: rule out of this file and into :mod:`mayhem.domain.lowlevel_report`, because a
+#: decision a person is meant to read cannot live only in a test: the CLI prints
+#: which rule sent a primitive to descriptor-only, and it could not print
+#: something this file declared. Grouping here is by *fault id* because that is
+#: the assertion worth making — one refusal per mechanism, never two.
+COVERED_BY_CATALOG: dict[str, tuple[str, ...]] = {}
+for _primitive_id, _fault_id in CATALOG_REFUSAL_BY_PRIMITIVE.items():
+    COVERED_BY_CATALOG.setdefault(_fault_id, ())
+    COVERED_BY_CATALOG[_fault_id] += (_primitive_id,)
+COVERED_BY_CATALOG = {fault_id: tuple(sorted(ids)) for fault_id, ids in COVERED_BY_CATALOG.items()}
 
 #: Blocked primitives that get no id, and the rule that says why.
+#:
+#: Read straight from :data:`~mayhem.domain.lowlevel_report.DESCRIPTOR_ONLY_RULES`.
+#: The rules themselves are documented there and are not restated here, so this
+#: file cannot disagree with what the surface prints:
 #:
 #: * ``R2`` — the catalog already holds the authoritative refusal, named by
 #:   ``MissingMechanism.anchor_fault_id``.
@@ -113,21 +127,7 @@ COVERED_BY_CATALOG: dict[str, tuple[str, ...]] = {
 #: * ``R5`` — the catalog has no honest shape. ``R5a``: the id a user would type
 #:   is taken by an active entry with a different mechanism. ``R5b``: the
 #:   descriptor's risk rung has no row for its scope.
-DESCRIPTOR_ONLY: dict[str, str] = {
-    "io.read_error": "R2",
-    "io.permission_error": "R2",
-    "jvm.exception_injection": "R2",
-    "clock.realtime_freeze": "R2",
-    "clock.monotonic_offset": "R3",
-    "clock.monotonic_freeze": "R3",
-    "jvm.method_delay": "R4",
-    "jvm.return_value_mutation": "R4",
-    "jvm.allocation_pressure": "R4",
-    "jvm.gc_pressure": "R4",
-    "jvm.thread_pressure": "R4",
-    "io.write_delay": "R5a",
-    "io.torn_write": "R5b",
-}
+DESCRIPTOR_ONLY: dict[str, str] = dict(DESCRIPTOR_ONLY_RULES)
 
 NEW_IDS: tuple[str, ...] = tuple(COVERED_BY_CATALOG)
 

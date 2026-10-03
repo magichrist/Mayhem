@@ -121,6 +121,7 @@ def _minimal_kernel(**overrides: object) -> dict[str, object]:
         ),
         "syscalls": frozenset({"read"}),
         "mode": "latency_delay",
+        "latency_ms": 2500,
         "loader": "probe-loader",
     }
     base.update(overrides)
@@ -146,6 +147,7 @@ def _minimal_io(**overrides: object) -> dict[str, object]:
         ),
         "operation": "read",
         "mode": "delay",
+        "delay_ms": 1500,
         "shim": "fuse",
         "path_param": "path",
         "default_path": "/tmp",

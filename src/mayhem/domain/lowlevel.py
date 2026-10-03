@@ -86,15 +86,22 @@ from mayhem.domain.faults import FaultCategory, MaturityLevel, Reversibility
 from mayhem.domain.risks import RiskLevel
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 __all__ = [
     "CURRENT_SUBSTRATE",
     "ERNO_NUMBERS",
     "MAX_SAFE_DURATION_CEILING_S",
+    "MIN_MAGNITUDE",
     "PLATFORM_SCOPED_ATTACHMENTS",
     "PRIMITIVES",
+    "RETURN_MUTATIONS",
     "REUSED_CATEGORY_BY_FAMILY",
+    "SCALING_CLOCK_MODES",
+    "SCALING_IO_MODES",
+    "SCALING_JVM_MODES",
+    "SCALING_KERNEL_MODES",
+    "AttachSpecification",
     "CapabilityGap",
     "ClockId",
     "ClockMode",
@@ -113,7 +120,9 @@ __all__ = [
     "KernelPrimitive",
     "MissingCode",
     "MissingMechanism",
+    "ParamKind",
     "PrimitiveFamily",
+    "PrimitiveParam",
     "ResidueCheck",
     "ResidueFacet",
     "ReverseAttachment",
@@ -122,9 +131,13 @@ __all__ = [
     "SubstrateVerdict",
     "descriptor_for",
     "injectable_primitives",
+    "magnitude_holder",
     "missing_mechanism_for",
+    "parameter_grammar",
     "primitive_by_id",
     "registry_problems",
+    "resolve_params",
+    "specification_for",
     "validate_substrate_claims",
 ]
 
@@ -765,6 +778,29 @@ _JVM_EXCEPTION_RE: Final[re.Pattern[str]] = re.compile(
 _RETURN_MUTATIONS: Final[frozenset[str]] = frozenset(
     {"zero", "max", "increment", "decrement", "mask_high_bit", "saturate"}
 )
+
+#: Public alias for the mutation vocabulary. The descriptor validator refuses a
+#: mutation outside this set and the parameter grammar builds its ``choices``
+#: from it, so the closed vocabulary has exactly one definition — a second copy
+#: in the grammar would be a second thing to keep in step.
+RETURN_MUTATIONS: Final[frozenset[str]] = _RETURN_MUTATIONS
+
+#: What one ``pressure_units`` means per mode. Named because a bare number next
+#: to a JVM primitive is unreadable: 262144 is 256 KiB of allocation and also a
+#: quarter of a million GC requests, and those are not interchangeable.
+class _PressureUnit(StrEnum):
+    BYTES = "bytes"
+    INVOCATIONS = "invocations"
+    THREADS = "threads"
+
+
+_PRESSURE_UNITS: Final[Mapping[JvmInjectionMode, _PressureUnit]] = MappingProxyType(
+    {
+        JvmInjectionMode.ALLOCATION_PRESSURE: _PressureUnit.BYTES,
+        JvmInjectionMode.GC_PRESSURE: _PressureUnit.INVOCATIONS,
+        JvmInjectionMode.THREAD_PRESSURE: _PressureUnit.THREADS,
+    }
+)
 #: Linux's usable slew range for a clock frequency, in parts per million.
 #: Outside it ``adjtimex`` refuses or clamps, which would make the injected fault
 #: a different fault from the declared one — so the bound is refused here rather
@@ -774,6 +810,58 @@ MAX_SLEW_PPM: Final[int] = 500
 #: HIGH or CRITICAL fault may not declare a window wider than this. Reused as a
 #: domain constant rather than a second number with a second meaning.
 MAX_SAFE_DURATION_CEILING_S: Final[float] = 600.0
+
+#: The floor on a magnitude. A zero magnitude injects nothing, which is the
+#: inert-parameter defect in its purest form: the fault is accepted, the plan
+#: records it, and nothing happens. Unrepresentable rather than defaulted.
+MIN_MAGNITUDE: Final[int] = 1
+
+#: The ceiling on a JVM pressure magnitude, in whatever unit the mode reads.
+#: Not a duration and deliberately not :data:`MAX_SAFE_DURATION_CEILING_S`: a
+#: GC-pressure count of 10^9 invocations is not a longer fault than one of 10^6,
+#: it is a different fault, and the bound exists so the *shape* of the pressure
+#: is a decision rather than an accident. Phase 3's decision, recorded because
+#: the alternative — inheriting the duration ceiling — would silently permit an
+#: allocation size large enough to OOM a heap that is not the point.
+_MAX_PRESSURE_UNITS: Final[float] = 1_000_000.0
+
+
+def _magnitude_is_declared(
+    *,
+    declared: int | None,
+    required: bool,
+    field: str,
+    ceiling_ms: float,
+    mode: str,
+) -> None:
+    """One rule for every tunable mode, so a mode cannot ship without a size.
+
+    Three checks, and the first is the one that catches a real defect: a mode
+    that *perturbs by an amount* must declare *how much*, because a delay fault
+    whose only parameter is "on or off" cannot be told apart from a no-op by an
+    observer, by a residue check, or by a reviewer reading the plan. The second
+    refuses a magnitude no mechanism could honour — a latency longer than the
+    descriptor's own maximum safe duration is not a more aggressive fault, it is
+    a fault whose recovery may never run. The third refuses a magnitude a
+    non-magnitude mode has no use for, because an unused field is a field that
+    later gets set by accident.
+    """
+    if required and declared is None:
+        raise ValueError(
+            f"{mode} mode must declare {field}: a perturbation with no magnitude is "
+            "a fault that cannot differ from a no-op"
+        )
+    if not required and declared is not None:
+        raise ValueError(f"{mode} mode perturbs by no magnitude, so it declares no {field}")
+    if declared is None:
+        return
+    if declared < MIN_MAGNITUDE:
+        raise ValueError(f"{field} must be at least {MIN_MAGNITUDE}: zero injects nothing")
+    if float(declared) > ceiling_ms:
+        raise ValueError(
+            f"{field}={declared}ms exceeds the descriptor's own maximum safe duration of "
+            f"{ceiling_ms:g}ms: a fault that outlasts its own recovery window cannot be undone"
+        )
 
 
 class LowLevelPrimitive(BaseModel):
@@ -821,6 +909,12 @@ class LowLevelPrimitive(BaseModel):
 
     id: Identifier
     family: PrimitiveFamily
+    mode: object = Field(exclude=True)
+    """The family's own mode enum, declared on the base so a family-agnostic
+    reader can dispatch on it. Subclasses narrow it to their own enum, which is
+    why :func:`_magnitude_field` and :func:`_mode_of` can read it without an
+    ``isinstance`` chain — and why a family that forgot to declare one fails at
+    construction rather than at injection time."""
     title: str = Field(min_length=4)
     summary: str = Field(min_length=20)
     category: FaultCategory
@@ -1046,6 +1140,11 @@ class KernelPrimitive(LowLevelPrimitive):
             are refused on a ``PROCESS`` category, because they are not.
         errno_name: Required iff ``mode`` is ``ERRNO_RETURN``.
         return_mutation: Required iff ``mode`` is ``RETURN_MUTATION``.
+        latency_ms: Required iff ``mode`` is ``LATENCY_DELAY``, and bounded by the
+            descriptor's own ``max_safe_duration_s``. Phase 3 added it: a latency
+            mode with no magnitude is a fault that cannot differ from itself, which
+            is the inert-parameter defect the Phase-5 regression guard exists to
+            make impossible.
         loader: The loader class a Phase-2 mechanism would register.
     """
 
@@ -1054,6 +1153,7 @@ class KernelPrimitive(LowLevelPrimitive):
     attachment: ReverseAttachment = ReverseAttachment.PROCESS
     errno_name: ErrorCode | None = None
     return_mutation: str | None = None
+    latency_ms: int | None = None
     loader: str = Field(min_length=3)
 
     @model_validator(mode="after")
@@ -1072,6 +1172,13 @@ class KernelPrimitive(LowLevelPrimitive):
                 )
         elif self.return_mutation is not None:
             raise ValueError(f"{self.mode.value} mode mutates no return value")
+        _magnitude_is_declared(
+            declared=self.latency_ms,
+            required=self.mode is KernelInjectionMode.LATENCY_DELAY,
+            field="latency_ms",
+            ceiling_ms=self.max_safe_duration_s * 1000.0,
+            mode=self.mode.value,
+        )
         if self.attachment in PLATFORM_SCOPED_ATTACHMENTS:
             raise ValueError(
                 f"{self.attachment.value}-scoped attaches perturb more than one "
@@ -1096,6 +1203,9 @@ class IOPrimitive(LowLevelPrimitive):
             a relative path resolves against whatever cwd the executor happens
             to run with, which is not a target the operator chose.
         error_code: The errno returned, iff ``mode`` is ``ERROR``.
+        delay_ms: Required iff ``mode`` is ``DELAY``, and bounded by the
+            descriptor's own ``max_safe_duration_s``. Phase 3 added it for the
+            reason :func:`_magnitude_is_declared` gives.
     """
 
     operation: IoOperation
@@ -1104,6 +1214,7 @@ class IOPrimitive(LowLevelPrimitive):
     path_param: Identifier
     default_path: str = Field(min_length=1)
     error_code: ErrorCode | None = None
+    delay_ms: int | None = None
 
     @model_validator(mode="after")
     def _io_is_well_formed(self) -> IOPrimitive:
@@ -1113,6 +1224,13 @@ class IOPrimitive(LowLevelPrimitive):
             raise ValueError("error mode must name the errno it returns")
         if self.mode is not IoMode.ERROR and self.error_code is not None:
             raise ValueError(f"{self.mode.value} mode returns no errno")
+        _magnitude_is_declared(
+            declared=self.delay_ms,
+            required=self.mode is IoMode.DELAY,
+            field="delay_ms",
+            ceiling_ms=self.max_safe_duration_s * 1000.0,
+            mode=self.mode.value,
+        )
         if self.shim in {IoShim.MARKER_FILES, IoShim.REMOUNT, IoShim.NONE} and (
             self.missing is not None
         ):
@@ -1136,6 +1254,15 @@ class JVMPrimitive(LowLevelPrimitive):
         instrumentation: The agent class a Phase-2 mechanism would register.
         mode: What the agent does to the method.
         exception_class: Required iff ``mode`` is ``EXCEPTION_INJECT``.
+        delay_ms: Required iff ``mode`` is ``METHOD_DELAY``. The same rule as the
+            other families' magnitudes: a method-delay agent with no delay is a
+            no-op that still attaches, which is the worst shape — residue with no
+            fault.
+        pressure_units: Required for every *pressure* mode, read per mode:
+            allocation bytes for ``ALLOCATION_PRESSURE``, invocation count for
+            ``GC_PRESSURE``, threads for ``THREAD_PRESSURE``. One field rather
+            than three because the mode says which it is, and a field the mode
+            has to disambiguate is a field a mechanism can misread.
         jvm_version_range: The JVM versions the descriptor claims to hold for.
     """
 
@@ -1144,6 +1271,8 @@ class JVMPrimitive(LowLevelPrimitive):
     instrumentation: JVMInstrumentation
     mode: JvmInjectionMode
     exception_class: str | None = None
+    delay_ms: int | None = None
+    pressure_units: int | None = None
     jvm_version_range: str = ""
 
     @model_validator(mode="after")
@@ -1161,6 +1290,28 @@ class JVMPrimitive(LowLevelPrimitive):
                 )
         elif self.exception_class is not None:
             raise ValueError(f"{self.mode.value} mode injects no exception")
+        _magnitude_is_declared(
+            declared=self.delay_ms,
+            required=self.mode is JvmInjectionMode.METHOD_DELAY,
+            field="delay_ms",
+            ceiling_ms=self.max_safe_duration_s * 1000.0,
+            mode=self.mode.value,
+        )
+        _magnitude_is_declared(
+            declared=self.pressure_units,
+            required=self.mode
+            in {
+                JvmInjectionMode.ALLOCATION_PRESSURE,
+                JvmInjectionMode.GC_PRESSURE,
+                JvmInjectionMode.THREAD_PRESSURE,
+            },
+            field="pressure_units",
+            # A pressure magnitude is not a duration: the bound is the absolute
+            # units cap, and reusing the duration ceiling here would let a
+            # descriptor declare a 300-second allocation of 600 MiB.
+            ceiling_ms=_MAX_PRESSURE_UNITS,
+            mode=self.mode.value,
+        )
         return self
 
 
@@ -1312,6 +1463,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 tool_capabilities=frozenset({"kernel.syscall_latency"}),
                 syscalls=frozenset({"read", "write", "fsync", "sendmsg"}),
                 mode=KernelInjectionMode.LATENCY_DELAY,
+                latency_ms=2500,
                 attachment=ReverseAttachment.PROCESS,
                 loader="ebpf-kprobe",
                 reversibility_statement=ReversibilityStatement(
@@ -1550,6 +1702,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 probe_bins=frozenset({"mount", "fusermount3"}),
                 operation=IoOperation.READ,
                 mode=IoMode.DELAY,
+                delay_ms=1500,
                 shim=IoShim.FUSE,
                 path_param="path",
                 default_path="/tmp",
@@ -1608,6 +1761,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 probe_bins=frozenset({"mount", "fusermount3"}),
                 operation=IoOperation.WRITE,
                 mode=IoMode.DELAY,
+                delay_ms=1500,
                 shim=IoShim.FUSE,
                 path_param="path",
                 default_path="/tmp",
@@ -1789,6 +1943,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 probe_bins=frozenset({"dmsetup"}),
                 operation=IoOperation.META,
                 mode=IoMode.DELAY,
+                delay_ms=2000,
                 shim=IoShim.DEVICE_MAPPER,
                 path_param="device",
                 default_path="/dev/<device>",
@@ -1905,6 +2060,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 target_method="getActiveCount",
                 instrumentation=JVMInstrumentation.JVMTI_AGENT,
                 mode=JvmInjectionMode.METHOD_DELAY,
+                delay_ms=1200,
                 reversibility_statement=ReversibilityStatement(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="detach the agent and restore the original bytecode",
@@ -2061,6 +2217,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 target_method="gc",
                 instrumentation=JVMInstrumentation.JVMTI_AGENT,
                 mode=JvmInjectionMode.ALLOCATION_PRESSURE,
+                pressure_units=262_144,
                 reversibility_statement=ReversibilityStatement(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="drop the agent's retained references and let the heap fall",
@@ -2114,6 +2271,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 target_method="gc",
                 instrumentation=JVMInstrumentation.JVMTI_AGENT,
                 mode=JvmInjectionMode.GC_PRESSURE,
+                pressure_units=500,
                 reversibility_statement=ReversibilityStatement(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="stop requesting collections; the target's own GC resumes",
@@ -2162,6 +2320,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 target_method="getActiveCount",
                 instrumentation=JVMInstrumentation.JAVA_INSTRUMENTATION,
                 mode=JvmInjectionMode.THREAD_PRESSURE,
+                pressure_units=64,
                 reversibility_statement=ReversibilityStatement(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="detach the agent; the pool's threads return to it",
@@ -2407,6 +2566,606 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
         )
     }
 )
+
+
+# ── the parameter grammar, and what a request would attach ───────────────────
+
+
+class ParamKind(StrEnum):
+    """How one parameter's value is constrained.
+
+    The vocabulary is closed because a parameter whose constraints live only in a
+    mechanism's prose is a parameter nobody can validate: the grammar below is what
+    a *decision* can check, and a decision that cannot check a value has to trust
+    the thing it is deciding about.
+
+    Attributes:
+        ENUM: One of :attr:`PrimitiveParam.choices`. The default shape.
+        INTEGER: A bounded integer, in :attr:`PrimitiveParam.unit`.
+        PATH: An absolute POSIX path, because a relative one resolves against
+            whatever working directory the injector happens to run with — which is
+            not a target the operator chose.
+        IDENTIFIER: A dotted or underscored name (a syscall, a Java class).
+    """
+
+    ENUM = "enum"
+    INTEGER = "integer"
+    PATH = "path"
+    IDENTIFIER = "identifier"
+
+
+class PrimitiveParam(BaseModel):
+    """One parameter a primitive's request may carry, and what makes it legal.
+
+    Attributes:
+        name: The parameter name, ``Identifier``-shaped.
+        kind: Which constraint applies.
+        unit: Human name for the value's unit (``ms``, ``ppm``, ``""``).
+        required: True when a request must carry it. Derived, not editorial: a
+            parameter the descriptor already fixes a default for is optional, and
+            one it cannot default (a magnitude, a target) is required.
+        default: The descriptor's own value, when it has one.
+        choices: The closed vocabulary, non-empty iff ``kind`` is ``ENUM``.
+        minimum: Inclusive lower bound for an ``INTEGER``.
+        maximum: Inclusive upper bound for an ``INTEGER``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: Identifier
+    kind: ParamKind
+    unit: str = ""
+    required: bool = False
+    default: str | int | None = None
+    choices: tuple[str, ...] = ()
+    minimum: int | None = None
+    maximum: int | None = None
+
+    @model_validator(mode="after")
+    def _param_is_well_formed(self) -> PrimitiveParam:
+        if self.kind is ParamKind.ENUM and not self.choices:
+            raise ValueError(f"enum parameter {self.name!r} offers no choices")
+        if self.kind is ParamKind.INTEGER and (self.minimum is None or self.maximum is None):
+            raise ValueError(
+                f"integer parameter {self.name!r} must declare both bounds: an unbounded "
+                "magnitude is not a decision"
+            )
+        if self.kind is not ParamKind.INTEGER and (self.minimum is not None or self.maximum):
+            raise ValueError(f"parameter {self.name!r} is not an integer and declares no bounds")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError(f"parameter {self.name!r} has an empty range")
+        if self.default is not None and not self._within(str(self.default)):
+            raise ValueError(f"parameter {self.name!r} default {self.default!r} is out of range")
+        if not self.unit.strip() and self.kind is ParamKind.INTEGER:
+            raise ValueError(f"integer parameter {self.name!r} must name its unit")
+        return self
+
+    def _within(self, value: str) -> bool:
+        if self.kind is ParamKind.ENUM:
+            return value in self.choices
+        if self.kind is not ParamKind.INTEGER:
+            return True
+        try:
+            number = int(value)
+        except ValueError:
+            return False
+        assert self.minimum is not None and self.maximum is not None
+        return self.minimum <= number <= self.maximum
+
+    def describe(self) -> str:
+        """The constraint, without repeating the name — a renderer supplies that.
+
+        Keeping the name out is what makes a grammar renderable as a list rather
+        than as a sentence per entry, and it is why ``describe`` reads the same
+        in a refusal message and in a table.
+        """
+        if self.kind is ParamKind.ENUM:
+            return "one of " + ", ".join(self.choices)
+        if self.kind is ParamKind.INTEGER:
+            return f"{self.minimum}..{self.maximum} {self.unit}".strip()
+        if self.kind is ParamKind.PATH:
+            return "an absolute POSIX path"
+        return "a dotted or underscored identifier"
+
+
+class AttachSpecification(BaseModel):
+    """What a request would attach — the *decision*, never the operation.
+
+    This is the whole of plan 04's mechanism contract on the domain side: a
+    description a mechanism would have to satisfy. Nothing here loads a program,
+    opens a device, or attaches an agent, and the field is called a specification
+    rather than a plan because a plan is something that gets executed.
+
+    It exists for two reasons that are the same reason:
+
+    * it is what the Phase-5 inertness guard compares. Two distinct parameter
+      values must produce two distinct specifications, because a specification
+      that ignores a parameter is the shape every inert parameter has;
+    * it is the value a refused request carries *instead of* a weaker mechanism.
+      There is no ``substituted_with`` field, for the reason
+      :class:`MissingMechanism` has no ``substitute`` field.
+
+    Attributes:
+        primitive_id: Which descriptor this is for.
+        family: The plan-04 family, carried so a mechanism loader can dispatch on
+            one field rather than re-deriving it from the id's prefix.
+        mode: The descriptor's mode, as the primitive's own enum value.
+        mechanism: The mechanism that would have to exist — named whether it does
+            or not, so the specification reads the same for an injectable primitive
+            and a blocked one.
+        targets: The target selector values, in a stable order.
+        magnitude: The magnitude's value, when the mode has one.
+        unit: The magnitude's unit, so ``2500`` is not read as 2500 bytes.
+        undo: The descriptor's undo statement, verbatim. A specification that
+            could not say how it comes back would not be safe to hand to anyone.
+        residue_probes: The descriptor's residue probes, verbatim.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    primitive_id: str
+    family: str
+    mode: str
+    mechanism: str
+    targets: tuple[tuple[str, str], ...]
+    magnitude: int | None = None
+    unit: str = ""
+    undo: str = Field(min_length=1)
+    residue_probes: tuple[str, ...] = Field(min_length=1)
+
+    def fingerprint(self) -> str:
+        """A stable one-line rendering, for comparing two requests for equality.
+
+        Two requests with the same fingerprint are the same attachment. Written as
+        a join over every field rather than as a hash so that a difference is
+        *readable* in a failing assertion — a digest that differs tells you
+        nothing about which parameter moved.
+        """
+        targets = ",".join(f"{key}={value}" for key, value in self.targets)
+        magnitude = "-" if self.magnitude is None else f"{self.magnitude} {self.unit}"
+        return (
+            f"{self.primitive_id}|{self.family}|{self.mode}|{self.mechanism}"
+            f"|targets={targets}|magnitude={magnitude}"
+        )
+
+
+#: The modes whose *effect scales with an amount*, and therefore must carry one.
+#:
+#: Derived once here and enforced twice: by each family's own validator (which
+#: refuses a descriptor that omits the magnitude) and by :func:`parameter_grammar`
+#: (which refuses to describe one). A mode absent from this set — ``FREEZE``,
+#: ``QUOTA``, ``CORRUPT`` — either has no amount to scale by or carries its
+#: magnitude in the backing catalog entry's own parameters, which
+#: :func:`magnitude_holder` reports rather than restates.
+SCALING_KERNEL_MODES: Final[frozenset[KernelInjectionMode]] = frozenset(
+    {KernelInjectionMode.LATENCY_DELAY}
+)
+SCALING_IO_MODES: Final[frozenset[IoMode]] = frozenset({IoMode.DELAY})
+SCALING_JVM_MODES: Final[frozenset[JvmInjectionMode]] = frozenset(
+    {
+        JvmInjectionMode.METHOD_DELAY,
+        JvmInjectionMode.ALLOCATION_PRESSURE,
+        JvmInjectionMode.GC_PRESSURE,
+        JvmInjectionMode.THREAD_PRESSURE,
+    }
+)
+SCALING_CLOCK_MODES: Final[frozenset[ClockMode]] = frozenset({ClockMode.RATE})
+
+
+def _ms_param(name: str, default: int | None, ceiling_ms: float) -> PrimitiveParam:
+    """A duration-magnitude parameter, bounded by the descriptor's own window.
+
+    One constructor so the bound is the same expression in every grammar: a
+    magnitude may not outlast ``max_safe_duration_s``, because a fault that
+    outlives its own recovery window cannot be undone in the time the plan allows
+    for undoing it.
+    """
+    return PrimitiveParam(
+        name=name,
+        kind=ParamKind.INTEGER,
+        unit="ms",
+        required=True,
+        default=default,
+        minimum=MIN_MAGNITUDE,
+        maximum=int(ceiling_ms),
+    )
+
+
+def _enum_param(
+    name: str, choices: Iterable[str], *, default: str | None = None, required: bool = False
+) -> PrimitiveParam:
+    """A closed-vocabulary parameter, sorted so the grammar is byte-stable."""
+    ordered = tuple(sorted(choices))
+    return PrimitiveParam(
+        name=name,
+        kind=ParamKind.ENUM,
+        required=required,
+        default=default,
+        choices=ordered,
+    )
+
+
+def parameter_grammar(primitive: LowLevelPrimitive) -> tuple[PrimitiveParam, ...]:
+    """Every parameter *primitive*'s request may carry, derived from the descriptor.
+
+    **Derived, never hand-written.** Phase 1 recorded "descriptors carry no
+    ``params_schema``" as a limitation and named this as Phase 3's job; deriving
+    the grammar from fields the descriptor already *validates* is what makes that
+    job finishable without a second source of truth. A hand-written grammar would
+    be free to disagree with the model — the same class of drift that makes an
+    impact-gate ``REQUIREMENTS`` row name a binary no fault probes.
+
+    Each family contributes its target selectors and then, exactly when the mode
+    calls for it, its magnitude:
+
+    * ``kernel``: the syscalls it declares (the closed set *is* the vocabulary,
+      so a typo is a refused request rather than a kprobe that never fires), the
+      attach scope, and — for ``ERRNO_RETURN`` the errno, for ``LATENCY_DELAY``
+      the latency, for ``RETURN_MUTATION`` the mutation — a value from the same
+      closed tables the descriptor was validated against;
+    * ``io``: its ``path_param`` under its own name (so ``device`` for the
+      device-mapper target and ``path`` for a mount), the operation, and the
+      delay for ``DELAY``;
+    * ``jvm``: the target class and method, the instrumentation channel, and the
+      mode's own quantity;
+    * ``clock``: the clock id, and — for ``OFFSET`` the offset, for ``RATE`` the
+      ppm bounded by :data:`MAX_SLEW_PPM` — the magnitude.
+
+    The result is never empty, because every family has at least a target
+    selector.
+    """
+    grammar: tuple[PrimitiveParam, ...]
+    if isinstance(primitive, KernelPrimitive):
+        grammar = _kernel_grammar(primitive)
+    elif isinstance(primitive, IOPrimitive):
+        grammar = _io_grammar(primitive)
+    elif isinstance(primitive, JVMPrimitive):
+        grammar = _jvm_grammar(primitive)
+    else:
+        assert isinstance(primitive, ClockPrimitive)  # every family is one of the four
+        grammar = _clock_grammar(primitive)
+    if not grammar:  # pragma: no cover - defensive: every family appends a selector
+        raise InvariantViolationError(
+            "lowlevel.empty_grammar",
+            f"{primitive.id!r} has no parameter grammar: a request could not be "
+            "distinguished from any other request for it",
+        )
+    return grammar
+
+
+def _errno_choices() -> tuple[str, ...]:
+    """The closed errno vocabulary, sorted once."""
+    return tuple(sorted(code.value for code in ErrorCode))
+
+
+def _kernel_grammar(primitive: KernelPrimitive) -> tuple[PrimitiveParam, ...]:
+    """``kernel``: target syscall, attach scope, and the mode's own quantity."""
+    grammar = [
+        _enum_param("syscall", primitive.syscalls, required=True),
+        _enum_param(
+            "attachment",
+            (ReverseAttachment.PROCESS.value, ReverseAttachment.THREAD.value),
+            default=primitive.attachment.value,
+        ),
+    ]
+    if primitive.mode is KernelInjectionMode.ERRNO_RETURN:
+        assert primitive.errno_name is not None  # narrowed by the descriptor's validator
+        grammar.append(_enum_param("errno", _errno_choices(), default=primitive.errno_name.value))
+    elif primitive.mode is KernelInjectionMode.LATENCY_DELAY:
+        grammar.append(
+            _ms_param(
+                "latency_ms",
+                primitive.latency_ms,
+                primitive.max_safe_duration_s * 1000,
+            )
+        )
+    else:
+        grammar.append(
+            _enum_param(
+                "mutation",
+                RETURN_MUTATIONS,
+                default=primitive.return_mutation,
+                required=True,
+            )
+        )
+    return tuple(grammar)
+
+
+def _io_grammar(primitive: IOPrimitive) -> tuple[PrimitiveParam, ...]:
+    """``io``: the path selector under the descriptor's own name, and the quantity.
+
+    The path parameter keeps the name the descriptor gave it — ``device`` for the
+    device-mapper target, ``path`` for a mount — so a request reads the way the
+    descriptor documented it rather than through a renamed field.
+    """
+    grammar = [
+        PrimitiveParam(
+            name=primitive.path_param,
+            kind=ParamKind.PATH,
+            required=True,
+            default=primitive.default_path,
+        ),
+        _enum_param(
+            "operation",
+            (op.value for op in IoOperation),
+            default=primitive.operation.value,
+        ),
+    ]
+    if primitive.mode is IoMode.DELAY:
+        grammar.append(
+            _ms_param("delay_ms", primitive.delay_ms, primitive.max_safe_duration_s * 1000)
+        )
+    elif primitive.mode is IoMode.ERROR:
+        assert primitive.error_code is not None  # narrowed by the descriptor's validator
+        grammar.append(_enum_param("errno", _errno_choices(), default=primitive.error_code.value))
+    return tuple(grammar)
+
+
+def _name_param(name: str, value: str | None) -> PrimitiveParam:
+    """A required identifier parameter — a Java class, method or exception class."""
+    return PrimitiveParam(
+        name=name,
+        kind=ParamKind.IDENTIFIER,
+        required=True,
+        default=value,
+    )
+
+
+def _jvm_grammar(primitive: JVMPrimitive) -> tuple[PrimitiveParam, ...]:
+    """``jvm``: the target method, the attach channel, and the mode's own quantity."""
+    grammar = [
+        _name_param("target_class", primitive.target_class),
+        _name_param("target_method", primitive.target_method),
+        _enum_param(
+            "instrumentation",
+            (tool.value for tool in JVMInstrumentation),
+            default=primitive.instrumentation.value,
+        ),
+    ]
+    if primitive.mode is JvmInjectionMode.EXCEPTION_INJECT:
+        grammar.append(_name_param("exception_class", primitive.exception_class))
+    elif primitive.mode is JvmInjectionMode.METHOD_DELAY:
+        grammar.append(
+            _ms_param("delay_ms", primitive.delay_ms, primitive.max_safe_duration_s * 1000)
+        )
+    elif primitive.mode in SCALING_JVM_MODES:
+        grammar.append(
+            PrimitiveParam(
+                name="pressure_units",
+                kind=ParamKind.INTEGER,
+                unit=_PRESSURE_UNITS[primitive.mode].value,
+                required=True,
+                default=primitive.pressure_units,
+                minimum=MIN_MAGNITUDE,
+                maximum=int(_MAX_PRESSURE_UNITS),
+            )
+        )
+    return tuple(grammar)
+
+
+def _clock_grammar(primitive: ClockPrimitive) -> tuple[PrimitiveParam, ...]:
+    """``clock``: the clock, and the offset or slew the mode applies."""
+    grammar = [
+        _enum_param(
+            "clock_id",
+            (clock.value for clock in ClockId),
+            default=primitive.clock_id.value,
+        )
+    ]
+    window_ms = int(primitive.max_safe_duration_s * 1000)
+    if primitive.mode is ClockMode.OFFSET:
+        grammar.append(
+            PrimitiveParam(
+                name="offset_ms",
+                kind=ParamKind.INTEGER,
+                unit="ms",
+                required=True,
+                default=primitive.offset_ms,
+                minimum=-window_ms,
+                maximum=window_ms,
+            )
+        )
+    elif primitive.mode is ClockMode.RATE:
+        grammar.append(
+            PrimitiveParam(
+                name="rate_ppm",
+                kind=ParamKind.INTEGER,
+                unit="ppm",
+                required=True,
+                default=primitive.rate_ppm,
+                minimum=-MAX_SLEW_PPM,
+                maximum=MAX_SLEW_PPM,
+            )
+        )
+    return tuple(grammar)
+
+
+#: What a mode with no tunable amount says about itself, in one sentence.
+_NO_AMOUNT: Final[str] = "the mode applies a fixed transformation with no tunable amount"
+
+#: The one parameter that carries a family/mode's magnitude, or nothing.
+#:
+#: A table rather than a chain of ``isinstance`` tests because there are two
+#: readers of the same question and they must not answer it differently:
+#: :func:`magnitude_holder` (which tells a person) and :func:`_magnitude_from`
+#: (which reads the value). Splitting the decision into a "where is it" and a
+#: "what is it" is how a magnitude ends up named in a report and read from a
+#: different field at injection time.
+_MAGNITUDE_PARAM_BY_FAMILY: Final[Mapping[PrimitiveFamily, Mapping[object, str]]] = (
+    MappingProxyType(
+        {
+            PrimitiveFamily.KERNEL: MappingProxyType(
+                {KernelInjectionMode.LATENCY_DELAY: "latency_ms"}
+            ),
+            PrimitiveFamily.IO: MappingProxyType({IoMode.DELAY: "delay_ms"}),
+            PrimitiveFamily.JVM: MappingProxyType(
+                {
+                    JvmInjectionMode.METHOD_DELAY: "delay_ms",
+                    JvmInjectionMode.ALLOCATION_PRESSURE: "pressure_units",
+                    JvmInjectionMode.GC_PRESSURE: "pressure_units",
+                    JvmInjectionMode.THREAD_PRESSURE: "pressure_units",
+                }
+            ),
+            PrimitiveFamily.CLOCK: MappingProxyType(
+                {ClockMode.OFFSET: "offset_ms", ClockMode.RATE: "rate_ppm"}
+            ),
+        }
+    )
+)
+
+#: Unit of each magnitude parameter. ``pressure_units`` is absent on purpose: its
+#: unit depends on the mode, so it is read from :data:`_PRESSURE_UNITS` instead of
+#: being guessed here.
+_MAGNITUDE_UNIT_BY_PARAM: Final[Mapping[str, str]] = MappingProxyType(
+    {"latency_ms": "ms", "delay_ms": "ms", "offset_ms": "ms", "rate_ppm": "ppm"}
+)
+
+
+def _magnitude_field(primitive: LowLevelPrimitive) -> str:
+    """The parameter that carries this primitive's magnitude, or ``""``."""
+    return _MAGNITUDE_PARAM_BY_FAMILY[primitive.family].get(primitive.mode, "")
+
+
+def magnitude_holder(primitive: LowLevelPrimitive) -> str:
+    """Where this primitive's magnitude lives, in words.
+
+    Three answers, and the third is the interesting one. A scaling mode carries
+    its own magnitude field. A mode with no amount to scale by names itself — and
+    an *error* mode says so more precisely, because the errno it returns is a
+    code rather than a size and reading its absence as a missing parameter would
+    be wrong. A mode whose amount belongs to the *backing catalog entry* names
+    that entry, so a reader learns that ``io.capacity_exhaustion`` takes its size
+    from ``fs.fill``'s parameters rather than from a field of its own.
+    """
+    field = _magnitude_field(primitive)
+    if field:
+        return f"the primitive's own {field}"
+    if isinstance(primitive, IOPrimitive) and primitive.mode is IoMode.ERROR:
+        return "the errno it returns, which is a code rather than an amount"
+    if primitive.existing_fault_id is not None:
+        return f"the parameters of the backing catalog entry {primitive.existing_fault_id}"
+    return _NO_AMOUNT
+
+
+def resolve_params(
+    primitive: LowLevelPrimitive, params: Mapping[str, object]
+) -> tuple[tuple[PrimitiveParam, str | int], ...]:
+    """Check *params* against *primitive*'s grammar and return them resolved.
+
+    A total, pure check that **refuses** rather than repairs: an unknown
+    parameter, a missing required one, a value outside a closed vocabulary, a
+    magnitude of zero, and a magnitude that outlasts the descriptor's own window
+    are five different mistakes and none of them is silently corrected. A grammar
+    that filled in a default for a value the operator supplied wrongly would be
+    inventing an injection nobody asked for.
+
+    Raises:
+        InvariantViolationError: With rule ``lowlevel.parameter_out_of_grammar``
+            and a message naming the parameter and what was wrong with it.
+    """
+    grammar = {param.name: param for param in parameter_grammar(primitive)}
+    unknown = sorted(set(params) - set(grammar))
+    if unknown:
+        raise InvariantViolationError(
+            "lowlevel.parameter_out_of_grammar",
+            f"{primitive.id!r} accepts no parameter(s) {unknown}; its grammar is "
+            + "; ".join(
+                f"{param.name}: {param.describe()}" for param in parameter_grammar(primitive)
+            ),
+        )
+    resolved: list[tuple[PrimitiveParam, str | int]] = []
+    for name, param in grammar.items():
+        supplied = params.get(name, param.default)
+        if supplied is None:
+            if param.required:
+                raise InvariantViolationError(
+                    "lowlevel.parameter_out_of_grammar",
+                    f"{primitive.id!r} requires parameter {name!r} and no default exists for it",
+                )
+            continue
+        if param.kind is ParamKind.INTEGER:
+            if isinstance(supplied, bool) or not isinstance(supplied, int):
+                raise InvariantViolationError(
+                    "lowlevel.parameter_out_of_grammar",
+                    f"{name!r} of {primitive.id!r} must be an integer number of "
+                    f"{param.unit}, not {supplied!r}",
+                )
+            assert param.minimum is not None and param.maximum is not None
+            if not param.minimum <= supplied <= param.maximum:
+                raise InvariantViolationError(
+                    "lowlevel.parameter_out_of_grammar",
+                    f"{name!r}={supplied} of {primitive.id!r} is outside "
+                    f"{param.minimum}..{param.maximum} {param.unit}",
+                )
+            resolved.append((param, supplied))
+            continue
+        if not isinstance(supplied, str):
+            raise InvariantViolationError(
+                "lowlevel.parameter_out_of_grammar",
+                f"{name!r} of {primitive.id!r} must be a string, not {supplied!r}",
+            )
+        if not param._within(supplied):
+            raise InvariantViolationError(
+                "lowlevel.parameter_out_of_grammar",
+                f"{name!r}={supplied!r} of {primitive.id!r} is not an accepted value; "
+                f"expected {param.describe()}",
+            )
+        resolved.append((param, supplied))
+    return tuple(resolved)
+
+
+def specification_for(
+    primitive: LowLevelPrimitive, params: Mapping[str, object]
+) -> AttachSpecification:
+    """The attachment *primitive* would perform for *params*.
+
+    Pure and total over a checked request: it resolves the grammar, then reads
+    the descriptor. It is a description, and the only way anything could be
+    injected is if a caller took this value and performed an operation — which no
+    code in this repository does, for any of the 22 primitives.
+
+    :raises InvariantViolationError: ``lowlevel.parameter_out_of_grammar``, from
+        :func:`resolve_params`.
+    """
+    resolved = {param.name: value for param, value in resolve_params(primitive, params)}
+    magnitude, unit = _magnitude_from(primitive, resolved)
+    return AttachSpecification(
+        primitive_id=primitive.id,
+        family=primitive.family.value,
+        mode=_mode_of(primitive),
+        mechanism=(
+            primitive.missing.mechanism if primitive.missing is not None else primitive.family.value
+        ),
+        targets=tuple(sorted((name, str(value)) for name, value in resolved.items())),
+        magnitude=magnitude,
+        unit=unit,
+        undo=primitive.reversibility_statement.undo,
+        residue_probes=tuple(check.probe for check in primitive.residue_checks),
+    )
+
+
+def _mode_of(primitive: LowLevelPrimitive) -> str:
+    """The descriptor's mode. Every family names its own field ``mode``."""
+    return str(getattr(primitive.mode, "value", primitive.mode))
+
+
+def _magnitude_from(
+    primitive: LowLevelPrimitive, resolved: Mapping[str, str | int]
+) -> tuple[int | None, str]:
+    """The one magnitude a request carries, with its unit — or ``(None, "")``.
+
+    Deliberately singular. A request that could carry two magnitudes would give
+    the inertness guard two things to compare and would let a mechanism choose
+    which one to honour, and a mechanism that may choose is a mechanism that may
+    choose wrong.
+    """
+    field = _magnitude_field(primitive)
+    if not field or field not in resolved:
+        return None, ""
+    if field == "pressure_units":
+        assert isinstance(primitive, JVMPrimitive)  # the only family declaring it
+        return int(resolved[field]), _PRESSURE_UNITS[primitive.mode].value
+    return int(resolved[field]), _MAGNITUDE_UNIT_BY_PARAM[field]
 
 
 # ── queries over the declared set ────────────────────────────────────────────
