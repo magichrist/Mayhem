@@ -67,8 +67,22 @@ Statistics interpretation guide (what "no material effect" does and does not mea
 Overall: 4 of 6 phases complete.
 
 ### Open items Phase 4 could not close in its own files
+(one of the two has since been closed by the plan-30 integration pass; the other is still open)
 - `KIND_RESILIENCE_BOUNDARY_SEARCHED` is declared in `controller/analytics_service.py`, not in `infra/audit_stream.py`'s closed `KIND_*` vocabulary. It belongs there; the audit module is not owned by this phase.
-- Four new gate rule ids need entries in `controller/safety_proof.py`'s `OBLIGATION_FOR_RULE`, or a refusal carrying them voids the proof by that module's own fail-closed rule: `analytics.planner_budget_diverged` → `damage_budget`, `analytics.step_unaffordable` → `damage_budget`, `analytics.evidence_not_sealed` → `required_approvals`, `analytics.search_not_recorded` → `required_approvals`. `analytics.evidence_unsupported` is a construction refusal on a report rather than a gate refusal and needs no line.
+- Four new gate rule ids needed entries in `controller/safety_proof.py`'s `OBLIGATION_FOR_RULE` and `controller/check_gate.py`'s `RULE_CHECK`, or a refusal carrying them voids the proof by that module's own fail-closed rule. **CLOSED** — all four rows landed, in both tables, in the plan-30 integration pass:
+
+  | rule id | obligation | check scope |
+  | --- | --- | --- |
+  | `analytics.planner_budget_diverged` | `damage_budget` | `DAMAGE_BUDGET` |
+  | `analytics.step_unaffordable` | `damage_budget` | `DAMAGE_BUDGET` |
+  | `analytics.evidence_not_sealed` | `required_approvals` | `SAFETY_POLICY` |
+  | `analytics.search_not_recorded` | `required_approvals` | `SAFETY_POLICY` |
+
+  Each obligation is as this section proposed. Two notes the tables record rather than leave to be inferred. First, the two budget rules are `damage_budget` because `step_affordable` spends `BudgetKind.DAMAGE_SECONDS` unless a caller asks for another kind — with `STEPS` or `COMBINATIONS` the quantity is a search budget rather than a damage quota, and `damage_budget` is still the only budget line in the nine-name spine. Second, the two evidence rules are `required_approvals` but not for the plan-09 reason: `require_sealed_claim` and `require_recorded_search` refuse a *decision* or a *search* whose backing claim is not in a verified chain and not in the cross-run audit stream. Nobody signed anything in either case, and both are about the question that line reports — may this decision proceed on what stands behind it.
+
+  Proved by `tests/unit/test_owed_rule_mappings.py` (40 tests), which asserts each of the four rows against both tables **and** reads every module under `src/mayhem` to prove the rule id is one the code actually spells. The second assertion is the one that matters: it is what would fail if one of these ids were a docstring-only spelling rather than a real refusal.
+
+  `analytics.evidence_unsupported` is still correct and is still unmapped: it is raised in `AnalyticsClaim.__post_init__` and the report constructors, so an unsupported claim is never *built*, and there is no gate decision for a proof line to report.
 
 ### Open items Phase 3 could not close in its own files
 - **The group is not registered.** `cli/boundary_report_cmd.py` exports `boundary` and nothing imports it; integration has to add `from mayhem.cli.boundary_report_cmd import boundary` to `command_registry.register_commands`, a `CommandSpec("boundary", "run", help_group="experiments")` row, a `COMMAND_HELP["boundary"]` entry, and the `command_map` line. Until then `mayhem boundary` does not dispatch and `test_command_inventory.py` / `test_cli_active_surface.py` / `test_cli_exhaustive_matrix.py` (which pin the top-level command set to exactly 19 names) will fail on the new name and need the matching allowlist line each. This phase's own suite invokes the group directly for exactly that reason.
