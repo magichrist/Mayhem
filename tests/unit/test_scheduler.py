@@ -466,11 +466,18 @@ def test_a_due_schedule_dispatches_and_records_the_real_fire_code() -> None:
 
 
 def test_a_schedule_outside_its_slot_is_recorded_as_not_due() -> None:
+    """A quiet instant is recorded as quiet, with a reason.
+
+    Probed five minutes *before* the schedule's anchor, so there is no occurrence
+    in play at all and nothing has been missed. A tick that found no slot and
+    reported nothing would leave an operator unable to distinguish "the scheduler
+    is idle" from "the scheduler is broken".
+    """
     store, repo = _store()
     scheduler = _scheduler(repo)
-    scheduler.register(_interval_entry(poll_resolution_s=60.0))
+    scheduler.register(_interval_entry(poll_resolution_s=60.0, anchor_at=T0))
 
-    report = scheduler.tick(_inputs(now=T0 + timedelta(minutes=5)))
+    report = scheduler.tick(_inputs(now=T0 - timedelta(minutes=5)))
 
     decision = report.for_schedule("poller")
     assert decision is not None
@@ -480,6 +487,62 @@ def test_a_schedule_outside_its_slot_is_recorded_as_not_due() -> None:
     assert decision.fire.code is FireCode.NOT_DUE
     assert decision.fire.reason
     assert decision.schedule_code == FireCode.NOT_DUE.value
+    store.close()
+
+
+def test_a_recurrence_the_poller_slept_through_is_reported_as_missed() -> None:
+    """Phase 4's acceptance criterion at the service layer, not just the domain.
+
+    The tick is five minutes past a 60-second interval slot. The slot is gone, the
+    next occurrence is an hour away and is a *different* slot with a different
+    idempotency key, so this occurrence will never run. What the tick must not do
+    is report that as success, or as an ordinary "not due" that reads like a quiet
+    afternoon; what it must do is name the missed instant and the reason it cannot
+    be retried.
+    """
+    store, repo = _store()
+    scheduler = _scheduler(repo)
+    scheduler.register(_interval_entry(poll_resolution_s=60.0))
+
+    report = scheduler.tick(_inputs(now=T0 + timedelta(minutes=5)))
+
+    decision = report.for_schedule("poller")
+    assert decision is not None
+    assert decision.dispatched is False
+    assert decision.held is True
+    assert decision.fire is not None
+    assert decision.fire.code is FireCode.MISSED
+    assert decision.fire.missed_window is True
+    assert decision.fire.slot_start == T0
+    assert decision.fire.fired is False
+    assert decision.schedule_code == FireCode.MISSED.value
+    assert T0.isoformat() in decision.fire.reason
+    assert "idempotency key" in decision.fire.reason
+    # Nothing was claimed: a missed slot is not a dispatch in progress.
+    assert repo.runs_for_schedule("poller") == ()
+    assert "MISSED" not in decision.describe() or decision.schedule_code in decision.describe()
+    store.close()
+
+
+def test_a_missed_recurrence_does_not_consume_a_slot_or_the_run_budget() -> None:
+    """A missed window must not quietly spend the schedule's run budget.
+
+    The budget exists to bound *dispatches*. If a miss decremented it, a schedule
+    whose poller was down for a weekend would arrive on Monday with fewer runs
+    left and nobody would be able to say why -- so the negative control is that
+    the run count is untouched by a tick that dispatched nothing.
+    """
+    store, repo = _store()
+    scheduler = _scheduler(repo)
+    scheduler.register(_interval_entry(poll_resolution_s=60.0, max_runs=3))
+
+    for offset in (1, 2, 3):
+        scheduler.tick(_inputs(now=T0 + timedelta(minutes=offset), window_index=offset))
+
+    entry = repo.load_schedule("poller")
+    assert entry is not None
+    assert entry.run_count == 0
+    assert repo.dispatch_count("poller") == 0
     store.close()
 
 
