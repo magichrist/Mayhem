@@ -1464,6 +1464,19 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
     ("mayhem.infra.store", "Store.save_observation"): frozenset(
         {"require_persistable_document"}
     ),
+    # Plan 23 Phase 4's benchmark and metering records. A published benchmark and
+    # a run's metering series are both caller-authored documents destined for
+    # storage and for comparison across releases, which is the same argument that
+    # bound every row above. It is **one** row rather than two because both seal
+    # functions route through a single ``_require_bound_digest`` helper, and that
+    # helper is what calls the gates: registering the two callers instead would
+    # have described a call graph the code does not have, and the guard would
+    # have reported the real function as unregistered. One row is what the code
+    # is; a future second writer that bypasses the helper fails the guard rather
+    # than passing on a partially registered module.
+    ("mayhem.infra.metering", "_require_bound_digest"): frozenset(
+        {"require_persistable_document", "require_clean_artifact"}
+    ),
 }
 
 #: The boundary functions themselves. Each is a module-level ``def`` in
