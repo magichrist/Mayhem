@@ -536,11 +536,291 @@ def test_a_jittered_fire_stays_within_bound_of_its_slot() -> None:
     schedule = _cron_schedule(expression="0 9 * * *", jitter=Jitter(max_offset_s="2m"))
 
     decision = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0))
-    drift = abs((decision.effective_at - decision.slot_start).total_seconds())
+    drift = abs((decision.effective_at - decision.nominal_at).total_seconds())
 
     assert decision.fired is True
     assert decision.jittered is True
     assert drift <= 120.0
+
+
+# --- honesty about time: jitter and lateness are two different facts ----------
+
+
+def test_jitter_is_applied_to_the_slot_not_to_the_pollers_instant() -> None:
+    """The declared bound bounds the *offset*, not the poller's slack.
+
+    A late poller reading the same slot twice -- once on time, once 45s late --
+    gets the same jittered effective instant. If jitter were applied to ``now``,
+    the second reading would move the fire time by 45s *plus* the offset, and a
+    schedule evaluated a minute late could land outside its own declared bound.
+    """
+    schedule = _cron_schedule(expression="0 9 * * *", jitter=Jitter(max_offset_s="2m"))
+
+    on_time = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 0))
+    late = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 45))
+
+    assert on_time.fired and late.fired
+    assert on_time.effective_at == late.effective_at
+    assert on_time.lateness_s == 0.0
+    assert late.lateness_s == 45.0
+
+
+def test_lateness_reports_the_poller_and_nothing_else() -> None:
+    """A declared jitter spread is not a poller that was late.
+
+    The negative control that matters: a schedule with a +/-2m jitter evaluated
+    exactly on its slot is on time, and reading lateness off ``effective_at``
+    would report up to two minutes of delay that never happened.
+    """
+    schedule = _cron_schedule(expression="0 9 * * *", jitter=Jitter(max_offset_s="2m"))
+
+    decision = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 0))
+
+    assert decision.jittered is True
+    assert abs(decision.effective_at - decision.nominal_at).total_seconds() > 0
+    assert decision.lateness_s == 0.0
+    # And the two fields really do disagree, which is the whole point.
+    assert decision.effective_at != decision.nominal_at
+    assert decision.nominal_at == decision.slot_start
+
+
+def test_an_unjittered_late_poll_is_not_reported_as_jittered() -> None:
+    """``jittered`` is about the declared jitter, not about "differs from slot".
+
+    Before the fix this was the same lie from the other side: an unjittered
+    schedule polled 45s into its one-minute cron slot reported ``jittered``,
+    dressing a late poller up as a deliberate offset.
+    """
+    schedule = _cron_schedule(expression="0 9 * * *")
+
+    decision = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 45))
+
+    assert decision.fired is True
+    assert decision.jittered is False
+    assert decision.effective_at == decision.slot_start == decision.nominal_at
+    assert decision.lateness_s == 45.0
+
+
+def test_a_calendar_window_is_never_reported_as_late_or_jittered() -> None:
+    """A one-off window has no deadline to be late against.
+
+    Its slot is the whole window, so measuring lateness against the window's
+    *opening* would report a run scheduled for a 09:00-17:00 window as "eight
+    hours late" whenever the poller got to it at 17:00.
+    """
+    schedule = _calendar_schedule()
+
+    early = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0))
+    late_in_window = schedule.evaluate(now=_utc(2026, 6, 1, 16, 59))
+
+    assert early.fired and late_in_window.fired
+    assert early.lateness_s == 0.0
+    assert late_in_window.lateness_s == 0.0
+    assert early.jittered is False and late_in_window.jittered is False
+    # The slot the ledger keys on is still the window's opening, so two polls
+    # inside one window cannot mint two idempotency keys.
+    assert early.slot_start == late_in_window.slot_start == _utc(2026, 6, 1, 9, 0)
+    assert early.nominal_at == _utc(2026, 6, 1, 9, 0)
+    assert late_in_window.nominal_at == _utc(2026, 6, 1, 16, 59)
+
+
+def test_a_refusal_reports_no_lateness_and_no_jitter() -> None:
+    """A non-fire is not a late fire. Both fields read zero on a refusal."""
+    schedule = _cron_schedule(
+        expression="0 9 * * *", jitter=Jitter(max_offset_s="2m"), blackout_dates=BlackoutDates(
+            dates=frozenset({date(2026, 6, 1)})
+        )
+    )
+
+    decision = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 30))
+
+    assert decision.fired is False
+    assert decision.lateness_s == 0.0
+    assert decision.jittered is False
+    assert decision.missed_window is False
+
+
+def test_a_recurrence_the_poller_slept_through_is_reported_as_missed() -> None:
+    """A window that closed with nobody in it says so, and says it is not a fire.
+
+    The interval slot is ``poll_resolution_s`` wide. Past that the recurrence the
+    poller was answering has gone and the next occurrence is a *different* slot
+    with a different idempotency key, so the occurrence is not retried and never
+    runs. Reporting that as ``NOT_DUE`` would record the non-fire and lose the
+    reason -- and a reader at 09:05 could not then tell a quiet minute from a
+    skipped run.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    tight = schedule.model_copy(update={"poll_resolution_s": 60.0})
+
+    inside = tight.evaluate(now=_utc(2026, 6, 1, 9, 0, 30))
+    after = tight.evaluate(now=_utc(2026, 6, 1, 9, 1, 30))
+
+    assert inside.fired is True
+    assert inside.code is FireCode.FIRED
+    assert inside.missed_window is False
+
+    assert after.fired is False
+    assert after.code is FireCode.MISSED
+    assert after.missed_window is True
+    # The missed occurrence is named, and so is the reason it cannot be retried.
+    assert after.slot_start == _utc(2026, 6, 1, 9, 0)
+    assert "2026-06-01T09:00:00+00:00" in after.reason
+    assert "idempotency key" in after.reason
+    assert after.blocked_by == ("poll_resolution_s",)
+    # A miss is not a late fire, and does not pretend to be one: the recurrence
+    # did not run late, it did not run.
+    assert after.lateness_s == 0.0
+    assert "HELD" in after.describe()
+
+
+def test_a_quiet_interval_instant_is_not_dressed_up_as_a_missed_window() -> None:
+    """The negative control on the miss predicate: nothing due, nothing missed.
+
+    Before the anchor there is no occurrence to have missed, so the predicate must
+    answer ``None`` rather than naming the occurrence at or after the probe.
+    Without the ``moment < anchor`` guard the earliest occurrence would be
+    reported as missed by every poll before it existed, which would open a
+    freshly started controller with an invented incident.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    tight = schedule.model_copy(update={"poll_resolution_s": 60.0})
+
+    well_before = tight.evaluate(now=_utc(2026, 6, 1, 8, 30))
+
+    assert well_before.code is FireCode.NOT_DUE
+    assert well_before.missed_window is False
+    assert well_before.fired is False
+    assert "no fire slot covers" in well_before.reason
+
+
+def test_a_missed_recurrence_stays_missed_until_the_next_one_answers() -> None:
+    """A miss persists for the whole gap, and clears the moment the next slot opens.
+
+    Reported here because it is the honest consequence of the design and a reader
+    deserves to be told about it: every poll between the missed occurrence and the
+    next one reports the *same* miss, naming the same ``slot_start``. That is
+    correct -- the recurrence is still unrun and still unreported -- and it is why
+    :attr:`FireDecision.missed_window` is a boolean a consumer can latch rather
+    than a counter it should try to sum.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    tight = schedule.model_copy(update={"poll_resolution_s": 60.0})
+
+    first_poll = tight.evaluate(now=_utc(2026, 6, 1, 9, 1, 30))
+    later_poll = tight.evaluate(now=_utc(2026, 6, 1, 9, 59))
+    next_slot = tight.evaluate(now=_utc(2026, 6, 1, 10, 0, 10))
+
+    assert first_poll.code is FireCode.MISSED
+    assert later_poll.code is FireCode.MISSED
+    assert first_poll.slot_start == later_poll.slot_start == _utc(2026, 6, 1, 9, 0)
+    # And the next occurrence is a different slot, which is what makes the miss
+    # permanent rather than merely delayed.
+    assert next_slot.fired is True
+    assert next_slot.slot_start == _utc(2026, 6, 1, 10, 0)
+
+
+def test_a_cron_slot_never_reports_a_missed_window() -> None:
+    """A cron slot is one minute wide, so a cron poller can be late but not miss.
+
+    The predicate is scoped to intervals deliberately. Two minutes past a
+    ``0 9 * * *`` slot there is no recurrence pending and no open window -- it is
+    a minute in which nothing was ever due, and calling it a miss would train an
+    operator to ignore the word.
+    """
+    schedule = _cron_schedule(expression="0 9 * * *")
+
+    two_minutes_late = schedule.evaluate(now=_utc(2026, 6, 1, 9, 2))
+
+    assert two_minutes_late.code is FireCode.NOT_DUE
+    assert two_minutes_late.missed_window is False
+
+
+def test_a_closed_horizon_reports_expiry_rather_than_a_miss() -> None:
+    """The horizon closing outranks the miss predicate.
+
+    Past ``ends_at`` the schedule is retired, and a retired schedule is not
+    accused of having slept through anything: the operator closed it.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    retired = schedule.model_copy(
+        update={"poll_resolution_s": 60.0, "ends_at": _utc(2026, 6, 1, 9, 30)}
+    )
+
+    decision = retired.evaluate(now=_utc(2026, 6, 1, 10, 0))
+
+    assert decision.code is FireCode.EXPIRED
+    assert decision.missed_window is False
+    assert "horizon closed" in decision.reason
+
+
+def test_a_calendar_window_can_never_report_a_missed_window() -> None:
+    """Structurally unreachable, not merely unlikely.
+
+    A calendar window stays open for as long as its author made it, so there is
+    no resolution past which it has "closed". The predicate reads off
+    :attr:`FireCode`, and :meth:`Schedule._interval_missed` refuses a non-interval
+    schedule outright, so the two together make the claim structural.
+    """
+    schedule = _calendar_schedule()
+
+    for hour in (9, 12, 16, 59):
+        decision = schedule.evaluate(now=_utc(2026, 6, 1, hour if hour != 59 else 16))
+        assert decision.fired is True
+        assert decision.missed_window is False
+
+    after_window = schedule.evaluate(now=_utc(2026, 6, 1, 17, 30))
+    assert after_window.code is FireCode.NOT_DUE
+    assert after_window.missed_window is False
+
+
+def test_the_fire_code_vocabulary_can_be_asked_which_side_of_the_split_it_is_on() -> None:
+    """``is_non_fire`` so a caller iterating codes does not re-spell the test."""
+    codes = list(FireCode)
+
+    assert FireCode.FIRED.is_non_fire is False
+    assert {code.value for code in codes if code.is_non_fire} == {
+        code.value for code in codes if code is not FireCode.FIRED
+    }
+    assert FireCode.MISSED.is_non_fire is True
+
+
+def test_the_fire_decision_carries_the_resolution_a_reader_needs() -> None:
+    """``resolution_s`` travels with the decision so a lateness figure is readable.
+
+    A consumer reading a persisted decision otherwise has to go back to the
+    schedule body to learn how wide the slot was, and a schedule edited since the
+    decision was recorded would give it the answer for a schedule that no longer
+    exists.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    tight = schedule.model_copy(update={"poll_resolution_s": 90.0})
+
+    decision = tight.evaluate(now=_utc(2026, 6, 1, 9, 0, 10))
+
+    assert decision.resolution_s == 90.0
+    assert decision.lateness_s == 10.0
+    # And a reader can judge it without the body: 10s late is well inside a 90s
+    # slot, which is why this one fired at all.
+    assert decision.lateness_s < decision.resolution_s
+
+
+def test_a_late_but_answered_fire_is_not_a_missed_window() -> None:
+    """The distinction the miss predicate is careful about, asserted directly.
+
+    A poller 30s into a 60s interval slot produced a *fire*, and it is late. It is
+    not a missed window, because the recurrence did run. Reading lateness and
+    missingness off the same number would have to choose, and either choice is
+    wrong for one of these two records.
+    """
+    schedule = _interval_schedule(every_s=3600.0, anchor_at=_utc(2026, 6, 1, 9, 0))
+    tight = schedule.model_copy(update={"poll_resolution_s": 60.0})
+
+    decision = tight.evaluate(now=_utc(2026, 6, 1, 9, 0, 30))
+
+    assert decision.fired is True
+    assert decision.lateness_s == 30.0
+    assert decision.missed_window is False
 
 
 # --- schedule evaluation -----------------------------------------------------
