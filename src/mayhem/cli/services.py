@@ -36,8 +36,10 @@ from mayhem.spec import load_drill
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from mayhem.controller.preflight_gate import PreflightGate
     from mayhem.domain.events import Event
     from mayhem.domain.execution_intent import ExecutionIntent
+    from mayhem.infra.budget_enforcement import RunBudgetGuard
     from mayhem.toolkit.registry import CapabilityReport
 
 DEFAULT_DB = "mayhem.db"
@@ -559,6 +561,8 @@ def engine_for(
     intent: ExecutionIntent | None = None,
     require_intent: bool = False,
     allow_implicit: bool = False,
+    gate: PreflightGate | None = None,
+    budget_guard: RunBudgetGuard | None = None,
 ) -> RunEngine:
     """Build the :class:`RunEngine` for a run.
 
@@ -587,9 +591,23 @@ def engine_for(
     edge (:func:`mayhem.cli.app.implicit_execution_allowed`), and the controller
     never touches ``os.environ``. The default ``False`` is the safe answer: a
     caller that says nothing requires an approval.
+
+    ``gate``/``budget_guard`` are the same shape for the two refusing controls
+    a deployment configures rather than mayhem: plan 10's preflight gate and
+    plan 23's resource budget. Both default to ``None``, which is the additive
+    *no gate configured* / *this run is not budgeted* state and leaves the run
+    byte-identical to one from before either lane existed — this factory attaches
+    neither by reading anything itself, so a caller that says nothing gets the
+    documented absence and not a silent default. What is passed in arrives
+    through :func:`mayhem.cli.execution.attach_preflight_gate` /
+    :func:`~mayhem.cli.execution.attach_resource_budget`, the one decision at one
+    place; the budget guard is attached *before* the gate so ``budget:available``
+    reads the guard this run will be admitted against rather than reporting it
+    missing. A caller that has no deployment binding — the CLI's own default, and
+    every programmatic construction today — passes nothing and is unchanged.
     """
     resolved_engine = reconcile_engine(engine, runtime) or "podman"
-    return RunEngine(
+    run = RunEngine(
         store,
         SQLiteLeaseSink(store),
         engine=resolved_engine,
@@ -603,6 +621,21 @@ def engine_for(
         require_intent=require_intent,
         allow_implicit=allow_implicit,
     )
+    # The attach helpers are imported inside the branches that use them, so the
+    # ungated path resolves no module it did not need before either lane existed.
+    # ``budget_guard`` first, and the order is load-bearing: ``budget:available``
+    # reads the guard this run is about to be admitted against, and a gate
+    # consulted before the guard is attached would report the budget missing on a
+    # run that has one.
+    if budget_guard is not None:
+        from mayhem.cli.execution import attach_resource_budget
+
+        run = attach_resource_budget(run, budget_guard)
+    if gate is not None:
+        from mayhem.cli.execution import attach_preflight_gate
+
+        run = attach_preflight_gate(run, gate)
+    return run
 
 
 def recent_runs(store: Store, limit: int) -> list[dict[str, Any]]:
