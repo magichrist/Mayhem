@@ -58,7 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final, Self
+from typing import TYPE_CHECKING, Any, Final, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -277,11 +277,26 @@ def slot_run_id(idempotency_key: str) -> str:
 
 @dataclass(frozen=True)
 class PlannedDispatch:
-    """What the planner produced for one scheduled run."""
+    """What the planner produced for one scheduled run.
+
+    ``dispatch`` is plan 13 Phase 4's addition and it is the reason this type is
+    a dataclass with fields rather than a bare tuple: a planner that ran the
+    shared compiler
+    (:func:`mayhem.controller.campaign_dispatch.compile_campaign_run`) attaches
+    the compilation it produced, and the admission gate judges *that* proof
+    rather than recompiling one and hoping the two agree. It is optional and
+    defaults to ``None``, which the campaign binding treats as **no proof at
+    all** and refuses -- so a bespoke pipeline cannot borrow this module's
+    admission gate without also bringing a proof.
+    """
 
     plan: ExecutionPlan
     plan_digest: str = ""
     note: str = ""
+    #: Whatever the planner produced alongside the plan, carried opaquely. Typed
+    #: ``Any`` on purpose: this module must not import
+    #: :mod:`mayhem.controller.campaign_dispatch`, which imports *this* module.
+    dispatch: Any | None = None
 
 
 @dataclass(frozen=True)
