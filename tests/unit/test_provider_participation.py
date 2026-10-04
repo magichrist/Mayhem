@@ -282,11 +282,11 @@ class TestBlastControls:
         action = _action(node_ids=("b", "a"), duration_s=17.5)
         blast = charge_provider_blast(ledger, action, DamageQuota())
         assert blast.charge.per_node_s == pytest.approx(17.5 * UNRESOLVED_FAULT_WEIGHT)
-        assert blast.charge.step_damage_s == pytest.approx(
-            2 * 17.5 * UNRESOLVED_FAULT_WEIGHT
-        )
-        assert ledger.by_node() == {"a": 17.5 * UNRESOLVED_FAULT_WEIGHT,
-                                     "b": 17.5 * UNRESOLVED_FAULT_WEIGHT}
+        assert blast.charge.step_damage_s == pytest.approx(2 * 17.5 * UNRESOLVED_FAULT_WEIGHT)
+        assert ledger.by_node() == {
+            "a": 17.5 * UNRESOLVED_FAULT_WEIGHT,
+            "b": 17.5 * UNRESOLVED_FAULT_WEIGHT,
+        }
 
     def test_the_control_detects_a_wrong_weight(self) -> None:
         """Break the property on purpose and show the assertion catches it.
@@ -501,46 +501,97 @@ class TestLeaseControls:
 # =============================================================================
 
 
-class TestCertificationCannotPinAProviderVersion:
-    def test_the_cell_has_no_field_for_a_provider_version(self) -> None:
-        assert CANDIDATE_CELL_PIN_FIELD not in MatrixCell.model_fields
+class TestCertificationPinsAProviderVersion:
+    """The pin landed in plan 01, so this class asserts that it works.
+
+    It previously asserted the opposite — that ``MatrixCell`` had **no** field
+    for a provider version and that a provider fault could therefore not be
+    certified at all. That was true when the class was written and stopped being
+    true when plan 01 added ``provider_id``/``provider_version`` to the cell, at
+    which point five of its tests began failing against a codebase that had
+    moved on. They are rewritten here to the current truth rather than deleted,
+    because the properties are still worth pinning — just the opposite ones.
+    """
+
+    @staticmethod
+    def _pinned_cell(version: str = "1.2.3") -> MatrixCell:
+        return MatrixCell(
+            **{**_cell().model_dump(), "provider_id": _PROVIDER_ID, "provider_version": version}
+        )
+
+    def test_the_cell_carries_the_pin_fields(self) -> None:
+        """The field the blocker used to name now exists, and ``extra`` is still forbid."""
+        assert CANDIDATE_CELL_PIN_FIELD in MatrixCell.model_fields
+        assert "provider_id" in MatrixCell.model_fields
         assert MatrixCell.model_config.get("extra") == "forbid"
-        from pydantic import ValidationError
 
-        with pytest.raises(ValidationError):
-            MatrixCell.model_validate(
-                {**_cell().model_dump(), CANDIDATE_CELL_PIN_FIELD: "1.2.3"}
-            )
-
-    def test_the_verdict_names_the_missing_field(self) -> None:
+    def test_a_cell_pinning_the_provider_is_pinned(self) -> None:
         pin = ProviderVersionPin(provider_id=_PROVIDER_ID, version="1.2.3")
+
+        assert pin_verdict(self._pinned_cell(), pin).status is CellPinStatus.PINNED
+
+    def test_an_unpinned_cell_is_not_pinned_and_says_which_way_it_went_wrong(self) -> None:
+        """``version_moved`` rather than ``cell_cannot_carry_pin``: the cell can hold a pin.
+
+        The three-valued enum survives, and two of its members still refuse. What
+        changed is which refusal an ordinary unpinned cell earns — it now reports
+        that the version moved, because there is a version field and it is absent,
+        rather than reporting that the field itself is missing.
+        """
+        pin = ProviderVersionPin(provider_id=_PROVIDER_ID, version="1.2.3")
+
         verdict = pin_verdict(_cell(), pin)
-        assert verdict.status is CellPinStatus.CELL_CANNOT_CARRY_PIN
+
+        assert verdict.status is CellPinStatus.VERSION_MOVED
         assert not verdict.pinned
-        assert CANDIDATE_CELL_PIN_FIELD in verdict.detail
         assert verdict.cell_label == _cell().label
 
-    def test_ensuring_the_pin_refuses(self) -> None:
+    def test_a_provider_that_moved_is_detected(self) -> None:
+        """The negative control the old class could not write: the field is real now.
+
+        Pinning 1.2.3 against a cell recording 1.2.4 must be refused, or a claim
+        certified against one provider build would still read as standing after
+        the provider was upgraded underneath it.
+        """
+        pin = ProviderVersionPin(provider_id=_PROVIDER_ID, version="1.2.3")
+
+        assert pin_verdict(self._pinned_cell("1.2.4"), pin).status is CellPinStatus.VERSION_MOVED
+
+    def test_ensuring_the_pin_refuses_on_an_unpinned_cell_and_succeeds_on_a_pinned_one(
+        self,
+    ) -> None:
+        """Both halves: a refusal that must stay, and the capability that now exists."""
+        pin = ProviderVersionPin(_PROVIDER_ID, "1.2.3")
+
         with pytest.raises(ProviderParticipationError) as excinfo:
-            ensure_certification_pin(_cell(), ProviderVersionPin(_PROVIDER_ID, "1.2.3"))
+            ensure_certification_pin(_cell(), pin)
         assert excinfo.value.code == RULE_PROVIDER_CELL_UNPINNED
-        assert "cannot be invalidated when the provider moves" in str(excinfo.value)
+
+        assert ensure_certification_pin(self._pinned_cell(), pin) is not None
 
     def test_a_pin_needs_a_readable_version(self) -> None:
         with pytest.raises(ProviderParticipationError, match="cannot be compared"):
             ProviderVersionPin(_PROVIDER_ID, "  ")
 
-    def test_a_record_cannot_name_a_provider_fault_id_today(self) -> None:
-        """Called directly, so the blocker below is reproducible on its own."""
-        with pytest.raises(Exception, match="unknown category prefix"):
+    def test_a_provider_fault_id_must_belong_to_the_pinned_provider(self) -> None:
+        """Called directly, so the surviving refusal is reproducible on its own.
+
+        The fixture declares ``acme.*`` faults under a provider whose id is
+        ``acme.injector``, so plan 01's rule — a provider id must be scoped to the
+        provider the cell pins — refuses it. That refusal is *correct* rather than
+        a gap, and it is why ``test_provider_fault_certification.py`` covers the
+        accepting path with an id that is properly scoped.
+        """
+        with pytest.raises(Exception, match="does not belong to provider"):
             CertificationRecord(
                 fault_id=_MUTATING_FAULT,
-                cell=_cell(),
+                cell=self._pinned_cell(),
                 injector_version="1.2.3",
                 expires_at=utc_now(),
             )
 
-    def test_the_blockers_name_both_changes_plan_01_needs(self) -> None:
+    def test_the_blockers_name_the_missing_pin_and_the_scoped_id(self) -> None:
+        """Both blockers are now readings of the real code, and both carry a remedy."""
         blockers = certification_blockers(_metadata(), _cell())
         subjects = {blocker.subject for blocker in blockers}
         assert f"MatrixCell.{CANDIDATE_CELL_PIN_FIELD}" in subjects
@@ -551,20 +602,33 @@ class TestCertificationCannotPinAProviderVersion:
             assert blocker.detail.strip()
 
     def test_the_blockers_are_observed_not_asserted(self) -> None:
-        """Each blocker's rule is what plan 01's own code actually raised."""
+        """Each blocker's rule is what plan 01's own code actually answered."""
         cell_blocker = next(
             blocker
             for blocker in certification_blockers(_metadata(), _cell())
             if blocker.subject.startswith("MatrixCell")
         )
-        assert cell_blocker.rule == CellPinStatus.CELL_CANNOT_CARRY_PIN.value
+        assert cell_blocker.rule == CellPinStatus.VERSION_MOVED.value
         fault_blocker = next(
             blocker
             for blocker in certification_blockers(_metadata(), _cell())
             if blocker.subject.startswith("CertificationRecord")
         )
-        assert "unknown category prefix" in fault_blocker.detail
         assert fault_blocker.to_dict()["rule"]
+
+    def test_a_pinned_cell_drops_the_pin_blocker_and_keeps_the_fault_one(self) -> None:
+        """What the pin bought, observed as a difference between two reports.
+
+        Pinning the cell removes exactly one blocker and leaves the other, so the
+        report cannot be read as "pinning fixed certification" when what it fixed
+        was one of the two things standing in the way.
+        """
+        unpinned = {b.subject for b in certification_blockers(_metadata(), _cell())}
+        pinned = {b.subject for b in certification_blockers(_metadata(), self._pinned_cell())}
+
+        assert f"MatrixCell.{CANDIDATE_CELL_PIN_FIELD}" in unpinned
+        assert f"MatrixCell.{CANDIDATE_CELL_PIN_FIELD}" not in pinned
+        assert any(subject.startswith("CertificationRecord.fault_id[") for subject in pinned)
 
 
 class TestCertificationControls:
@@ -608,21 +672,27 @@ class TestCertificationControls:
     def test_removing_the_missing_field_would_change_the_verdict(self) -> None:
         """The negative control for the detection itself.
 
-        Pins that a real cell with the field present is judged ``pinned``, so the
-        ``cell_cannot_carry_pin`` answer is a *reading* of the cell rather than a
-        constant the function returns.
+        Originally written as "a cell *without* the pin field yields
+        ``cell_cannot_carry_pin``". Plan 01 then added the field, so a subclass
+        pretending the field is absent could no longer be built and the control
+        had nothing left to attack. The control is preserved in the form that is
+        still available: three real cells — carrying the right version, carrying
+        none, and carrying a moved one — produce three different readings, so
+        ``pinned`` is a measurement of the cell rather than a constant the
+        function returns.
         """
-        assert pin_verdict(_cell(), ProviderVersionPin(_PROVIDER_ID, "1.2.3")).status is (
-            CellPinStatus.CELL_CANNOT_CARRY_PIN
-        )
 
-        class _PinnedCell(MatrixCell):
-            provider_version: str | None = None
+        def _verdict(version: str | None) -> CellPinStatus:
+            payload = {**_cell().model_dump(), "provider_id": _PROVIDER_ID}
+            if version is not None:
+                payload[CANDIDATE_CELL_PIN_FIELD] = version
+            return pin_verdict(
+                MatrixCell(**payload), ProviderVersionPin(_PROVIDER_ID, "1.2.3")
+            ).status
 
-        assert pin_verdict(
-            _PinnedCell(**{**_cell().model_dump(), CANDIDATE_CELL_PIN_FIELD: "1.2.3"}),
-            ProviderVersionPin(_PROVIDER_ID, "1.2.3"),
-        ).status is CellPinStatus.PINNED
+        assert _verdict("1.2.3") is CellPinStatus.PINNED
+        assert _verdict(None) is CellPinStatus.VERSION_MOVED
+        assert _verdict("1.9.9") is CellPinStatus.VERSION_MOVED
 
 
 # =============================================================================
