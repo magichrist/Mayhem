@@ -25,9 +25,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 ACTIVE_ROOTS = {
+    "advisor",
+    "api",
+    "boundary",
     "bundle",
     "campaign",
     "certify",
+    "ci",
     "commands",
     "completion",
     "discover",
@@ -35,14 +39,20 @@ ACTIVE_ROOTS = {
     "experiment",
     "extend",
     "game-day",
+    "game-day-step",
+    "ha",
     "init",
     "inspect",
     "janitor",
+    "lowlevel",
     "maniac",
     "pack",
     "prepare",
+    "probe",
     "recover",
+    "risk-preview",
     "run",
+    "schedule",
     "stop",
     "verify",
 }
@@ -109,6 +119,40 @@ ACTIVE_GROUP_PATHS = {
         "residual",
     ),
     "recover": ("status", "plan", "execute"),
+    # ── The nine groups that were built and tested but never mounted ──────
+    #
+    # Every subcommand of every one of these is enumerated, not just the groups.
+    # `test_group_child_inventory_is_exact` compares these tuples against
+    # `app.commands[group].commands`, so a *missing* entry here fails — but a
+    # group that appeared in this table with a partial list would leave its
+    # unlisted subcommands outside `test_every_active_group_and_subcommand_
+    # parses_help`, which is the false green this table must not be able to
+    # produce. One row per leaf, always.
+    #
+    # `advisor.scenario` is the only nested group among the nine; `_all_group_paths`
+    # descends into it on its own, so `advisor scenario {instantiate,list,show}`
+    # is covered by naming `scenario` here.
+    "advisor": ("dashboard", "replay", "scenario", "submit"),
+    "boundary": ("report", "review"),
+    "risk-preview": ("nodes", "plan"),
+    "api": ("openapi", "pages", "parameters", "routes", "ui"),
+    "lowlevel": ("admit", "explain", "primitives"),
+    "probe": ("build", "catalogue", "condition", "connectors", "tolerances", "uncover"),
+    "schedule": (
+        "add",
+        "delete",
+        "disable",
+        "enable",
+        "fairness",
+        "list",
+        "next",
+        "runs",
+        "show",
+        "tick",
+    ),
+    "game-day-step": ("hold", "inject", "note", "release", "steps"),
+    "ha": ("cert", "promote", "rotate", "update"),
+    "ci": ("check", "status", "summary", "workflow"),
 }
 
 REMOVED_ROOTS = {
