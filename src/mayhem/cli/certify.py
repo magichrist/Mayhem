@@ -40,14 +40,27 @@ Honesty properties this surface inherits and re-exports
 * **The certification gate is not optional here.** Every maturity number
   ``certify matrix`` reports is computed with ``records=`` supplied from the
   record store, so an empty store caps every fault at ``verified-unit``. There is
-  no mode in which this command reports a live rung it cannot back.
+  no mode in which this command reports a live rung it cannot back. The mapping
+  is the *sealed* gate, not merely the record store's: every live claim's
+  attestation chain is re-verified on read, and one that no longer verifies is
+  handed to ``evaluate_maturity`` withdrawn, so a claim whose bundle was deleted
+  stops being reported rather than being reported as standing.
+* **A claim this command mints is sealed.** ``certify run`` hands
+  ``certify_fault`` a
+  :class:`~mayhem.controller.certification_evidence.CertificationEvidenceStore`,
+  so a claim that reaches a ``certified`` row is one whose bytes can be
+  re-verified later with no control plane. The runner's sealer stays *optional*
+  for the unit suite and for weaker callers — that is its own contract, not this
+  surface's — but on this surface it is passed unconditionally, and a bundle that
+  cannot be sealed is a refusal rather than a certification.
 * **A refusal is a result.** ``certify run`` on a catalog-only fault exits
   non-zero *and* leaves a record naming the refusal. A certification attempt that
   proves nothing is not a pass, and not a pass must not look like success.
 * **The live-verified count is zero until a real runtime says otherwise.** No
   code path here seeds a record, so ``certify matrix`` reports zero on a fresh
   database and the README's 0-of-N stays true (N is the live catalogue size,
-  asserted against ``CATALOG`` rather than written down here).
+  asserted against ``CATALOG`` rather than written down here). Sealing changes
+  nothing about that count: a sealed chain still needs a cell that actually ran.
 
 The live path is exercised only by a real container engine
 ----------------------------------------------------------
@@ -84,6 +97,7 @@ import click
 from mayhem.cli import style
 from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.resolver import make_group
+from mayhem.controller.certification_evidence import CertificationEvidenceStore
 from mayhem.domain.capabilities import Capability
 from mayhem.domain.catalog import CATALOG, definition_for
 from mayhem.domain.certification import (
@@ -110,6 +124,7 @@ from mayhem.infra.certification_runner import (
     planned_target_identity,
     requires_recovery_verification,
 )
+from mayhem.infra.certification_sweep import sweep_certifications
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -846,13 +861,22 @@ def certify_run(
             out_dir=None if bundle_out is None else Path(bundle_out),
             mayhem_version=_mayhem_version(),
         )
+        repository = CertificationRepository(store)
         attempt = certify_fault(
             request,
             provisioner=_StaticProvisioner(cell),
             compile_plan=compile_plan,
             capture=capturer,
-            sink=CertificationRepository(store),
+            sink=repository,
             now=utc_now(),
+            # Phase 5 plumbing. Phase 4 made the sealer optional so the
+            # pre-Phase-4 surface kept working, and named this call site as the
+            # place it belongs. On *this* surface it is not optional: a claim
+            # that reaches a stored `certified` row is a claim whose bytes can be
+            # re-verified later, and a claim whose bundle cannot be sealed is a
+            # refusal. Leaving it off here would have meant this command was the
+            # one way to mint a live claim with nothing attesting it.
+            evidence_sealer=CertificationEvidenceStore(store, repository=repository),
         )
     finally:
         store.close()
@@ -898,6 +922,16 @@ class _StaticProvisioner:
     help="Capability the cell advertises (repeatable). Omit to leave capabilities unknown.",
 )
 @click.option("--all", "show_all", is_flag=True, help="Report every catalog fault.")
+@click.option(
+    "--sweep",
+    "sweep_now",
+    is_flag=True,
+    help=(
+        "Persist expiry and drift transitions before reporting. Ages every stored "
+        "record against the wall clock and withdraws claims whose cell no longer "
+        "describes the runtime."
+    ),
+)
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress human output.")
@@ -912,6 +946,7 @@ def certify_matrix(
     privilege: str | None,
     capabilities: tuple[str, ...],
     show_all: bool,
+    sweep_now: bool,
     db_opt: str | None,
     as_json: bool,
     quiet: bool,
@@ -921,6 +956,10 @@ def certify_matrix(
     Executes nothing. Every reported maturity is computed with the certification
     record store supplied, so a fault with no live claim cannot be shown above
     ``verified-unit`` here.
+
+    ``--sweep`` is the one exception, and it is opt-in: it persists ageing and
+    drift transitions, and still executes no fault. Without it this command is
+    a pure read and the report is not allowed to change what it reports on.
     """
     cli_ctx: CliContext = ctx.obj
     definitions: list[FaultDefinition]
@@ -951,14 +990,35 @@ def certify_matrix(
 
     now = utc_now()
     store = _open_store(db_opt or cli_ctx.db)
+    sweep: dict[str, object] = {"performed": False}
     try:
         repository = CertificationRepository(store)
+        evidence = CertificationEvidenceStore(store, repository=repository)
+        if sweep_now:
+            # The only mutation this command performs, and only when asked for.
+            # It is not on by default: `certify matrix` is a read, and a command
+            # that quietly demoted claims while rendering a table would be a
+            # command whose report changed the thing it reports on.
+            result = sweep_certifications(
+                repository,
+                now=now,
+                current_cells=None,
+            )
+            sweep = {"performed": True, **result.to_dict()}
         # THE GATE. An empty store returns an empty *mapping*, which is the
         # assertion that nothing is certified — and that caps every fault at
         # verified-unit. `records=None` would preserve 1.0.0 behaviour and let a
         # live rung be reported off run evidence alone; this surface never
         # passes it.
-        records = repository.certification_gate(now=now)
+        #
+        # Phase 5 switched this from `certification_gate` to
+        # `sealed_certification_gate`, which is a drop-in for it: same shape,
+        # same arming point, plus it re-verifies every live claim's sealed chain
+        # and hands on the unverifiable one in the `failed` state. Until Phase 5
+        # the stricter gate existed and nothing used it, so the matrix would
+        # report a claim whose bundle had been deleted as though it were still
+        # standing.
+        records = evidence.gate(now=now)
         rows = [
             _row(definition, query, records, now=now) for definition in definitions
         ]
@@ -978,6 +1038,11 @@ def certify_matrix(
         "certified_faults": sum(1 for row in rows if row["certification"]["live"]),
         "faults_total": len(rows),
         "certification_gate": "armed: every reported maturity consulted the record store",
+        "sealed_evidence_gate": (
+            "armed: every live claim's sealed chain was re-verified; an unverifiable "
+            "claim is reported in the failed state and grants nothing"
+        ),
+        "expiry_sweep": sweep,
         "faults": rows,
     }
     if as_json:
