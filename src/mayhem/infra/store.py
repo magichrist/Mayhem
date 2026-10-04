@@ -16,6 +16,7 @@ from mayhem.domain.common import utc_now
 from mayhem.domain.run_outcome import Outcome, RunRecord, RunStatus, RunVerdict
 from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.migrator import Migration, current_version, run_down_migrations, run_migrations
+from mayhem.infra.secret_resolver import require_persistable_document
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -167,7 +168,31 @@ class Store:
         source: str = "",
         data: dict[str, object] | None = None,
     ) -> None:
-        """Persist one row to the observations table (ADR-M5 phase-gated)."""
+        """Persist one row to the observations table (ADR-M5 phase-gated).
+
+        An observation is evidence by the argument that binds the audit stream:
+        it is persisted, read back by the reports that make a run legible, and
+        archived by the retention machinery — so plan 12's "secrets must never
+        enter evidence" binds the row. ``data`` is caller-authored and
+        free-form, and the callers are operator-facing: a facilitator's note on a
+        game-day artifact, a scheduler tick's decisions, a stop record. Any of
+        them can carry a value the run resolved, under a field name nobody
+        graded, which is the surface the byte rule exists for.
+
+        The gate runs before the transaction opens, not inside it, so a refusal
+        leaves no row rather than a rolled-back one.
+
+        Raises:
+            InvariantViolationError: From the evidence boundary, if ``data``
+                carries a secret-classified field or a value this run resolved.
+                Nothing was written.
+        """
+        # The evidence boundary, before the transaction opens. Gating ``data``
+        # rather than its JSON rendering because the document is what the grade
+        # rule walks; the writer's ``json.dumps`` re-emits the same values, so
+        # gating a different rendering than the column receives would be gating
+        # the wrong artifact.
+        require_persistable_document(data or {}, artifact="store:observations")
         with self.write() as conn:
             conn.execute(
                 """INSERT INTO observations (kind, run_id, source, data_json, timestamp)
