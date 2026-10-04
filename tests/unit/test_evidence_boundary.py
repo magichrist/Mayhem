@@ -67,6 +67,20 @@ docstring had already reasoned its way to ``require_persistable_document`` and t
 registered nowhere. The completeness guard below caught it on its first run, which
 is the only reason it is a row here rather than a report.
 
+Then it happened three more times at once. ``infra/probe_seal_store.py`` (a
+caller-authored document of redacted probe readings, sealed condition set and
+citation verdicts) and ``infra/failover_store.py`` (two writers: a standby
+registration and a promotion record, both of which name a control-plane term that
+cannot be re-derived afterwards) each argued their way to
+``require_persistable_document`` in their own docstrings and registered nowhere.
+The pattern is now consistent enough to be worth stating as the rule rather than
+as four anecdotes: **a new ``infra`` writer that persists a caller-supplied
+document is evidence by default**, and reaching the right gate is the easy half —
+the row is what makes the static conformance check cover it, and reaching the gate
+without registering is what the completeness guard exists to catch.
+:func:`TestTheGateCannotBeDeleted.test_every_module_calling_a_gate_is_registered`
+caught all three on their first run and they are now three rows.
+
 What this suite still cannot prove
 ----------------------------------
 
@@ -1416,6 +1430,38 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
     # is the complete set for this module, and adding a second writer later fails
     # the guard above rather than passing on a partially registered module.
     ("mayhem.infra.fabric_journal", "FabricJournalTable.append"): frozenset(
+        {"require_persistable_document"}
+    ),
+    # Three more modules joined ``infra`` in the same wave, and all three reached
+    # for the same reason: their writer persists a *caller-authored free-form
+    # document* into a row that is exported and read back by the retention
+    # machinery, which is the argument that bound the audit stream. Each reasoned
+    # its way to ``require_persistable_document`` in its own module docstring and
+    # then registered nowhere, so all three arrived here together as one
+    # completeness-guard failure rather than three.
+    #
+    # They are one row each, per write entry point, which is what makes the table
+    # checkable entry by entry. ``probe_seal_store`` and ``failover_store`` each
+    # hold exactly one writer; ``failover_store`` holds *two*, so it contributes
+    # two rows and deleting either one now fails the guard rather than leaving a
+    # row behind that no longer describes anything.
+    ("mayhem.infra.probe_seal_store", "ProbeSealTable.seal"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.failover_store", "FailoverPromotionStore.register_standby"): frozenset(
+        {"require_persistable_document"}
+    ),
+    ("mayhem.infra.failover_store", "FailoverPromotionStore.record_promotion"): frozenset(
+        {"require_persistable_document"}
+    ),
+    # Plan 13's game-day evidence: ``controller/game_day_evidence.py``'s
+    # ``record_artifact`` and ``infra/schedule_store.py``'s ``record_tick`` both
+    # write through ``Store.save_observation``, and neither call site was inside
+    # the boundary. One row, because there is one function: registering only the
+    # game-day caller would have left ``record_tick`` outside the boundary while
+    # the table claimed to cover ``save_observation``. Two rows for two callers
+    # would have been the dishonest granularity — one is what the code is.
+    ("mayhem.infra.store", "Store.save_observation"): frozenset(
         {"require_persistable_document"}
     ),
 }
