@@ -343,6 +343,40 @@ class PolicyPredicate(BaseModel):
             return f"{self.operator.value}()"
         return f"{self.operator.value}({', '.join(self.values)})"
 
+    def requirement(self) -> str:
+        """What has to hold for this predicate to *match*, in one sentence.
+
+        The companion to :meth:`describe`, and what makes a denial explainable
+        rather than merely reported: "observed ``critical``" tells a reader what
+        the gate saw, and this tells them what it wanted instead. Together they
+        are the promotion-refusal shape — what happened, and what would have
+        happened otherwise — with no second evaluation and no authoring step in
+        between, because both halves are read off the same predicate object that
+        made the decision.
+
+        Deliberately phrased over *observed values* and never over the rule's own
+        ``values`` alone: ``not_in(sre, service_owner)`` matching means "no
+        observed level is one of these", not "the observed levels are none of
+        these and there were none at all" — an unobserved dimension never matches
+        at all (see :meth:`matches`), so the sentence must not imply it could.
+        """
+        values = ", ".join(self.values)
+        if self.operator is PolicyOperator.IN:
+            return f"at least one observed value is in ({values})"
+        if self.operator is PolicyOperator.NOT_IN:
+            return f"observed values exist and none of them is in ({values})"
+        if self.operator is PolicyOperator.ALL_IN:
+            return f"every observed value is in ({values})"
+        if self.operator is PolicyOperator.EXACT:
+            return f"the observed values are exactly ({values})"
+        if self.operator is PolicyOperator.AT_LEAST:
+            return f"the largest observed number is at least {values}"
+        if self.operator is PolicyOperator.AT_MOST:
+            return f"the largest observed number is at most {values}"
+        if self.operator is PolicyOperator.PRESENT:
+            return "the dimension was observed at all"
+        return "the dimension was not observed"
+
 
 def _is_numeric(value: str) -> bool:
     try:
@@ -415,6 +449,18 @@ class PolicyRule(BaseModel):
             f"-> {self.effect.value}; observed {seen}"
         )
 
+    def explain_detail(self, facts: PolicyFacts) -> str:
+        """:meth:`explain` plus *why* the effect fired — what it wanted instead.
+
+        The two halves together are what plan 07 Phase 3 asks an ``explain`` to
+        show: the rule, the observed values, and the values that would have
+        passed. Both come off this one rule and the same ``facts`` the decision
+        was made from, so an explanation cannot disagree with the verdict it is
+        explaining.
+        """
+        fired = "refused" if self.effect is PolicyEffect.DENY else "permitted"
+        return f"{self.explain(facts)}; {fired} because {self.predicate.requirement()}"
+
 
 class PolicyBundle(BaseModel):
     """A versioned, digest-addressed set of rules plus its inheritance edges.
@@ -424,6 +470,15 @@ class PolicyBundle(BaseModel):
     is the pin: once set, the bundle refuses to exist in a form whose content
     has drifted from that digest, so an approval, an evidence record, and a
     later replay can all name the same bundle by value.
+
+    ``compatibility_edges`` is plan 07 gap 66's collision graph, and it lives
+    *here* rather than only on the gate inputs for one reason: an approval binds
+    a policy digest, so putting the graph inside the bundle is what makes an
+    approval on this plan cover the pairs this bundle declares. A graph supplied
+    as a side-channel is not covered by any digest anybody signs, which would
+    leave the one thing that decides whether two faults may run together outside
+    the thing an auditor can check. Adding an edge therefore changes the bundle's
+    content digest, exactly like adding a rule does.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -431,6 +486,7 @@ class PolicyBundle(BaseModel):
     bundle_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
     version: int = Field(ge=1)
     rules: tuple[PolicyRule, ...] = ()
+    compatibility_edges: tuple[CompatibilityEdge, ...] = ()
     parents: tuple[str, ...] = ()
     # Fail closed: a facts set no rule speaks to is refused, not waved through.
     default_effect: PolicyEffect = PolicyEffect.DENY
@@ -498,6 +554,24 @@ class PolicyBundle(BaseModel):
     def describe(self) -> str:
         window = "never" if self.expires_at is None else self.expires_at.isoformat()
         return f"{self.bundle_id} v{self.version} (expires {window})"
+
+    def graph(self) -> tuple[CompatibilityEdge, ...]:
+        """The collision graph this bundle declares.
+
+        Named rather than read as ``compatibility_edges`` at every call site
+        because the field is the *data* and this is the question a gate asks of
+        it. Empty for a bundle that declares no pairs, which is not the same as
+        a bundle that forbids nothing: an undeclared pair is permitted by
+        :func:`evaluate_compatibility` precisely so the graph stays additive to
+        :attr:`~mayhem.domain.experiments.BlastRadiusBudget.forbidden_fault_pairs`.
+        """
+        return self.compatibility_edges
+
+    def describes_pair(self, left_fault: str, right_fault: str) -> bool:
+        """Whether *this* bundle, not a side-channel, declares the pair."""
+        return frozenset({left_fault, right_fault}) in {
+            edge.pair() for edge in self.compatibility_edges
+        }
 
 
 def inherited_rules(
@@ -975,6 +1049,114 @@ class BudgetNode(BaseModel):
             rebuilt = parent.model_copy(update={"children": tuple(children)})
         charges.reverse()
         return rebuilt, tuple(charges)
+
+
+# -- the persisted damage ledger (gap 67's commit side) ---------------------------
+
+
+class BudgetLedgerEntry(BaseModel):
+    """One charge as it exists on the *persisted* ledger.
+
+    A :class:`BudgetNode` is a value. It can be built, charged, and compared, and
+    then it is gone with the process that built it, which is the whole difference
+    between a probe and a budget: :meth:`BudgetNode.post_charge` answers "what
+    would this plan spend", and only a sum of these answers "what has this team
+    already spent, across every run so far".
+
+    This is that record, and it is the record that makes the hierarchy a budget
+    over **time**. It is an append-only charge rather than a running total on
+    purpose — see the ledger port in :mod:`mayhem.controller.policy_gate` — so a
+    stored total can never disagree with the charges that produced it, and a
+    reader can always show the arithmetic instead of a number nobody can account
+    for.
+
+    ``charged_at`` is the *gate's* clock (``PolicyGateInputs.now``), not the
+    writer's. A charge is a fact about the decision that posted it, so recording
+    the decision's own clock is what lets a replay of that decision reproduce
+    when the charge landed without reading a wall clock the gate was forbidden to
+    touch.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scope: BudgetScope
+    key: str
+    amount_s: float
+    run_id: str = ""
+    charged_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _check_entry(self) -> BudgetLedgerEntry:
+        # The same two refusals ``BudgetNode`` makes, for the same reasons: an
+        # entry with no key names no budget, and a negative amount would be a
+        # refund nobody agreed to give. A zero amount is legal — a zero-duration
+        # fault is damage of no seconds, and recording it is still a fact.
+        if not self.key:
+            msg = f"budget ledger entry at scope {self.scope.value!r} has an empty key"
+            raise InvariantViolationError("budget.empty_key", msg)
+        if self.amount_s < 0.0:
+            msg = f"budget ledger entry for {self.key!r} has a negative amount {self.amount_s}"
+            raise InvariantViolationError("budget.negative_charge", msg)
+        return self
+
+    @classmethod
+    def from_charge(
+        cls, charge: BudgetCharge, *, run_id: str, charged_at: datetime
+    ) -> BudgetLedgerEntry:
+        """The ledger entry for one :meth:`BudgetNode.charge` result.
+
+        Reads ``amount_s`` off the charge rather than re-deriving it from the
+        plan, so what is persisted is exactly the arithmetic the gate judged.
+        """
+        return cls(
+            scope=charge.scope,
+            key=charge.key,
+            amount_s=charge.amount_s,
+            run_id=run_id,
+            charged_at=charged_at,
+        )
+
+    def describe(self) -> str:
+        return f"{self.scope.value}/{self.key} += {self.amount_s:g}s (run {self.run_id or '?'})"
+
+
+def fold_spend(tree: BudgetNode, entries: Iterable[BudgetLedgerEntry]) -> BudgetNode:
+    """``tree`` with every posted charge for each node folded into its ``spent_s``.
+
+    Pure, and the whole of what "persisted across runs" means. A caller mounts
+    the *authored* hierarchy — shape and authored limits, never spend, because a
+    spent value is a fact about the past rather than a thing a config file can
+    state — and this returns the same tree carrying the history. Two runs against
+    one authored hierarchy therefore see different headroom without either run
+    having mutated the object the author wrote.
+
+    Rounded at :data:`DAMAGE_PRECISION` for the same reason ``charge`` rounds:
+    a sum of many entries must not drift on a last binary digit that a replay
+    would then disagree about.
+
+    **An entry naming a node ``tree`` does not hold is not an error.** It belongs
+    to some other branch of the hierarchy — another team, another environment —
+    and this function answers about ``tree`` alone. A charge that cannot be
+    attributed to *any* budget is refused when it is posted
+    (:meth:`BudgetNode.path`), where refusing still means something, not here,
+    where the damage is already on the ledger and nothing could be recovered.
+    """
+    totals: dict[tuple[BudgetScope, str], float] = {}
+    for entry in entries:
+        key = (entry.scope, entry.key)
+        totals[key] = totals.get(key, 0.0) + entry.amount_s
+
+    def _fold(node: BudgetNode) -> BudgetNode:
+        posted = totals.get((node.scope, node.key), 0.0)
+        children = tuple(_fold(child) for child in node.children)
+        updates: dict[str, Any] = {}
+        if posted:
+            updates["spent_s"] = round(node.spent_s + posted, DAMAGE_PRECISION)
+        if children != node.children:
+            updates["children"] = children
+        return node.model_copy(update=updates) if updates else node
+
+    return _fold(tree)
 
 
 # -- environment locking (gap 86) ----------------------------------------------
