@@ -114,8 +114,9 @@ report cannot cross it (:data:`RULE_EVIDENCE_NOT_SEALED`).
 builds a :class:`SearchRecord` naming the policy digest, the origin, the
 approvers, and the escalating ladder it walked, and hands it to whatever recorder
 the caller wired; :func:`record_boundary_search` writes it to
-:mod:`mayhem.infra.audit_stream` as :data:`KIND_RESILIENCE_BOUNDARY_SEARCHED`.
-The stream is the cross-run log that already exists, so an operator can see who
+:mod:`mayhem.infra.audit_stream` as
+:data:`mayhem.infra.audit_stream.KIND_RESILIENCE_BOUNDARY_SEARCHED`. The stream is
+the cross-run log that already exists, so an operator can see who
 searched a boundary and under what authorization without a second logger.
 :func:`require_recorded_search` is the fail-closed counterpart: a search with no
 entry in the stream is refused (:data:`RULE_SEARCH_NOT_RECORDED`).
@@ -193,7 +194,13 @@ from mayhem.infra.attestation_store import (
     AttestationError,
     AttestationRepository,
 )
-from mayhem.infra.audit_stream import AuditEntry
+
+#: Re-exported, not declared: this kind belongs to the audit stream's ``KIND_*``
+#: table. See the note above :data:`KIND_RESILIENCE_BOUNDARY_SEARCHED`.
+from mayhem.infra.audit_stream import (
+    KIND_RESILIENCE_BOUNDARY_SEARCHED,
+    AuditEntry,
+)
 
 if TYPE_CHECKING:
     from mayhem.domain.attestation import (
@@ -351,12 +358,14 @@ CHAIN_EVENT_ANALYTICS_SEALED = "analytics.sealed"
 
 #: The audit-stream action a resilience-boundary search is recorded under.
 #:
-#: Declared here rather than in :mod:`mayhem.infra.audit_stream` only because this
-#: phase does not own that file; the audit module's own docstring keeps the closed
-#: ``KIND_*`` vocabulary there so a new action is a grep-able edit, and moving this
-#: constant there is the follow-up it expects. The *string* is the event kind the
-#: entry carries, exactly as for every other action in the stream.
-KIND_RESILIENCE_BOUNDARY_SEARCHED = "audit.resilience_boundary.searched"
+#: Re-exported, not declared: the kind is a member of
+#: :mod:`mayhem.infra.audit_stream`'s closed ``KIND_*`` table, which this phase did
+#: not own — the local definition that used to sit here has moved to that module,
+#: and the name stays in this namespace so existing callers of
+#: ``mayhem.controller.analytics_service.KIND_RESILIENCE_BOUNDARY_SEARCHED`` keep
+#: resolving (it remains in ``__all__``). The *string* is unchanged: it is the
+#: event kind the entry carries, exactly as for every other action in the stream.
+#: ``tests/unit/test_audit_kind_ownership.py`` fails if this module defines it again.
 
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
