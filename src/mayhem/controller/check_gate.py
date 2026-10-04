@@ -300,6 +300,25 @@ OBLIGATION_CHECK: Final[dict[str, CheckScope]] = {
 }
 
 #: Gate rule id -> the check that reports it.
+#:
+#: Enumerated, and total against
+#: :data:`~mayhem.controller.safety_proof.OBLIGATION_FOR_RULE`: every rule the
+#: proof compiler can blame appears in exactly one row here, every row here is a
+#: rule the compiler can blame, and **no row is dead** — each rule id is one the
+#: code under ``src/mayhem`` actually spells, which
+#: ``tests/unit/test_owed_rule_mappings.py`` asserts by reading the source rather
+#: than by trusting this table's own shape. A row for a rule nothing raises would
+#: pass every test that only compares the two tables to each other, which is why
+#: the dead-row check reads the code.
+#:
+#: Two obligations are deliberately split from their check: the five plan-14
+#: ceilings are blamed on ``target_policy`` and reported on ``blast_radius``. That
+#: split is a choice about which question a reader is asking — *which line owns this
+#: rule* and *which check should show it* are not the same question — and it is
+#: written out at both rows rather than left to be inferred. Every row added since,
+#: including the provider lease refused for a missing write-ahead undo (blamed on
+#: ``compensation``, reported on ``safety_policy`` because ``OBLIGATION_CHECK``
+#: already maps that line there), agrees with its own obligation's check.
 RULE_CHECK: Final[dict[str, CheckScope]] = {
     # -- blast radius: the five per-step caps plus the forbidden pairs ---------
     RULE_MAX_SERVICES_PCT: CheckScope.BLAST_RADIUS,
@@ -358,6 +377,62 @@ RULE_CHECK: Final[dict[str, CheckScope]] = {
     RULE_APPROVAL_EXECUTOR_UNAUTHORIZED: CheckScope.SAFETY_POLICY,
     RULE_APPROVAL_PROOF_NOT_PASS: CheckScope.SAFETY_POLICY,
     RULE_APPROVAL_REQUIRED: CheckScope.SAFETY_POLICY,
+    # -- the stop and preflight refusals (plan 10) ----------------------------------
+    # Enumerated for the reason :data:`DEFAULT_RULE_CHECK` gives as its *default*
+    # and not its rule: the default is right for a bundle-authored rule name, whose
+    # check nobody can know, and wrong for a gate's own id — these are refusals mayhem
+    # raises about a specific run at a specific moment, and "safety-policy" is the
+    # check that reports them. The two scopes are not interchangeable in the other
+    # direction either: a stop that refuses to act is a finding about whether the
+    # run may proceed (`safety_policy`), not about which targets the plan named
+    # (`target`).
+    "preflight.refused": CheckScope.SAFETY_POLICY,
+    "stop_for_terminal_run": CheckScope.SAFETY_POLICY,
+    "stop_engine_requires_run_scope": CheckScope.SAFETY_POLICY,
+    "stop_command_stale": CheckScope.SAFETY_POLICY,
+    # The stop-ladder structural refusals: a walk that will not resume in order, and
+    # a seal that will not close over it. All `SAFETY_POLICY` because
+    # `OBLIGATION_CHECK` already reports `recovery_path` there — see the note on
+    # `provider.lease_undo_absent` below for why that split (line here, check there)
+    # is deliberate rather than an oversight.
+    "stop_stage_skip_refused": CheckScope.SAFETY_POLICY,
+    "stop_stage_not_owed": CheckScope.SAFETY_POLICY,
+    "stop_seal_requires_complete_walk": CheckScope.SAFETY_POLICY,
+    "stop_seal_requires_evidence": CheckScope.SAFETY_POLICY,
+    "stop_seal_digest_mismatch": CheckScope.SAFETY_POLICY,
+    # -- the campaign dispatch stage (plan 13) --------------------------------------
+    # `campaign_budget` is `DAMAGE_BUDGET` and not `SAFETY_POLICY`: the refusal
+    # measures the same cumulative damage-seconds against the same quota the
+    # `damage_quota.*` rows report, and an operator reading it wants the budget
+    # check. `no_compilation` is `SAFETY_POLICY`, whose check is defined as "the
+    # safety case the normal path compiled for this plan" — which is the thing
+    # missing.
+    "schedule.campaign_budget": CheckScope.DAMAGE_BUDGET,
+    "schedule.no_compilation": CheckScope.SAFETY_POLICY,
+    # -- the analytics service (plan 15) --------------------------------------------
+    # Two budget refusals and two evidence refusals, mirroring the two obligations
+    # they land on in `safety_proof.OBLIGATION_FOR_RULE`. `evidence_not_sealed` and
+    # `search_not_recorded` are `SAFETY_POLICY` because `required_approvals` is
+    # reported there; they are not coverage refusals and `target` would misreport
+    # them as statements about what the plan may touch.
+    "analytics.planner_budget_diverged": CheckScope.DAMAGE_BUDGET,
+    "analytics.step_unaffordable": CheckScope.DAMAGE_BUDGET,
+    "analytics.evidence_not_sealed": CheckScope.SAFETY_POLICY,
+    "analytics.search_not_recorded": CheckScope.SAFETY_POLICY,
+    # -- the provider participation surface (plan 17) ------------------------------
+    # `lease_undo_absent` is `SAFETY_POLICY`, which is where `compensation` is
+    # already reported, so the line and the check agree. The refusal is a mutation
+    # whose write-ahead undo cannot be recorded; `target` would misreport it as a
+    # statement about what the plan may touch. The other two *are* `TARGET` — a
+    # fault the declaration does not contain and a matrix cell that cannot carry a
+    # provider version are both statements about what this plan may act on, which is
+    # what `target_policy` and `target` are for.
+    # `provider.quota_exceeded` is absent on purpose: an exceeded charge is refused
+    # with the ledger's own `damage_quota.*` rule id, so it already has a row and a
+    # second one could disagree with it.
+    "provider.fault_undeclared": CheckScope.TARGET,
+    "provider.certification_cell_unpinned": CheckScope.TARGET,
+    "provider.lease_undo_absent": CheckScope.SAFETY_POLICY,
 }
 
 #: Where a refusal goes when its rule id is not in :data:`RULE_CHECK`.
@@ -978,6 +1053,20 @@ def evaluate_pr_checks(inputs: CheckInputs) -> CheckReport:
     )
 
 
+#: How much of a catalog refusal may be quoted into a check finding.
+#:
+#: :class:`~mayhem.domain.pipeline.CheckFinding` caps ``message`` at 2000
+#: characters, and the catalog's own ``not in catalog`` refusal enumerates every
+#: id it holds — 2911 characters at this catalog's size. Pasting that in full
+#: would not produce a *long* finding; it would raise
+#: :class:`pydantic.ValidationError` out of the middle of
+#: :func:`evaluate_pr_checks`, so a PR with one misspelled fault id would crash
+#: the check rather than fail it. The head of the message is kept, because the
+#: fault id is the first thing it says and that is what an operator needs; the
+#: tail is a list of 145 ids nobody reads.
+_SYNTAX_REPORT_CHARS: Final[int] = 400
+
+
 def _syntax_problems(inputs: CheckInputs) -> tuple[str, ...]:
     """What the authored plan does not resolve against the catalog.
 
@@ -987,6 +1076,11 @@ def _syntax_problems(inputs: CheckInputs) -> tuple[str, ...]:
     :func:`mayhem.domain.catalog.definition_for` and the definition's own
     ``validate_params``, so a PR check cannot hold a different parameter grammar
     than the planner does.
+
+    Each refusal is bounded (see :data:`_SYNTAX_REPORT_CHARS`). The bound is a
+    fix for a crash, not a style preference: an unbounded catalog refusal is
+    longer than the finding that has to carry it, and a finding that is too long
+    to construct is not a finding.
     """
     problems: list[str] = []
     faults = plan_faults(inputs.plan)
@@ -994,7 +1088,7 @@ def _syntax_problems(inputs: CheckInputs) -> tuple[str, ...]:
         try:
             definition = definition_for(fault.fault_id)
         except LookupError as exc:
-            problems.append(str(exc))
+            problems.append(_bounded(str(exc)))
             continue
         if definition.catalog_only:
             problems.append(
@@ -1005,10 +1099,25 @@ def _syntax_problems(inputs: CheckInputs) -> tuple[str, ...]:
         try:
             definition.validate_params(fault.params)
         except DomainError as exc:
-            problems.append(f"{fault.fault_id} params do not validate: {exc}")
+            problems.append(_bounded(f"{fault.fault_id} params do not validate: {exc}"))
     if not faults:
         problems.append("the plan names no fault step, so there is nothing to check")
     return tuple(problems)
+
+
+def _bounded(message: str) -> str:
+    """A refusal short enough for a finding, saying how much was dropped.
+
+    The "and N more characters of catalog listing" tail is deliberate: a silent
+    truncation would let a reader believe they had seen the whole refusal, which
+    is the same failure mode as a truncated ticket.
+    """
+    if len(message) <= _SYNTAX_REPORT_CHARS:
+        return message
+    return (
+        f"{message[:_SYNTAX_REPORT_CHARS].rstrip()} "
+        f"(+{len(message) - _SYNTAX_REPORT_CHARS} more characters of catalog listing)"
+    )
 
 
 def _obligation_problems(compilation: SafetyCompilation, scope: CheckScope) -> tuple[str, ...]:
@@ -1163,7 +1272,11 @@ def _check_from_scope(
         problems = (*problems, *_claim_errors(claims))
         warnings = _claim_warnings(claims)
     if problems:
-        detail = "; ".join(dict.fromkeys(problems))
+        # Bounded as well as the individual refusals: a plan with several
+        # unresolvable faults joins into one message, and each of those is
+        # comfortably under the finding's 2000-character cap while their sum is
+        # not. See :data:`_SYNTAX_REPORT_CHARS` for why this is a crash fix.
+        detail = _bounded("; ".join(dict.fromkeys(problems)))
         return PRCheck(
             name=CHECK_NAME[scope],
             scope=scope,
