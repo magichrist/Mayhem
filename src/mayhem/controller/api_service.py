@@ -110,15 +110,17 @@ surfaces read (``risk``, ``required_caps``, ``reversible``,
 Migrations
 ----------
 
-:data:`API_GATEWAY_MIGRATION` is defined here and **is not yet registered in**
-:data:`mayhem.infra.migrations.ALL_MIGRATIONS`, because ``migrations.py`` is
-declared read-only for this work item. It is a complete, self-contained
-migration with a working down path, appended to the chain as version 34 by
-whoever owns that file; ``tests/unit/test_api_service.py`` builds its fixture
-chain as ``(<34 from ALL_MIGRATIONS, API_GATEWAY_MIGRATION)`` so it keeps
-working whatever concurrent lanes append around it. The absence is stated here
-rather than papered over, because a table that exists only where a caller spliced
-the migration in is the exact defect plan 03 hit and documented.
+:data:`API_GATEWAY_MIGRATION` is registered in
+:data:`mayhem.infra.migrations.ALL_MIGRATIONS` as version 34, so the
+``api_idempotency`` table this module reads and writes is created by the
+**production** chain rather than by a fixture that spliced the migration in. Its
+DDL lives in :mod:`mayhem.infra.api_gateway_schema` — moved down out of this
+module because ``migrations.py`` importing ``mayhem.controller`` would be an
+upward edge the layering contract reports as broken — and it is re-exported here
+so ``from mayhem.controller.api_service import API_GATEWAY_MIGRATION`` keeps
+resolving to the same object the chain migrates. ``tests/unit/test_api_service.py``
+builds its fixture chain as ``(<34 from ALL_MIGRATIONS, API_GATEWAY_MIGRATION)``
+so it keeps working whatever concurrent lanes append around it.
 """
 
 from __future__ import annotations
@@ -136,8 +138,11 @@ from mayhem.domain.catalog import all_definitions
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.hashing import digest
 from mayhem.domain.identity import EnvironmentScope, Role
+from mayhem.infra.api_gateway_schema import (
+    API_GATEWAY_MIGRATION,
+    API_GATEWAY_VERSION,
+)
 from mayhem.infra.api_store import ApiStore, RunFilters
-from mayhem.infra.migrator import Migration
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -1804,31 +1809,14 @@ def _responses_for(route: Route) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# The migration this module owns                                              #
+# The migration this module's surface depends on                                 #
+#                                                                              #
+# The DDL itself lives in mayhem.infra.api_gateway_schema, beside the row model #
+# it creates, and is registered in mayhem.infra.migrations.ALL_MIGRATIONS as   #
+# version 34. It is re-exported here (not redefined) so every existing import  #
+# of ``mayhem.controller.api_service.API_GATEWAY_MIGRATION`` still resolves to  #
+# the same object the chain migrates — one spelling, no second copy.            #
 # --------------------------------------------------------------------------- #
-
-API_GATEWAY_VERSION: Final[int] = 34
-
-MIGRATION_SQL: tuple[str, ...] = (
-    """
-    CREATE TABLE api_idempotency (
-        idempotency_key TEXT PRIMARY KEY,
-        request_fingerprint TEXT NOT NULL,
-        status INTEGER NOT NULL,
-        envelope_json TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-    """,
-)
-
-DOWN_SQL: tuple[str, ...] = ("DROP TABLE api_idempotency",)
-
-API_GATEWAY_MIGRATION = Migration(
-    version=API_GATEWAY_VERSION,
-    name="api_gateway",
-    statements=MIGRATION_SQL,
-    down_statements=DOWN_SQL,
-)
 
 
 # --------------------------------------------------------------------------- #
