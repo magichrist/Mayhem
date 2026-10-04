@@ -48,9 +48,9 @@ Certification explosion across runtime/kernel combinations. Solved with the tier
 - Phase 4 (safety and evidence integration): DONE — `controller/certification_evidence.py` seals each certification's facts into an `AttestedEvent` chain and manifest using plan 12's own machinery (`seal_events`, `build_manifest`, `verify_chain`, `verify_manifest`, `AttestationRepository.save_chain`/`save_manifest`); there is no second sealer and a test asserts the rows land in plan 12's tables. The chain carries the post-run **residue scan** (`performed` and `findings`, not an inferred "clean"), the **recovery probe's numbers**, the content digests, and one `certification.demoted` event per regression — so "the demotion event in evidence" is now a hash-linked member rather than a `demotion` digest sitting beside a hash. `infra/certification_runner.py` gained one optional seam, `EvidenceSealer`, and a seal that raises, returns an unverified chain, or names a different bundle becomes `RefusalClass.EVIDENCE_UNSEALABLE` — a refusal, not a certification. `sealed_certification_gate` re-verifies every live claim and hands `evaluate_maturity` an unverifiable one in the `failed` state, so a record whose bundle does not verify grants no level while `evaluate_maturity` stays the only function that decides one. `CertificationEvidenceHeldError` refuses a retention deletion while a live claim cites the evidence, with `demote_dependents=True` as the deliberate second path, and `reconcile_certification_evidence` demotes claims whose evidence vanished outside retention. 26 tests in `tests/unit/test_certification_evidence.py`. Phase 4 left the sealer unwired on purpose, as Phase 5 plumbing; that is now done (see below).
 - Phase 5: **substantially advanced — the nightly job now runs, and the sweep it runs has tests for the first time.** The `nightly` marker was registered in `pyproject.toml` and `.github/workflows/conformance.yml` ran `uv run pytest tests/unit -m nightly -q`, but **no test in the repository carried the marker**, so that job selected nothing and exited green — a CI line standing for a certification sweep that had never executed. `infra/certification_sweep.py` (368 lines) likewise had **zero** references from any test. Both gaps are closed by `tests/unit/test_certification_nightly.py` (10): eight nightly-marked tests over a real migrated SQLite store, because the sweep's whole value is that every write goes through `store_transition` and a fake would not notice if it stopped. They cover the **clock** half (a lapsed claim aged by an explicit `now`, so the policy is replayable rather than slept through), the **drift** half (a claim whose cell moved is invalidated to `incompatible`, gap item 107), the **honest absence** half (`checked_against_a_cell is False` when no current cell was supplied, because "nothing moved" and "nothing was looked at" are different findings and a sweep reporting the first while doing the second would lie by omission), the **regression blocking** half (`regression_report(...).blocked` is `True` for a previously certified fault a re-run contradicted, `False` when the re-run reproduced it), and the distinction that makes a matrix mean something — a verdict from **another** cell neither passes nor fails the stored claim and lands in `unreached`. `apply_regressions` is asserted to withdraw *before* the gate reports, so a claim cannot survive a gate that named it. Two meta-tests close the vacuity permanently: the marker must be **registered** in `pyproject.toml` (an unregistered marker never errors under `--strict-markers`, it is simply never selected) and all eight job tests must still carry it, so a lost decorator fails here instead of silently emptying a CI job. Verified: `pytest tests/unit -m nightly` selects and runs **8 tests** where it previously selected 0. Still open in this phase, and stated rather than netted out: a **scheduled** trigger (a cron or workflow `schedule:` key) for the nightly run, and CI blocking wired to `RegressionReport.blocked` rather than asserted only in a test.
 - **Surface plumbing, landed in the earlier pass and unchanged:** `cli/certify.py` passes the `EvidenceSealer` and reads through `sealed_certification_gate`; `catalog_report`'s reporting path is armable end to end and every maturity payload states its gate state.
-- Phase 6: not started
+- Phase 6 (docs and rollout): DONE — four sections appended below. **Fault-catalog reliability matrix**: its numbers were already correct and are unchanged; what this phase added is the rule that keeps them correct. **Public compatibility matrix** (gap 109): the nine frozen fields of a `MatrixCell`, why a record stores its cell in its identity rather than pointing at one, and the three answers the matrix can give — compatible, certified, and **unreached**, which is the one a naive matrix would render as a green row. **Tiered rollout**: baseline per release, expanded nightly, customer cells on demand, with the honest status that **the first two tiers have no schedule** — the sweep runs on demand and regression blocking is asserted in a test rather than wired into a pipeline. **Rollout order**: records before maturity before a matrix before a badge, and why a badge is last. The phase's acceptance criterion is the load-bearing part: `tests/unit/test_certification_badge_honesty.py` (72 cases) extends the `test_no_document_describes_fault_packs_as_signed` idea to certification badges across every published document, and it is **derived from the record store** rather than hardcoded — a real migrated SQLite database read through `sealed_certification_gate`, so the day a promotion lands the gate opens for that fault instead of blocking it. Two things the gate had to learn the hard way, both recorded because both were wrong first: requiring a **catalog fault id** in the line, because matching the rung alone flagged eleven innocent documents that merely explain the maturity model; and accepting a **retraction on the same line** ("unit-verified rather than live-verified"), because the reliability matrix's longest paragraphs state the truth and then name the rung they are not at. The README's `0 of N` count is **not** re-asserted here: `test_readme_honesty.py` already derives N from `len(CATALOG)` so the denominator cannot quietly become a smaller lie, and duplicating it would only inflate the count.
 
-Overall: 4 of 6 phases complete, with Phase 5 substantially advanced. Phase 5 is **not** counted as done and the count is deliberately not inflated: the nightly sweep now has tests and the `nightly` job actually selects them (8 tests, verified), but no **scheduled trigger** runs it yet and CI blocking is asserted in a test rather than wired to `RegressionReport.blocked`.
+Overall: 5 of 6 phases complete (Phases 1, 2, 3, 4, and 6), with Phase 5 substantially advanced. Phase 5 is **not** counted as done and the count is deliberately not inflated: the nightly sweep now has tests and the `nightly` job actually selects them (8 tests, verified), but no **scheduled trigger** runs it yet and CI blocking is asserted rather than wired. **Phase 5 is the only phase left open, and the tiered rollout Phase 6 documents is what is missing from it** — the tiers are designed and documented, but the schedule that would drive tiers one and two is part of what Phase 5 has not landed. Nothing here changed a count: `certified_faults` is still 0 on a fresh database, every fault is still capped at `verified-unit`, and the README is still `0 of N`.
 
 ### Nothing is certified yet, and the README count must stay 0-of-N
 
@@ -114,3 +114,91 @@ The **surface** plumbing is done. `cli/certify.py` passes the sealer and reads t
 - **The expiry/invalidation sweep being scheduled.** `certify matrix --sweep` now runs `sweep_certifications` on demand and reports what it did (`"expiry_sweep": {"performed": true, "aged": 2, …}`), and `reconcile_certification_evidence` exists for evidence that vanished outside retention — but **nothing calls either on a clock**. It is opt-in and manual by design: a read must not change what it reports on, so ageing is made durable only when an operator or a job asks for it.
 - **The store-less reporting commands holding a real store.** `discover capabilities`, `toolkit faults --coverage`, and `explain catalog fault` pass `records=None` and say `"certification_gate": "not-consulted"`. Giving them a handle is one argument each at the CLI seam, once a decision is made about whether a `--help`-adjacent read may open a database; they must not be armed with a fabricated `{}`.
 
+
+## Fault-catalog reliability matrix
+
+The matrix lives at `docs/fault-catalog/reliability-matrix.md`, and this phase
+changed **nothing in its numbers**. Every count in it was already correct and
+remains correct: the executable faults are `verified-unit`, the live rungs are
+unreachable, and the honest zero is a zero.
+
+What this phase added is the rule that keeps it that way. The matrix is a
+*published* document, so it is in scope for a new gate:
+`tests/unit/test_certification_badge_honesty.py` walks every published Markdown
+file, and for each line that names a **catalog fault id** *and* asserts a live
+rung — `certified`, `✅`, `verified-live`, `live-verified`, or a rung name sitting
+alone in a table cell — it asks the record store whether that claim exists. The
+store is a real migrated SQLite database read through
+`sealed_certification_gate`, not a literal `set()`.
+
+That comparison is the point. A prohibition on the word "certified" would have
+failed every document that *explains* the maturity model, and the first version
+of this detector did exactly that: eleven documents, every one of them innocent,
+because prose about `verified-live` is most of what the catalog documentation is.
+Requiring a named subject fixes it — a badge always names the fault it is about.
+When the first real cell is certified the store's set becomes non-empty and the
+same gate admits exactly that fault's badge, which is why the allowlist is derived
+rather than hardcoded.
+
+## Public compatibility matrix (gap 109)
+
+The compatibility question is "can this fault run here, and who says so?", and
+`mayhem certify matrix` answers it without executing anything. A **matrix cell**
+is nine frozen fields — `engine`, `engine_version`, `os_distro`,
+`kernel_version`, `arch`, `privilege`, `capabilities`, `provider_id`,
+`provider_version` — and a certification record stores the cell inside its
+identity rather than pointing at one. That is what makes drift detectable: compare
+the recorded cell against the cell that exists now and the difference is *named*
+rather than averaged away. A record without its cell would be a claim about "a
+machine somewhere", which is the claim the harness was built to refuse.
+
+Three answers the matrix can give, and they are not the same thing:
+
+* **compatible** — the fault can run on this cell, with no live claim attached;
+* **certified** — it ran, and a sealed record says so;
+* **unreached** — the verdict came from *another* cell, so it neither passes nor
+  fails this one. A matrix that reported an unreached verdict as a pass would be
+  a green row that means nothing.
+
+Every reported maturity comes from `evaluate_maturity(..., records=...)` with the
+sealed gate armed, so a fault's level is capped at `verified-unit` on a cell that
+has never run it, regardless of what any other cell recorded. `certified_faults` on
+a fresh database is **0**, and the payload says the gate was armed
+(`"certification_gate": "armed: every reported maturity consulted the record
+store"`).
+
+## Tiered rollout
+
+The plan's answer to certification explosion, unchanged: **required baseline cells
+per release, expanded nightly matrix, customer-specific cells on demand.** The
+reason the tiers are ordered this way is that a cell is the expensive thing — a
+real engine, a real disposable container, a real drill — and a promotion is the
+thing that outlives it.
+
+* **Baseline per release.** A small fixed set of cells every release must certify.
+  This is what makes a regression block a build: the same cells, every release, so
+  "it worked last release" is a statement about a comparable thing.
+* **Expanded nightly matrix.** Everything else, on a clock. It can be wide because
+  nothing downstream depends on one run of it.
+* **Customer cells on demand.** A customer's own engine versions and kernel,
+  because that is the cell only they have and only they need.
+
+**Honest status: tiers one and two have no schedule.** The sweep runs on demand
+(`mayhem certify matrix --sweep`) and the nightly marker now carries eight real
+tests, but nothing in `.github/workflows/` calls `certify run` on a clock, and
+regression blocking is asserted in a test rather than wired into a pipeline. The
+tiering is designed and documented; it is not yet driving anything.
+
+## Rollout order
+
+Records before maturity, maturity before a matrix, a matrix before a badge.
+A stored record is falsifiable — it can be aged, invalidated, withdrawn, and
+checked against its sealed chain. A reported maturity is a *claim* derived from
+records and is worthless without them. A matrix is many claims side by side. A
+badge is a matrix reduced to a single mark, which is exactly why it is last: it is
+the one shape an overclaim takes when the machinery already exists and somebody
+fills in the cell, because the cell was there.
+
+So the gate that closes this phase is not a style check. It is a comparison
+against the record store, and it is written so that the day a promotion genuinely
+lands, it opens rather than blocks.
