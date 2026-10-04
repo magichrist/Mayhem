@@ -65,6 +65,56 @@ gate's own per-step measurements, and distinguishes "measured and within" from
 "never checked", because a ``None`` ceiling is unchecked and reporting it as
 satisfied would be the artifact claiming a pass nobody earned.
 
+**The last wave closed the same debt for four more plans, and the two halves of
+it are not symmetric.** :data:`BLAMEABLE_SOURCES` in the test suite is still two
+modules wide, so none of the fourteen new rules below is *reached* by this
+compiler today — they are rows ahead of the wiring, not rows a live refusal is
+producing. That is stated rather than glossed because a table of rules nothing
+raises is exactly the thing this module's own docstring calls out as dishonest
+coverage, and the guard against it is structural rather than a promise:
+``tests/unit/test_owed_rule_mappings.py`` reads every module under
+``src/mayhem`` and asserts each row here is a rule id *the code spells*, so a
+proposal for a rule nobody raises is a test failure naming the dead key instead of
+a row that only looks like coverage. (``BLAMEABLE_SOURCES`` in
+``tests/unit/test_proof_compiler.py`` is the reach half of the same guard, and it
+is still two modules wide — widening it is the wiring lane's call, not this row's.)
+
+Which is why the rows were not taken on trust. Three of them are not what the
+plans asked for, and one rule the plans asked for is not in the code at all:
+
+* plan 10's ``stop_resume_skips_owed_stage`` does not exist.
+  :meth:`~mayhem.controller.stop_engine.StopEngine._resume` raises
+  ``stop_stage_skip_refused`` (and, on the sibling check, ``stop_stage_not_owed``).
+  The real ids are mapped, and both, because mapping one of a pair that a single
+  function raises two lines apart is the same false coverage as the dead key.
+* plan 10's ``compensation`` for the resume refusal, and plan 17's
+  ``recovery_path`` for ``provider.lease_undo_absent``, were both narrowed past
+  the truth. The stop ladder's rungs are the recovery work (see the comments on
+  the rows), and a missing undo is the ``compensation`` line's own subject. Both
+  corrections are argued at their rows.
+* plan 17's ``provider.quota_exceeded`` stays unmapped, on plan 17's own reason:
+  the ledger's ``damage_quota.*`` ids already place it, and two rows for one
+  physical limit is a table that can disagree with itself.
+* ``schedule.admission_refused`` is **not** mapped, and this is the one omission
+  that looks like an oversight. :func:`~mayhem.controller.campaign_dispatch.
+  _admission` re-labels whatever :func:`validate_plan` refused under a
+  ``schedule.``-prefixed id, discarding the rule the authoritative gate actually
+  raised. A row for it would name one line for a refusal whose real owner is any
+  of eight, and this compiler never reads it anyway — :func:`_authoritative` takes
+  ``decision.rule_id`` off the gate's own exception, so the underlying rule is
+  already placed correctly. A re-labelling wrapper is not an unmapped refusal; it
+  is a rule that must never arrive here.
+
+:data:`GATE_RULE_IDS` did **not** grow. It is intersected with
+``prediction.rule_ids``, so it holds rule ids an
+:class:`~mayhem.domain.prediction.ImpactPrediction` can *forecast* — blast and
+damage quantities, which is what plan 14's ceilings were. None of the new rules is
+a quantity a prediction forecasts: a stale stop command, an unsealed chain, an
+unrecorded search and an unpinned matrix cell are states, not estimates, and
+admitting them would widen the set with ids no prediction can ever carry. The
+predicate the set exists for — "a forecast that flags a breached limit is blamed
+rather than dropped" — is unchanged by them.
+
 ## Why the probes clone the context
 
 :func:`mayhem.controller.safety.validate_plan` and
@@ -309,6 +359,15 @@ CEILING_RULE_IDS: frozenset[str] = frozenset(
 #: :func:`_blame`). Two of the budget's six limits and the whole target/fault-pair
 #: family are owned by ``target_policy`` because the nine-name spine has no line
 #: of their own and all of them are statements about what the plan may touch.
+#:
+#: Two invariants hold over this table and both are checked rather than promised.
+#: Every key is an obligation in :data:`ObligationName` (:mod:`controller.check_gate`
+#: asserts the values against its own ``OBLIGATION_CHECK``), and **no key is dead**
+#: — ``tests/unit/test_owed_rule_mappings.py`` reads every module under
+#: ``src/mayhem`` and fails on a row whose rule id the code does not spell. The
+#: second invariant is the one that bites: a row for a rule nothing raises is
+#: indistinguishable from coverage when read, and a plan that proposed one was
+#: wrong about what its own module raises.
 OBLIGATION_FOR_RULE: dict[str, str] = {
     # -- policy identity and environment ------------------------------------------
     "policy.identity_mismatch": ObligationName.TARGET_POLICY.value,
@@ -374,6 +433,132 @@ OBLIGATION_FOR_RULE: dict[str, str] = {
     RULE_LOCK_CONTENDED: ObligationName.TARGET_POLICY.value,
     RULE_COMPAT_CONFLICT: ObligationName.TARGET_POLICY.value,
     RULE_BUDGET_EXHAUSTED: ObligationName.DAMAGE_BUDGET.value,
+    # -- the plan-10 emergency stop and preflight gates -----------------------------
+    # The first rules mapped from outside `controller.safety` and
+    # `controller.approval_gate`, and the first that arrive *unprefixed*.
+    #
+    # The ids are recorded verbatim rather than normalised to the dotted
+    # `owner.thing` shape everything else in this table follows. Renaming a rule
+    # id is not a formatting decision: `cli/stop_cmd.py` writes `"preflight.
+    # refused"` into the report the Click callback prints, so the string is already
+    # an output contract a caller can branch on, and a table that disagreed with
+    # the printed value would be a second, quieter lie. Plan 10's plan named the
+    # same rows and recorded the same ids.
+    #
+    # Two families, split the way the refusals actually split.
+    #
+    # **"May this stop act at all?"** is ``required_approvals``: the run is already
+    # over, the engine was handed no run scope, or the command describes a state the
+    # run has since left. Each answers a question about whether this run was
+    # permitted to proceed, which is what that line already reports — the same
+    # reason the plan-09 gate's three refusals sit there.
+    "preflight.refused": ObligationName.REQUIRED_APPROVALS.value,
+    "stop_for_terminal_run": ObligationName.REQUIRED_APPROVALS.value,
+    "stop_engine_requires_run_scope": ObligationName.REQUIRED_APPROVALS.value,
+    "stop_command_stale": ObligationName.REQUIRED_APPROVALS.value,
+    # **"Did the walk finish, and can it prove it?"** is ``recovery_path``. The stop
+    # ladder's own vocabulary (:mod:`mayhem.domain.stop`) says ``FREEZE`` through
+    # ``VERIFY`` are *the recovery work* and only ``SEAL`` makes it evidence, so a
+    # seal that will not close over an incomplete walk, a missing receipt, or a
+    # digest that does not match is a statement about whether this plan can be
+    # brought back — the subject ``recovery_path`` exists to report.
+    #
+    # The three ``stop_seal_*`` rules and the two ``_resume`` rules are one family
+    # rather than two. Plan 10 proposed ``compensation`` for the resume refusal and
+    # left the choice of owner for the rest to this module; ``compensation`` is
+    # narrower than the truth. The skipped stage is any rung of ``FREEZE..VERIFY``
+    # — a caller that resumes after ``FREEZE`` skipped ``CANCEL_PENDING``, and
+    # reporting that on the line that reads ``PlannedFault.undo_ops`` would name
+    # compensation for a freeze that was never done. ``recovery_path`` covers all
+    # seven rungs honestly.
+    "stop_seal_requires_complete_walk": ObligationName.RECOVERY_PATH.value,
+    "stop_seal_requires_evidence": ObligationName.RECOVERY_PATH.value,
+    "stop_seal_digest_mismatch": ObligationName.RECOVERY_PATH.value,
+    "stop_stage_skip_refused": ObligationName.RECOVERY_PATH.value,
+    "stop_stage_not_owed": ObligationName.RECOVERY_PATH.value,
+    # -- the plan-13 campaign dispatch stage ---------------------------------------
+    # Plan 13 named both ids and left the obligation to the owner of this table.
+    #
+    # ``schedule.campaign_budget`` is ``damage_budget`` because that is what it
+    # measures: ``campaign_budget_verdict`` walks 07's damage hierarchy and refuses
+    # when the campaign's committed damage-seconds would reach a limit, so it is the
+    # same quantity ``RULE_BUDGET`` and ``RULE_PER_FAULT_CEILING`` refuse on. The
+    # module's own comment observed that giving it a 07-shaped id "would let it be
+    # blamed onto a proof line it did not produce" — which is true of the *name* and
+    # is why the id stays ``schedule.``-prefixed, and false of the mapping, which is
+    # the point of this table.
+    #
+    # ``schedule.no_compilation`` is ``required_approvals``, and that is the one row
+    # here whose owner is a judgement rather than a measurement. The refusal is "the
+    # planner produced a plan with no safety compilation, so the admission gate has
+    # nothing to admit". The nine-name spine has no line for *the proof is absent* —
+    # every line describes something about a plan that exists — and the alternatives
+    # were worse: ``target_policy`` would report it as a statement about what the
+    # plan may touch, which it says nothing about. ``required_approvals`` is chosen
+    # because it is the one line that answers "may this run proceed", and because
+    # ``safety_policy`` — the check that reports it — is defined as "the safety case
+    # the normal path compiled for this plan", which is exactly what is missing.
+    "schedule.campaign_budget": ObligationName.DAMAGE_BUDGET.value,
+    "schedule.no_compilation": ObligationName.REQUIRED_APPROVALS.value,
+    # -- the plan-15 analytics service ---------------------------------------------
+    # The two budget rules are ``damage_budget``: the runner's per-step affordability
+    # check (:func:`~mayhem.controller.analytics_service.step_affordable`) spends
+    # ``BudgetKind.DAMAGE_SECONDS`` unless a caller asks for another kind, and
+    # ``planner_budget_diverged`` is the same check failing for the sharper reason
+    # that the planner and the runner were answering about two different remainders
+    # of it. Stated honestly: with ``BudgetKind.STEPS`` or
+    # ``COMBINATIONS`` the quantity is a search budget rather than a damage quota,
+    # and ``damage_budget`` is still the only budget line in the spine — the same
+    # accommodation ``RULE_MAX_CONCURRENT_FAULTS`` makes for a count it shares a
+    # line with.
+    #
+    # The two evidence rules are ``required_approvals``, as plan 15 proposed, and the
+    # reasoning is worth recording because it is not the plan-09 one:
+    # :func:`~mayhem.controller.analytics_service.require_sealed_claim` refuses a
+    # decision whose backing claim is not in a verified chain, and
+    # :func:`~mayhem.controller.analytics_service.require_recorded_search` refuses a
+    # search the cross-run audit stream cannot show. Neither is an approval in the
+    # plan-09 sense — nobody signed anything — and both are about the *same*
+    # question that line reports: may this decision proceed on what stands behind it.
+    # A report with no seal is the evidence-side equivalent of a run with no approval,
+    # and putting it anywhere else would either claim a policy finding or hide it.
+    #
+    # ``analytics.evidence_unsupported`` is deliberately absent. It is raised in an
+    # ``AnalyticsClaim`` field validator and a report-construction path, so a claim
+    # that cannot be supported is never built rather than refused by a gate — there
+    # is nothing for a proof line to report about a document that does not exist.
+    "analytics.planner_budget_diverged": ObligationName.DAMAGE_BUDGET.value,
+    "analytics.step_unaffordable": ObligationName.DAMAGE_BUDGET.value,
+    "analytics.evidence_not_sealed": ObligationName.REQUIRED_APPROVALS.value,
+    "analytics.search_not_recorded": ObligationName.REQUIRED_APPROVALS.value,
+    # -- the plan-17 provider participation surface ---------------------------------
+    # ``provider.fault_undeclared`` and ``provider.certification_cell_unpinned`` are
+    # ``target_policy`` as plan 17 proposed, and both fit the argument that block
+    # already makes for the target/fault-pair family: each is a statement about
+    # *what this plan may act on*. The first refuses an action for a fault the
+    # declaration does not contain, which is the provider-side form of "this plan
+    # names something mayhem has no catalogue entry for"; the second refuses a
+    # certification whose matrix cell cannot carry the provider version, so the
+    # finding cannot be frozen to the thing it was recorded against.
+    #
+    # ``provider.lease_undo_absent`` is ``compensation``, **not** the
+    # ``recovery_path`` plan 17 proposed, and the change is deliberate. This module
+    # already defines ``compensation`` as "write-ahead ``undo_ops`` on the frozen
+    # PlannedFault", and the refusal is word for word that: a declared-mutating
+    # provider action with no undo ops, refused because "mayhem cannot take the lease
+    # for it" — the compensation path exists and cannot be written down first.
+    # ``recovery_path`` reads the ``recovery`` flag and ``verify_probes``, neither of
+    # which the refusal mentions, so the proposed owner would have reported a missing
+    # compensation as a missing recovery path. Both land on ``safety_policy``, so the
+    # check a reader reads is unchanged; only the line named is corrected.
+    #
+    # ``provider.quota_exceeded`` is deliberately **not** here, on plan 17's own
+    # reasoning: an exceeded provider charge is refused with the ledger's own
+    # ``damage_quota.*`` rule ids, so it lands on the rows above and a second row for
+    # one physical limit would be a duplicate that could disagree with it.
+    "provider.fault_undeclared": ObligationName.TARGET_POLICY.value,
+    "provider.certification_cell_unpinned": ObligationName.TARGET_POLICY.value,
+    "provider.lease_undo_absent": ObligationName.COMPENSATION.value,
 }
 
 #: The refusal the policy gate raises for an adapter block, in the gate's own
