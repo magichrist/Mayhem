@@ -748,12 +748,24 @@ class FireCode(StrEnum):
 
     FIRED = "schedule.fired"
     NOT_DUE = "schedule.not_due"
+    MISSED = "schedule.missed"
     PREMATURE = "schedule.premature"
     EXPIRED = "schedule.expired"
     EXHAUSTED = "schedule.exhausted"
     OUTSIDE_BUSINESS_HOURS = "schedule.outside_business_hours"
     MAINTENANCE = "schedule.maintenance"
     BLACKOUT = "schedule.blackout"
+
+    @property
+    def is_non_fire(self) -> bool:
+        """True for every code that is not :attr:`FIRED`.
+
+        A convenience for callers that iterate the vocabulary and need the
+        "nothing ran" test; reading it off the enum keeps every such test from
+        re-spelling ``code is not FireCode.FIRED`` and possibly getting it wrong
+        for one member.
+        """
+        return self is not FireCode.FIRED
 
 
 class FireDecision(BaseModel):
@@ -766,18 +778,93 @@ class FireDecision(BaseModel):
     reason: str
     schedule_id: str
     now: datetime
+    #: The slot being answered. For a cron or interval that is a point; for a
+    #: calendar it is the *opening* of the window this evaluation fell inside,
+    #: which is also what the claim ledger keys on -- a window must not mint a
+    #: fresh key per poll inside it.
     slot_start: datetime | None = None
+    #: The instant the schedule's effective time is measured from: the slot for
+    #: cron and interval, the evaluation instant itself for a calendar window.
+    #: Jitter is applied to *this*, and :attr:`lateness_s` is measured against
+    #: it, so jitter and poller lateness are two separable facts.
+    nominal_at: datetime | None = None
     effective_at: datetime | None = None
+    #: How wide this schedule's slot stays open, copied in so a reader of a
+    #: persisted decision can judge :attr:`lateness_s` without going back to the
+    #: schedule body -- which may since have been edited to a different
+    #: resolution, in which case the body would answer a question about a
+    #: schedule that no longer exists.
+    resolution_s: float = 60.0
     blocked_by: tuple[str, ...] = ()
 
     @property
     def jittered(self) -> bool:
-        """True when jitter moved the effective time off the slot start."""
+        """True when jitter actually moved the effective time off the nominal.
+
+        Measured against :attr:`nominal_at` -- the instant jitter was applied to
+        -- and not against ``effective_at != slot_start``. The second reading is
+        a lie twice over: an *unjittered* schedule polled 45s into a one-minute
+        cron slot would report itself as jittered, dressing a late poller up as
+        a deliberate offset; and a *calendar* schedule's slot is its whole
+        window, so every evaluation inside the window would look jittered too.
+        Comparing against the nominal says what it means: the offset is non-zero
+        exactly when a declared jitter bound produced one. (A declared jitter
+        whose hash happens to draw 0.0s reports ``False``, which is the truth --
+        it moved nothing.)
+        """
         return (
             self.effective_at is not None
-            and self.slot_start is not None
-            and self.effective_at != self.slot_start
+            and self.nominal_at is not None
+            and self.effective_at != self.nominal_at
         )
+
+    @property
+    def lateness_s(self) -> float:
+        """How long after the nominal fire instant the evaluation happened.
+
+        **The poller's lateness, and nothing else.** ``now - nominal_at``, not
+        ``effective_at - slot_start``: after jitter is applied the difference
+        between the effective instant and the slot *is the jitter offset*, so
+        reading lateness off it would report a declared ±60s spread as a poller
+        that was up to a minute late, which is a different fact about a
+        different subsystem.
+
+        Zero for a non-fire, for a refusal, and for an evaluation that landed
+        exactly on its nominal instant. Zero for a *calendar* schedule, where the
+        nominal **is** the evaluation instant by construction: a one-off window
+        has no deadline to be late against, and the window's age is a fact about
+        the window rather than about the poller.
+
+        Non-zero for a cron or interval fire means the poller was late, and it is
+        reported rather than absorbed -- a run that fires 45s into a one-minute
+        cron slot is a different fact from one that fires on the slot, and the
+        difference belongs in the record. Negative means the evaluation preceded
+        its nominal instant, which the fire decision does not currently allow;
+        the property is written so a future change that permitted it would be
+        visible rather than silently negative.
+        """
+        if not self.fired or self.nominal_at is None:
+            return 0.0
+        return round((self.now - self.nominal_at).total_seconds(), JITTER_PRECISION)
+
+    @property
+    def missed_window(self) -> bool:
+        """True when this evaluation is reporting a recurrence that was let go.
+
+        Read off :attr:`code`, not recomputed from :attr:`lateness_s` and
+        :attr:`resolution_s`, for a reason worth stating: a *fired* decision can
+        be arbitrarily late and is not a missed window -- the poller answered
+        inside the slot -- while a *missed* one is by construction not a fire at
+        all. Asking "is this decision about a window nobody answered?" is one
+        comparison against the vocabulary; deriving it from two numbers is four
+        cases (fired/late, fired/late-enough, not-fired/on-time, not-fired/late)
+        of which three are wrong.
+
+        The related distinction is deliberately *not* folded in: a fire that is
+        late enough to worry a human is still a fire, and :attr:`lateness_s` is
+        where that fact lives.
+        """
+        return self.code is FireCode.MISSED
 
     def describe(self) -> str:
         verdict = "FIRED" if self.fired else "HELD"
@@ -971,6 +1058,49 @@ class Schedule(BaseModel):
         start = interval.occurrence_at(index)
         return start if (moment - start).total_seconds() < self.poll_resolution_s else None
 
+    def _interval_missed(self, moment: datetime) -> datetime | None:
+        """The occurrence a poller arriving at ``moment`` has already let go.
+
+        ``None`` unless every one of these holds, which is why the predicate is
+        a function rather than a flag:
+
+        * the schedule is an interval one -- only an interval has a slot width a
+          poller can be late past, since a cron slot is one minute wide and a
+          calendar window stays open for as long as its author made it;
+        * ``moment`` is at or after the anchor, so there is an occurrence to
+          have missed;
+        * the occurrence containing ``moment`` is *not* exhausted and its slot is
+          *not* still open -- if it were, the poller is merely late and
+          :meth:`_interval_slot` already answered;
+        * that occurrence is inside the declared horizon.
+
+        This is Phase 4's acceptance criterion made *distinguishable*: "a
+        schedule whose window closed between creation and fire time does not fire,
+        with the non-fire recorded". Reporting it as :attr:`FireCode.NOT_DUE`
+        would record the non-fire and lose the reason -- and an operator reading
+        the record at 09:05 could not then tell a quiet night from a recurrence
+        that was slept through.
+        """
+        interval = self.interval
+        if interval is None or self.kind is not ScheduleKind.INTERVAL:
+            return None
+        anchor = interval.anchor_at.astimezone(UTC)
+        if moment < anchor:
+            return None
+        index = interval.index_of(moment)
+        if interval.exhausted_at(index):
+            return None
+        # Called only when `_interval_slot` returned None, so the occurrence's
+        # slot has already closed; recomputed here rather than assumed, because
+        # "already closed" is the property being reported and reading it off the
+        # caller would be a claim about the caller instead.
+        missed = interval.occurrence_at(index)
+        if (moment - missed).total_seconds() < self.poll_resolution_s:
+            return None
+        if self.ends_at is not None and missed > self.ends_at.astimezone(UTC):
+            return None
+        return missed
+
     def is_due(self, now: datetime, *, run_count: int = 0) -> bool:
         """True when a fire slot covers ``now`` and the run budget allows it."""
         if self.max_runs is not None and run_count >= self.max_runs:
@@ -1021,16 +1151,32 @@ class Schedule(BaseModel):
             refusal = self._calendar_refusal(moment)
         if refusal is not None:
             return refusal
+        slot = self.slot_start(moment)
+        # Jitter is applied to the *nominal*, not to the evaluation instant, so
+        # the declared bound is a bound on how far the fire time may move from
+        # the slot -- which is the thing a late poller would otherwise be free to
+        # add on top of it, unbounded by anything the author wrote. With no
+        # jitter declared the effective instant *is* the nominal, which is what
+        # makes ``jittered`` and ``lateness_s`` separable.
+        #
+        # A calendar window's nominal is the evaluation instant rather than the
+        # window's opening. A one-off window is open for however long its author
+        # made it, so there is no deadline to be late against and no stampede to
+        # spread -- measuring against the window's start would report a run
+        # scheduled for a 09:00-12:00 window as "three hours late" at 12:00.
+        nominal = moment if self.kind is ScheduleKind.CALENDAR else (slot or moment)
         jitter = self.jitter
-        effective = moment if jitter is None else jitter.apply(moment, seed=self.schedule_id)
+        effective = nominal if jitter is None else jitter.apply(nominal, seed=self.schedule_id)
         return FireDecision(
             fired=True,
             code=FireCode.FIRED,
             reason=f"fire slot is open and every gate cleared for {self.schedule_id}",
             schedule_id=self.schedule_id,
             now=moment,
-            slot_start=self.slot_start(moment),
+            slot_start=slot,
+            nominal_at=nominal,
             effective_at=effective,
+            resolution_s=self.poll_resolution_s,
         )
 
     def _budget_refusal(self, moment: datetime, *, run_count: int) -> FireDecision | None:
@@ -1052,22 +1198,57 @@ class Schedule(BaseModel):
             )
         return None
 
+    def _no_slot_refusal(self, moment: datetime) -> FireDecision:
+        """The recorded non-event for an instant no fire slot covers.
+
+        Three codes, and the distinction between them is the point:
+        :attr:`FireCode.EXPIRED` when the horizon closed,
+        :attr:`FireCode.MISSED` when a recurrence's slot opened and closed with no
+        poller in it, and :attr:`FireCode.NOT_DUE` for an ordinary quiet instant.
+        Collapsing the middle one into ``NOT_DUE`` would make "nothing was
+        scheduled at this minute" and "we slept through the 09:00 run" the same
+        record, and an operator reading that record at 09:05 could not tell a
+        quiet night from a missed recurrence.
+
+        Only an *interval* schedule can miss this way, because only an interval
+        has a slot width the poller can be late past: a cron slot is one minute
+        wide and a calendar window stays open for as long as its author made it,
+        so for both of them "no slot covers this instant" is genuinely
+        :attr:`FireCode.NOT_DUE`.
+        """
+        if self.ends_at is not None and moment > self.ends_at.astimezone(UTC):
+            return self._hold(
+                FireCode.EXPIRED,
+                f"schedule horizon closed at {self.ends_at.isoformat()}",
+                moment,
+                blocked_by=("ends_at",),
+            )
+        missed = self._interval_missed(moment)
+        if missed is not None:
+            gap = round((moment - missed).total_seconds(), JITTER_PRECISION)
+            return self._hold(
+                FireCode.MISSED,
+                (
+                    f"recurrence due at {missed.isoformat()} was missed: its slot stayed "
+                    f"open for {self.poll_resolution_s:g}s and this evaluation arrived "
+                    f"{gap:g}s after it closed. The next fire answers a *different* slot "
+                    "with a different idempotency key, so this occurrence is not retried"
+                ),
+                moment,
+                slot=missed,
+                blocked_by=("poll_resolution_s",),
+            )
+        return self._hold(
+            FireCode.NOT_DUE,
+            f"no fire slot covers {moment.isoformat()}",
+            moment,
+        )
+
     def _calendar_refusal(self, moment: datetime) -> FireDecision | None:
         """Refuse a fire the recurrence, the calendar, or the live gates deny."""
         slot = self.slot_start(moment)
         if slot is None:
-            expired = self.ends_at is not None and moment > self.ends_at.astimezone(UTC)
-            reason = (
-                f"schedule horizon closed at {self.ends_at.isoformat()}"
-                if expired and self.ends_at is not None
-                else f"no fire slot covers {moment.isoformat()}"
-            )
-            return self._hold(
-                FireCode.EXPIRED if expired else FireCode.NOT_DUE,
-                reason,
-                moment,
-                blocked_by=("ends_at",) if expired else (),
-            )
+            return self._no_slot_refusal(moment)
         local = moment.astimezone(self.zone)
         day = self.blacked_out_on(local)
         if day is not None:
@@ -1115,6 +1296,7 @@ class Schedule(BaseModel):
             schedule_id=self.schedule_id,
             now=moment,
             slot_start=slot,
+            resolution_s=self.poll_resolution_s,
             blocked_by=blocked_by,
         )
 
