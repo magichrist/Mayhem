@@ -58,16 +58,20 @@ decision is recorded, no object is mutated. That is the same contract
 their optional fields, and ``tests/unit/test_preflight_gate.py`` pins it with a golden
 rendering of the whole admission sequence.
 
-.. warning::
-
-   **There is no call site inside
-   :meth:`mayhem.controller.executor.RunEngine.execute` yet.** ``executor.py`` was
-   declared read-only for this work item, and a refusal that only a caller has to
-   remember to ask for is not yet a refusal. The decision lives here; the binding
-   into the executor is a separate, additive change (one optional constructor
-   keyword and one ``if ... is not None`` block beside ``validate_plan``, ahead of
-   ``_open_run``), and the ``mayhem stop`` surface is a further one still. Both are
-   called out in the Phase 3 STATUS line of the plan.
+**And it is a refusal in the run path, not only on request.** The gate reaches
+:meth:`mayhem.controller.executor.RunEngine.execute` through
+:meth:`~mayhem.controller.executor.RunEngine.with_preflight_gate` — the same
+shape :meth:`~mayhem.controller.executor.RunEngine.with_budget_guard` already had —
+and is consulted in one ``is not None`` block immediately before ``_open_run``, so a
+refusal leaves no run row, no step row, and no lease. There is deliberately no
+counterpart that removes it: no ``skip_preflight`` keyword, no
+``without_preflight_gate``, no flag. The only absent state is ``preflight_gate=None``,
+which means *no gate was configured*, and that state reads nothing and refuses
+nothing because there is nothing to refuse with. The engine supplies only the inputs
+it holds — the plan, the clock, a live topology graph if it has one, and the attached
+budget guard — and every other check reports ``FAIL`` naming what it lacked. This
+module does not invent a preflight preview, an agent registry, or a policy decision
+for it: a gate fed an opinion it manufactured would certify it.
 
 :func:`admit` raises :class:`PreflightRefusedError`, which carries a
 :class:`~mayhem.domain.stop.StopTrigger` for the ``PREFLIGHT_REFUSAL`` signal — so a
