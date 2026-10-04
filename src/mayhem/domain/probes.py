@@ -1,14 +1,23 @@
 """Probe definitions: *what a probe is about*, declared as data.
 
-Plan 11 lists eighteen probe families — HTTP/HTTPS, TCP/UDP, DNS, gRPC, SQL,
-Redis, Kafka/RabbitMQ/NATS, process, file, command, Prometheus metrics,
-OpenTelemetry, logs, traces, Kubernetes state, and a synthetic business
-transaction — and then, in one sentence, says what a probe definition is:
-*"new families as data: endpoints, queries, sampling cadence, lifecycle
-membership."* That is the whole job. Eighteen families is eighteen endpoint
-strings and eighteen query strings; it is not eighteen classes, and building
-eighteen classes is how a probe catalogue turns into a second probe hierarchy
-that drifts from the first one.
+Plan 11 lists its probe families in one sentence — HTTP/HTTPS, TCP/UDP, DNS,
+gRPC, SQL, Redis, Kafka/RabbitMQ/NATS, process, file, command, Prometheus
+metrics, OpenTelemetry, logs, traces, Kubernetes state, and a synthetic
+business transaction — and then says what a probe definition is: *"new families
+as data: endpoints, queries, sampling cadence, lifecycle membership."* That is the
+whole job. A family is a locator string and a cadence; it is not a class, and
+building a class per family is how a probe catalogue turns into a second probe
+hierarchy that drifts from the first one.
+
+**That sentence names sixteen items and the enum below carries nineteen members,
+and the count in the plan's prose was simply wrong.** The three compound items are
+split here for the reasons each split is spelled out on its member: ``HTTP/HTTPS``
+becomes one ``HTTP`` (the scheme is part of the endpoint), ``TCP/UDP`` becomes two
+because a UDP "connect" has no handshake, and ``Kafka/RabbitMQ/NATS`` becomes three
+because they are three brokers with three failure modes. Nothing is merged to reach
+sixteen and nothing is invented to reach twenty; :class:`ProbeFamily` is the
+vocabulary and this docstring no longer claims a number it cannot keep true. The
+discrepancy is recorded in the plan's STATUS ledger.
 
 **This module extends the probe vocabulary that already exists. It does not
 replace it.** The runtime probe is still the closed
@@ -126,6 +135,7 @@ __all__ = [
     "ProbeValueKind",
     "ProbeVersion",
     "graded_stages",
+    "required_locator",
     "stage_phase",
 ]
 
@@ -156,7 +166,11 @@ ProbeFingerprint = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class ProbeFamily(StrEnum):
-    """The eighteen families plan 11 lists, spelled out one by one.
+    """Every probe family, spelled out one by one.
+
+    Nineteen members, which is what the plan's sixteen-item sentence expands to once
+    its three compound items are split — see the module docstring for why each split
+    is the right one.
 
     ``HTTP`` covers HTTPS: the scheme is part of the endpoint, and splitting
     them would produce two families with identical semantics and a
@@ -357,6 +371,23 @@ def graded_stages(definition: ProbeDefinition) -> tuple[LifecycleStage, ...]:
     """
     excluded = set(_SETTLING_STAGES)
     return tuple(stage for stage in definition.stages if stage not in excluded)
+
+
+def required_locator(family: ProbeFamily) -> tuple[str, ...]:
+    """The locator fields that make a definition *that* family.
+
+    Public because a surface has to be able to *name* the requirement before it
+    can satisfy it: ``mayhem probe build --help`` has to say which of
+    ``endpoint`` / ``query`` / ``command`` / ``path`` / ``target`` / ``steps`` a
+    family is defined by, and a copy of :data:`_REQUIRED_LOCATOR` in the CLI
+    would be a second table that could disagree with the first — a disagreement
+    whose symptom is a flag that builds a definition the domain then refuses.
+
+    Returned as a tuple and not a single name because
+    :data:`ProbeFamily.KUBERNETES` accepts two, and a surface that had to pick
+    one would be picking for the author.
+    """
+    return _REQUIRED_LOCATOR[family]
 
 
 # -- the definition -----------------------------------------------------------------
