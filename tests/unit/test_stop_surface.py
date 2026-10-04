@@ -29,11 +29,15 @@ is reachable by a person, and this suite is about the missing last link:
   raised": a finished run, an already-stopped run, an unknown run, a blank
   reason, an unauthorized environment-wide stop, and an unreachable port.
 
-One test in this file is about something that did **not** land:
-:func:`test_the_run_path_still_has_no_preflight_gate_seam` pins the absence of
-the executor attach point, because a refusal a caller has to remember to ask for
-is not yet a refusal in the run path, and the Phase 3 STATUS line depends on
-that being true.
+One test in this file is about the run path itself:
+:func:`test_the_run_path_has_a_preflight_gate_seam` and the three beside it
+assert that ``RunEngine.execute`` consults an attached preflight gate *before*
+the run row opens, that a run nobody gated is byte-identical, and that no
+``--force``-shaped mechanism exists on the engine or the attach module. This is
+the Phase 3 gap that used to be pinned from the other side: the old
+``test_the_run_path_still_has_no_preflight_gate_seam`` asserted the attach point
+was **absent**, and it was deleted by whoever added the seam rather than edited,
+so that whoever added it could not quietly add a bypass alongside it.
 
 Timestamps are injected everywhere; nothing here reads a wall clock to decide a
 verdict.
@@ -1217,39 +1221,151 @@ def test_the_stop_record_is_written_where_a_second_stop_can_find_it(tmp_path: Pa
 
 
 # ==============================================================================
-# What did NOT land, pinned so it cannot be quietly forgotten
+# The run path, and the seam that makes the refusal a refusal
 # ==============================================================================
 
 
-def test_the_run_path_still_has_no_preflight_gate_seam() -> None:
-    """Why Phase 3 is still INCOMPLETE, asserted rather than asserted-in-prose.
+def test_the_run_path_has_a_preflight_gate_seam() -> None:
+    """What Phase 3 was INCOMPLETE for, now asserted as landed.
 
+    This test used to assert the seam's *absence*, and did so for a real reason:
     ``RunBudgetGuard`` reached the run path through one optional attach point
     (``with_budget_guard``) and one ``is not None`` block beside
-    ``validate_plan``. The preflight gate has neither, so a refusal is reachable
-    only by a caller who asks for one — and a refusal a caller has to remember to
-    ask for is not a refusal in the run path. Binding it needs
-    ``controller/executor.py`` and ``cli/execution.py``, which this work item
-    does not own; the pin below is deleted by whoever adds the seam.
+    ``validate_plan``, and no equivalent existed for the preflight gate — so a
+    refusal was reachable only by a caller who asked for one, which is not a
+    refusal in the run path. Inverting it means asserting the shape the budget
+    guard already had, and asserting that ``execute`` really consults it. The
+    protection the old pin gave is not lost: it is now enforced from the other
+    side, by the tests below that break the wiring and watch ``execute`` refuse.
     """
     import inspect
 
     from mayhem.controller.executor import RunEngine
 
-    assert not hasattr(RunEngine, "with_preflight_gate"), (
-        "RunEngine gained a preflight-gate attach point: the Phase 3 STATUS line and this "
-        "pin both have to be revisited, because the run-path wiring may now exist"
-    )
+    assert hasattr(RunEngine, "with_preflight_gate")
     parameters = inspect.signature(RunEngine.__init__).parameters
-    assert "preflight_gate" not in parameters, (
-        "RunEngine now takes a preflight gate: bind it in cli/execution.py and update the "
-        "Phase 3 ledger"
+    assert "preflight_gate" in parameters
+    # Optional, and defaulted to nothing: the additive contract the rest of the
+    # engine relies on. A default *gate* would make every construction in the
+    # tree refuse, which is not an additive change.
+    assert parameters["preflight_gate"].default is None
+    # And ``execute`` actually asks it — the block is in the method body, not
+    # merely reachable through a helper nobody calls.
+    source = inspect.getsource(RunEngine.execute)
+    assert "self._preflight_gate is not None" in source
+    assert source.index("self._preflight_gate is not None") < source.index("self._open_run("), (
+        "the preflight gate is consulted after _open_run, so a refusal would already have "
+        "written a run row: move it back ahead of the run opening"
     )
-    # And the additive contract the surface relies on is still intact: with no
-    # gate, `admit` reads nothing at all.
+    # With no gate, `admit` reads nothing at all — unchanged from the old pin.
     from mayhem.controller.preflight_gate import admit
 
     assert admit(None, granting_inputs(_plan(), ports=PreflightPorts())) is None
+
+
+def test_the_run_path_refuses_on_a_gate_that_is_attached(tmp_path: Path) -> None:
+    """The seam is not decorative: attaching a refusing gate stops ``execute``.
+
+    Asserted against the store, the way the CLI's own refusal test is: the run
+    never opens, so there is no ``runs`` row, no step row, and no lease. A gate
+    consulted after the run opened would still *raise*, and the raise would still
+    be visible — but the world would already have changed, which is the whole
+    distinction the plan draws between "refused before anything was injected"
+    and "refused afterwards".
+    """
+
+    store = _make_store(tmp_path)
+    try:
+        engine = _bare_engine(store).with_preflight_gate(
+            PreflightGate(checks=(CHECK_INCIDENT_ACTIVE,), ports=PreflightPorts())
+        )
+        with pytest.raises(InvariantViolationError) as caught:
+            engine.execute(_plan())
+        # The gate's own refusal, not some other error wearing its clothes.
+        assert type(caught.value).__name__ == "PreflightRefusedError"
+        assert store.query("SELECT * FROM runs WHERE id = ?", (RUN_ID,)) == []
+    finally:
+        store.close()
+
+
+def test_the_run_path_still_runs_byte_identically_with_no_gate(tmp_path: Path) -> None:
+    """The additive half: no gate attached means the block does not exist.
+
+    ``execute`` with no gate attached completes, and the report property is
+    ``None`` — nothing was consulted, so nothing is claimed. Without this the
+    wiring could be "safe" only by refusing everything, which is a refusal that
+    passes every test above.
+    """
+
+    store = _make_store(tmp_path)
+    try:
+        with store.write() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO config_snapshots (id, resolved_json, source_map,"
+                " created_at) VALUES ('c-1', '{}', '{}', 'now')"
+            )
+        engine = _bare_engine(store)
+        assert engine.preflight_gate is None
+        result = engine.execute(_empty_plan())
+        assert result.status == "completed"
+        assert engine.preflight_report is None
+    finally:
+        store.close()
+
+
+def test_the_run_path_has_no_preflight_bypass() -> None:
+    """No ``--force``, no ``--no-preflight``, no ``skip_preflight``.
+
+    The stop surface has no bypass flag and
+    :func:`test_stop_has_no_bypass_flag` says so; this is the same property for
+    the run path, asserted by *absence of the mechanism* rather than by the
+    absence of a spelling. The only way ``execute`` skips the gate is
+    ``preflight_gate=None``, which means no gate was ever configured — and that
+    is not a bypass, because there is nothing to get past.
+    """
+    import inspect
+
+    from mayhem.cli import execution as execution_module
+    from mayhem.controller.executor import RunEngine
+
+    forbidden = {"skip_preflight", "no_preflight", "force_preflight", "ignore_preflight"}
+    # The constructor keyword set and the public surface, on both the engine and
+    # the module that attaches the gate.
+    engine_params = set(inspect.signature(RunEngine.__init__).parameters)
+    assert not engine_params & forbidden, engine_params & forbidden
+    public = {name for name in dir(RunEngine) if not name.startswith("_")}
+    public |= {name for name in dir(execution_module) if not name.startswith("_")}
+    assert not public & forbidden, public & forbidden
+    # A module-level escape hatch is the same bypass in a different spelling.
+    assert not [
+        name for name in dir(execution_module) if "preflight" in name and "attach" not in name
+    ], "cli/execution.py grew a preflight entry point other than the attach helper"
+    assert not hasattr(RunEngine, "without_preflight_gate")
+
+
+def _bare_engine(store: Store) -> Any:
+    """A :class:`RunEngine` over *store* with nothing attached but the sink."""
+    from mayhem.controller.executor import RunEngine
+
+    return RunEngine(store, SQLiteLeaseSink(store), sleeper=lambda _seconds: None)
+
+
+def _empty_plan(run_id: str = "r-drill-empty00") -> ExecutionPlan:
+    """A plan with no steps: the cheapest thing ``execute`` can complete.
+
+    It exists so "the no-gate path is unchanged" can be asserted by *running* it
+    rather than by reading the source. A plan that names no fault resolves no
+    target and reaches no safety gate, so whatever preflight did or did not do
+    has nothing else to show up in.
+    """
+    return ExecutionPlan(
+        run_id=run_id,
+        kind=ExperimentKind.DRILL,
+        steps=(),
+        config_snapshot_id="c-1",
+        topology_snapshot_id="",
+        environment_fingerprint="f-1",
+    )
 
 
 def _documented_stop_invocations() -> list[str]:
