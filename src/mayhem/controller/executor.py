@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from mayhem.agents.sinks import LeaseSink
+    from mayhem.controller.preflight_gate import PreflightGate, PreflightReport
     from mayhem.controller.resource_manager import ResourceManager
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.checks import SteadyStateCheck
@@ -467,6 +468,7 @@ class RunEngine:
         require_intent: bool = False,
         allow_implicit: bool = False,
         budget_guard: RunBudgetGuard | None = None,
+        preflight_gate: PreflightGate | None = None,
     ) -> None:
         self._store = store
         self._sink = sink
@@ -526,6 +528,21 @@ class RunEngine:
         # BudgetNode, so it cannot enforce a damage refusal.
         self._budget_guard = budget_guard
         self._budget_pause: PauseForReview | None = None
+        # Plan 10 Phase 3 — the refusing preflight gate (gap 9). Same additive
+        # contract as the budget guard above and no weaker: there is no default
+        # gate, no ``skip_preflight``, no ``require_preflight=False``. With none
+        # attached this is one ``is not None`` test per run; with one attached,
+        # ``execute`` refuses the run before ``_open_run`` — so before any run
+        # row, any step row, and any lease exists.
+        #
+        # The engine supplies only the inputs it actually holds. Everything else
+        # stays at ``PreflightInputs``' own ``None``/empty default and is judged
+        # accordingly: no preflight preview, no agent registry, no policy
+        # decision. Those are ``FAIL``s naming what they lacked, which is the
+        # point — the engine reports the absence rather than answering for the
+        # systems it cannot see.
+        self._preflight_gate = preflight_gate
+        self._preflight_report: PreflightReport | None = None
 
     # -- public -----------------------------------------------------------------------
 
@@ -567,6 +584,22 @@ class RunEngine:
                         plan, graph, k8s_phase.safety or safety_ctx
                     )  # G1+G2, raises SafetyRefusedError
                 k8s_events = k8s_phase.events
+        # Plan 10 Phase 3 — the refusing PREFLIGHT gate, immediately before the
+        # budget admission below and for the same reason: both sit after the
+        # plan-time gates and ahead of ``_open_run``, which is the last moment a
+        # refusal still prevents *every* mutation rather than some. Preflight
+        # first because one of the checks it runs (``budget:available``) reads the
+        # guard the next block admits against — asking about affordability before
+        # deciding it is the order the two documents already stand in.
+        #
+        # There is no flag here to get past it. The only way this block does not
+        # run is ``preflight_gate=None``, which means *this run has no gate
+        # configured* — the additive contract ``preflight_gate.admit(None, …)``
+        # was built for, and which reads nothing at all. It is not a bypass:
+        # there is nothing configured to bypass, and configuring one is a
+        # per-call-site decision rather than a runtime switch.
+        if self._preflight_gate is not None:
+            self._admit_preflight(plan)
         # Plan 23 Phase 3 — resource-budget ADMISSION, beside validate_plan and
         # before _open_run, which is the last moment at which a refusal still
         # prevents *every* mutation rather than some: no run row, no step row, no
@@ -685,6 +718,82 @@ class RunEngine:
         kind = EventKind.RUN_COMPLETED if status == "completed" else EventKind.RUN_FAILED
         self._emit(Event(kind=kind, run_id=plan.run_id))
         return result
+
+    # -- preflight (plan 10 Phase 3) -------------------------------------------
+    # Every method in this block is inert unless a PreflightGate was attached.
+
+    def with_preflight_gate(self, gate: PreflightGate) -> RunEngine:
+        """Attach this run's refusing preflight gate; returns the engine.
+
+        The additive attach point, and the same shape
+        :meth:`with_budget_guard` already has: ``build_run_engine`` is shared by
+        every CLI surface, so requiring each one to thread a keyword through would
+        make preflight a per-surface decision. There is deliberately no sibling
+        that removes it — no ``without_preflight_gate``, no ``skip_preflight``
+        flag, no environment variable. A gate that a caller can turn off is not
+        a gate; the only absent state is the one where none was ever configured,
+        which reads nothing and refuses nothing because there is nothing to
+        refuse with.
+        """
+        self._preflight_gate = gate
+        self._preflight_report = None
+        return self
+
+    @property
+    def preflight_gate(self) -> PreflightGate | None:
+        """The attached gate, or ``None`` when this run has no preflight."""
+        return self._preflight_gate
+
+    @property
+    def preflight_report(self) -> PreflightReport | None:
+        """The granting report, or ``None`` when the gate was never consulted.
+
+        ``None`` covers both "no gate" and "refused", and the refusal is not
+        reachable through this property at all: a refused ``execute`` raises, so
+        there is no report to read on that path. A caller that wants the refusal
+        reads it from the raised :class:`~mayhem.controller.preflight_gate.\
+PreflightRefusedError`, which carries both the report and the stop trigger.
+        """
+        return self._preflight_report
+
+    def _admit_preflight(self, plan: ExecutionPlan) -> PreflightReport:
+        """Ask the gate whether this run may start, and record the answer.
+
+        The inputs are assembled from what this engine holds and nothing else:
+        the plan being executed, the injected clock, the live topology graph when
+        this engine has one, and the attached budget guard. The preflight
+        preview, the agent registry, and the policy decision are **not**
+        synthesised here — this class holds none of them, so they arrive at their
+        ``None`` defaults and the checks that need them report ``FAIL`` naming
+        what was missing. Inventing a preview would be the plan's bug rather
+        than its fix: a gate fed an opinion it manufactured would certify it.
+
+        Raises:
+            PreflightRefusedError: Any check refused, or the gate evaluated
+                nothing. Raised before ``_open_run``, so the refusal leaves no
+                run row, no step row, and no lease — and carries a
+                ``PREFLIGHT_REFUSAL`` stop trigger naming every failing check
+                with its evidence reference.
+        """
+        from mayhem.controller.preflight_gate import PreflightInputs, admit
+
+        assert self._preflight_gate is not None
+        graph = self._live_graph() if self._live_graph is not None else None
+        report = admit(
+            self._preflight_gate,
+            PreflightInputs(
+                plan=plan,
+                now=utc_now(),
+                graph=graph,
+                budget=self._budget_guard,
+            ),
+        )
+        # ``admit`` returns ``None`` only for a ``None`` gate, which the ``is not
+        # None`` above excludes — so the report exists here, and the assignment
+        # needs no ``or raise`` to say so.
+        self._preflight_report = report
+        assert report is not None
+        return report
 
     # -- resource budgets (plan 23 Phase 3) ------------------------------------
     # Every method in this block is inert unless a RunBudgetGuard was attached.
