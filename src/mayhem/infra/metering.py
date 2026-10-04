@@ -80,6 +80,7 @@ not renderable" stays true end to end.
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -102,9 +103,12 @@ from mayhem.domain.budgets import (
     unit_for,
 )
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.hashing import sha256_hex
+from mayhem.infra.secret_resolver import require_clean_artifact, require_persistable_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
+    from typing import Any
 
     from mayhem.domain.budgets import (
         BenchmarkSpec,
@@ -125,13 +129,16 @@ __all__ = [
     "RULE_METER_CONTRACT",
     "RULE_METER_SINK_FAILED",
     "RULE_METHODOLOGY_REQUIRED",
+    "RULE_RECORD_NOT_BOUND",
     "STORE_GROWTH_BYTES",
     "TARGET_COUNT_SEAM",
     "AdmissionDecision",
+    "BenchmarkEvidence",
     "BudgetAdmissionRefused",
     "ContinuityDecision",
     "MeterContractError",
     "MeterReading",
+    "MeterSeriesEvidence",
     "MeterSink",
     "PauseForReview",
     "ResourceBudgetEnforcer",
@@ -142,6 +149,8 @@ __all__ = [
     "now_utc",
     "publish_benchmark",
     "render_scale_claim",
+    "seal_benchmark_record",
+    "seal_meter_series",
     "strict_reading",
 ]
 
@@ -156,6 +165,7 @@ RULE_METER_CONTRACT = "meter.contract_violation"
 RULE_ESTIMATE_UNMEASURED = "meter.estimate_unmeasured"
 RULE_BUDGET_NOT_GOVERNED = "meter.budget_not_governed"
 RULE_METHODOLOGY_REQUIRED = "benchmark.methodology_required"
+RULE_RECORD_NOT_BOUND = "benchmark.record_not_bound"
 
 CONTINUITY_PAUSE = "budget.continuity_pause"
 """The action a pause carries: the run stops being authorized to continue."""
@@ -590,6 +600,159 @@ def render_scale_claim(claim: ScaleClaim) -> ScaleClaimView:
     through that door rather than reaching into the claim itself.
     """
     return claim.render()
+
+
+# -- the evidence boundary (Phase 4) -------------------------------------------
+
+
+def _canonical(document: Any) -> str:
+    """A stable serialisation, so a record's digest covers exactly its content."""
+    return json.dumps(document, sort_keys=True, separators=(",", ":"), default=str)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkEvidence:
+    """A published benchmark cleared for persistence and bound to its spec.
+
+    Two things make this *evidence* rather than a number somebody wrote down.
+    First, ``record_digest`` is a sha256 over the canonical record, so a reader
+    can tell whether the artifact they are looking at is the one that was
+    cleared. Second, ``spec_digest`` is carried forward from the spec that
+    produced it, so a published number names the spec that generated it — which
+    is what makes two releases comparable at all (plan 22 owns the comparison).
+    """
+
+    spec_id: str
+    spec_digest: str
+    metric: str
+    scale: str
+    methodology: str
+    published_at: datetime
+    measurements: tuple[Measurement, ...]
+    record_digest: str
+
+    def describe(self) -> str:
+        return (
+            f"{self.spec_id} @ {self.scale} — {self.metric}, "
+            f"{len(self.measurements)} measurement(s), record {self.record_digest[:12]}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MeterSeriesEvidence:
+    """A run's metering readings cleared for persistence, in one digest."""
+
+    scope_key: str
+    readings: tuple[MeterReading, ...]
+    record_digest: str
+    dropped: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        return (
+            f"{self.scope_key} — {len(self.readings)} reading(s), record {self.record_digest[:12]}"
+        )
+
+
+def _require_bound_digest(document: dict[str, Any], *, artifact: str) -> str:
+    """Run both boundary gates over a record and return its canonical digest.
+
+    The order is the one plan 29 Phase 4 established: the *grade* rule first (a
+    field classified ``secret`` may not be persisted here at all), then the
+    *byte* rule (a resolved credential's bytes may not be present even under a
+    field name nobody graded). Running them in the other order would let a
+    properly-named secret field past whenever no guard happened to be active.
+    """
+    require_persistable_document(document, artifact=artifact)
+    payload = _canonical(document)
+    require_clean_artifact(payload, artifact=artifact)
+    return sha256_hex(payload)
+
+
+def seal_benchmark_record(
+    benchmark: PublishedBenchmark,
+    *,
+    spec: BenchmarkSpec,
+) -> BenchmarkEvidence:
+    """Clear a published benchmark for persistence and bind it to its spec.
+
+    This is the Phase 4 write path for benchmarks: the only way a published
+    number becomes a stored artifact. It is deliberately *not* an
+    :class:`~mayhem.infra.evidence.EvidenceEnvelope` — a benchmark is not a run,
+    has no plan, no blast radius and no verdict, and forcing it into that shape
+    would have it assert fields it does not have. What it gets instead is the
+    two gates every evidence write path in this codebase gets, plus a digest.
+
+    ``spec`` is a required argument rather than an optional convenience. A
+    published benchmark *claims* a ``spec_digest``; comparing that claim against
+    the spec it was supposedly produced from is the only way to catch a record
+    bound to the wrong spec, and a check that compares the claim with itself
+    cannot fail and is not a check.
+
+    Raises:
+        InvariantViolationError: With :data:`RULE_RECORD_NOT_BOUND` when the
+            benchmark's ``spec_digest`` is not the one ``spec`` computes; or from
+            the boundary gates — a field graded ``secret``, or a resolved
+            credential's bytes, anywhere in the record. Nothing is written and no
+            digest is returned.
+    """
+    expected = spec.compute_digest()
+    if benchmark.spec_digest != expected:
+        msg = (
+            f"benchmark {benchmark.spec_id} claims spec digest "
+            f"{benchmark.spec_digest!r}, but the spec it was produced from "
+            f"computes {expected!r}; a record bound to the wrong spec cannot be "
+            "compared across releases, which is the only reason to seal one"
+        )
+        raise InvariantViolationError(RULE_RECORD_NOT_BOUND, msg)
+    document = benchmark.model_dump(mode="json")
+    digest = _require_bound_digest(document, artifact="benchmark_record")
+    return BenchmarkEvidence(
+        spec_id=benchmark.spec_id,
+        spec_digest=benchmark.spec_digest,
+        metric=benchmark.metric,
+        scale=benchmark.scale.describe(),
+        methodology=benchmark.methodology,
+        published_at=benchmark.published_at,
+        measurements=tuple(benchmark.measurements),
+        record_digest=digest,
+    )
+
+
+def seal_meter_series(
+    readings: Iterable[MeterReading],
+    *,
+    scope_key: str,
+) -> MeterSeriesEvidence:
+    """Clear a run's metering series for persistence and digest it as one record.
+
+    ``scope_key`` is required rather than optional: a metering ledger with no
+    scope cannot be attributed to anything, and an unattributable cost number is
+    the one thing a resource budget must not be built on.
+    """
+    if not scope_key.strip():
+        msg = (
+            "a meter series must name the scope it belongs to; an unattributed "
+            "cost number is not evidence"
+        )
+        raise InvariantViolationError(RULE_METER_CONTRACT, msg)
+    collected = tuple(readings)
+    document = {
+        "scope_key": scope_key,
+        "readings": [
+            {
+                "seam": reading.seam,
+                "unit": reading.unit,
+                "value": reading.value,
+                "kind": reading.kind,
+                "run_id": reading.run_id,
+                "at": reading.at.isoformat() if reading.at is not None else None,
+                "note": reading.note,
+            }
+            for reading in collected
+        ],
+    }
+    digest = _require_bound_digest(document, artifact="meter_series")
+    return MeterSeriesEvidence(scope_key=scope_key, readings=collected, record_digest=digest)
 
 
 # -- the meter -----------------------------------------------------------------
