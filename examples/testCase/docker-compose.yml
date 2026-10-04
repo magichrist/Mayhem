@@ -77,12 +77,18 @@ services:
     restart: always 
 
   # ── PostgreSQL database ─────────────────────────────────────────────────
+  # No password here on purpose. The db port is `expose`d, never published to
+  # the host, so this drill needs no credential — and an example that ships one
+  # teaches the reader to paste one. Plan 29's scanner
+  # (`tests/unit/test_secret_fixture_scan.py`) refuses a literal credential in
+  # this file; `credentialRef` has no representation in the compose schema, so
+  # the honest answer for a drill that needs no auth is to have none.
   db:
     container_name: testcase-db
     image: docker.io/library/postgres:16-alpine
     environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
       POSTGRES_USER: mayhem
-      POSTGRES_PASSWORD: mayhem
       POSTGRES_DB: mayhem
     expose:
       - "5432"

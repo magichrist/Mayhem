@@ -132,8 +132,8 @@ services:
     container_name: testcase-db
     image: docker.io/library/postgres:16-alpine
     environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
       POSTGRES_USER: mayhem
-      POSTGRES_PASSWORD: mayhem
       POSTGRES_DB: mayhem
     expose:
     - '5432'
