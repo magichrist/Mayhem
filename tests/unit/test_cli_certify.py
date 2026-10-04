@@ -76,6 +76,7 @@ from mayhem.infra.certification_repository import CertificationRepository
 from mayhem.infra.certification_runner import (
     CellRequest,
     CertificationRequest,
+    RecoveryEvidence,
     ResidueFinding,
     ResidueScan,
     effective_lanes,
@@ -141,13 +142,23 @@ def _cell(engine: EngineLane = EngineLane.DOCKER) -> MatrixCell:
 
 
 def _store_with_certification(
-    tmp_path: Path, *engines: EngineLane, ttl: timedelta = DEFAULT_CERTIFICATION_TTL
+    tmp_path: Path,
+    *engines: EngineLane,
+    ttl: timedelta = DEFAULT_CERTIFICATION_TTL,
+    seal: bool = True,
 ) -> str:
     """A migrated database holding one certified record per engine given.
 
     The instant is the wall clock so the record is *currently* live: a fixture
     stamped in the past would be honestly reported as lapsed, which is its own
     test (see ``test_a_lapsed_record_is_reported_as_not_live``).
+
+    ``seal=True`` writes a real attestation chain behind each record, because
+    this surface reads through ``sealed_certification_gate``: a claim with no
+    verifiable chain is reported withdrawn, and a fixture that planted bare rows
+    would therefore be asserting the *absence* of a certification while claiming
+    to assert its presence. ``seal=False`` is the negative control for exactly
+    that, used by ``test_a_claim_with_no_sealed_chain_is_reported_withdrawn``.
     """
     from mayhem.domain.common import utc_now
 
@@ -157,39 +168,95 @@ def _store_with_certification(
     try:
         repository = CertificationRepository(store)
         for engine in engines or tuple(EngineLane):
+            cell = _cell(engine)
+            bundle = _sealed_bundle(engine)
             record = CertificationRecord(
                 fault_id=FAULT_ID,
-                cell=_cell(engine),
+                cell=cell,
                 injector_version="1.0.0",
                 expires_at=at + ttl,
-            )
-            digests = expected_evidence_digests(
-                params={},
-                target="docker/testcase-api",
-                observed_effect="process execution state changes|observed=SIGSTOP",
-                recovery=None,
-                residue=ResidueScan(performed=True),
             )
             repository.append(
                 certify_record(
                     record,
                     at=at,
                     expires_at=at + ttl,
-                    evidence=(
-                        EvidenceBundleRef(
-                            bundle_hash=evidence_digest("bundle", digests),
-                            mayhem_version="1.0.0",
-                            digests=digests,
-                        ),
-                    ),
+                    evidence=(bundle,),
                     outcome="certified on a real cell",
                 ),
-                run_id="r-seed",
+                run_id=f"r-seed-{engine.value}",
                 now=at,
             )
+            if seal:
+                _seal(store, bundle, cell)
     finally:
         store.close()
     return path
+
+
+#: The recovery signal a container-lane ``proc.pause`` certification carries:
+#: undo ran, the lease came back to released, and the observed distance from
+#: that state is zero. ``proc.pause`` is reversible, so
+#: ``requires_recovery_verification`` demands a probe and
+#: ``CertificationEvidenceVerdict.grants_runtime_verification`` will not grant a
+#: claim without one — a fixture that certified without recovery would be
+#: claiming exactly what the gate is right to withdraw.
+_GOOD_RECOVERY = RecoveryEvidence(
+    probe="lease.released", baseline=0.0, observed=0.0, tolerance=0.0, undo_ran=True
+)
+
+
+def _sealed_bundle(engine: EngineLane) -> EvidenceBundleRef:
+    """The bundle one cell's run would have produced, digests derived honestly.
+
+    Cell-specific on purpose: two cells are two runs, so their observed effect
+    strings differ and each bundle — and therefore each sealed chain — is
+    distinct. A fixture that reused one bundle hash for both engines would have
+    the second seal overwrite the first chain.
+    """
+    digests = expected_evidence_digests(
+        params={},
+        target=f"{engine.value}/testcase-api",
+        observed_effect=(
+            f"process execution state changes|observed=SIGSTOP on {engine.value}"
+        ),
+        recovery=_GOOD_RECOVERY,
+        residue=ResidueScan(performed=True),
+    )
+    return EvidenceBundleRef(
+        bundle_hash=evidence_digest("bundle", digests),
+        mayhem_version="1.1.0",
+        digests=digests,
+    )
+
+
+def _seal(store: Store, bundle: EvidenceBundleRef, cell: MatrixCell) -> None:
+    """Write the attestation chain a live claim has to be able to point at."""
+    from mayhem.controller.certification_evidence import (
+        CertificationFacts,
+        seal_certification_evidence,
+    )
+    from mayhem.domain.attestation import AttestedTimestamp
+    from mayhem.domain.common import utc_now
+
+    at = utc_now()
+    seal_certification_evidence(
+        store,
+        CertificationFacts(
+            bundle=bundle,
+            fault_id=FAULT_ID,
+            cell_label=cell.label,
+            cell_fingerprint=cell.fingerprint,
+            injector_version="1.0.0",
+            run_id="r-seed",
+            residue=ResidueScan(performed=True),
+            recovery=_GOOD_RECOVERY,
+            recovery_required=True,
+            compensated=True,
+            outcome="certified on a real cell",
+        ),
+        recorded_at=AttestedTimestamp(wall_clock=at, monotonic_ns=1, source="system"),
+    )
 
 
 # ── the surface ─────────────────────────────────────────────────────────────
@@ -293,6 +360,99 @@ def test_a_stored_record_changes_the_answer(tmp_path: Path) -> None:
         for outcome in row["maturity"]["criteria"]
         if "certified certification record" in outcome["name"] and not outcome["met"]
     ], "with a record on every required engine the gate must be satisfied"
+
+
+def test_a_claim_with_no_sealed_chain_is_reported_withdrawn(tmp_path: Path) -> None:
+    """The strict gate is armed: a record nothing sealed grants nothing.
+
+    This is the surface-level consequence of
+    ``sealed_certification_gate`` replacing ``certification_gate`` here. The row
+    still says ``certified`` — the row is history — but the report must not
+    present it as a standing claim, and it must say *why* rather than quietly
+    counting a fault that no longer has evidence behind it.
+    """
+    db = _store_with_certification(
+        tmp_path, EngineLane.DOCKER, EngineLane.PODMAN, seal=False
+    )
+    result = _run("--db", db, "certify", "matrix", FAULT_ID, "--json")
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    row = payload["faults"][0]
+    assert payload["certified_faults"] == 0
+    assert row["certification"]["live"] is False
+    assert all(cell["state"] == "failed" for cell in row["certification"]["cells"])
+    assert all("sealed evidence" in cell["reason"] for cell in row["certification"]["cells"])
+    assert row["maturity"]["maturity"] in {"experimental", "verified-unit"}
+
+
+def test_a_chain_that_disappears_stops_being_reported_as_a_standing_claim(
+    tmp_path: Path,
+) -> None:
+    """Deleting the evidence withdraws the claim; nothing else can restore it.
+
+    The failure the whole plan exists to prevent is a claim that outlives what it
+    is checked against. Asserted by removing the attestation rows behind a claim
+    that was live a moment earlier — which is exactly what
+    ``CertificationEvidenceHeldError`` and ``reconcile_certification_evidence``
+    exist to make hard to do by accident, and what the read-time gate exists to
+    catch when it happens anyway.
+    """
+    db = _store_with_certification(tmp_path, EngineLane.DOCKER, EngineLane.PODMAN)
+    before = json.loads(_run("--db", db, "certify", "matrix", FAULT_ID, "--json").output)
+    assert before["certified_faults"] == 1
+
+    store = Store.open_migrated(db)
+    try:
+        with store.write() as conn:
+            conn.execute("DELETE FROM attestation_events")
+            conn.execute("DELETE FROM attestation_manifests")
+    finally:
+        store.close()
+
+    after = json.loads(_run("--db", db, "certify", "matrix", FAULT_ID, "--json").output)
+    assert after["certified_faults"] == 0
+    row = after["faults"][0]
+    assert row["certification"]["live"] is False
+    assert all(cell["state"] == "failed" for cell in row["certification"]["cells"])
+    assert row["maturity"]["maturity"] in {"experimental", "verified-unit"}
+
+
+def test_the_matrix_sweep_persists_ageing_and_is_still_opt_in(tmp_path: Path) -> None:
+    """``--sweep`` writes the transitions a plain read only reports.
+
+    Two halves, both required: a read must not mutate what it reports on, and
+    the command that does mutate must say so in its payload rather than leaving
+    the operator to guess whether a demotion happened.
+    """
+    db = _store_with_certification(
+        tmp_path,
+        EngineLane.DOCKER,
+        EngineLane.PODMAN,
+        ttl=-timedelta(hours=1),  # already lapsed when it is written
+    )
+
+    read = json.loads(_run("--db", db, "certify", "matrix", FAULT_ID, "--json").output)
+    assert read["expiry_sweep"] == {"performed": False}
+    store = Store.open_migrated(db)
+    try:
+        assert all(
+            row.record.state.value == "certified" for row in CertificationRepository(store).all()
+        )
+    finally:
+        store.close()
+
+    swept = json.loads(
+        _run("--db", db, "certify", "matrix", FAULT_ID, "--sweep", "--json").output
+    )
+    assert swept["expiry_sweep"]["performed"] is True
+    assert swept["expiry_sweep"]["aged"] == 2
+    store = Store.open_migrated(db)
+    try:
+        assert sorted(
+            row.record.state.value for row in CertificationRepository(store).all()
+        ) == ["stale", "stale"]
+    finally:
+        store.close()
 
 
 def test_a_lapsed_record_is_reported_as_not_live_without_any_sweep(
