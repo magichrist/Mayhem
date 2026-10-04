@@ -16,8 +16,16 @@ this file's snapshot diff.
 
 from __future__ import annotations
 
+import re
+from typing import TYPE_CHECKING
+
+import pytest
+
 from mayhem.infra.migrations import ALL_MIGRATIONS
 from mayhem.infra.store import Store
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Canonical version snapshot — new versions only ever append.
 VERSION_SNAPSHOT: tuple[int, ...] = tuple(sorted(m.version for m in ALL_MIGRATIONS))
@@ -194,4 +202,140 @@ def test_name_snapshot_is_stable() -> None:
         # snapshot had no reason to name it — and a test could pass against a
         # table no deployment would ever have had.
         "fabric_journal",
+        # ``api_gateway`` (version 34) and ``api_safety`` (version 35) are the two
+        # control-plane tables the HTTP surface needs: the idempotency record for
+        # a mutating request, and the safety layer's log of the mutations that
+        # passed. Their DDL lives in ``infra.api_gateway_schema`` — moved down out
+        # of the two ``controller`` modules that first spelled it, because
+        # registering them here would otherwise have made ``infra`` import
+        # ``controller`` — and both migration objects are *imported* into
+        # ``ALL_MIGRATIONS`` rather than re-spelled. Appended per the same
+        # procedure; nothing above is edited.
+        #
+        # This entry exists because the tables are now migrated by the production
+        # chain. Until registration, ``api_idempotency`` existed only in databases
+        # whose fixture spliced the migration in, and ``api_safety``'s receipt
+        # write took its "table not present" fallback on every real deployment.
+        "api_gateway",
+        "api_safety",
+        # ``probe_seal`` (version 36) is plan 11 Phase 4's durable probe seal —
+        # the redacted observations, sealed conditions and citation verdicts a
+        # reviewer reads back, in one table with one writer. Appended per the same
+        # procedure; nothing above is edited.
+        #
+        # It keeps version 36 rather than 37: ``probe_seal_store`` reserved 36 and
+        # its own tests published ``36`` / ``"0036_probe_seal"`` as facts about
+        # this lane. ``Migration.version`` *is* the migration id, so the colliding
+        # ``ha_promotions`` took the next free id instead (see below).
+        "probe_seal",
+        # ``ha_promotions`` (version 37) is plan 19's standby roster and promotion
+        # ledger, including the *refused* promotions. Appended per the same
+        # procedure; nothing above is edited.
+        #
+        # It is 37 rather than the 36 its module originally hard-coded because
+        # ``probe_seal`` above holds 36. ``Migration.version`` is the id, and
+        # ``run_migrations`` refuses duplicates outright — so the alternative was
+        # not a second 36 but a startup failure in every migrated store. Version
+        # 36 is the lower of the two and already published by another lane's
+        # tests, so 37 is what moved.
+        "ha_promotions",
     ), "migration name sequence drifted from the snapshot — append-only."
+
+
+# --------------------------------------------------------------------------- #
+# Reachability: the last four migrations' tables exist because the chain ran    #
+# --------------------------------------------------------------------------- #
+#
+# ``NAME_SNAPSHOT`` above says the migrations are *registered*. It does not say
+# their DDL runs — a migration whose ``statements`` named nothing, or whose only
+# real DDL lived in a fixture, would pass the name gate and still leave a
+# deployment without the table. So each table is checked in both directions:
+# present in a database migrated by the **production** tuple (no ``migrations=``
+# argument, exactly as ``Store.open_migrated`` takes it in an application), and
+# genuinely absent after rolling that same chain back one version.
+
+#: Every table migrations 34..37 create, paired with the version that creates it.
+#:
+#: **Five tables from four migrations is not a mistake.** ``ha_promotions``
+#: creates both ``control_plane_standbys`` (the roster) and
+#: ``control_plane_promotions`` (the log, refused promotions included) — the two
+#: halves plan 19 needs to say who was promoted and out of which term.
+_REGISTERED_TABLES: tuple[tuple[str, int], ...] = (
+    ("api_idempotency", 34),
+    ("api_mutation_receipts", 35),
+    ("probe_seals", 36),
+    ("control_plane_standbys", 37),
+    ("control_plane_promotions", 37),
+)
+
+_TABLE_NAME = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z_0-9]*)")
+
+
+def _tables_created_by(version: int) -> set[str]:
+    """The tables migration ``version`` actually creates, read off its DDL."""
+    migration = next(m for m in ALL_MIGRATIONS if m.version == version)
+    return {
+        found
+        for statement in migration.statements
+        for found in _TABLE_NAME.findall(statement)
+    }
+
+
+def _live_tables(store: Store) -> set[str]:
+    return {
+        str(row["name"])
+        for row in store.query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+
+
+def test_the_registered_table_list_matches_the_migrations_ddl() -> None:
+    """The literal above is checked against the DDL, so it cannot rot silently.
+
+    Without this, a lane that added a sixth table to ``ha_promotions`` would get a
+    reachability suite that quietly stopped covering it — the failure mode of a
+    hand-maintained list that nothing compares against the source.
+    """
+    derived = {
+        table
+        for version in sorted({version for _, version in _REGISTERED_TABLES})
+        for table in _tables_created_by(version)
+    }
+    assert derived == {table for table, _ in _REGISTERED_TABLES}
+
+
+def test_the_production_chain_creates_every_registered_table(tmp_path: Path) -> None:
+    store = Store.open_migrated(tmp_path / "reachable.db")
+    try:
+        live = _live_tables(store)
+        missing = [table for table, _ in _REGISTERED_TABLES if table not in live]
+        assert not missing, (
+            f"registered in ALL_MIGRATIONS but absent from a production-migrated "
+            f"database: {missing} — the DDL lives in a fixture, not in the chain"
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(("table", "version"), _REGISTERED_TABLES)
+def test_a_registered_table_is_absent_one_version_earlier(
+    table: str, version: int, tmp_path: Path
+) -> None:
+    """The negative control, and the reason the positive test means anything.
+
+    Rolling back to ``version - 1`` runs the migrations' own ``down_statements``.
+    If a table survived its migration's rollback, it was never created *by* that
+    migration — so it would have been present before it, and the positive test
+    would have been proving nothing about the registration.
+    """
+    store = Store.open_migrated(tmp_path / f"rollback-{version}.db")
+    try:
+        assert table in _live_tables(store)
+
+        store.migrate_down(version - 1)
+
+        assert store.schema_version == version - 1
+        assert table not in _live_tables(store)
+    finally:
+        store.close()
