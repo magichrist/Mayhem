@@ -74,12 +74,35 @@ Cluster operations guide, certificate management runbook, backup/restore guide w
   **`infra/backup_engine.py` — scheduled snapshots, WAL archiving, evidence replication, and drills that verify.** `SnapshotSchedule` is pure (`is_due(now, last_taken_at)`), and a schedule with no prior capture is **due** — a fresh install has no backup and treating that as "not yet" is how a system runs for a month without one. `SqliteSnapshotSource` captures with the stdlib's own `sqlite3.Connection.backup` (a real, consistent SQLite file, not a JSON envelope), and WAL archiving runs `PRAGMA wal_checkpoint(TRUNCATE)` and records the frame count SQLite reports — a real log position, not a counter this engine invented. Every capture is **read back** out of the object store and re-digested before a descriptor is written, and a store that returns different bytes is refused; a descriptor therefore always names bytes somebody wrote. `ObjectStorePort` is the seam for S3/Azure/GCS — **no SDK is imported and no production backend ships in this phase** (the same shape `infra/retention.py` already uses); `UnavailableObjectStore` is the negative control and every call on it raises, so the engine fails **closed**. `run_drill()` fetches the bytes, writes them into a **fresh temporary cell**, opens it as its own store, runs one observation per required check *against that cell*, measures data loss from the descriptor's own `covers_through`, and hands the observations to Phase 1's `RestoreVerification`, which **derives** the outcome. The live store is never opened for writing. Checks: `ROW_COUNT` and `DIGEST_MATCH` are real comparisons; `WAL_REPLAY` is a **position** check whose own text says "POSITION CHECK ONLY: no write-ahead log frame was applied, so this does not prove frame-level replay"; `EVIDENCE_CHAIN` re-verifies the restored run's attestation chain when a reader is bound and **fails closed** when none is; `SERVICE_HEALTHY` and `MTLS_HANDSHAKE` are probe ports with **no shipped implementation**, so they fail closed with that stated — which means a plan requiring `MTLS_HANDSHAKE` cannot produce a verified restore in this phase. **The engine writes no achieved RPO/RTO anywhere.** `state_objective` records a *target*; `report` delegates to Phase 1's `compare_against_objective`, so a stated RPO with no verified drill reads "rpo not demonstrated — no restore was attempted", never zero and never the target, and an all-failed drill set yields no measured value at all. A drill that does not verify is `failed`/`incomplete` and `claim_success()` raises; a tampered capture raises `BackupUnavailableError` and produces **no** verification row rather than a failing one.
 
   **Persistence.** Migration `M0032 ha_dr` (version 32; 30 and 31 were reserved for concurrent lanes, so 32 was taken rather than renumbering anything shipped) adds four tables with forward **and** down statements: `agent_command_nonces` (nonce primary key — one nonce, one dispatch, decided by the database rather than by an application race), `control_plane_leaders` (scope, strictly-increasing `term`, expiry), `control_plane_step_fences` (per `(run_id, step_id)`, the highest epoch *dispatched* plus the command that spent it), and `backup_snapshot_evidence` (the observations a drill compares against — a `SnapshotDescriptor`'s question input, with **no** "restored fine" column and **no** achieved-RPO column). It holds **no key material anywhere**, and no foreign key to `runs`. 101 tests across the three new files.
-- Phase 3: not started
-- Phase 4: not started
-- Phase 5: not started
-- Phase 6: not started
+- Phase 3 (surface: cluster operations, promotion, credential rotation, secure update channel): DONE — `domain/failover.py` landed the failover vocabulary, `controller/failover_service.py` the promotion path, `infra/failover_store.py` the durable record plus its own migration, `infra/certificate_authority.py` the trust decision and the X.509 refusal, `controller/credential_rotation.py` the policy-level sweep, `infra/update_manifest.py` the signed-update decision and applier, `controller/cluster_ops.py` the membership view, and `cli/failover_cmd.py` the operator surface. **Four of the eight modules had to be repaired before any of it worked, and the repairs are the point of this line** (see the four numbered items below). 314 tests across eight new test files.
+  - **`domain/failover.py` — the vocabulary, and the sentence the plan exists for.** `PrimaryStatus` is **three-valued** (`ALIVE` / `DEAD` / `INDETERMINATE`) and `LivenessAssessment.promotable` is `status is DEAD` — an identity test, never `not alive` — so a fourth member added later defaults to *not* promoting. Which observations may establish death is **data**, not a chain of `if`s: `DEATH_EVIDENCE` is exactly `{PRIMARY_LEASE_EXPIRED, PRIMARY_PROCESS_GONE}`. A missing heartbeat, an unreachable probe, a stale replica and "no evidence" establish nothing, and `LIVENESS_EVIDENCE` (unreachable probe, missing heartbeat) *vetoes* a promotion on its own, so a contradiction about whether a primary is alive reads as a reason to wait. Every observation must name the term it was taken against and when it was taken — an observation that cannot be checked against anything is the thing that gets promoted on — and an inadmissible one lands in `excluded` **with its reason**, because an assessment that silently dropped stale evidence would read identically to one that never saw it. `PromotionDecision` is where the structural guarantee lives: `PROMOTED` requires a `new_term` strictly greater than the requested term and cannot carry refusals; `REFUSED` cannot name a term at all. A takeover that does not move the term forward is not a handover, it is a second owner, and it is unrepresentable.
+  - **`controller/failover_service.py` — five steps in an order that cannot be skipped.** `promote()` runs the pure evidence check *before the store is read*, so there is no window in which mayhem has observed the leadership state and then promoted on an assessment that does not support it; then the stored term (a request decided against term *N* is refused once the store is at *N+1*); then the lease (a live foreign lease is refused unless the operator forced it); then `campaign()`, the only call that can move the term; then the record, **for both outcomes**. Refusals are returned rather than raised so a watchdog can keep waiting, and `promote_or_raise` carries the decision on the exception. Repaired in three places: `NO_LEADER` was added because a cold start could not work at all (there is no term to increase), the detail text now says that claiming an empty scope is a *campaign* rather than a failover, and `current_lease()` / `campaign()` were added as named seams so the CLI never reaches past the service.
+  - **`infra/failover_store.py` — the durable half, with its own migration.** `control_plane_promotions` stores **refused decisions too**, because "we observed the partition and did not promote" is the record an incident review needs and a success-only table could not produce it; `control_plane_standbys` is a roster that nothing treats as evidence. The schema repeats the domain's rule in CHECKs (`promoted` ⇒ `new_term > deposed_term` and an operator named; `refused` ⇒ `new_term = 0`) and carries a digest recomputed on every read, so a row edited behind the model's back refuses itself. Three real defects were repaired: (1) the row models demanded a 64-hex digest *before* stamping, which made `stamped()` unreachable and both models unconstructible; (2) `iso_utc` renders `+00:00` where pydantic's JSON mode renders `Z`, so every stored standby row refused itself on read — the digest is now taken over a document the model itself produced; (3) an **unconditional** unique index on `(scope, new_term)` made the *second refusal in a scope* collide with the first and be reported as a split brain — it is now `WHERE status = 'promoted'`, and the idempotent re-record and the duplicate-term refusal are decided by reading first inside the transaction rather than by pattern-matching SQLite's error text.
+  - **`infra/certificate_authority.py` — real checks, fixture cryptography, and a seam that refuses.** `FixtureCertificateAuthority` issues certificates whose `authority_signature` is HMAC-SHA256 over the canonical body and whose fingerprint is a sha256 over that same body, and it *verifies* both with `compare_digest`. What that establishes is stated in the module and stamped on every verdict: a holder of that fixture authority's shared key issued these bytes and they are unaltered. It is **not** a CA — no DER, no ASN.1, no RSA, no certificate parser — and `CA_ALGORITHM_FIXTURE` is recorded on every verdict so a report cannot read as a PKI result. `MtlsTrustService.is_real_pkix` is `False` for *both* shipped implementations, so a caller can ask instead of guessing. Three defects were repaired, and all three were ways of returning a pass: (1) the fingerprint was computed over a body containing itself, so an issued certificate never agreed with its own fingerprint and **no anchor could ever be minted**; (2) `anchor()` named the *leaf* as the anchor subject, which Phase 1's pinning rule reads as an issuer mismatch; (3) **the pinning verdict was computed for the narrative and thrown away**, so a certificate nobody had pinned was reported `TRUSTED` while its own detail said "not pinned". Pinning is now the last check in the order and a refusal like any other.
+  - **`controller/credential_rotation.py` — the policy object Phase 2's ledger asked for.** `RotationPolicy` is data with three numbers and one derived rule, and a degenerate policy (rotation due the moment a credential is issued) is refused at construction. The sweep is per-agent: one agent's refusal does not stop the other ninety-nine, and failures come back as `FAILED` outcomes rather than as exceptions that abort the sweep. The honest part is what rotation does **not** do: it provisions no key, and `key_provisioned` is `False` unless a `KeyProvisionerPort` was bound and returned one — including when a bound provisioner returns nothing. Immediately after a rotation the agent holds a credential it **cannot authenticate with**, and that is correct: a rotation whose overlap let the old key keep working would not have rotated anything. One repair: `RotationOutcome.describe()` appended the "NO signing key provisioned — this agent cannot authenticate until a provisioner issues one" note to *every* action, including a revocation, which is a false statement (a revoked agent's problem is the revocation, and no provisioner fixes it).
+  - **`infra/update_manifest.py` — "nothing is applied that has not been verified".** There is no `apply(manifest)`: the first argument to `UpdateApplier.apply` is the `ManifestVerdict`, there is no `trusted` field on a manifest, and `artifact_digest` is inside the signed body so the digest verification commits to is the digest the applier compares the fetched bytes against. A store that serves different bytes is refused `artifact_digest_mismatch` with the apply hook never called; a store that cannot be reached raises `artifact_unavailable`, because an unreachable store is not an applied update. Rollback takes the *earlier release's own manifest* — the bytes being installed still have to be bytes some manifest committed to — and refuses both "rolling back" to something newer and a rollback nobody approved. `verified` and `applicable` are separate properties on purpose: a perfectly signed manifest for the wrong channel is verified and not applicable. The signature is HMAC-SHA256, reusing Phase 2's canonicaliser and comparison, and `X509UpdateSignatureVerifier` **raises** `agent_signature_port_unavailable` rather than returning `False`, because "we could not check" and "the signature is wrong" are different facts and a caller conflating them would retry a bad manifest forever or treat an unavailable checker as a pass.
+  - **`controller/cluster_ops.py` — the read model, which holds no lock.** A frozen projection over the leadership lease, the standby roster, the enrolled identities and the stated recovery objectives, rebuilt from the store on every call. Rendering it cannot promote a standby, spend a fence, or rotate a credential, and the tests assert that by reading the store back afterwards. Three places it refuses to reassure: `leadership_verdict` says a leader is *recorded* and prints a caveat saying no quorum and no partition detection ship here; `backup_trusted` is `False` for any datastore with no *verified* restore drill; and `CredentialState` is five-valued with a reachable `UNKNOWN_KEY`, because an agent with no key port bound must not render as healthy. A datastore with **no stated objective produces no recovery row at all**, so nobody reads "0 snapshots" about a system nobody backs up and mistakes it for a finding. Repaired: `_credential_state` used `AgentCredential.is_valid_at`, which counts *rotation overdue* as a refusal — so `ROTATION_DUE` was unreachable and every due agent rendered as `EXPIRED`, the difference between "rotate this soon" and "this is broken". It now reads the window directly.
+  - **`cli/failover_cmd.py` — the operator surface, not registered.** Four commands (`ha promote`, `ha rotate`, `ha cert`, `ha update`) invoked directly through `CliRunner`; nothing in this phase touched `cli/command_registry.py` or `cli/app.py`. The design decision worth naming: **there is no flag for "we cannot reach the primary, so take over"**, because that is the branch a CLI most makes easy and must least offer. `ha promote` derives its evidence from the leadership store's own record — an expired lease is a durable fact, a live lease is `NO_EVIDENCE` — and break-glass is two flags because it is two separate claims: `--forced` ("I am taking this from a live lease") and `--attest-process-gone` (the operator's own attested account of an out-of-process witness, recorded with their name as the observation's source). Neither alone promotes; both are recorded on the promotion row and in the sealed evidence; the term still strictly increases. Every key is read from a named environment variable, so no secret lands in a command line, in shell history, or in `ps`.
+- Phase 4 (safety and evidence integration): DONE — `controller/failover_evidence.py` landed the sealing, and nothing else in this phase was needed or claimed.
+  - **Every failover decision is sealed, refusals first-class.** `FailoverEvidenceRecorder` writes standby registrations, promotion decisions and credential actions into plan 12's `AttestedEvent` chain and re-seals it after every event, so integrity is a property of *stored bytes* rather than of a process's memory. Promoted and refused decisions get **different event kinds** rather than one kind with a boolean, so a reader filtering for "did anything actually take over" cannot misread a refusal and a query that forgot to check a flag cannot turn a refusal into a takeover. The payload carries the terms on both sides of the handover, the operator, whether it was forced, the full assessment **including the excluded observations**, and — twice, deliberately — `standby_id_is_a_claim` / `identity_claim`, because a promotion record proves *this process, holding the store, wrote these bytes* and nothing about where the controller was.
+  - **Two chains, deliberately.** `<scope>:failover` for leadership decisions and `<controller_id>:rotation` for credential actions, so a reader of a promotion does not page past ninety credential events and a rotated agent's key window is readable without reading anyone else's promotions.
+  - **Offline verification reads stored bytes through plan 12's own domain verifier** — never by re-running the sealer, which would only prove the sealer agrees with itself — and the manifests are written with plan 12's `unsigned_no_signing` state and its reason, because sealing attests integrity, not authorship.
+  - **"Every dispatch authenticated and fenced" needed no new code**, and the ledger says so rather than inventing some: it is plan 03's `FabricEngine` plus plan 19 Phase 2's `AgentCommandVerifier`, and Phase 3's tests exercise the composition (a captured command replayed after a promotion is refused by name; a deposed leader's dispatch is refused before the dispatcher is called).
+  - **NOT LANDED in this phase: SBOM and SLSA provenance.** `UpdateManifest` carries `sbom_ref` and `provenance_ref` as **references** and this module checks only that they are present and well-formed. Nothing in this repository generates an SBOM, produces a provenance attestation, verifies either, or talks to Sigstore/Cosign/Rekor. A gate that always refused would be a ceremony, not a control, so the honest artefact is this sentence plus a test that pins it (`test_the_references_are_pointers_and_the_module_says_so`). Phase 4's acceptance clause naming "the 24 release-gate platform section" belongs to plan 24 and is not claimed here.
+- Phase 5 (tests, regression guards, negative controls): DONE — 314 tests across eight files, every one of them an executable statement about behaviour rather than about a docstring.
+  - `tests/unit/test_failover_domain.py` (54) — the three-valued status, the death-evidence table, admissibility, and the `PromotionDecision` invariants, including the enumeration that **every** status that is not `DEAD` is unpromotable.
+  - `tests/unit/test_failover_service.py` (39) — the promotion matrix against a real migrated database, the migration reservation, the fencing drills, and the replay controls.
+  - `tests/unit/test_certificate_authority.py` (47) — the full conformance matrix (no certificate, not yet valid, expired, revoked, unknown issuer, forged body, added role, swapped fingerprint, wrong role, unpinned, issuer mismatch) and the X.509 refusal.
+  - `tests/unit/test_credential_rotation.py` (30), `tests/unit/test_cluster_ops.py` (30), `tests/unit/test_update_manifest.py` (47), `tests/unit/test_failover_evidence.py` (18), `tests/unit/test_failover_cmd.py` (49).
+  - **The four negative controls the plan names, and what each one breaks:**
+    - **A stale-epoch holder loses.** `ctl-a` dispatches at term 1, its lease lapses, `ctl-b` promotes to term 2, and `ctl-a` — returning with its *unexpired* lease — is refused by `require_leader` with `leader_not_current` **before** the recorder is called, and its epoch was never spent. `StepAlreadyDispatchedError` then refuses a second effect at the epoch that *was* spent. (Expiry alone would not do this: a partition can leave a deposed leader comfortably inside its own TTL.)
+    - **A replayed command is refused.** The same envelope verifies once, is captured, and is presented again after the promotion: `nonce_freshness` fails and the detail names `fabric_replayed_nonce`. The companion case asserts the *other* half — a command refused for a deposed fence can still be re-minted and accepted, because verification is the last check and spends no nonce on its way to a refusal.
+    - **An unbindable identity port yields `SIGNATURE_PORT_UNAVAILABLE`, never a pass.** `X509CertificateAuthority.verify_certificate` raises on every call, including for a certificate it could trivially accept; `MtlsTrustService` propagates the raise rather than converting it to a verdict; `X509UpdateSignatureVerifier` likewise; and `ha cert --algorithm x509` exits `TOOLKIT_ERROR` with the word "trusted" absent from its output. None of them falls back to the fixture HMAC path, and that non-downgrade is asserted.
+    - **A rotation that cannot reach its store refuses rather than reporting success.** An unenrolled agent raises; a revoked agent inside a sweep comes back as a `FAILED` outcome rather than aborting the sweep; a **closed store** raises out of the sweep instead of being swallowed into a success; and a bound provisioner that returns no key leaves `key_provisioned is False`. `sweep_summary` counts `failed` and `without_key` separately, so a sweep that broke every agent cannot read as a healthy one.
+  - Plus the falsifiers this plan's own claims needed: an agent with **no pinned** certificate is refused (this is the control that would have caught the pinning verdict being discarded); a backup with **no verified restore drill** is untrusted and its RPO/RTO read "not demonstrated"; a promotion with **no operator and reason** is a validation error; a manifest whose **bytes differ** from the signed digest applies nothing; and a sealed event **edited behind the sealer's back** fails offline verification.
+- Phase 6 (docs, honesty gates, rollout): DONE — the operator documentation is in this file, immediately below the ledger, and every claim in it names the test that proves it. Nothing else was needed: there is no `docs/` file to register, no release gate to flip, and no rollout to stage, because no capability in this phase is enabled by default — mTLS is refused, the promotion tables are not in the production migration chain, and the update applier is unreachable from the CLI.
 
-Overall: 2 of 6 phases complete.
+Overall: 6 of 6 phases complete.
 
 Known limitations:
 - **Command signatures are checked with a symmetric MAC, not with a public-key signature or a certificate.** Phase 2 verifies HMAC-SHA256 over the canonical envelope with a constant-time comparison, which proves a holder of the shared key produced the bytes. It does **not** prove authorship to a third party who does not hold the secret, and no key material is stored here (the secret is resolved through a port at ask time). Plan 03's `FABRIC_UNDERSIGNED` refusal in `controller/fabric_engine.py` still only checks that the signature field is non-empty — the *real* check is `AgentCommandVerifier`, which is not yet wired into that dispatch path.
@@ -92,4 +115,162 @@ Known limitations:
 - **No RPO/RTO has been measured in this repository, and the schema makes that visible.** `recovery_objectives` has no achieved columns at all, `backup_restore_verifications.data_loss_seconds` stays `NULL` for a restore that never measured one, and the new `backup_snapshot_evidence` table holds only capture-time *observations* (row counts, covered position, log position) with no outcome column. `BackupEngine.report` delegates to `compare_against_objective`, so a stated RPO with no verified drill reads "not demonstrated"; an unmeasured drill is `outcome = 'incomplete'`, never a zero that reads like a good result. The drills that pass in the unit tests run against a fixture database — they demonstrate the *mechanism*, not this deployment's recovery posture.
 - **The `WAL_REPLAY` check is a position check, not log replay.** It observes the capture's recorded `covers_through` / `wal_sequence` and compares it with the restored cell's position, and its own text says so. No write-ahead log frame is applied to a restored database; frame-level replay stays behind `SnapshotSourcePort`.
 - **No object-storage backend ships.** `ObjectStorePort` is the seam; `InMemoryObjectStore` is a test double and `UnavailableObjectStore` is the down-backend negative control. There is no S3/Azure/GCS SDK in this build, so "evidence replicated to object storage" is a **decision and a port**, not a deployed capability. Captures are also not encrypted at rest here: `SnapshotDescriptor.encryption` is a reference only, and plan 29 owns key resolution.
+- **THE PROMOTION TABLES ARE NOT IN THE PRODUCTION MIGRATION CHAIN.** `infra/failover_store.py` owns `FAILOVER_MIGRATION` at **version 36** and it is **not** in `ALL_MIGRATIONS`; the chain head is 33 (`0033_fabric_journal`) and **34 and 35 are reserved by concurrent lanes**, so 36 was taken rather than renumbering anything shipped. Until the registering lane adds `FAILOVER_MIGRATION` after the head, a real deployment has no `control_plane_promotions` table and every promotion write fails at the first real persist — the same gap plan 03 recorded for its own journal and since closed for it. `tests/unit/test_failover_service.py::TestTheMigrationReservation` states this out loud and its fixtures migrate through a chain that **splices the migration in** unless and until it is registered, at which point the splice disappears with no test edited. **Registration is one line, and it is not bookkeeping.**
+- **`mayhem ha` is not registered.** `cli/failover_cmd.py` is invoked directly (the surface half of plan 10's pattern) and nothing in this phase touched `cli/command_registry.py`, `cli/app.py`, or `tests/unit/test_command_inventory.py`. The consequence is that an operator cannot yet type `mayhem ha promote` on a released build.
+- **A promotion proves a claim, not an identity.** The promotion record and the sealed event both name `standby_id` as a **claim** (`standby_id_is_a_claim`, `identity_claim` in the payload). What a promotion record proves is that *this process, holding the store, wrote these row*. It does not prove that a particular controller at a particular address took the scope, and there is no handshake on the promotion path — `FailoverService` verifies the *evidence*, not the presenter. A caller wanting an authenticated promotion would have to run `MtlsTrustService.controller_capable` itself and pass the certificate in, which is not wired and is therefore not implied.
+- **The only death evidence this build can supply without reaching the primary is an expired lease.** `PRIMARY_PROCESS_GONE` exists in the vocabulary and is honoured, but no service in this plan observes a process: the only way to produce one is an operator's attested claim (`--attest-process-gone`), recorded with their name as the observation's source. Everything else is a refusal, which is the intended direction of error but does mean a controller whose lease is refreshed by a hung heartbeat loop cannot be promoted automatically.
+- **A cold start is refused, not promoted.** `promote()` returns `NO_LEADER` when no lease is recorded and points at `campaign()`, because there is no term to strictly increase and a promotion record naming a deposed leader the cluster never had would be a fiction. Claiming an empty scope writes a lease and no promotion row, so **a fresh cluster's first controller leaves no promotion history at all** — including nothing recording who claimed it, since `campaign()` writes only the leadership lease.
+- **Credential rotation provisions nothing by itself, and the plan to add it is plan 29's.** `KeyProvisionerPort` is a protocol; no implementation ships. Until one is bound, every rotation leaves the agent unable to authenticate. That is fail-closed and reported (`key_provisioned`, `without_key`), but it means a deployment that rotates without custody breaks its agents' ability to sign — a deliberate trade, stated here rather than discovered during an incident.
+- **The fixture certificate authority is not substitutable for a CA, and no doc may pretend otherwise.** Its "signature" is an HMAC over a typed record; its fingerprint is a digest of that record's body, not of a public key. A holder of the fixture key can forge any certificate. `MtlsTrustService.is_real_pkix` returns `False` for both shipped implementations and a passing verdict's own detail text says in words that it is neither a public-key signature nor a chain validation.
+- **The update channel is symmetric end to end.** Manifest verification reuses Phase 2's HMAC-SHA256 canonicaliser, so it proves a holder of the shared release key produced the manifest — not public-key authorship, and nothing a third party can check without the secret. `X509UpdateSignatureVerifier` exists, raises, and never returns a verdict.
+- **`UpdateApplier.rollback` needs the earlier release's own manifest, so the operator must keep them.** That is the honest shape — the bytes being installed have to be bytes some manifest committed to — but it means a deployment that discards old manifests cannot roll back, and there is no manifest store in this build.
+- **SBOM and SLSA provenance: not generated, not verified, not gated.** See Phase 4's ledger entry. `UpdateManifest` carries `sbom_ref` and `provenance_ref` as references whose shape is checked and whose contents are not read by anything.
+- **`mayhem ha promote` trusts the operator's clock and the store's, and says nothing about skew.** The lease observation is stamped from the controller's own clock; a controller whose clock is behind reads a live lease as live (refusing, the safe direction) and one whose clock is ahead could read a live lease as expired (promoting, the unsafe direction). There is no clock-skew detection in this plan.
 - **Leader election has no quorum and no partition detection.** Mutual exclusion is a lease plus a monotonic term: `campaign()` refuses a second claimer while a lease is live, `campaign(force=True)` is the operator break-glass path, and the term is what makes a forced handover safe because a deposed lease stops authorising the instant the term moves. A store that is *reachable but split in two* is out of scope — the term bounds the damage, it does not prevent it. There is no membership change, no lease renewal under contention, and no `resign`/`renew` operation (`campaign()` is renewal).
+
+---
+
+## Phase 6 — operator documentation
+
+Every property below names the test that proves it. Where the answer is "this
+build cannot do that", the sentence says so and names the refusal instead.
+
+### Cluster operations guide
+
+**What exists.** `mayhem.controller.cluster_ops.ClusterOperations.members()` is a
+frozen projection over the leadership lease, the standby roster, the enrolled
+identities and the stated recovery objectives. It holds no lock and mutates
+nothing — *proved by* `test_taking_a_view_writes_nothing` and
+`test_a_dashboard_cannot_promote_a_standby`, which render the view three times and
+then read the tables back. `mayhem ha promote` is the write path and is **not
+registered** in `cli/command_registry.py`; it is reached by invoking
+`cli/failover_cmd.py` directly.
+
+**The three numbers an operator should read.**
+
+| Reading | What it actually means | Proof |
+| --- | --- | --- |
+| `leadership_verdict: single_dispatcher` | One leader is **recorded** and nothing contradicts it. It does **not** prove one leader is **running**: no quorum and no partition detection ship in this build. | `test_a_live_lease_reads_as_a_single_dispatcher`, `test_the_caveat_is_printed_on_every_view` |
+| `backup_trusted: True` | A **restore drill** verified this datastore. A snapshot nobody has ever restored is untrusted, and says so. | `test_a_snapshot_without_a_drill_is_still_untrusted`, `test_a_stated_objective_with_no_drill_reads_not_demonstrated` |
+| `credential_state: unknown_key` | Current credential, but no key resolves for it. An agent rendered healthy here would be a lie, so no key port bound renders **every** agent unkeyed. | `test_an_agent_with_no_key_port_bound_reads_as_unknown_key` |
+
+A datastore with **no stated objective produces no recovery row at all** —
+*proved by* `test_no_stated_objective_produces_no_recovery_row` — so nobody reads
+"0 snapshots" about a system nobody backs up and mistakes it for a finding.
+
+### Certificate management runbook
+
+**What this build can do.** `FixtureCertificateAuthority` issues and verifies
+fixture certificates: HMAC-SHA256 over the canonical body, a fingerprint that is
+a digest of that same body, and eight named refusals — no certificate, not yet
+valid, expired, revoked, unknown issuer, signature invalid, wrong role, not
+pinned. *Proved by* the conformance matrix in
+`tests/unit/test_certificate_authority.py`.
+
+**What this build cannot do, and says so on every verdict.** There is **no
+handshake, no session, no socket, no DER/ASN.1, no RSA, no certificate parser and
+no chain building**. A trusted verdict states in its own detail that it is not a
+public-key signature and not an X.509 chain validation, and every verdict carries
+`algorithm = fixture-ca-hmac-sha256`. `MtlsTrustService.is_real_pkix` is `False`
+for both shipped implementations.
+
+**The CA-backed seam refuses.** `X509CertificateAuthority` raises
+`agent_signature_port_unavailable` on every call and never returns a verdict or
+`True`; it does not fall back to the fixture authority, because an invisible
+downgrade is exactly how an attacker picks the weaker scheme — *proved by*
+`test_it_does_not_fall_back_to_the_fixture_authority` and
+`test_it_refuses_with_the_one_code_the_plan_uses_everywhere`. `ha cert
+--algorithm x509` exits `TOOLKIT_ERROR` and never prints the word "trusted" —
+*proved by* `test_x509_refuses_as_unavailable_and_never_says_trusted`.
+
+**Rotation and revocation.** `mayhem ha rotate --all` applies the deployment's
+`RotationPolicy`; `--agent` rotates one. Immediately after a rotation the old key
+is refused (the identity no longer names it) and the new one verifies nothing
+until a `KeyProvisionerPort` issues it — *proved by*
+`test_the_old_key_stops_working_and_the_new_one_has_no_key_yet`. That fail-closed
+window is the correct behaviour and the CLI reports it: *proved by*
+`test_a_keyless_rotation_is_reported_as_a_window_not_a_success`. Revocation is
+written to the append-only ledger and a command verified against that identity is
+refused afterwards — *proved by* `test_it_uses_the_append_only_ledger_and_leaves_one_row`.
+
+### Backup and restore guide (with tested RPO/RTO)
+
+**No RPO or RTO has been measured in this deployment.** The schema makes that
+visible rather than leaving a blank to be filled in: `recovery_objectives` has no
+achieved columns, a stated objective with no verified drill reads **"not
+demonstrated"**, and an unmeasured drill is `incomplete` rather than a zero that
+reads like a good result. *Proved by* the Phase 2 tests named in that phase's
+ledger. The drills in this repository run against a fixture database and
+demonstrate the **mechanism**, not this deployment's recovery posture.
+
+**Rotate and re-verify.** `WAL_REPLAY` is a **position** check, not log replay:
+its own text says no write-ahead log frame was applied. No object-storage backend
+ships — `ObjectStorePort` is a seam, `InMemoryObjectStore` is a test double, and
+`UnavailableObjectStore` is the down-backend control that makes every call raise.
+
+### Vulnerability disclosure policy (what a reporter gets)
+
+Mayhem in this build has **no public disclosure channel, no security contact
+address, and no signed release** for a reporter to verify. What can be stated
+honestly today:
+
+* A fault pack is **unsigned**. `providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`
+  is `False` and a loader that reads a pack's `signature` field checks a SHA-256
+  digest and nothing more — there is no key, no algorithm, and no trust store
+  behind it. Agent-command verification being real does not make pack verification
+  real.
+* A private report cannot be authenticated either: there is no public-key
+  signature anywhere in this plan. Verification is HMAC-SHA256, which proves a
+  holder of the shared key produced the bytes.
+* Fixes are gated by the same rules as everything else here: an agent-command
+  verifier that would accept a downgraded algorithm is refused by
+  `test_it_does_not_fall_back_to_the_fixture_authority`, and a supply-chain check
+  that would report "verified" without running is not shipped at all.
+
+This section is a statement of what exists, not a policy promise. A policy needs a
+contact, a response window, and a signed artefact to verify against, and none of
+the three ships here.
+
+### Supply-chain posture doc
+
+| Capability | State in this build | Proof |
+| --- | --- | --- |
+| Agent-command signature verification | **Real, symmetric.** HMAC-SHA256 over the canonical envelope, constant-time compared. Proves a holder of the shared key produced the bytes; proves nothing to a third party. | `tests/unit/test_agent_identity_verifier.py` |
+| Update-manifest signature verification | **Real, symmetric**, reusing the same canonicaliser and comparison. | `test_a_good_manifest_is_applicable`, `test_a_tampered_body_is_refused_by_name` |
+| Artifact digest checked before apply | **Real.** Fetched bytes are re-digested against the signed digest; a mismatch applies nothing. | `test_bytes_that_do_not_match_the_signed_digest_apply_nothing` |
+| Public-key / X.509 signatures | **Refused**, not implemented. | `test_the_x509_seam_fails_closed` |
+| Sigstore / Cosign / Rekor | **Absent.** Not imported, not configured, not stubbed. | — |
+| SBOM generation and verification | **Absent.** `sbom_ref` is a pointer; the module checks its shape and not its contents. | `test_the_references_are_pointers_and_the_module_says_so` |
+| SLSA provenance generation and verification | **Absent.** Same. | `test_the_references_are_pointers_and_the_module_says_so` |
+| Secret scanning / dependency scanning as a release gate | **Not this plan's.** | — |
+
+### Rollout order
+
+The plan asks for mTLS first, leader election second, backups third, supply-chain
+signing last, each gated on the previous. In this build the honest order is
+different, because two of the four are *refused* rather than shipped:
+
+1. **Backups and restore drills first** — the only capability here that is fully
+   implemented end to end (capture, replication, drill, verification), and the one
+   whose absence costs the most.
+2. **Credential rotation policy second** — implemented, and it works closed when
+   key custody is not bound.
+3. **Secure update manifests third** — implemented and symmetric; the apply step is
+   reachable only with a verdict.
+4. **Leadership/failover fourth** — implemented and fenced, but its promotion
+   tables are **not yet in the production migration chain** (see the reservation
+   below), so it must not be deployed before that one-line registration.
+5. **mTLS last, and not at all in this build** — the CA-backed port refuses. A
+   deployment that configures it gets `agent_signature_port_unavailable` rather
+   than a connection.
+
+### What each phase added, in files
+
+| Phase | Files | Tests |
+| --- | --- | --- |
+| 1 | `domain/agent_identity.py`, `domain/backup.py` | (Phase 1 ledger) |
+| 2 | `infra/agent_identity_verifier.py`, `controller/leader_election.py`, `infra/backup_engine.py`, `M0032 ha_dr` | 101 |
+| 3 | `domain/failover.py`, `controller/failover_service.py`, `infra/failover_store.py`, `infra/certificate_authority.py`, `controller/credential_rotation.py`, `infra/update_manifest.py`, `controller/cluster_ops.py`, `cli/failover_cmd.py` | 314 |
+| 4 | `controller/failover_evidence.py` | 18 (same file) |
+| 5 | the eight test files above | — |
+| 6 | this section | — |
