@@ -141,26 +141,93 @@ class TestRegistration:
         assert FABRIC_JOURNAL_MIGRATION.version == JOURNAL_VERSION
         assert FABRIC_JOURNAL_MIGRATION.name == "fabric_journal"
 
-    def test_the_journal_migration_is_the_chain_head(self) -> None:
-        # Last *by version*, and last in tuple order. The migrator requires
-        # strictly increasing versions as it walks the tuple, so a registration
-        # placed after a higher id would be a startup failure, not a silent
-        # misordering — this asserts the placement is the working one.
-        head = max(ALL_MIGRATIONS, key=lambda m: m.version)
-        assert head is FABRIC_JOURNAL_MIGRATION
-        assert ALL_MIGRATIONS[-1] is FABRIC_JOURNAL_MIGRATION
-        assert len(ALL_MIGRATIONS) == FABRIC_JOURNAL_VERSION
+    def test_the_journal_migration_is_registered_and_correctly_placed(self) -> None:
+        # **This used to assert the journal was the chain *head*.** That was never
+        # the claim; "is the last entry" was a proxy for "is registered and
+        # applied", and the proxy became unsatisfiable the moment versions 34-37
+        # landed — a fact about *later migrations existing*, not about the journal.
+        #
+        # The claim it was proxying is now asserted directly, and it is the
+        # stronger statement in the only sense that matters here:
+        #
+        # * identity, not equality — a re-spelled copy of the DDL would satisfy an
+        #   `in`-by-value check while the journal's own object stayed unregistered;
+        # * its version is ``FABRIC_JOURNAL_VERSION``, so the id the module
+        #   publishes and the id the chain migrates are one number;
+        # * **every migration before it has a strictly lower version**, which is
+        #   the property the old head-assertion was reaching for when it checked
+        #   ``max(...)`` and ``ALL_MIGRATIONS[-1]``. Ordering is now asserted
+        #   *around the journal* instead of around the tuple's end, so it survives
+        #   any number of later migrations and still fails if the journal were
+        #   registered out of order — which the migrator would refuse at startup.
+        assert any(m is FABRIC_JOURNAL_MIGRATION for m in ALL_MIGRATIONS)
+        assert FABRIC_JOURNAL_MIGRATION.version == FABRIC_JOURNAL_VERSION
+        index = next(i for i, m in enumerate(ALL_MIGRATIONS) if m is FABRIC_JOURNAL_MIGRATION)
+        before = [m.version for m in ALL_MIGRATIONS[:index]]
+        after = [m.version for m in ALL_MIGRATIONS[index + 1 :]]
+        assert all(version < FABRIC_JOURNAL_VERSION for version in before), (
+            f"migrations registered after the journal's tuple position carry a "
+            f"lower or equal version: {before} — the migrator requires strictly "
+            f"increasing versions in tuple order and refuses this chain at startup"
+        )
+        assert all(version > FABRIC_JOURNAL_VERSION for version in after), (
+            f"a migration registered after {FABRIC_JOURNAL_MIGRATION.migration_id} "
+            f"carries a version at or below it: {after}"
+        )
 
     def test_the_chain_is_contiguous_ascending_and_duplicate_free(self) -> None:
+        # Contiguity is now derived from the chain's own head rather than pinned to
+        # ``JOURNAL_VERSION``. A literal ``range(1, 34)`` was a statement about the
+        # chain's *length*, which changes every time a lane registers — so it tested
+        # the arrival schedule, not the shape the test names. ``1..max`` is the
+        # actual invariant: no gap, no duplicate, ascending in tuple order.
         versions = [m.version for m in ALL_MIGRATIONS]
-        assert versions == list(range(1, JOURNAL_VERSION + 1))
+        assert versions == list(range(1, max(versions) + 1)), (
+            f"the chain is not contiguous 1..{max(versions)}: {versions}"
+        )
         assert len(set(versions)) == len(versions), "duplicate migration version"
-        assert ALL_MIGRATIONS[-1].migration_id == "0033_fabric_journal"
+        assert versions == sorted(versions), (
+            "the migrator applies the tuple in order and requires strictly "
+            f"increasing versions; got {versions}"
+        )
+        # The journal's identity is still pinned literally. Unlike the chain's
+        # length, this one *is* a fact about this migration and does not move.
+        assert FABRIC_JOURNAL_MIGRATION.migration_id == "0033_fabric_journal"
 
 
 class TestProductionMigratedDatabase:
-    def test_the_journal_table_exists_at_the_production_head(self, store: Store) -> None:
-        assert store.schema_version == JOURNAL_VERSION
+    def test_the_journal_table_exists_after_the_production_chain(self, store: Store) -> None:
+        """**This used to assert ``store.schema_version == JOURNAL_VERSION``.**
+
+        That pinned the *chain head* to the journal. The head is a fact about what
+        has landed since, not about the journal — so registering version 34 made
+        the assertion fail on a database where the journal is registered, applied,
+        readable and append-only. The test would have kept passing its intent (a
+        table nobody had) while its only assertion had stopped describing it.
+
+        The claim is now made directly and is **stronger**, because it names the
+        journal rather than the chain's end:
+
+        * the journal's own version is recorded in ``_schema_migrations``, so this
+          is "this migration was applied", not "nothing else was";
+        * the head is at or beyond it, which is what "applied by the production
+          chain" requires;
+        * the table exists, by both the model's own probe and raw ``sqlite_master``.
+        """
+        head = store.schema_version
+        assert head is not None, "open_migrated left the database unmigrated"
+        applied = {
+            (int(row["version"]), str(row["name"]))
+            for row in store.query("SELECT version, name FROM _schema_migrations")
+        }
+        assert (FABRIC_JOURNAL_VERSION, FABRIC_JOURNAL_MIGRATION.name) in applied, (
+            f"the journal's migration is not recorded in _schema_migrations: "
+            f"applied={sorted(applied)}"
+        )
+        assert head >= FABRIC_JOURNAL_VERSION, (
+            f"the journal's migration (version {FABRIC_JOURNAL_VERSION}) is recorded "
+            f"as applied but the schema head is {head}"
+        )
         assert FabricJournalTable(store).table_exists() is True
         tables = {
             str(row["name"])
@@ -232,7 +299,16 @@ class TestNegativeControl:
     Without these, "the table exists after migrating the production chain" could
     be satisfied by a schema that never needed version 33 at all. The table is
     therefore shown to be genuinely absent at the previous head of the *same*
-    chain, and genuinely re-created by applying version 33 and nothing else.
+    chain, and genuinely re-created by re-applying the chain onto that head.
+
+    ``PRIOR_HEAD`` stays ``FABRIC_JOURNAL_VERSION - 1`` rather than the chain's
+    new head. The target of a rollback is a property of the migration being
+    rolled back ("undo the journal, leave its neighbour alone"), not a property of
+    how long the chain happens to be now — deriving it from ``len()`` would
+    silently retarget it at whatever landed next and stop exercising the journal's
+    down path while still reporting green. ``migrate_down(32)`` therefore also
+    reverses 34..37, which is why the id-list assertions below name the journal
+    *among* the reversed ids rather than requiring it to be the only one.
     """
 
     def test_the_table_is_absent_at_version_32(self, store: Store) -> None:
@@ -241,7 +317,10 @@ class TestNegativeControl:
 
         reversed_ids = store.migrate_down(PRIOR_HEAD)
 
-        assert reversed_ids == ["0033_fabric_journal"]
+        # Not ``== ["0033_fabric_journal"]``: rolling back to 32 legitimately
+        # reverses every migration registered after it. The claim is that the
+        # journal's *own* id is among them and that nothing above 32 survived.
+        assert FABRIC_JOURNAL_MIGRATION.migration_id in reversed_ids
         assert store.schema_version == PRIOR_HEAD
         assert journal.table_exists() is False
         assert FABRIC_JOURNAL_TABLE not in {
@@ -272,9 +351,15 @@ class TestNegativeControl:
         store.migrate_down(PRIOR_HEAD)
         assert journal.table_exists() is False
 
-        assert store.migrate() == ["0033_fabric_journal"]
+        reapplied = store.migrate()
 
-        assert store.schema_version == JOURNAL_VERSION
+        # Same reasoning as above: re-applying the chain onto version 32 restores
+        # the journal *and* everything registered after it. What is asserted is
+        # that the journal's id came back and that the head is now at or beyond
+        # it — not that it was the last id applied.
+        assert FABRIC_JOURNAL_MIGRATION.migration_id in reapplied
+        assert store.schema_version is not None
+        assert store.schema_version >= JOURNAL_VERSION
         assert journal.table_exists() is True
         # The down path dropped the rows with the table; an append-only journal
         # that survived its own rollback would be a journal with two histories.
