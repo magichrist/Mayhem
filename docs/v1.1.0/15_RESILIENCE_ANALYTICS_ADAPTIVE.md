@@ -61,10 +61,10 @@ Statistics interpretation guide (what "no material effect" does and does not mea
 - Phase 2 (engine): DONE — `controller/analytics_service.py` (boundary brackets with a confidence statement, recovery curves, minimal failure cases, gap-53 causal chains where an uncited hop is withheld, the adaptive runner with per-step approval + admission + budget, and `compile_stages` for the single-target → 5% → 10% → 25% → 50% gated ladder)
 - Phase 3 (surface): DONE — `cli/boundary_report_cmd.py` landed as the `mayhem boundary` group with two read-only commands: `boundary report --search FILE [--signal NAME]` renders a recorded search (each declared metric gets its **own** boundary, from one `boundary_report` call over that metric's own ladder) with the engine's own confidence sentence attached and the minimal-failure-case reduction, and `boundary review --candidate --policy --spec --graph [--deny-fault]` compiles an untrusted draft through `compile_candidate` and then takes the authored drill *and* the derived micro-drill through a single `_gate(spec, ...) -> plan_drill → compile_safety_evidence → simulate_plan_policy` core that has **no origin parameter**. The acceptance criterion is structural rather than a string comparison: both arms leave `_gate` holding the same `ExecutionPlan` type, the suite spies the three gate functions and asserts the recorded sequence is exactly `GATE_PATH` twice, and `plan_shape_digest` — the plan's digest with the planner's per-call `execution_group_id` held out, because no two `plan_drill` calls are ever byte-identical — is equal for a candidate proposing the rung the authored drill already encodes. A boundary whose confidence is insufficient never renders as a tolerance: `_tolerates` is the only thing that can emit that word, it gates on the domain's own `Comparison.sufficient`/`graded`, and it refuses when the ladder crossed without a separable measurement behind it. A refusal at the view-model layer raises `BoundaryViewRefused` with a stable rule id (unknown document field, blank/non-finite/unknown ladder value, undeclared signal, a spec that will not compile) and the Click callback only reports it. 88 tests in `tests/unit/test_boundary_report_surface.py` cover the documented invocations, the two negative controls on confidence and on support-withholding, the identical-code-path spy, the identical-shape-digest proof, the AST checks that this surface never constructs a `SearchPlan` with an approval and never re-declares an authority scan, six refusals on a draft that tries to carry authority, and mutation evidence measured against the caller's own `SafetyContext` (both probes run on clones, so `ctx.decisions` stays empty and the view reports the length) plus a filesystem assertion that neither command opens a store
 - Phase 4 (safety and evidence): DONE — the runner's own per-step budget check is live via a documented `planner_budget` (the budget the planner plans against, separate from the budget the runner spends) with the divergence recorded on the run and in the step's own stamped reading; every boundary report, recovery curve, minimal failure case, and causal chain now carries its support (trial digests, sample digest, tried-case digests, observation citations plus topology edges) and seals through `infra/attestation_store` with `require_sealed_claim` refusing an unsealed report; a claim with no support cannot be constructed (`analytics.evidence_unsupported`) and a report with no support is sealed as a withholding beside the claims that survived; an adaptive run carries a `SearchRecord` and `record_boundary_search` writes it to `infra/audit_stream` as `audit.resilience_boundary.searched` with the policy digest and the escalating ladder, and `require_recorded_search` refuses a search the stream cannot show; the AI boundary is unchanged — `AUTHORITY_FIELDS`/`_authority_keys` are still the single authority scan and neither `AnalyticsClaim` nor `SearchRecord` has a field an approval could travel in
-- Phase 5: not started
-- Phase 6: not started
+- Phase 5: DONE — **the phase's named list was already covered by five existing suites**, and the `not started` status was stale rather than the work being absent: CI overlap logic (`test_interval_overlap_is_symmetric_and_touching_counts_as_overlap`), the sufficiency threshold (`test_sufficiency_threshold_is_the_five_sample_floor`, `test_a_comparison_on_too_few_samples_is_marked_insufficient_not_scored`), search over a simulated response surface with a planted boundary (`test_a_planted_boundary_is_found_and_narrowed_onto`) and planted counterexample minimisation (`test_counterexample_minimization_needs_a_reproducer`, `test_counterexample_minimization_starts_from_a_known_reproducer`), the AI boundary (`test_a_draft_with_an_embedded_approval_token_is_rejected`, `test_a_nested_approval_token_is_rejected_too`, `test_a_compiled_candidate_is_never_constructed_with_an_approval`) and both of the phase's own negative controls (`test_a_search_with_no_remaining_budget_refuses_its_next_step`, `test_a_chain_over_a_missing_edge_is_withheld_not_guessed`). What was genuinely missing is the discipline the completed plans record — proving those properties are **load-bearing** — so `tests/unit/test_analytics_negative_controls.py` (12) supplies it: the **materiality floor decides**, shown in both directions on identical data (material rise at a 5% floor, no material effect at 95%), which is what makes every "no material effect" sentence a statement about the reader's threshold rather than the data's mood; **per-series overlap decides nothing**, shown as a matched pair disagreeing in opposite directions (disjoint intervals yet immaterial, overlapping intervals yet material), each phrase naming the difference interval that decided it; **insufficient data withholds rather than widens**, asserted from below the five-sample floor (no effect size, no interval, no delta, phrase ends `— NOT GRADED`) against five samples where the same comparison is graded, and against four where it is *still* insufficient — the floor is per series, and getting that wrong would have made the pair look like a crossed threshold; the **budget backstop** pinned from both sides (identical policy and history, exhausted refuses with `no-remaining-budget`, unexhausted proceeds, so a search that refused everything could not pass); a **missing** budget refused rather than read as unlimited; and the **planted boundary is bracketed, not landed on** — minimization narrows toward 8.0 without walking it, so the test asserts a clean value below and a breached value above, and a surface that never breaches stops `ladder-exhausted` rather than reporting a boundary. The two properties living behind the engine's ports (causal-chain withholding, approval-token rejection) are guarded by **name-pin** rather than rebuilt, and the test docstring says so rather than dressing a weaker check up as the real thing.
+- Phase 6: DONE — three guides written into this document below the ledger and asserted rather than left to review. **Statistics interpretation guide**: that "no material effect" is a statement about the *declared threshold* (identical data, material at a 5% floor and immaterial at 95%), that it is not "no effect" (7.7% material against a 5% floor, 14.9% immaterial against 15%), that the graded verdict follows the **difference** interval and never the per-series overlap, and that insufficient data is **no answer** rather than low confidence — with the reason a point estimate plus a widening interval would be the dishonest shape. **Boundary-report reading guide**: read the bracket rather than the last value, read the stop reason (all nine `StopReason` values enumerated, with `ladder-exhausted` called out as the one most often misread as a clean bill of health), and the explicit limit that a missing bracket is not a safe service — a boundary is scoped to *this fault, these values, this budget, this surface* and is not a guarantee across releases, which belongs to plan 22. **Advisor methodology doc**: priority as the weighted mean of declared criteria with a mandatory customer question, no score field to inject into, three reading refusals so no priority is imputed, read-only by structure rather than procedure. **Rollout order** as the phase specifies. The acceptance criterion "no doc presents a boundary as a guarantee across releases" is met and enforced: `tests/unit/test_analytics_plan_docs.py` (7) parses this document, cross-checks the `Overall:` count against the `DONE` lines, requires the three guides, and refuses four literal claims — including any sentence calling a boundary a guarantee across releases — with each checker proven to bite against a mutated copy.
 
-Overall: 4 of 6 phases complete.
+Overall: 6 of 6 phases complete.
 
 ### Open items Phase 4 could not close in its own files
 (one of the two has since been closed by the plan-30 integration pass; the other is still open)
@@ -91,3 +91,112 @@ Overall: 4 of 6 phases complete.
 - **The plan-09 approval gate is not reachable.** `boundary_review_safety_context` configures no `approval_gate` and no `policy_gate`, so the proof's `required_approvals` line reports *requirements* and nothing more, and the policy state renders as `no_bundle_configured` rather than "allowed". That is the same standing `cli/advisor_cmd.py` takes and for the same reason; a context carrying either would have to come from a caller that has witnesses, which a CLI does not.
 - **No `--force`, no ceiling flags, no store.** A candidate that would fail a gate is refused by that gate and the refusal names its rule id; `--deny-fault` exists because it can only *tighten*; the four blast-radius ceilings are module constants because a caller handed the ceiling is handed the gate that checks it.
 
+
+## Statistics interpretation guide — what "no material effect" does and does not mean
+
+This is the sentence operators will quote in an incident review, so it is worth
+being exact about what it claims.
+
+**"No material effect" is a statement about your declared threshold.** The same
+two series read as a material rise at a 5% floor and as no material effect at a
+95% one. Nothing about the data changes between those verdicts; only the number
+the customer declared does. So the phrase is never "nothing happened" — it is
+"nothing cleared the bar you set", and the bar travels with the report
+(`materiality_pct` is echoed in the note, so a reader can see which one was used).
+
+**"No material effect" is not "no effect".** A 7.7% move that clears a 5% floor
+is reported as a material rise; a 14.9% move against a 15% floor is reported as
+no material effect. An effect large enough to care about can be called immaterial
+by a threshold chosen deliberately high, which is a legitimate configuration and
+not a contradiction. Read the floor first, then the verdict.
+
+**The graded verdict follows the *difference* interval, never the overlap.** Two
+fixtures disagree with the per-series overlap in opposite directions: one where
+the per-series confidence intervals are disjoint and the difference interval
+contains zero (no material effect), and one where they overlap and the difference
+interval excludes zero (material rise). `intervals_overlap` is reported because
+operators want to see it, and it grades nothing. Each verdict phrase names the
+interval that decided it — "on the difference containing zero", or "difference CI
+excluding zero" — so the sentence carries its own reasoning.
+
+**Insufficient data is not low confidence — it is no answer.** Below five samples
+in either series the comparison reports **no quotable number at all**: no effect
+size, no difference interval, no baseline interval, not even the movement
+percentage, and the phrase ends `— NOT GRADED`. This is deliberate. An
+insufficient comparison rendered as a point estimate with a wider interval would
+give a reader a number to quote, one whose confidence interval becomes
+comfortable only as the sample grows past a threshold the comparison was never
+allowed to cross. Absence is the honest output; "not graded" is the honest word.
+A zero baseline is likewise reported without a relative scale rather than as a
+percentage against nothing.
+
+## Boundary-report reading guide
+
+A boundary report answers one question: **where does this service stop
+tolerating this fault?**
+
+**Read the bracket, not the last value.** The search brackets the boundary
+between a clean value below it and a breached value above it; it does not land
+on it. Minimization narrows toward the planted value, so the reported boundary
+is an interval you can defend, and the walk that produced it is recorded. A
+report quoting a single "boundary = 8.0" is over-claiming relative to what the
+search measured.
+
+**Read the stop reason.** The search ends for a named reason and every value of
+the vocabulary is a stop *with findings attached*: `boundary-resolved` (a
+boundary was bracketed and narrowed), `ladder-exhausted` (the declared ladder ran
+out before anything breached — **not** a finding of safety), `breach-found` (a
+sweep past the boundary with no narrowing), `no-reproducer` (minimization asked
+for and could not start), `no-remaining-budget`, `combination-budget-exhausted`,
+`insufficient-measurement`, `no-further-value`, and `max-steps`. A ladder that
+ran out is the one most often misread as a clean bill of health.
+
+**A missing bracket is not a safe service.** If the ladder was exhausted with no
+breach, the search learned that *this fault, at these values, within this
+budget, on this surface* did not breach. It is not a guarantee across releases,
+across fault variants, or across a different environment — that claim belongs to
+plan 22's regression tracking, which compares sealed runs, and this document
+does not make it.
+
+**Budget is part of the result.** The remaining budget travels with each planned
+step, and a search with no remaining budget refuses its next step rather than
+proceeding. An exhausted budget is a stop reason, not a silent truncation: a
+boundary found at 80% of the budget is a real boundary, and one *not* found at
+100% is an absence of evidence.
+
+## Advisor methodology doc — priority from declared criteria, never opaque ranking
+
+The boundary report's ranking, and the advisor's priority, come from the same
+principle: **a number a reader cannot interrogate is a number they must trust
+blindly**, and a resilience tool whose output must be trusted blindly is a
+black box with a decimal point.
+
+- Priority is the **weighted mean of customer-declared criteria**, and the
+  declaration carries a question per criterion — "how many customers meet this
+  failure in a normal week?", not "impact". An empty declaration is refused
+  rather than defaulted, and there is no score field anywhere in the type, so
+  there is nothing for a ranking to be injected into or frozen at.
+- A reading without evidence is refused; so is a reading about a criterion the
+  declaration does not name, and a criterion nobody supplied a reading for.
+  Mayhem does not impute a customer's priorities, because an imputed value would
+  be indistinguishable from a stated one.
+- The advisor runs **read-only**, and that is structural rather than procedural:
+  its execution context holds no mutation backend and no lease sink, so there is
+  no call site through which it could dispatch anything.
+- A generated candidate faces the identical compilation, safety-proof and policy
+  gates as one a human typed, and a draft carrying an embedded approval token —
+  or a nested one — is rejected before it reaches any of them.
+
+## Rollout order
+
+Analytics first, progressive stages second, boundary search third, minimisation
+and AI-generated candidates last. Each stage is worth more than the one after it,
+and the order is chosen so that the tool earns trust with the boring arithmetic
+before it proposes anything.
+
+**Honest limits.** No boundary in this plan has been measured on a production
+system; the suites search a *simulated* response surface with a boundary planted
+in it, which proves the search finds a boundary it is given and does not report
+one when there is none. Statistical independence is assumed by these intervals
+and is not verified here. Nothing in this document presents a boundary as a
+guarantee across releases — that claim belongs to plan 22.
