@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
+from mayhem.domain.errors import InvariantViolationError
 from mayhem.infra.report import artifact_name
 from mayhem.toolkit.hashing import canonical_json
 
@@ -13,9 +15,15 @@ from mayhem.toolkit.hashing import canonical_json
 #: ``infra.evidence`` needs it too and must not reach upward into ``cli``
 #: (layered-architecture contract).
 __all__ = [
+    "BUDGET_GUARD_ENV",
+    "GATE_WITNESSES_ENV",
     "artifact_name",
+    "attach_preflight_gate",
     "attach_resource_budget",
     "budget_admission",
+    "budget_guard_from_spec",
+    "gate_for_ports",
+    "gate_from_spec",
     "plan_hash_from_file",
     "resource_budget_guard",
 ]
@@ -25,6 +33,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from mayhem.controller.executor import RunEngine
+    from mayhem.controller.preflight_gate import PreflightGate, PreflightPorts
     from mayhem.controller.steady_state import SteadyStateReport
     from mayhem.domain.budgets import (
         ResourceBudget,
@@ -35,6 +44,289 @@ if TYPE_CHECKING:
     from mayhem.infra.budget_enforcement import ConcurrentRunReservations, RunBudgetGuard
     from mayhem.infra.metering import AdmissionDecision, RunMeter
     from mayhem.infra.store import Store
+
+
+# -- preflight (plan 10 Phase 3) -------------------------------------------------
+# The refusing preflight gate reached the run path through exactly the shape plan
+# 23's budget guard already had: one optional constructor keyword on
+# ``RunEngine`` and one ``is not None`` block in ``execute``, plus the attach
+# helper below. Before this, the gate existed but a refusal was reachable only by
+# a caller who explicitly asked for one — which is not a refusal in the run path.
+# There is deliberately no ``attach_no_preflight`` and no flag: see
+# ``RunEngine.with_preflight_gate``.
+
+
+def attach_preflight_gate(engine: RunEngine, gate: PreflightGate) -> RunEngine:
+    """Attach ``gate`` to ``engine``; returns the engine.
+
+    The refusal then runs inside ``RunEngine.execute``, before the run row opens,
+    so every CLI surface that attaches one gets admission without knowing it and
+    without a second decision to keep in step. A surface that attaches none is
+    unchanged: :func:`mayhem.controller.preflight_gate.admit` is never called,
+    no port is read, and the run proceeds exactly as it did before this lane.
+    """
+    return engine.with_preflight_gate(gate)
+
+
+# -- the deployment's binding (plan 10 Phase 3, integration dependency 3) -------
+# ``attach_preflight_gate`` was reachable and had nothing to attach: mayhem owns
+# no incident manager, no deployment feed, no backup system, no replication peer,
+# and cannot synthesise any of them. So a CLI surface had nothing to wire and
+# every production run was correctly ungated. This block is the configuration
+# path that gives one to them: a deployment that *does* own those systems binds
+# its own objects and mayhem consults them before the run opens.
+#
+# Three rules, and they are the whole design.
+#
+# **Binding is explicit, and it can only add.** :data:`GATE_WITNESSES_ENV` and
+# :data:`BUDGET_GUARD_ENV` name an import spec each; the only thing either can
+# produce is a gate or a guard. Neither can remove one, narrow one away, or
+# switch off what a deployment bound in-process, and there is no second spelling
+# that gets past what a binding installed. A binding that cannot be loaded is
+# **refused loudly** (an :class:`~mayhem.domain.errors.InvariantViolationError`
+# before any store is touched) rather than degraded into "no gate", because an
+# operator who asked for gating and silently got none has been told the safe
+# thing is on when it is off.
+#
+# **An empty binding is no gate, not a refusing one.** A
+# :class:`~mayhem.controller.preflight_gate.PreflightPorts` with nothing bound is
+# the *unconfigured* state, and :func:`gate_for_ports` reports it as ``None`` so
+# nothing is attached and ``RunEngine.execute`` behaves exactly as it did before
+# this lane. Attaching a gate over it instead would refuse every run for five
+# systems nobody can answer for, which on every screen reads as mayhem being
+# broken rather than as mayhem being unable to see.
+#
+# **What a bound gate can still not see is documented, not papered over.** The
+# engine supplies the gate only what it holds, so ``plan:admitted``,
+# ``agent:availability``, ``agent:capability``, ``policy:available`` and
+# ``budget:available`` are judged ``FAIL`` naming what they lacked. A
+# deployment that binds all five witnesses therefore still gets a refusal until
+# it also declares a narrower catalogue — which is its decision to make and is
+# visible as an *absence* of checks, never as a pass.
+
+#: Names the module attribute holding this deployment's preflight witnesses, as
+#: ``module:attribute``. Read once at the CLI edge by
+#: :func:`mayhem.cli.app.run_gate`, which is the only module that consults the
+#: environment for it — the controller reads nothing and imports no CLI module,
+#: the same discipline ``allow_implicit`` follows.
+GATE_WITNESSES_ENV: Final[str] = "MAYHEM_GATE_WITNESSES"
+
+#: Names the module attribute holding this deployment's
+#: :class:`~mayhem.infra.budget_enforcement.RunBudgetGuard`, as
+#: ``module:attribute``. Plan 23's guard has no configuration of its own in
+#: ``mayhem.yaml``: a budget is a statement about somebody's infrastructure, so
+#: the deployment states it and mayhem holds it.
+BUDGET_GUARD_ENV: Final[str] = "MAYHEM_BUDGET_GUARD"
+
+
+def gate_for_ports(
+    ports: PreflightPorts | None,
+    *,
+    checks: Sequence[str] | None = None,
+) -> PreflightGate | None:
+    """The run's gate over *ports* — or ``None`` when no witness is bound.
+
+    ``None`` means *no gate was configured*, the additive state
+    :func:`mayhem.controller.preflight_gate.admit` and
+    ``RunEngine.execute`` were both built around: nothing is consulted, no port
+    is called, and the run proceeds exactly as it did before this lane. It is not
+    a gate that passes, and it is not a gate that refuses.
+
+    A binding that names at least one witness produces a gate over the whole of
+    ``ports``, so the witnesses a deployment did **not** bind are ``UNAVAILABLE``
+    inside a gate that exists and refuses. That is the honest shape: an operator
+    who wired the incident manager and not the backup system learns exactly which
+    one is missing, instead of learning that mayhem as a whole is unavailable.
+
+    ``checks`` narrows the catalogue, and narrowing can only refuse more or say
+    less — a check that did not run cannot have passed. The default is every
+    check, which is the *refusing* choice: see the block comment above for why a
+    fully-wired deployment still has to narrow it.
+    """
+    from mayhem.controller.preflight_gate import ALL_CHECKS
+    from mayhem.controller.preflight_gate import PreflightGate as _Gate
+
+    if ports is None or not ports.bound():
+        return None
+    return _Gate(ports=ports, checks=tuple(ALL_CHECKS if checks is None else checks))
+
+
+def gate_from_spec(spec: str) -> PreflightGate | None:
+    """The gate a deployment named by *spec* (``module:attribute``), or ``None``.
+
+    The attribute may be a :class:`~mayhem.controller.preflight_gate.\
+PreflightPorts`, a mapping of witness name to witness, a
+    :class:`~mayhem.controller.preflight_gate.PreflightGate`, or a no-argument
+    callable returning any of those. A gate is returned verbatim rather than
+    rebuilt, because a deployment that hands over a configured gate has made the
+    narrowing decision itself and mayhem has no business widening it back.
+
+    ``None`` is the answer for a binding that resolves to ``None`` or to a
+    ``PreflightPorts`` with nothing bound — the unconfigured state again, not a
+    silently discarded gate.
+
+    Raises:
+        InvariantViolationError: The spec is malformed, the module or attribute
+            cannot be imported, the factory raised, or the object is not one of
+            the accepted shapes. Every one of those is refused rather than
+            downgraded to "no gate": see the block comment.
+    """
+    found = _load_binding(spec, GATE_WITNESSES_ENV, "gate_binding")
+    return _resolve_gate(found)
+
+
+def _resolve_gate(found: Any) -> PreflightGate | None:
+    """One gate binding to a gate — or to ``None``, which means *unconfigured*.
+
+    The single place the accepted shapes are decided, so the attribute path and
+    the factory path cannot drift: a witness name refused on one and accepted on
+    the other is exactly the typo this module refuses to let through. The order
+    is the conservative one — the three concrete shapes first, so a configured
+    gate handed over directly is returned verbatim and never *called*, and only
+    then the factory, and finally the refusal.
+
+    A factory is called with no arguments (a gate closes over its own wiring)
+    and whatever it returns is resolved by this same function, so a factory is
+    not a wider door than the value it names: one returning ``object()`` is
+    refused exactly as an attribute holding ``object()`` is, and one returning an
+    empty :class:`~mayhem.controller.preflight_gate.PreflightPorts` is the
+    unconfigured state rather than a gate refusing for five systems nobody bound.
+
+    Raises:
+        InvariantViolationError: The factory raised, or the object is not one of
+            the accepted shapes.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    from mayhem.controller.preflight_gate import PreflightGate as _Gate
+    from mayhem.controller.preflight_gate import PreflightPorts as _Ports
+
+    if found is None:
+        return None
+    if isinstance(found, _Gate):
+        return found
+    if isinstance(found, _Ports):
+        return gate_for_ports(found)
+    if isinstance(found, _Mapping):
+        return gate_for_ports(_ports_from_mapping(found))
+    if callable(found):
+        try:
+            resolved = found()
+        except Exception as exc:
+            raise _binding_error(
+                "gate_binding_call",
+                f"{GATE_WITNESSES_ENV} factory raised: {type(exc).__name__}: {exc}",
+            ) from exc
+        # Bounded by construction, not by hope: each recursion consumes one layer
+        # of the deployment's own object graph, and a finite graph bottoms out at
+        # the shape check above.
+        return _resolve_gate(resolved)
+    raise _binding_error(
+        "gate_binding_shape",
+        f"{GATE_WITNESSES_ENV} must resolve to a PreflightGate, a PreflightPorts, a mapping of "
+        f"witness name to witness, or a callable returning one; got {type(found).__name__}",
+    )
+
+
+def budget_guard_from_spec(spec: str, *, run_id: str) -> RunBudgetGuard | None:
+    """The resource-budget guard a deployment named by *spec*, or ``None``.
+
+    The attribute may be a :class:`~mayhem.infra.budget_enforcement.\
+RunBudgetGuard`, or a callable taking this run's ``run_id`` and returning one.
+    The run id is passed rather than declared because a guard's budgets are
+    scoped to it (``ResourceScope.RUN`` resolves a scope key from it), so a
+    deployment cannot write one guard for every run and mean it.
+
+    Raises:
+        InvariantViolationError: The spec cannot be loaded, the factory raised or
+        returned the wrong shape, or the object is not a guard.
+    """
+    from mayhem.infra.budget_enforcement import RunBudgetGuard as _Guard
+
+    found = _load_binding(spec, BUDGET_GUARD_ENV, "budget_binding")
+    if callable(found):
+        try:
+            found = found(run_id)
+        except Exception as exc:
+            raise _binding_error(
+                "budget_binding_call",
+                f"{BUDGET_GUARD_ENV} factory raised for run {run_id}: {type(exc).__name__}: {exc}",
+            ) from exc
+    if found is None:
+        return None
+    if not isinstance(found, _Guard):
+        raise _binding_error(
+            "budget_binding_shape",
+            f"{BUDGET_GUARD_ENV} must resolve to a RunBudgetGuard or a callable returning one; "
+            f"got {type(found).__name__}",
+        )
+    return found
+
+
+def _binding_error(rule: str, message: str) -> InvariantViolationError:
+    return InvariantViolationError(rule, message)
+
+
+def _load_binding(spec: str, variable: str, rule_prefix: str) -> Any:
+    """Import ``module:attribute`` from *spec* and return the attribute, uncalled.
+
+    The one import both bindings go through, so both are refused the same way for
+    the same reasons. It deliberately **does not call** what it finds: each binding
+    decides its own call, because the two need different arguments — a gate
+    factory closes over its own wiring and is called with nothing, while a budget
+    guard is run-scoped and is called with this run's id. Calling here, before
+    the caller had a chance to supply its argument, would have made the
+    run-scoped factory unreachable: every one of them would have been invoked with
+    no arguments and refused for the ``TypeError`` that followed, which reads as a
+    broken binding rather than as a binding that was never given its run.
+    """
+    from importlib import import_module
+
+    module_name, separator, attribute = spec.partition(":")
+    module_name, attribute = module_name.strip(), attribute.strip()
+    if not separator or not module_name or not attribute:
+        raise _binding_error(
+            f"{rule_prefix}_spec",
+            f"{variable} must name 'module:attribute'; got {spec!r}",
+        )
+    try:
+        module = import_module(module_name)
+    except Exception as exc:
+        raise _binding_error(
+            f"{rule_prefix}_import",
+            f"{variable} cannot import {module_name!r}: {type(exc).__name__}: {exc}",
+        ) from exc
+    try:
+        return getattr(module, attribute)
+    except AttributeError as exc:
+        raise _binding_error(
+            f"{rule_prefix}_import",
+            f"{module_name!r} has no attribute {attribute!r}, named by {variable}",
+        ) from exc
+
+
+def _ports_from_mapping(mapping: Mapping[str, object]) -> PreflightPorts:
+    """Build a ``PreflightPorts`` from ``{witness name: witness}``.
+
+    The five names are read off the dataclass rather than restated here, so a
+    port added to ``PreflightPorts`` cannot be a name this rejects — and an
+    unknown name is refused by name, because a typo in a witness name is the one
+    mistake that would otherwise read as a witness nobody bound.
+    """
+    from mayhem.controller.preflight_gate import PreflightPorts as _Ports
+
+    known = tuple(f.name for f in fields(_Ports))
+    unknown = sorted(str(name) for name in mapping if name not in known)
+    if unknown:
+        raise _binding_error(
+            "gate_binding_witness_name",
+            f"unknown preflight witness name(s) {unknown}; the five are {list(known)}",
+        )
+    # Typed as ``Any`` because the witness types are structural protocols: the
+    # dataclass declares what each field must satisfy, and mayhem checks a
+    # witness when the gate asks it, not when it is bound.
+    bound: dict[str, Any] = {str(name): witness for name, witness in mapping.items()}
+    return _Ports(**bound)
 
 
 # -- resource budgets (plan 23 Phase 3) -----------------------------------------
