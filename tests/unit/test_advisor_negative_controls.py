@@ -26,16 +26,6 @@ fixture rather than by hand.
 from __future__ import annotations
 
 import pytest
-
-from mayhem.controller import advisor_service
-from mayhem.controller.advisor_service import (
-    RULE_REPLAY_TOPOLOGY_PIN_MISMATCH,
-    AdvisorService,
-    SealedCell,
-)
-from mayhem.controller.policy_gate import MutationSink
-from mayhem.domain.advisor import RULE_LANDSCAPE_EMPTY
-from mayhem.domain.errors import InvariantViolationError
 from tests.unit.test_advisor_service import (
     CRITERIA,
     GAP_CELL,
@@ -49,6 +39,16 @@ from tests.unit.test_advisor_service import (
     service,
     weight,
 )
+
+from mayhem.controller import advisor_service
+from mayhem.controller.advisor_service import (
+    RULE_REPLAY_TOPOLOGY_PIN_MISMATCH,
+    AdvisorService,
+    SealedCell,
+)
+from mayhem.controller.policy_gate import MutationSink
+from mayhem.domain.advisor import RULE_LANDSCAPE_EMPTY
+from mayhem.domain.errors import InvariantViolationError
 
 #: A sink that is already loaded, so ``calls == 0`` could only mean "nothing was
 #: written" and never "nothing was there to write".
@@ -174,9 +174,7 @@ def test_the_graph_identity_is_delegated_to_the_one_digest_everybody_else_uses(
     never appear and this test would fail.
     """
     sentinel = "delegated-identity-not-recomputed"
-    monkeypatch.setattr(
-        advisor_service, "compute_graph_identity", lambda graph: sentinel
-    )
+    monkeypatch.setattr(advisor_service, "compute_graph_identity", lambda graph: sentinel)
 
     assert service().graph_identity() == sentinel
 
