@@ -1905,3 +1905,173 @@ def test_a_plan_with_no_fault_steps_voids_rather_than_vacuously_passing():
     ):
         line = proof.obligation(name.value)
         assert line is not None and line.status is not ObligationStatus.PASS, name.value
+
+
+# --- the rules mapped ahead of their wiring (plan 30 Phase 4, third pass) --------
+#
+# Four plans landed refusal rule ids in modules this compiler does not run, and
+# each recorded the debt rather than editing this module. Eighteen rows closed it.
+#
+# The reach half of the guard above is still two modules wide, so none of these
+# eighteen rules is *reached* today — they are rows ahead of the wiring. That is
+# exactly the state in which a mapping can quietly become fiction, so this section
+# asserts the opposite direction: that each row names a rule the code actually
+# spells, and that no row anywhere in the table names one it does not. The full
+# per-plan ledger, the ids deliberately left unmapped and why, and the negative
+# controls live in ``tests/unit/test_owed_rule_mappings.py``; this is the same
+# invariant stated from the compiler's side of the boundary, because the compiler
+# is what a dead row would misrepresent.
+
+#: Modules whose rule ids the eighteen new rows come from, and the rows each one
+#: owns. Written out rather than derived, so a row landing in the wrong family is
+#: a failure that names the family instead of passing a set comparison.
+OWED_RULE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "controller/stop_engine.py",
+        (
+            "stop_for_terminal_run",
+            "stop_engine_requires_run_scope",
+            "stop_command_stale",
+            "stop_stage_skip_refused",
+            "stop_stage_not_owed",
+            "stop_seal_requires_complete_walk",
+            "stop_seal_requires_evidence",
+            "stop_seal_digest_mismatch",
+        ),
+    ),
+    (
+        "controller/preflight_gate.py",
+        ("preflight.refused",),
+    ),
+    (
+        "controller/campaign_dispatch.py",
+        ("schedule.campaign_budget", "schedule.no_compilation"),
+    ),
+    (
+        "controller/analytics_service.py",
+        (
+            "analytics.planner_budget_diverged",
+            "analytics.step_unaffordable",
+            "analytics.evidence_not_sealed",
+            "analytics.search_not_recorded",
+        ),
+    ),
+    (
+        "providers/participation.py",
+        (
+            "provider.fault_undeclared",
+            "provider.certification_cell_unpinned",
+            "provider.lease_undo_absent",
+        ),
+    ),
+)
+
+#: The two modules that *are* the mapping. Their rows cannot be used as evidence
+#: that a rule id exists, or the table certifies itself.
+BLAMEABLE_TABLES: frozenset[str] = frozenset(
+    {
+        "src/mayhem/controller/safety_proof.py",
+        "src/mayhem/controller/check_gate.py",
+    }
+)
+
+
+def _rule_ids_spelled_by_code(relative: str) -> frozenset[str]:
+    """Rule ids a module spells in its *code*: literals, not docstrings, not comments.
+
+    ``ast.parse`` drops comments, so a rule id that survives only in one cannot be
+    counted. The one remaining way prose reaches the AST as a string constant is a
+    bare string expression, which is what a docstring is — and a rule named only in
+    a docstring is precisely the dead row this exists to catch.
+    """
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    return frozenset(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    )
+
+
+@pytest.mark.parametrize(
+    ("module", "rules"),
+    OWED_RULE_FAMILIES,
+    ids=[family for family, _ in OWED_RULE_FAMILIES],
+)
+def test_every_row_mapped_from_a_later_plan_is_a_rule_that_module_raises(
+    module: str, rules: tuple[str, ...]
+) -> None:
+    """Each new row's evidence is its own module, read from that module's source.
+
+    Not "the string appears somewhere in the repository": a rule id spelled only in
+    an unrelated module would satisfy a looser check while the row still described
+    nothing. This asserts the naming module spells it, and that the rule is mapped.
+    """
+    spelled = _rule_ids_spelled_by_code(f"src/mayhem/{module}")
+    for rule in rules:
+        assert rule in spelled, (
+            f"{rule} is mapped to a proof line but {module} does not spell it, so the "
+            "row describes a refusal that module cannot produce"
+        )
+        assert OBLIGATION_FOR_RULE.get(rule), rule
+
+
+def test_no_key_in_the_blame_table_is_a_rule_the_repository_never_spells() -> None:
+    """The whole table, checked against the code — the anti-fabrication guard.
+
+    The failure this catches is specific and has already happened once in this
+    repository: plan 10's ledger proposed ``stop_resume_skips_owed_stage``, and no
+    such rule id exists. Adding that row would have made ``OBLIGATION_FOR_RULE``
+    *look* complete while leaving both refusals ``StopEngine._resume`` can raise
+    unplaceable — the debt made invisible rather than removed, which is worse than
+    the debt because nothing reports it any more.
+
+    Written over the entire table and not just the eighteen new rows, so a row
+    added later by a lane that never reads this file is covered too. The two table
+    modules are excluded because they spell every row; counting them would make
+    this test true by construction.
+    """
+    spelled: set[str] = set()
+    for path in sorted((REPO_ROOT / "src" / "mayhem").rglob("*.py")):
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if relative in BLAMEABLE_TABLES:
+            continue
+        spelled |= _rule_ids_spelled_by_code(relative)
+
+    dead = sorted(rule for rule in OBLIGATION_FOR_RULE if rule not in spelled)
+    assert not dead, (
+        "these rule ids are mapped to a proof line but no module under src/mayhem "
+        "spells them, so each row is coverage of a refusal that cannot occur: "
+        f"{dead}. Point each row at the rule the code actually raises, or delete it."
+    )
+
+
+def test_the_stale_rule_id_plan_10_proposed_is_not_in_the_table_and_its_replacement_is() -> None:
+    """The correction, pinned so it cannot be reverted by copying the plan back.
+
+    Plan 10's integration table names ``stop_resume_skips_owed_stage`` for
+    ``StopEngine._resume``. That rule id is in no module.
+    :meth:`StopEngine._resume` raises ``stop_stage_skip_refused``, and one branch
+    earlier ``stop_stage_not_owed``. The real ids are mapped — both, because a
+    single function raising a pair of which only one is mapped is the same false
+    assurance a dead row gives.
+    """
+    assert "stop_resume_skips_owed_stage" not in OBLIGATION_FOR_RULE
+    assert "stop_resume_skips_owed_stage" not in GATE_RULE_IDS
+    assert "stop_stage_skip_refused" not in GATE_RULE_IDS, (
+        "GATE_RULE_IDS is intersected with prediction.rule_ids, which forecast blast "
+        "and damage quantities; a resumed-at-the-wrong-stage stop is a state, not an "
+        "estimate, and admitting it would widen the set with an id no prediction can "
+        "carry"
+    )
+    for rule in ("stop_stage_skip_refused", "stop_stage_not_owed"):
+        assert OBLIGATION_FOR_RULE.get(rule), rule
