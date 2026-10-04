@@ -29,6 +29,9 @@ from mayhem.toolkit.tool_runner import ToolError
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from mayhem.controller.preflight_gate import PreflightGate
+    from mayhem.infra.budget_enforcement import RunBudgetGuard
+
 
 def mayhem_version() -> str:
     """Installed version, or a source-checkout marker when not installed.
@@ -174,6 +177,60 @@ def implicit_execution_allowed(environ: Mapping[str, str] | None = None) -> bool
     """
     env = os.environ if environ is None else environ
     return str(env.get(IMPLICIT_EXECUTION_ENV, "")).strip() == "1"
+
+
+def run_gate(environ: Mapping[str, str] | None = None) -> PreflightGate | None:
+    """The refusing preflight gate this deployment configured, or ``None``.
+
+    The same shape as :func:`implicit_execution_allowed`, for the same reason:
+    ``MAYHEM_GATE_WITNESSES`` names an import spec for the deployment's port
+    witnesses, the environment is read **here** and only here, and the resolved
+    gate is passed down to ``mayhem.cli.services.engine_for``. The controller
+    reads no environment and imports no CLI module, so a run's admission never
+    depends on ambient state the sealed evidence does not name.
+
+    ``None`` is the ordinary answer and means *this deployment configured no
+    gate*: the run path is unchanged, byte-identical to before the gate existed.
+    Unset is the shipped default — mayhem binds none of the five witnesses,
+    because it owns no incident manager, deployment feed, backup system or
+    replication peer.
+
+    A spec that is set but unusable raises
+    :class:`~mayhem.domain.errors.InvariantViolationError` rather than returning
+    ``None``: an operator who asked for a gate and got a silently ungated run
+    would be told the safe thing is on while it is off. That raise happens
+    before any store is opened, so nothing has been touched when it lands.
+    """
+    from mayhem.cli.execution import GATE_WITNESSES_ENV, gate_from_spec
+
+    env = os.environ if environ is None else environ
+    spec = str(env.get(GATE_WITNESSES_ENV, "")).strip()
+    if not spec:
+        return None
+    return gate_from_spec(spec)
+
+
+def run_budget_guard(
+    run_id: str, environ: Mapping[str, str] | None = None
+) -> RunBudgetGuard | None:
+    """The resource-budget guard this deployment configured, or ``None``.
+
+    ``MAYHEM_BUDGET_GUARD`` names an import spec for a
+    :class:`~mayhem.infra.budget_enforcement.RunBudgetGuard` (or a callable
+    taking ``run_id`` and returning one). Read here and passed down, exactly as
+    :func:`run_gate` does for the gate, and ``None`` means the same thing: this
+    run is not budgeted, and plan 23's admission and continuity hooks stay inert.
+
+    Called once per command at the point the run engine is built, so
+    ``run_id`` is the run about to execute and the guard is scoped to it.
+    """
+    from mayhem.cli.execution import BUDGET_GUARD_ENV, budget_guard_from_spec
+
+    env = os.environ if environ is None else environ
+    spec = str(env.get(BUDGET_GUARD_ENV, "")).strip()
+    if not spec:
+        return None
+    return budget_guard_from_spec(spec, run_id=run_id)
 
 
 def _is_refusal(code: str) -> bool:
