@@ -45,6 +45,13 @@ The record store is read by :func:`mayhem.infra.promotion.evaluate_maturity`,
 which stays the only function that decides a reported maturity level. This
 module decides nothing about rungs; it only says whether a live claim exists
 for a fault on a cell.
+
+A provider's fault is not a special case bolted on afterwards: it is a
+:class:`MatrixCell` that also pins the provider and its version, and a fault id
+that :class:`~mayhem.domain.faults.FaultCategory` does not recognise is accepted
+only on such a cell and only when it belongs to the pinned provider. Plan 17
+supplies the provider declarations; this module supplies the constraint that
+makes a provider claim checkable rather than merely writable.
 """
 
 from __future__ import annotations
@@ -54,7 +61,14 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from mayhem.domain.capabilities import Capability
 from mayhem.domain.faults import EngineLane, FaultCategory
@@ -64,9 +78,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BUNDLE_DIGEST_RE",
+    "CATALOG_FAULT_ID_RE",
     "DEFAULT_CERTIFICATION_TTL",
     "DEFAULT_EXPIRY_WARNING",
     "LEGAL_TRANSITIONS",
+    "PROVIDER_ID_RE",
     "REQUIRED_EVIDENCE_DIGESTS",
     "Arch",
     "CellPrivilege",
@@ -86,6 +102,22 @@ __all__ = [
 #: SHA-256 hex of an evidence bundle, or of one artifact inside it. Anything
 #: else is not a reference to a bundle.
 BUNDLE_DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+
+#: Shape of a fault id in mayhem's own catalogue: ``<family>.<kind>``. The
+#: shape is necessary but not sufficient — :class:`~mayhem.domain.faults.FaultCategory`
+#: decides whether the family is one mayhem actually defines, which is what stops
+#: ``foo.bar`` from being certifiable merely for being dot-shaped.
+CATALOG_FAULT_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+$")
+
+#: Shape of a provider id, as declared in ``mayhem.provider/v1``.
+#:
+#: Deliberately *copied* from ``mayhem.domain.provider`` rather than imported
+#: from it. Certification must be able to check the string without taking a
+#: dependency on the provider wire contract, so that a change to that contract
+#: cannot silently widen what may be certified; the cost is that the two can
+#: drift, which :func:`_check_provider_id_shape` at the point of use keeps
+#: honest rather than leaving to a comment.
+PROVIDER_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 
 #: Content digests a certification's bundle must carry. Each maps onto a claim
 #: the promotion criteria make, so a bundle that omits one cannot support the
@@ -202,6 +234,28 @@ class MatrixCell(BaseModel):
     into the record's identity is what makes drift detectable later: compare
     the recorded cell against the cell that exists now and the difference is
     named, not averaged away.
+
+    **The provider pin (plan 17's dependency).** Two faults can be certified on
+    the same engine, kernel and privilege mode and still be different claims if
+    one of them ran third-party code: a container that also had ``acme-net``
+    1.4.0 loaded is not the container a core fault was certified on two releases
+    ago. :attr:`provider_id` and :attr:`provider_version` carry that, and they
+    are part of :attr:`fingerprint` so :func:`invalidate_on_change` notices a
+    provider that moved under a cell that did not.
+
+    A pin is **complete or absent**, and :attr:`provider_pin` is what says so:
+    an id without a version, or a version without an id, is not a weaker pin, it
+    is no pin, and it therefore cannot support a certification (see
+    :meth:`CertificationRecord._plausible_fault_id`). The cell itself stays
+    permissive so that a half-written pin is a *describable fact about a
+    runtime* rather than an unpersistable one — the refusal belongs where a
+    claim is made, not where a cell is described.
+
+    **What the pin is not.** ``provider_version`` is the string a provider's
+    author declared. Nothing here checks who wrote it:
+    ``mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`` is ``False`` and
+    this module does not change it. The pin is evidence about *which artifact
+    ran*, never about *who published it*.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -213,29 +267,81 @@ class MatrixCell(BaseModel):
     arch: Arch
     privilege: CellPrivilege = CellPrivilege.ROOTLESS
     capabilities: frozenset[Capability] = Field(default_factory=frozenset)
+    provider_id: str | None = Field(default=None, min_length=1, max_length=64)
+    provider_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("provider_id")
+    @classmethod
+    def _provider_id_is_a_provider_id(cls, value: str | None) -> str | None:
+        if value is not None and PROVIDER_ID_RE.match(value) is None:
+            raise ValueError(
+                f"provider_id {value!r} is not a lowercase dotted provider identifier; a "
+                "cell cannot pin something that is not a provider"
+            )
+        return value
+
+    @field_validator("provider_version")
+    @classmethod
+    def _provider_version_is_readable(cls, value: str | None) -> str | None:
+        # Semver is *not* required: a provider's version is a declared string,
+        # and refusing an unparseable one here would turn "the provider moved"
+        # into "the cell cannot be described", which is a worse answer and hides
+        # drift instead of reporting it. What is refused is a blank version,
+        # because a blank version cannot be compared against a later one, so a
+        # pin carrying one is a pin that can never be invalidated.
+        if value is not None and not value.strip():
+            raise ValueError("provider_version must name the version under test")
+        return value
+
+    @property
+    def provider_pin(self) -> str | None:
+        """``<provider_id>@<version>`` when the pin is complete, else ``None``.
+
+        The single place that decides whether a cell carries a pin, so "pinned"
+        is one comparison rather than two conditions written twice.
+        """
+        if self.provider_id is None or self.provider_version is None:
+            return None
+        return f"{self.provider_id}@{self.provider_version}"
+
+    @property
+    def carries_provider_pin(self) -> bool:
+        """True when this cell names both a provider and the version of it."""
+        return self.provider_pin is not None
 
     @property
     def label(self) -> str:
         """Single-line cell identity, for reports and refusal messages."""
-        return (
+        base = (
             f"{self.engine.value}@{self.engine_version}/{self.os_distro}"
             f"/kernel-{self.kernel_version}/{self.arch.value}/{self.privilege.value}"
         )
+        pin = self.provider_pin
+        return f"{base}/provider-{pin}" if pin is not None else base
 
     @property
     def fingerprint(self) -> str:
         """Every dimension that a later invalidation could notice."""
-        return "|".join(
-            (
-                self.engine.value,
-                self.engine_version,
-                self.os_distro,
-                self.kernel_version,
-                self.arch.value,
-                self.privilege.value,
-                ",".join(sorted(capability.value for capability in self.capabilities)),
-            )
-        )
+        dimensions = [
+            self.engine.value,
+            self.engine_version,
+            self.os_distro,
+            self.kernel_version,
+            self.arch.value,
+            self.privilege.value,
+            ",".join(sorted(capability.value for capability in self.capabilities)),
+        ]
+        pin = self.provider_pin
+        # The pin segment is appended only when the pin is complete, so an
+        # unpinned cell's fingerprint is byte-identical to what it was before the
+        # pin existed — no stored row, no lookup key, and no report changes
+        # shape just because a field was added. A *half* pin is omitted for the
+        # same reason it grants nothing: it cannot support a claim, so it cannot
+        # be load-bearing evidence, and putting it in the fingerprint would make
+        # two uncertifiable cells look like two different cells.
+        if pin is not None:
+            dimensions.append(f"provider={pin}")
+        return "|".join(dimensions)
 
 
 class EvidenceBundleRef(BaseModel):
@@ -285,8 +391,19 @@ class CertificationRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    fault_id: str
+    # ORDER IS LOAD-BEARING. ``cell`` is declared before ``fault_id`` because
+    # :meth:`_plausible_fault_id` reads the validated cell out of pydantic's
+    # ``info.data`` in order to decide whether a non-catalogue fault id belongs
+    # to the provider this cell pins. Reordering these two silently removes that
+    # ability. It fails *closed* rather than open — a cell that is not in
+    # ``info.data`` reads as no pin, and no pin refuses every provider fault id —
+    # so the worst a reorder can do is make provider faults uncertifiable, never
+    # make arbitrary strings certifiable.
+    # ``test_the_cell_is_declared_before_the_fault_id`` pins the order itself,
+    # and ``test_the_fault_id_rule_fails_closed_without_a_visible_cell`` pins the
+    # direction it fails in, so the pin cannot quietly stop being enforced.
     cell: MatrixCell
+    fault_id: str
     injector_version: str = Field(min_length=1, max_length=64)
     expires_at: datetime
     evidence: tuple[EvidenceBundleRef, ...] = ()
@@ -299,10 +416,64 @@ class CertificationRecord(BaseModel):
 
     @field_validator("fault_id")
     @classmethod
-    def _plausible_fault_id(cls, value: str) -> str:
-        if re.match(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+$", value) is None:
-            raise ValueError("fault_id must look like '<family>.<kind>'")
-        FaultCategory.from_fault_id(value)  # raises on an unknown family prefix
+    def _plausible_fault_id(cls, value: str, info: ValidationInfo) -> str:
+        """Accept mayhem's own fault ids, and a provider's only on a pinned cell.
+
+        Two branches, and the second is not a relaxation:
+
+        * **The catalogue branch** is unchanged. A dot-shaped id whose family
+          prefix :class:`~mayhem.domain.faults.FaultCategory` knows is mayhem's
+          own, and is returned.
+        * **The provider branch** exists so plan 17's provider faults can enter
+          this pipeline (plan 01 owns this file; plan 17 states the requirement
+          and refuses to edit it). It requires the record's cell to carry a
+          *complete* pin and the id to belong to *that* provider. A blanket
+          relaxation — accepting any well-shaped id — would let any string be
+          certified, which is the one outcome a certification record exists to
+          prevent, so it is refused here rather than left to a caller.
+
+        Two deliberate limits:
+
+        * A provider that names its fault under a catalogue family prefix
+          (``net.something``) is read as a catalogue fault. The loader's
+          id-shadowing refusal is the mitigation and it is plan 17's, not this
+          module's; a provider that shadows a built-in id never reaches a
+          registry, so it cannot reach a record either.
+        * A cell that pins a provider may still certify a *mayhem* fault. That
+          is not a hole: the pin is part of the cell's identity, so such a claim
+          lands on a different (pinned) cell and reads as a different claim
+          rather than silently borrowing the unpinned one.
+        """
+        catalog_refusal = ""
+        if CATALOG_FAULT_ID_RE.match(value) is not None:
+            try:
+                FaultCategory.from_fault_id(value)
+            except ValueError as exc:  # unknown family prefix: not a catalogue fault
+                catalog_refusal = str(exc)
+            else:
+                return value
+        else:
+            catalog_refusal = f"it does not look like '<family>.<kind>'"
+
+        cell = info.data.get("cell")
+        pin = cell.provider_pin if isinstance(cell, MatrixCell) else None
+        if pin is None or not isinstance(cell, MatrixCell):
+            where = cell.label if isinstance(cell, MatrixCell) else (
+                "no cell was available to scope it to"
+            )
+            raise ValueError(
+                f"{value!r} is not a mayhem catalogue fault ({catalog_refusal}) and "
+                f"{where} carries no complete provider pin, so there is nothing to "
+                "scope it to. A provider fault id is certified only on a cell that "
+                "pins the provider it came from, at a named version."
+            )
+        prefix = f"{cell.provider_id}."
+        if not value.startswith(prefix) or len(value) == len(prefix):
+            raise ValueError(
+                f"{value!r} does not belong to provider {pin!r}, which is the only "
+                f"provider {cell.label} pins; a cell may only certify faults of the "
+                "provider it names"
+            )
         return value
 
     # -- time discipline -----------------------------------------------------
@@ -522,11 +693,14 @@ def invalidate_on_change(
     """Invalidate a record when the cell or the injector no longer matches.
 
     Gap item 107 (drift detection). Engine, kernel, OS, architecture, privilege,
-    and capabilities all live in :class:`MatrixCell`, so passing the cell that
-    exists *now* covers every runtime dimension in one comparison; the injector
-    or provider version is checked separately because it can move without the
-    cell moving at all. When nothing differs the record is returned untouched —
-    this predicate observes drift, it does not manufacture it.
+    capabilities **and the provider pin** all live in :class:`MatrixCell`, so
+    passing the cell that exists *now* covers every runtime and tooling dimension
+    in one comparison; the injector version is checked separately because it can
+    move without the cell moving at all. A provider that moved is caught by the
+    cell comparison, and the reason names the pin because
+    :attr:`MatrixCell.label` carries it. When nothing differs the record is
+    returned untouched — this predicate observes drift, it does not manufacture
+    it.
     """
     drift: list[str] = []
     if cell is not None and cell != record.cell:
