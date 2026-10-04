@@ -154,7 +154,8 @@ a security assessment, and not a substitute for reviewing the plan itself.
 
 The related honest limits: `mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`
 is `False` in this build and this phase leaves it `False`, so a sealed proof
-demonstrates **integrity** of what was recorded, never **authorship** of it. And
+demonstrates **integrity** of what was recorded, never **authorship** of it.
+Signature verification is *not implemented* in this build. And
 no proof in this plan has been reviewed or accepted by a human approver in a live
 release — the compiler runs the real checks, and the acceptance path that would
 gate it is plan 09's Phase 4.

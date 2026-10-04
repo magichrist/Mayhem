@@ -203,7 +203,8 @@ a human typed.
 **Honest limits.** No incident in this plan has ever been replayed against a
 production system, and no recommendation has been acted on; the machinery is
 tested against fixture captures. A sealed advisory claim proves *integrity* of
-what was recorded, never *authorship* of it — `mayhem.providers.pack.
+what was recorded, never *authorship* of it — signature verification is
+*not implemented* in this build — `mayhem.providers.pack.
 SIGNATURE_VERIFICATION_IMPLEMENTED` is `False` and this phase leaves it `False`.
 Nothing here maps an advisor artifact onto a proof obligation, so the surface
 renders the proof verdict and its void reason verbatim rather than paraphrasing
