@@ -20,6 +20,11 @@ Three shapes, and the differences between them are the point of the phase:
   default, because ``evaluate_bundle`` refuses an ambient clock and the only
   way to keep that promise here is to make the clock impossible to omit.
 
+The fourth shape arrived later and is **not** one of these three:
+:func:`commit_budget` is the write. It posts a plan's damage to the
+hierarchical ledger after admission, and it is deliberately unreachable from
+the three above — see its own section at the foot of this module.
+
 **Refusal order is deliberate and most-actionable-first**: an expired bundle,
 then the operational preconditions (resource lock, damage budget, fault-pair
 compatibility), then the bundle's own verdict. A plan that breaks four things
@@ -72,15 +77,37 @@ error, and the useful answer to it is a typed, named refusal carrying the fix,
 not a traceback that ends somebody's run. :func:`detect_config_defect` converts
 each one to a :class:`PolicyConfigDefect` — the refusal reason is preserved
 verbatim, the defect is classified, and the remediation is authored per defect.
+
+Phase 4b — spending the ledger
+------------------------------
+
+The other half of Phase 4 landed afterwards: **budget charges now post to the
+ledger hierarchically.** :func:`commit_budget` writes every charge a plan would
+have made — the leaf and every ancestor above it — to a
+:class:`HierarchicalBudgetLedger`, and judges the result *after* writing, so a
+refused charge stays on the ledger. That last half is the whole design: a run
+that attempted the damage did it, whatever the gate said, and a ledger that
+refunded a refusal would report more headroom to the next run than the system
+actually has.
+
+The gate is untouched by this and stayed pure. The commit is a separate call a
+caller makes after admission, it reuses :func:`_charge_plan` — the same walk
+:func:`probe_budget` uses — so the numbers a preview reports and the numbers a
+commit writes cannot come from two implementations, and it reuses
+:func:`_budget_refusal`, so the refusal it produces is the gate's refusal
+byte-for-byte and carries the same rule id. Persisted state lives in the existing
+``observations`` table through :class:`ObservationBudgetLedger`; the reasoning,
+including what that choice costs, is in that class's docstring.
 """
 
 from __future__ import annotations
 
+import json
 import string
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mayhem.domain.catalog import definition_for
 from mayhem.domain.errors import InvariantViolationError
@@ -89,6 +116,7 @@ from mayhem.domain.faults import FaultCategory
 from mayhem.domain.policy import (
     BUDGET_SCOPE_ORDER,
     DAMAGE_PRECISION,
+    BudgetLedgerEntry,
     BudgetScope,
     PolicyDecision,
     PolicyDimension,
@@ -98,6 +126,7 @@ from mayhem.domain.policy import (
     effective_rules,
     evaluate_bundle,
     evaluate_compatibility,
+    fold_spend,
     resolve_precedence,
 )
 from mayhem.domain.quota import DamageLedger, damage_weight
@@ -118,6 +147,7 @@ if TYPE_CHECKING:
         PolicyRule,
     )
     from mayhem.domain.quota import DamageQuota, QuotaCharge
+    from mayhem.infra.store import Store
 
 # -- rule ids ---------------------------------------------------------------------
 # The existing gate names each refusal by the rule that produced it
@@ -318,8 +348,11 @@ class PolicyGateInputs:
 
     ``index`` supplies the ancestor bundles named by ``bundle.parents`` for
     inheritance; an empty one is correct for a bundle with no parents. ``locks``
-    is the caller's live lock set and ``compatibility`` the collision graph —
-    both are read, never written. ``budget_path`` names the run's place in the
+    is the caller's live lock set and ``compatibility`` the caller's own
+    collision edges — both are read, never written. A bundle's *own* graph
+    (:meth:`~mayhem.domain.policy.PolicyBundle.graph`) is always consulted as
+    well, and wins a pair both declare; see :func:`effective_compatibility`.
+    ``budget_path`` names the run's place in the
     five-level hierarchy (team → environment → service → experiment); the gate
     appends the fault id for the leaf.
     """
@@ -334,6 +367,9 @@ class PolicyGateInputs:
     run_id: str = ""
     budget: BudgetNode | None = None
     budget_path: tuple[str, ...] = ()
+    #: Collision edges the *caller* supplies on top of the bundle's own graph.
+    #: Merged by :func:`effective_compatibility`, where the bundle's declaration
+    #: wins a pair both claim.
     compatibility: tuple[CompatibilityEdge, ...] = ()
     #: The per-target cumulative damage quota, so the gate can answer "is this
     #: plan within budget?" without deferring half the question to the per-step
@@ -376,20 +412,32 @@ class PolicyGateInputs:
 class MutationSink:
     """The declared boundary a commit writes through.
 
-    Phase 2's gate is read-only by construction, so nothing here is ever
-    written and a simulation's sink is provably empty — the purity test asserts
-    ``len(sink) == 0`` against a real object rather than against a comment.
-    The type exists so the boundary is a name in the API: the only writes the
-    gate will ever make are budget posting and lock granting, and Phase 4
-    deliberately added neither — posting spends a ledger and granting takes a
-    lock, so both belong to a commit path that has a store, not to a pure
-    evaluator. The sink stays empty.
+    The gate is read-only by construction, so nothing here is ever written and a
+    simulation's sink is provably empty — the purity test asserts
+    ``len(sink) == 0`` against a real object rather than against a comment. The
+    type exists so the boundary is a name in the API: the only writes this
+    engine's gate will ever make are budget posting and lock granting.
+
+    **Budget posting now has its commit path (:func:`commit_budget`) and it does
+    not come through here.** That is a deliberate split, not an inconsistency.
+    A sink is a callback into the caller's process: whatever a ``record()`` did
+    was in memory until the caller did something else with it. A damage charge
+    has to be durable, ordered against the other charges, and re-readable by the
+    next run, and none of those is a property a returned tuple can have. So the
+    commit takes a :class:`HierarchicalBudgetLedger` and writes to it directly,
+    and the sink stays the *evaluation* boundary — the one place the purity claim
+    has to be true, and the one place an empty sink is evidence.
+
+    Lock granting still has no commit path at all. :func:`check_locks` returns a
+    :class:`~mayhem.domain.policy.LockVerdict` and taking the lock is a write
+    against a live lock set with an expiry and an owner, which is a different
+    operation from spending a ledger.
     """
 
     calls: tuple[tuple[str, str], ...] = ()
 
     def record(self, kind: str, detail: str) -> MutationSink:
-        """A sink with one more recorded mutation. Never called in Phase 2."""
+        """A sink with one more recorded mutation. Never called."""
         return replace(self, calls=(*self.calls, (kind, detail)))
 
     def __len__(self) -> int:
@@ -749,15 +797,42 @@ def _chargeable_path(tree: BudgetNode, keys: tuple[str, ...], leaf: str) -> tupl
     raise InvariantViolationError("policy.budget_path_missing", msg)
 
 
+def _charge_plan(
+    plan: ExecutionPlan, inputs: PolicyGateInputs, tree: BudgetNode
+) -> tuple[BudgetNode, tuple[BudgetCharge, ...]]:
+    """``tree`` with every step's charge posted, and every charge, in step order.
+
+    The one walk both :func:`probe_budget` and :func:`commit_budget` use. That
+    sharing is the point: the numbers a preview reports and the numbers a commit
+    writes come from one implementation, so "the preview said it would fit" and
+    "the commit charged that much" cannot be two calculations that agree today
+    and drift tomorrow. A second copy of this loop is the one thing that would
+    make plan 07's preview meaningless.
+
+    Still pure. ``BudgetNode`` is frozen and ``post_charge`` returns a new tree,
+    so the rebinding below is local and ``tree`` — the caller's tree, mounted or
+    rebuilt — is never spent. The caller decides what to do with the returned
+    tree: :func:`probe_budget` throws it away, :func:`commit_budget` persists
+    what was charged and hands the new tree back.
+    """
+    charges: list[BudgetCharge] = []
+    for fault in plan_faults(plan):
+        amount = round(float(fault.duration) * damage_weight(fault.fault_id), DAMAGE_PRECISION)
+        path = _chargeable_path(tree, inputs.budget_path, fault.fault_id)
+        tree, posted = tree.post_charge(path, amount)
+        charges.extend(posted)
+    return tree, tuple(charges)
+
+
 def probe_budget(plan: ExecutionPlan, inputs: PolicyGateInputs) -> tuple[BudgetCharge, ...]:
     """Charge every step against a *copy* of the budget and return the charges.
 
     ``BudgetNode`` is frozen and ``post_charge`` returns a new tree, so the
-    running tree below is a local rebinding and ``inputs.budget`` is never
-    spent — the probe-then-commit shape ``check_blast_radius`` already uses
-    with ``DamageQuota.unrestricted()``. The returned charges are what a commit
-    would post, in the order a refusal would read them: widest level first,
-    per step.
+    running tree inside :func:`_charge_plan` is a local rebinding and
+    ``inputs.budget`` is never spent — the probe-then-commit shape
+    ``check_blast_radius`` already uses with ``DamageQuota.unrestricted()``. The
+    returned charges are what a commit *would* post, in the order a refusal
+    would read them: widest level first, per step.
 
     This is the raising form and it stays raising: an unmappable ``budget_path``
     is an :class:`InvariantViolationError` here, exactly as
@@ -767,14 +842,35 @@ def probe_budget(plan: ExecutionPlan, inputs: PolicyGateInputs) -> tuple[BudgetC
     """
     if inputs.budget is None:
         return ()
-    tree = inputs.budget
-    charges: list[BudgetCharge] = []
-    for fault in plan_faults(plan):
-        amount = round(float(fault.duration) * damage_weight(fault.fault_id), DAMAGE_PRECISION)
-        path = _chargeable_path(tree, inputs.budget_path, fault.fault_id)
-        tree, posted = tree.post_charge(path, amount)
-        charges.extend(posted)
-    return tuple(charges)
+    return _charge_plan(plan, inputs, inputs.budget)[1]
+
+
+def _charge_plan_safely(
+    plan: ExecutionPlan, inputs: PolicyGateInputs, tree: BudgetNode
+) -> tuple[BudgetNode, tuple[BudgetCharge, ...], PolicyConfigDefect | None]:
+    """:func:`_charge_plan`, with a misconfiguration returned instead of raised.
+
+    Returns ``(tree, charges, defect)``. On a defect the tree comes back
+    **untouched** and ``charges`` is empty, because the walk raised part-way
+    through and a partial charge list would be a lie: the caller is about to
+    persist these, and persisting half a plan's damage while reporting a refusal
+    would leave the ledger describing a run that never happened.
+
+    ``BudgetNode``'s own ``InvariantViolationError`` covers more than the path
+    lookup (a scope order the tree was authored against, a duplicate child, a
+    negative charge), so the whole exception is classified rather than just the
+    one case :func:`probe_budget` documents. Any invariant raised while walking
+    the tree is a malformed hierarchy, and a malformed hierarchy refuses.
+    """
+    try:
+        charged, charges = _charge_plan(plan, inputs, tree)
+    except InvariantViolationError as exc:
+        context: dict[str, Any] = {
+            "budget_root": tree.key,
+            "budget_path": list(inputs.budget_path),
+        }
+        return tree, (), _defect_from_exception(exc, context)
+    return charged, charges, None
 
 
 def probe_budget_safely(
@@ -786,20 +882,13 @@ def probe_budget_safely(
     ``defect`` means nothing was charged and nothing was spent, because the path
     could not be resolved at all — there is no partial answer to give.
 
-    ``BudgetNode``'s own ``InvariantViolationError`` covers more than the path
-    lookup (a scope order the tree was authored against, a duplicate child, a
-    negative charge), so the whole exception is classified rather than just the
-    one case :func:`probe_budget` documents. Any invariant raised while walking
-    the tree is a malformed hierarchy, and a malformed hierarchy refuses.
+    A gate mounted with no budget at all is **not** a defect: an absent
+    hierarchy is a system nobody configured one for, and the reconciliation below
+    already reports it as ``none`` rather than inventing a refusal.
     """
-    try:
-        return probe_budget(plan, inputs), None
-    except InvariantViolationError as exc:
-        context: dict[str, Any] = {
-            "budget_root": inputs.budget.key if inputs.budget is not None else "",
-            "budget_path": list(inputs.budget_path),
-        }
-        return (), _defect_from_exception(exc, context)
+    if inputs.budget is None:
+        return (), None
+    return _charge_plan_safely(plan, inputs, inputs.budget)[1:]
 
 
 # =============================================================================
@@ -1021,6 +1110,30 @@ def reconcile_budgets(
     )
 
 
+def effective_compatibility(inputs: PolicyGateInputs) -> tuple[CompatibilityEdge, ...]:
+    """The collision graph this gate consults: the bundle's, then the caller's.
+
+    Phase 3 moved the graph *into* the bundle, so it is covered by the policy
+    digest an approval binds. A caller may still supply edges of its own — an
+    operator's local denylist, a provider's declared incompatibilities — and the
+    union is what gets consulted.
+
+    **The bundle wins a disputed pair.** Two edges for the same unordered pair
+    are collapsed to one here, before
+    :func:`~mayhem.domain.policy.evaluate_compatibility` is ever asked, because
+    that function returns the first edge it finds in a sorted walk and two
+    disagreeing declarations would otherwise be resolved by fault-id ordering —
+    a fact about spelling, not about policy. The rule is the one the rest of
+    plan 07 already uses for rules: the nearer, versioned, digest-pinned
+    declaration wins.
+    """
+    declared = inputs.bundle.graph()
+    if not inputs.compatibility:
+        return declared
+    claimed = {edge.pair() for edge in declared}
+    return (*declared, *(edge for edge in inputs.compatibility if edge.pair() not in claimed))
+
+
 def check_compatibility(
     plan: ExecutionPlan, inputs: PolicyGateInputs, facts: PolicyFacts
 ) -> tuple[CompatibilityOutcome, ...]:
@@ -1031,15 +1144,17 @@ def check_compatibility(
     three-fault plan is checked as completely as a two-fault one, and the pair
     is caught on whichever of its two members runs second. Undeclared pairs
     come back permitted; see the module docstring for why that is safe.
+
+    Consults :func:`effective_compatibility`, so the graph the *bundle* pins is
+    consulted as well as whatever the caller supplied.
     """
+    edges = effective_compatibility(inputs)
     outcomes = []
     seen: list[str] = []
     for fault in plan_faults(plan):
         new = fault.fault_id
         for earlier in sorted({prior for prior in seen if prior != new}):
-            outcomes.append(
-                evaluate_compatibility(inputs.compatibility, earlier, new, facts)
-            )
+            outcomes.append(evaluate_compatibility(edges, earlier, new, facts))
         seen.append(new)
     return tuple(outcomes)
 
@@ -1445,4 +1560,309 @@ def simulate_gate(
     """
     return replace(
         evaluate_gate(plan, inputs, environment=environment, sink=sink), simulated=True
+    )
+
+
+# =============================================================================
+# The commit path: budget charges post to the ledger hierarchically
+#
+# Plan 07 Phase 4's other half, and the last thing the plan listed as not done.
+# :func:`evaluate_gate` stays what it has always been — a pure function that reads
+# a tree and answers "would this charge fit". Nothing below is reachable from it,
+# from :func:`probe_budget`, or from :func:`simulate_gate`. The commit is a
+# *separate, explicit* operation a caller makes after admission, and it is the
+# only thing in this module that writes anything.
+#
+# Three properties are load-bearing, and each one is a decision rather than an
+# implementation detail.
+#
+# * **A charge posts to the leaf and to every ancestor above it.** Damage inside
+#   a team spends the team's window whether or not the team's own node ran
+#   anything; :meth:`BudgetNode.post_charge` has always had that arithmetic and
+#   :func:`commit_budget` persists all of it rather than the leaf alone. A ledger
+#   holding only leaves would answer "has this fault been over its limit" and
+#   never "has this team", which is the question the team-level node exists for.
+# * **An exhausted ancestor refuses even when the leaf has headroom.** The
+#   judgement reads *every* posted charge, so the widest level that went over is
+#   what the refusal names, and the tree can be exhausted at any one of five
+#   levels without the leaf ever noticing.
+# * **Charge, then judge — and a refused charge stays charged.** The same
+#   discipline :class:`~mayhem.domain.quota.DamageLedger` charges with, for the
+#   same reason: a run that attempted the damage did it, whatever a gate said
+#   about it. Rolling the number back would leave the ledger disagreeing with the
+#   world in the one direction that flatters the next run, because the headroom a
+#   refund creates is exactly what the following run plans against. A budget that
+#   refunds a refusal is not a budget anybody can reason about.
+#
+# **What this path does not do, stated rather than left to be discovered.** It does
+# not merge with the per-target ``DamageQuota``. That ledger answers spend inside
+# one plan on a fresh ledger each pass; this one answers spend persisted across
+# runs. :func:`reconcile_budgets` remains the pure conjunction of the two and
+# remains the only answer to "is this plan within budget" — a commit does not
+# consult the quota and a quota charge does not consult this ledger, so no
+# damage-second is ever counted by both.
+# =============================================================================
+
+
+class HierarchicalBudgetLedger(Protocol):
+    """Where posted damage-budget charges are written, and read back from.
+
+    Two operations, because that is all a hierarchical budget needs: append one
+    charge, and read every charge ever appended. **Spend is not stored as a
+    running total** — it is the sum of the entries — so a stored total can never
+    disagree with the charges that produced it, and a reader can always show the
+    arithmetic rather than a number nobody can account for.
+
+    Append-only is the interface, not a convention: there is deliberately no
+    ``update`` and no ``delete``. The correction for a charge that should not have
+    been made is a new record written by whoever owns the hierarchy, which is the
+    same discipline ``infra.audit_stream`` enforces in SQL triggers and the same
+    one :func:`fold_spend`'s docstring relies on.
+    """
+
+    def append(self, entry: BudgetLedgerEntry) -> None:
+        """Record one charge durably.
+
+        A failure here must propagate. A commit that reported success while a
+        charge was lost would leave the ledger understating damage and the gate
+        over-admitting against it forever after.
+        """
+
+    def entries(self) -> tuple[BudgetLedgerEntry, ...]:
+        """Every charge on the ledger, in the order it was appended."""
+
+
+KIND_BUDGET_CHARGE = "policy.budget_charge"
+"""The ``observations.kind`` every persisted damage-budget charge is written under."""
+
+
+class ObservationBudgetLedger:
+    """The hierarchical damage ledger, persisted through ``Store``'s observations.
+
+    **Why ``observations`` and not a table of its own.** Three reasons, and the
+    first two are the ones that decide it:
+
+    * The table already exists, already carries ``kind`` / ``run_id`` / ``source``
+      / ``data_json`` / ``timestamp``, and is already indexed on the first two.
+      A charge is an append-only record of an event attributed to a run, which is
+      what that table *is*.
+    * Its writes pass through
+      :meth:`~mayhem.infra.store.Store.save_observation`'s evidence boundary
+      before the transaction opens, so a budget charge is graded by the same rule
+      as the evidence that describes it. A dedicated table written directly would
+      be the one evidence-adjacent write in the repository with no such gate.
+    * Adding a migration is not this work item's to do. ``infra/migrations.py`` is
+      another module's, its head is 37, and the chain is required to be strictly
+      increasing — so a new table would mean claiming an id in a file this change
+      does not own. Recorded as an open question in the plan rather than taken
+      silently.
+
+    What this costs is written down rather than glossed: ``observations`` has no
+    uniqueness constraint on its body, so a *repeated* commit double-charges. The
+    caller owns calling this once per admitted run. The alternative — an
+    idempotency key — needs a unique index, which needs a migration.
+
+    ``charged_at`` goes in ``data`` rather than relying on the row's ``timestamp``
+    because the row's timestamp is the *store's* clock and the charge's is the
+    gate's. Both are recorded; the gate's is authoritative for reproduction,
+    because it is the clock the decision was reached against.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self._store = store
+
+    def append(self, entry: BudgetLedgerEntry) -> None:
+        self._store.save_observation(
+            KIND_BUDGET_CHARGE,
+            run_id=entry.run_id,
+            source=entry.scope.value,
+            data={
+                "scope": entry.scope.value,
+                "budget_key": entry.key,
+                "amount_s": entry.amount_s,
+                "charged_at": entry.charged_at.isoformat(),
+            },
+        )
+
+    def entries(self) -> tuple[BudgetLedgerEntry, ...]:
+        rows = self._store.query(
+            "SELECT run_id, timestamp, data_json FROM observations WHERE kind = ? ORDER BY id",
+            (KIND_BUDGET_CHARGE,),
+        )
+        return tuple(
+            _ledger_entry(row["run_id"], row["timestamp"], row["data_json"]) for row in rows
+        )
+
+
+def _ledger_entry(run_id: str, timestamp: str, data_json: str) -> BudgetLedgerEntry:
+    """Rebuild one ledger entry from an ``observations`` row, or refuse.
+
+    A row that cannot be read is **not** skipped, and this is the read side's
+    version of the rule the write side is written against. Skipping it would
+    understate the spend on the branch it belonged to and hand the next run more
+    headroom than the ledger actually has — the exact failure the whole commit
+    path exists to prevent, arriving through the read instead of the write. So an
+    unreadable row refuses, naming the row that could not be read.
+
+    The row's own ``timestamp`` is the fallback for ``charged_at`` so a row
+    written before ``charged_at`` was in the payload still reads, rather than
+    becoming a permanently unreadable row nobody can delete (the table has no
+    delete path either).
+    """
+    try:
+        data = json.loads(data_json) if data_json else {}
+        return BudgetLedgerEntry(
+            scope=BudgetScope(data["scope"]),
+            key=str(data["budget_key"]),
+            amount_s=float(data["amount_s"]),
+            run_id=run_id,
+            charged_at=datetime.fromisoformat(str(data.get("charged_at") or timestamp)),
+        )
+    except (KeyError, TypeError, ValueError, InvariantViolationError) as exc:
+        msg = (
+            f"damage budget ledger row for run {run_id or '<none>'} at {timestamp} "
+            f"is unreadable and was not skipped: {exc}"
+        )
+        raise InvariantViolationError("budget.ledger_entry_invalid", msg) from exc
+
+
+def persisted_budget(tree: BudgetNode, ledger: HierarchicalBudgetLedger) -> BudgetNode:
+    """``tree`` with everything the ledger says has already been spent.
+
+    The read half of the commit path, and the reason "persisted across runs" is a
+    claim this module can make rather than an aspiration. A caller mounts the
+    *authored* hierarchy — shape and authored limits, never spend — and this
+    returns the same tree carrying the history, which is what the gate then probes
+    and the commit then extends.
+    """
+    return fold_spend(tree, ledger.entries())
+
+
+@dataclass(frozen=True)
+class BudgetCommit:
+    """What a commit posted to the ledger, and what posting it judged.
+
+    ``charges`` is *everything* that was posted, widest level first per step, and
+    ``breached`` is the subset whose ``after_s`` passed its own limit. ``tree`` is
+    the post-charge tree including every run's prior spend, which is what a caller
+    mounts next time so the window carries forward rather than resetting.
+
+    ``entries`` counts ledger rows written. It is the field that answers "did this
+    run spend anything", and it is separate from ``charges`` only so a caller can
+    see the difference between "charged nothing" and "had nothing to charge".
+    """
+
+    charges: tuple[BudgetCharge, ...] = ()
+    tree: BudgetNode | None = None
+    breached: tuple[BudgetCharge, ...] = ()
+    entries: int = 0
+    config_defect: PolicyConfigDefect | None = None
+    refusal: PolicyRefusal | None = None
+
+    @property
+    def posted(self) -> bool:
+        """True when anything reached the ledger."""
+        return self.entries > 0
+
+    @property
+    def within_budget(self) -> bool:
+        return self.refusal is None
+
+    @property
+    def refused(self) -> bool:
+        return self.refusal is not None
+
+    def inputs(self) -> dict[str, Any]:
+        """The machine-readable half, shaped like :meth:`PolicyGateResult.inputs`."""
+        return {
+            "budget_posted_entries": self.entries,
+            "budget_posted": [
+                f"{charge.scope.value}:{charge.key}={charge.after_s}" for charge in self.charges
+            ],
+            "budget_posted_breached": [
+                f"{charge.scope.value}:{charge.key}" for charge in self.breached
+            ],
+            "budget_post_refusal": self.refusal.rule_id if self.refusal else "",
+            "budget_post_config_defect": (
+                self.config_defect.defect.value if self.config_defect else ""
+            ),
+        }
+
+    def describe(self) -> str:
+        if self.refusal is not None:
+            return f"budget commit refused: {self.refusal.reason}"
+        if not self.posted:
+            return "budget commit posted nothing (no budget mounted)"
+        return f"budget commit posted {self.entries} charge(s) to the damage ledger"
+
+
+def commit_budget(
+    plan: ExecutionPlan,
+    inputs: PolicyGateInputs,
+    ledger: HierarchicalBudgetLedger,
+) -> BudgetCommit:
+    """Post this plan's damage to the hierarchical ledger, then judge the result.
+
+    **Call this after admission, never inside it.** The gate's own answer is
+    :func:`probe_budget`, and it is what decides whether the plan may run; this is
+    the operation that makes the answer cost something. Keeping them apart is not
+    tidiness — it is the only way ``simulate_gate`` can stay provably free of
+    writes, because a preview and a commit that shared a code path could not.
+
+    **The charge is computed against the ledger, not against the mounted tree.**
+    The mounted tree carries the *authored* limits; the spend comes from
+    :func:`persisted_budget`, so a plan that a previous run pushed an ancestor over
+    is refused here even though the leaf has room left. This is what makes the
+    hierarchy a budget over time rather than a per-run ceiling.
+
+    **The charges are recomputed here rather than taken from a gate result.** A
+    result handed in was reached against a ledger as it stood then, and this call
+    may be the one that follows somebody else's commit in between. The numbers
+    posted are the numbers judged *here*, on the ledger as it stands now — from
+    the same :func:`_charge_plan` the gate probes with, so the two cannot disagree
+    about arithmetic while still agreeing about when.
+
+    **No budget mounted is allowed, and posts nothing.** That is the reading
+    :func:`mayhem.controller.campaign_dispatch.campaign_budget_verdict` gives an
+    unmounted campaign budget: a limit nobody configured is not a limit, and
+    refusing here would invent one. A *malformed* hierarchy is a different thing
+    and refuses, with the same ``policy.config_invalid`` refusal and the same
+    per-defect remediation the gate produces — this path reuses
+    :func:`_config_refusal` rather than authoring a second wording.
+
+    **The refusal reuses :func:`_budget_refusal`,** so the rule id
+    (:data:`RULE_BUDGET_EXHAUSTED`), the reason, the remediation and the inputs
+    are byte-identical whether the gate or the commit refused. One id for one
+    failure is what keeps a proof's obligation mapping honest, and it is why this
+    path introduces no rule id of its own.
+
+    Refusals here are :class:`PolicyRefusal` values, not exceptions: a commit that
+    overspends is an operational outcome somebody needs to read and reconcile, not
+    a crash. A ledger that *cannot be read* does raise
+    (``budget.ledger_entry_invalid``), because in that case the module does not
+    know what the budget has already spent and must not guess.
+    """
+    if inputs.budget is None:
+        return BudgetCommit()
+    tree = persisted_budget(inputs.budget, ledger)
+    charged, charges, defect = _charge_plan_safely(plan, inputs, tree)
+    if defect is not None:
+        # Nothing was posted. The walk raised before it could say who pays, so
+        # there is no damage to record — and posting "what we could work out so
+        # far" would leave the ledger describing damage for a plan the gate never
+        # charged at all.
+        return BudgetCommit(tree=tree, config_defect=defect, refusal=_config_refusal(defect))
+    run_id = inputs.run_id or plan.run_id
+    for charge in charges:
+        ledger.append(BudgetLedgerEntry.from_charge(charge, run_id=run_id, charged_at=inputs.now))
+    breached = tuple(charge for charge in charges if charge.exceeded)
+    # Judged *after* every append, and nothing above this line can undo one. That
+    # ordering is the charge-then-judge rule stated as control flow rather than
+    # as a promise: there is no code path from a breach back to a refund.
+    return BudgetCommit(
+        charges=charges,
+        tree=charged,
+        breached=breached,
+        entries=len(charges),
+        refusal=_budget_refusal(breached, None),
     )
