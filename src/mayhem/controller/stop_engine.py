@@ -88,6 +88,7 @@ so a stop can never be silently dropped for want of somewhere to record it.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -95,6 +96,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mayhem.domain.attestation import AttestedEvent, AttestedTimestamp
 from mayhem.domain.cancellation import CancellationLevel
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
@@ -126,12 +128,18 @@ if TYPE_CHECKING:
     from mayhem.domain.stop_conditions import Firing
 
 __all__ = [
+    "EVENT_STOP_EXECUTED",
+    "EVENT_STOP_POSTFLIGHT",
+    "FREEZE_LATENCY_BOUND_S",
+    "STOP_CHAIN_KEY_SUFFIX",
     "STOP_MECHANISM",
     "AgentCompensationOutcome",
     "AgentCompensator",
+    "ClaimLedger",
     "Compensated",
     "CompensationPath",
     "DispatchFreezer",
+    "OpenClaim",
     "Residue",
     "ResidueScanner",
     "SealedStop",
@@ -139,7 +147,9 @@ __all__ = [
     "StopEngine",
     "StopExecution",
     "StopLedger",
+    "claim_ref",
     "command_for_firing",
+    "freeze_latency",
     "lease_ref",
     "leases_for_run",
     "observed_values_for",
@@ -148,6 +158,11 @@ __all__ = [
     "residue_ref",
     "run_state_from_sink",
     "stage_ref",
+    "stop_chain_events",
+    "stop_chain_key",
+    "stop_evidence_payload",
+    "stop_manifest_id",
+    "stop_postflight_payload",
     "trigger_for_firing",
 ]
 
@@ -187,6 +202,44 @@ def residue_ref(kind: str, target: str) -> str:
 def postflight_ref(run_id: str, report_digest: str) -> str:
     """Evidence reference for a sealed postflight report, by its digest."""
     return f"postflight/{run_id}/{report_digest}"
+
+
+def claim_ref(command_id: str) -> str:
+    """Evidence reference for one dispatch claim that was never settled."""
+    return f"claim/{command_id}"
+
+
+#: The plan's "freeze within seconds", as a number this codebase will fail on.
+#:
+#: Chosen for what the freeze actually is: one call to the
+#: :class:`DispatchFreezer`, which on the shipped surface is a fence-epoch mint
+#: against the local store. There is no network hop in it, so a bound in the
+#: seconds is not generous — it is a bound that would notice a freeze which
+#: started reaching for something remote or waiting on a lock it does not hold.
+#:
+#: It is a bound on *mayhem's* freeze, not on the environment's reaction: how
+#: long a paused queue takes to drain, or a frozen sidecar to notice, is not
+#: measured here and cannot be, from inside the process that asked.
+FREEZE_LATENCY_BOUND_S = 5.0
+
+
+def freeze_latency(
+    execution: StopExecution, *, bound_s: float = FREEZE_LATENCY_BOUND_S
+) -> tuple[float | None, bool]:
+    """``(measured_seconds, within_bound)`` for one stop.
+
+    The fail-closed third state is carried rather than collapsed: ``(None, False)``
+    for a stop whose walk never reached ``FREEZE``, because "the freeze was not
+    measured" is not "the freeze was instant", and a caller that treats an
+    absent measurement as a passing one would report a bound it never checked.
+
+    The check is ``measured <= bound`` and nothing else. No margin, no
+    rounding, no tolerance: a bound with slack in it is a bound nobody reads.
+    """
+    measured = execution.freeze_latency_s
+    if measured is None:
+        return None, False
+    return measured, measured <= bound_s
 
 
 # -- records ------------------------------------------------------------------------
@@ -448,10 +501,20 @@ class StopExecution:
     between "we know what happened" and "we know what happened and finished".
     ``verdict`` is ``UNKNOWN`` without a seal: nothing was established, and
     unchecked is not clean.
+
+    ``freeze_latency_s`` is the *measured* seconds from entering ``execute`` to
+    the ``FREEZE`` stage leaving a receipt, and ``None`` when the walk never got
+    there. It is the plan's "freeze within seconds" acceptance as a number rather
+    than a claim: measured on a monotonic clock, never on the injected
+    ``now`` (which is a *record* of when the stop was issued, and reading it back
+    would report exactly 0.0 for a freeze that took a minute). It measures this
+    process, so it bounds what mayhem can do and says nothing about how fast the
+    system it froze reacted — see :func:`freeze_latency`.
     """
 
     record: StopRecord
     sealed: SealedStop | None = None
+    freeze_latency_s: float | None = None
 
     @property
     def run_id(self) -> str:
@@ -542,6 +605,50 @@ class DispatchFreezer(Protocol):
     """
 
     def freeze(self, run_id: str) -> str: ...
+
+
+class ClaimLedger(Protocol):
+    """Plan 03's dispatch journal, read as claims that were never settled.
+
+    The crash window, in the only form this engine can honestly act on. A claim
+    is an *intent*: mayhem asked the fabric to do something under a fence epoch.
+    A settlement is the observation of what that became. A claim with neither a
+    settlement nor a lease in the sink is the case the reconcile stage exists for
+    — mayhem dispatched, mayhem cannot prove the effect happened, and mayhem
+    cannot prove it did not.
+
+    **A reader, deliberately, and not a settler.** Settling a claim means
+    asserting what the effect became, and only the lane that dispatches may make
+    that assertion: it is the statement that makes a crashed step safely
+    re-dispatchable under a fresh fence, and a stop has no business writing it.
+    So this engine reports an open claim as a residue finding — which makes the
+    postflight ``DIRTY`` and the run unclosable-clean — and leaves closing it to
+    the reconciler that owns the dispatch.
+
+    Raising is how "the journal could not be read" is said, and the walk then
+    records the stall rather than asserting a clean reconcile.
+    """
+
+    def open_claims(self, run_id: str) -> tuple[OpenClaim, ...]: ...
+
+
+class OpenClaim(BaseModel):
+    """One dispatch claim with no settlement.
+
+    Deliberately only what the residue finding has to cite: which command, which
+    step, and under which fence epoch. A stop is not the right place to read a
+    command's payload.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    command_id: str
+    step_id: str = ""
+    epoch: int = 0
+
+    @property
+    def evidence_ref(self) -> str:
+        return claim_ref(self.command_id)
 
 
 class ResidueScanner(Protocol):
@@ -833,6 +940,12 @@ class _Walk:
     findings: list[Residue] = field(default_factory=list)
     recovery: RecoveryExecutionResult | None = None
     report: PostflightReport | None = None
+    freeze_latency_s: float | None = None
+    """Measured seconds from taking the command to the ``FREEZE`` receipt.
+
+    ``None`` until the freeze stage leaves one, which is what a stop that
+    stalled at (or before) ``FREEZE`` reports: no measurement is not a fast one.
+    """
 
 
 class StopEngine:
@@ -848,6 +961,8 @@ class StopEngine:
         residue: ResidueScanner | None = None,
         compensator: AgentCompensator | None = None,
         artifact_dir: str | None = None,
+        claims: ClaimLedger | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._sink = sink
         self._recovery = recovery
@@ -856,6 +971,14 @@ class StopEngine:
         self._residue = residue
         self._compensator = compensator
         self._artifact_dir = artifact_dir
+        # Plan 13's claim ledger, read-only. Optional and inert without it; see
+        # :class:`ClaimLedger` for why it is a reader and not a settler.
+        self._claims = claims
+        # Monotonic, not the injected wall clock: the freeze latency is an
+        # elapsed-time measurement, and a clock a test can pin is exactly the
+        # clock that would make the measurement meaningless. Injectable so a
+        # test can drive it, never a source of the number a caller is shown.
+        self._monotonic = monotonic
 
     # -- entry points ---------------------------------------------------------
 
@@ -920,6 +1043,9 @@ class StopEngine:
             compensation=compensation,
             now=moment,
         )
+        # Taken once, before the walk starts: the freeze latency is measured from
+        # the moment mayhem took the command, not from the moment the walk began.
+        entered_at = self._monotonic()
         stalled: StopStage | None = None
         stall_reason = ""
         while (stage := escalation.current) is not None:
@@ -932,6 +1058,8 @@ class StopEngine:
                 stalled = stage
                 stall_reason = f"{stage.value}: {type(exc).__name__}: {exc}"
                 break
+            if stage is StopStage.FREEZE:
+                walk.freeze_latency_s = self._monotonic() - entered_at
             escalation = escalation.advance(stage)
 
         report = walk.report
@@ -951,7 +1079,7 @@ class StopEngine:
         )
         self._ledger.record_attempt(record)
         if stalled is not None or report is None:
-            return StopExecution(record=record)
+            return StopExecution(record=record, freeze_latency_s=walk.freeze_latency_s)
         sealed = SealedStop(
             record=record,
             report=report,
@@ -959,7 +1087,9 @@ class StopEngine:
             sealed_at=moment,
         )
         self._ledger.record_seal(sealed)
-        return StopExecution(record=record, sealed=sealed)
+        return StopExecution(
+            record=record, sealed=sealed, freeze_latency_s=walk.freeze_latency_s
+        )
 
     async def execute_for_lost_controller(
         self,
@@ -1265,6 +1395,51 @@ class StopEngine:
                     observed_at=walk.now,
                 )
             )
+        self._reconcile_claims(walk)
+
+    def _reconcile_claims(self, walk: _Walk) -> None:
+        """Compare dispatch intent against observation, claim by claim.
+
+        The lease half of :meth:`_stage_reconcile` only sees work that reached
+        the write-ahead ledger. A claim the fabric took and never settled is
+        intent with no observation anywhere: no lease row to compensate, no
+        recovery plan naming it, nothing for the lease-side reconcile to notice.
+        With a :class:`ClaimLedger` bound, each of those becomes a
+        ``claim_unsettled`` residue finding — which makes the postflight
+        ``DIRTY`` and the run unclosable-clean, because an effect mayhem cannot
+        account for is not an effect mayhem proved absent.
+
+        Without one bound the stage is unchanged and says nothing about claims:
+        mayhem holds no journal, and "no witness" is not "nothing outstanding".
+        """
+        if self._claims is None:
+            return
+        observed = {lease.id for lease in leases_for_run(self._sink, walk.run_id)}
+        for claim in self._claims.open_claims(walk.run_id):
+            walk.findings.append(
+                Residue(
+                    kind="claim_unsettled",
+                    target=claim.command_id,
+                    detail=(
+                        f"dispatch claim {claim.command_id}"
+                        + (f" for step {claim.step_id}" if claim.step_id else "")
+                        + (f" under epoch {claim.epoch}" if claim.epoch else "")
+                        + " was never settled and owns no lease in the sink: mayhem cannot "
+                        "prove whether the effect happened, and cannot prove it did not"
+                    ),
+                )
+            )
+            walk.receipts.append(
+                StageReceipt(
+                    stage=StopStage.RECONCILE,
+                    evidence_ref=claim.evidence_ref,
+                    detail=(
+                        f"claim {claim.command_id} reconciled against "
+                        f"{len(observed)} lease(s) held by run {walk.run_id}"
+                    ),
+                    observed_at=walk.now,
+                )
+            )
 
     def _stage_residue_scan(self, walk: _Walk) -> None:
         """Look for what the undo missed, beyond the lease states.
@@ -1395,3 +1570,208 @@ class StopEngine:
             for lease in leases_for_run(self._sink, walk.run_id)
         ]
         return max(deadlines, default=walk.now.timestamp()) + 1.0
+
+
+# =============================================================================
+# Phase 4 — the stop, sealed into plan 12's attested chain
+# =============================================================================
+#
+# The ledger above is this module's own operator record. It is not evidence in
+# plan 12's sense: it is a mutable table anyone with the database can edit, and
+# nothing in it verifies. Phase 4 puts the same four facts into a chain whose
+# every link is a SHA-256 over canonical bytes:
+#
+# * the **stop reason** — which of the six ``StopReason`` members, with the
+#   command id, principal, scope, level, and the trigger's detail;
+# * the **per-action compensation outcomes** — each lease the compensation pass
+#   settled or could not, by id and evidence reference;
+# * the **residue scan results** — every finding, by kind, target, and reference;
+# * the **postflight verdict** — ``CLEAN``/``DIRTY``/``UNKNOWN`` as the report
+#   itself recomputes it, plus the report's digest.
+#
+# Four properties this half holds, and each is what makes the chain worth
+# reading rather than decorative:
+#
+# 1. **A stalled stop seals too.** :func:`stop_chain_events` emits one event for
+#    a stop that never sealed, with ``sealed=false`` and ``verdict=UNKNOWN``.
+#    Sealing is a claim that a chain is *complete as a record of what happened*,
+#    not that everything went well; a stop that stalled is exactly the thing a
+#    reader most needs on the chain, and withholding it would make an unsealed
+#    attempt indistinguishable from an attempt that never happened.
+# 2. **The verdict is read, never authored.** It is
+#    :attr:`StopExecution.verdict`, which is
+#    :meth:`~mayhem.domain.stop.PostflightReport.verdict` recomputed from the
+#    report's own checks. A caller cannot pass a verdict in, because the payload
+#    builder takes a :class:`StopExecution` and nothing else.
+# 3. **An empty stop seals nothing.** :func:`stop_chain_events` returns ``()`` for
+#    an execution with no record — and a chain of zero events is a chain that
+#    proves nothing while looking like one that does.
+# 4. **The events are unsealed on the way out.** They are sealed by
+#    ``seal_events`` in the writer, so a reader can tell built from written.
+
+#: ``AttestedEvent.event_kind`` for the stop itself: what was asked, and what the
+#: ladder did with it.
+EVENT_STOP_EXECUTED = "stop.executed"
+
+#: ``AttestedEvent.event_kind`` for the postflight: the per-lease compensation
+#: outcomes, the residue findings, and the verdict they produce.
+EVENT_STOP_POSTFLIGHT = "stop.postflight"
+
+#: Namespaces the stop chain so it cannot collide with another lane's chain for
+#: the same run. ``attestation_chains.run_id`` is a key, not a foreign key, so
+#: two lanes sealing the same run must not share a row.
+STOP_CHAIN_KEY_SUFFIX = ":stop"
+
+
+def stop_chain_key(run_id: str) -> str:
+    """The ``attestation_chains`` key the stop chain is written under."""
+    return f"{run_id}{STOP_CHAIN_KEY_SUFFIX}"
+
+
+def stop_manifest_id(run_id: str) -> str:
+    """The ``attestation_manifests`` id covering the stop chain."""
+    return stop_chain_key(run_id)
+
+
+def stop_evidence_payload(execution: StopExecution) -> dict[str, Any]:
+    """Everything about one stop that belongs in evidence, as canonical scalars.
+
+    A pure projection of a :class:`StopExecution` — no store, no clock, no
+    re-derivation. Every list is sorted so the same stop seals the same bytes
+    twice, and every field is either a scalar or a list of them, because this is
+    what gets hashed and a dict-of-dicts would be hashed by a rule nobody could
+    later re-state by hand.
+
+    ``verdict`` is included as the enum's *value* alongside the report's digest,
+    not instead of them: the digest is what proves *which* report produced the
+    verdict, and the value is what a reader reads.
+    """
+    record = execution.record
+    command = record.command
+    sealed = execution.sealed
+    report = sealed.report if sealed is not None else None
+    residue_checks = (
+        []
+        if report is None
+        else [
+            {
+                "name": check.name,
+                "status": check.status.value,
+                "evidence_refs": sorted(check.evidence_refs),
+                "detail": check.detail,
+            }
+            for check in report.checks
+            if check.name.startswith("residue:")
+        ]
+    )
+    recovery_check = None
+    if report is not None:
+        recovery_check = next(
+            (check for check in report.checks if check.name == "recovery:leases_recovered"), None
+        )
+    return {
+        "run_id": execution.run_id,
+        "command_id": command.id,
+        "scope": command.scope.value,
+        "principal": command.principal,
+        "reason": record.reason.value,
+        "reason_detail": command.trigger.detail,
+        "condition_id": command.trigger.condition_id,
+        "level": record.level.value,
+        "state": record.state.value,
+        "compensation_path": record.compensation.value,
+        "sealed": sealed is not None,
+        "completed_stages": [stage.value for stage in record.completed_stages],
+        "carried_stages": [stage.value for stage in record.carried_stages],
+        "outstanding_stages": [stage.value for stage in record.outstanding],
+        "stalled_at": "" if record.stalled_at is None else record.stalled_at.value,
+        "stall_reason": record.stall_reason,
+        "receipts": [
+            {
+                "stage": receipt.stage.value,
+                "evidence_ref": receipt.evidence_ref,
+                "detail": receipt.detail,
+                "observed_at": receipt.observed_at.isoformat(),
+            }
+            for receipt in record.receipts
+        ],
+        # Per-action compensation outcomes: one entry per lease the recovery pass
+        # had an opinion about, cited by the same reference the postflight cites.
+        "compensated_leases": (
+            []
+            if recovery_check is None
+            else sorted(recovery_check.evidence_refs)
+        ),
+        "compensation_detail": "" if recovery_check is None else recovery_check.detail,
+        "residue_checks": residue_checks,
+        "verdict": execution.verdict.value,
+        "recovery_verified": execution.recovered,
+        "report_digest": sealed.report_digest if sealed is not None else "",
+        "evidence_ref": (
+            postflight_ref(execution.run_id, sealed.report_digest)
+            if sealed is not None
+            else stage_ref(execution.run_id, StopStage.SEAL)
+        ),
+        "freeze_latency_s": execution.freeze_latency_s,
+    }
+
+
+def stop_chain_events(
+    execution: StopExecution, *, recorded_at: AttestedTimestamp
+) -> tuple[AttestedEvent, ...]:
+    """The unsealed chain events for one stop, in order (pure).
+
+    One ``stop.executed`` event and one ``stop.postflight`` event. The second is
+    emitted for a stalled stop as well, with the postflight fields empty and the
+    verdict ``UNKNOWN`` — the record of "this stop did not get far enough to
+    produce a postflight" belongs in the chain, because its absence is
+    indistinguishable from never having tried.
+
+    Returns ``()`` for an execution with no record, so a caller can seal
+    unconditionally and write no empty chain.
+    """
+    if not execution.record.command.id:
+        return ()
+    run_id = execution.run_id
+    executed = AttestedEvent(
+        event_id=f"{run_id}:stop:{execution.record.command.id}",
+        event_kind=EVENT_STOP_EXECUTED,
+        run_id=run_id,
+        sequence=0,
+        payload=stop_evidence_payload(execution),
+        recorded_at=recorded_at,
+    )
+    postflight = AttestedEvent(
+        event_id=f"{run_id}:stop-postflight:{execution.record.command.id}",
+        event_kind=EVENT_STOP_POSTFLIGHT,
+        run_id=run_id,
+        sequence=1,
+        payload=stop_postflight_payload(execution),
+        recorded_at=recorded_at,
+    )
+    return (executed, postflight)
+
+
+def stop_postflight_payload(execution: StopExecution) -> dict[str, Any]:
+    """The postflight half on its own: verdict, obligations, and the report digest.
+
+    Separate from :func:`stop_evidence_payload` because the postflight is the part
+    a reader opens a stop to find, and burying it inside a larger event would make
+    it quotable only by parsing something else.
+    """
+    payload = stop_evidence_payload(execution)
+    return {
+        key: payload[key]
+        for key in (
+            "run_id",
+            "command_id",
+            "reason",
+            "sealed",
+            "compensated_leases",
+            "residue_checks",
+            "verdict",
+            "recovery_verified",
+            "report_digest",
+            "evidence_ref",
+        )
+    }
