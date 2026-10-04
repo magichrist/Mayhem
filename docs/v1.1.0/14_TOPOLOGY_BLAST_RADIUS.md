@@ -178,7 +178,98 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
   - **Predictions are sealed with the plan, and an uncited one cannot be.** `seal_prediction` commits a prediction into plan 12's existing hash chain and M0023 tables under its own `:prediction` scope (so it cannot overwrite the run-close or `:proof` chain), reusing the same domain functions and unsigned-manifest honesty gate as `controller/proof_sealing.py`. `verify_sealed_prediction` re-verifies chain, then manifest, then the payload's own digest — a chain proves the bytes were not edited, never that they are the right bytes. `evidence_ref` is required and non-blank at both seal time and read-back: a prediction citing no evidence cannot back a decision.
   - **A run whose actual blast exceeded its prediction opens a finding.** `score_prediction_accuracy` reads "exceeded" as a *set* question rather than a count, names the affected ids the forecast did not contain, and records the over-estimated direction without opening a finding against the run.
   - **DEBT CARRIED FORWARD — NOW CLOSED (recorded here rather than deleted, because the shape of the debt is the useful part).** As Phase 4 landed, `safety_proof.OBLIGATION_FOR_RULE` had no owning line for the five ceiling rule ids, because that lane could not edit `controller/safety_proof.py` while concurrent lanes held it. The consequence was measured, not assumed: a run refused on a ceiling compiled to a `VOID` proof naming an unplaceable rule — fail-closed rather than a silent pass, but strictly weaker than the `FAIL` on `target_policy` the artifact could have reported, and weaker in the way that matters, because a `VOID` proof reports nothing about the line that was actually breached. The five ids were spelled as inline literals in `_deny_decision` calls precisely so the completeness scanner could see them and fail by name. **They are now mapped**, all five to `ObligationName.TARGET_POLICY`, with the five ids added to `safety_proof.GATE_RULE_IDS` so a prediction's ceiling findings are attributable, and a tenth obligation name was considered and rejected on the type rather than the taste: `ObligationName` is the fixed nine-name spine, and adding a line to it changes what a `PASS`-shaped proof must contain for every consumer of the artifact, for a rule an existing line already describes honestly. `test_proof_compiler.py::test_every_rule_the_gates_can_raise_has_an_owning_proof_line` passes. The `CEILING_RULES_AWAITING_AN_OBLIGATION` marker that specified the work is gone from the suite, and the `target_policy` line now reports each ceiling's measured value beside the limit it was compared against, so a breach is a `FAIL` naming its number rather than a count of ceilings somewhere in a line.
-- Phase 5: not started
-- Phase 6: not started
+- Phase 5: DONE — **the phase's named list was already covered by three existing suites** and the `not started` status was stale rather than the work being absent: prediction accuracy on fixture graphs (`test_accuracy_is_scored_against_the_reloaded_seal_not_an_in_memory_object`), agreement with the real gate (`test_the_preview_and_the_gate_agree_on_which_ceiling_fires`, `test_an_unmodelled_refusal_does_not_make_the_preview_look_in_agreement`), protected-list refusal (`test_the_protected_list_matches_targets_not_the_whole_blast`), and both of the phase's own negative controls (`test_a_prediction_over_a_drifted_graph_is_marked_stale` plus `test_a_stale_prediction_is_refused_for_approval_use`, and `test_a_preview_is_never_accepted_as_a_preflight`). What was missing is the discipline the completed plans record — proving the properties underneath are **load-bearing** — so `tests/unit/test_prediction_negative_controls.py` (13) supplies it: the **graph identity senses content and nothing else** (identical graphs hash alike, one extra node does not — the property staleness depends on, since an identity insensitive to content or re-derived per call would leave Phase 4's drift check comparing a constant); the **plan identity** changes when a step is added and not when a plan is recompiled identically; the **affected set is closed under dependencies and closed to everything else**, asserted as an *equality* after adding an isolated service so a traversal that leaked — or one that recomputed differently per call — fails; **cutting one edge shrinks the set**, which is what makes a blast-radius ceiling mean anything; and **fan-out depth counts hops**, with the full four-deep chain measuring 3 and the cut chain measuring less, plus a dependent count that shrinks with it. Three engine-level properties (drift refusal, preview-never-a-preflight, ceiling agreement) are guarded by **name-pin** against the suites that own them, with a second test asserting the pin list cannot be emptied by deleting an entry, and a third asserting the edge-cut helper really cuts the edge it names — because a no-op helper would have made every closure test above vacuous. `TopologyGraph` is a frozen pydantic model, so variants are built with `model_copy`; the first attempt used `dataclasses.replace` and was corrected rather than worked around.
+- Phase 6: DONE — two guides plus the rollout order written into this document below the ledger. **Prediction interpretation guide**: the three ceiling stances and why `unchecked` is a first-class reading rather than folded into `inside_policy`; that depth is a *measured* hop count with a directly-targeted node at depth 0; that drift marks a prediction **stale** and refuses it for approval use because it describes a world that no longer exists; that the protected list is about **targets**, not blast radius; and that an unpriced estimate omits `currency` and `total` **entirely** rather than emitting `null`, because `total: null` renders a dollar sign in most consumers and reads as zero-with-no-units. **Simulate vs. preflight**: the three rules that keep them apart (a preview is never accepted as a preflight; the fingerprint default is disclosed via `FINGERPRINT_NOTE` because a default that skips a check is only acceptable if the reader is told; the preview/gate ceiling agreement is enforced and a disagreement is a finding), plus why no plan-14 ceiling is configurable from a preview surface. **Rollout order** as the phase specifies. Honesty: the guide states that no prediction has been scored against a production incident and that fixture accuracy proves agreement with the gate, not accuracy about the world. The acceptance criterion "no doc calls a prediction a guarantee" is met and enforced by `tests/unit/test_prediction_plan_docs.py`, which refuses the claim by pattern and cross-checks the `Overall:` count against the `DONE` lines.
 
-Overall: 4 of 6 phases complete.
+Overall: 5 of 6 phases complete. Phase 3 stays **INCOMPLETE** and the count is deliberately not inflated to 6: its own entry records two acceptance-criterion halves that did not land for reasons of ownership (the `RiskPreviewView` is written nowhere because a read-only preview must not own a write path; and there is no UI renderer to demonstrate "identical in CLI and UI" against).
+
+## Prediction interpretation guide
+
+A prediction says what a step is *expected* to affect, before anything runs.
+Read it as an expectation with a stated confidence, never as an outcome.
+
+**The three stances, and why there are three.** A ceiling reports `inside_policy`,
+`outside_policy`, or `unchecked`. `unchecked` exists because an unconfigured
+ceiling was **not checked** — rendering it `inside_policy` would put a fourth
+reading on the page that means "nothing was violated" when what happened is
+"nothing was measured". A preview that cannot tell you which of the three it is
+reporting is a preview you cannot act on, so the enum is load-bearing and a
+refusal renders as unusable rather than as a clean preview.
+
+**Confidence bounds are stated, never hidden.** The affected set is a closure over
+the topology *as it was read*, and its depth is a measured count of dependency
+hops — a directly targeted node is depth 0, so a plan whose targets impair
+nothing downstream reports `max_depth == 0` rather than a misleading "no depth".
+The numbers are in the payload so a reader can see the basis, not just the
+conclusion.
+
+**A prediction is invalidated by drift, and says so.** The prediction is pinned to
+a graph identity and a plan identity. If the topology moves between the read and
+the use — or the plan changes — the prediction is marked **stale** and is
+*refused for approval use*. A stale prediction is not a slightly less certain
+one; it describes a world that no longer exists. This is why a graph identity is
+computed from the graph itself: an identity insensitive to content, or one
+re-derived per call, would leave the staleness machinery with nothing to compare.
+
+**The protected list is about targets, not about blast radius.** A protected
+service is a protection *breach* when it is a **target**, not when it merely
+appears in the fan-out. Confusing the two would make every preview that touches a
+protected dependency read as a breach, and a gate that refused on that basis would
+be refused constantly and mean nothing.
+
+**An unpriced estimate discloses rather than guessing.** When no rate card
+applies, `cost` omits `currency` and `total` **entirely** — not `null`, not
+`0.0`, because a consumer rendering `total: null` beside a number draws a dollar
+sign, and most JSON tooling reads `null` as zero-with-no-units. The measured
+`affected_node_seconds` is always present, because it *is* measured. An estimate
+mayhem cannot price is an absence, and the payload's key is absent.
+
+## Simulate vs. preflight — the distinction that has not been deleted yet
+
+This distinction is documented *until it hurts*, which is to say until a UI needs
+the words and the temptation to drop them becomes strong enough to overcome the
+cost.
+
+**`mayhem simulate` / risk-preview is a preview. `preflight` is a gate.** A
+preview asks "what would this plan do, roughly, according to the topology I can
+read right now" and its answer is advisory: it is stored nowhere authoritative,
+executes nothing, and has no `--force` and no `--record`. A preflight asks "may
+this run start" and its answer is a refusal or a grant that the run path enforces.
+
+**The three rules that keep them apart.**
+
+1. **A preview is never accepted as a preflight.** There is no code path by which
+   a `SimulateReport` satisfies an admission check, and the report declares which
+   artifact it is so the question cannot be answered by accident. A preview that
+   read as a preflight would be a gate with no teeth, which is worse than no gate:
+   it converts "not checked" into "checked and passed".
+2. **The preview adopts the plan's own recorded fingerprint by default**, which
+   means the stricter drift check does not run unless a caller passes
+   `--fingerprint`. That is disclosed in the rendered output (`FINGERPRINT_NOTE`)
+   and in the payload, because a default that skips a check is only acceptable if
+   the reader is told it was skipped.
+3. **The preview and the real gate agree on which ceiling fires, and that
+   agreement is enforced in production.** Where they disagree, the disagreement is
+   a finding and never a silent pass — and an agreement record cannot assert a
+   state its own fields contradict.
+
+**What the preview deliberately cannot configure.** No plan-14 ceiling is
+configurable from this surface yet, so all five report `unchecked`
+(`CEILINGS_NOTE`). A caller handed `--max-hosts` on a preview surface would be
+handed the ceiling that is supposed to be checking them.
+
+## Rollout order
+
+Fan-out display first, prediction second, simulate third. Each step is a smaller
+promise than the one after it, and the order means the tool is trusted with a
+description of the blast radius before it is trusted with a projection of a plan
+nobody has run.
+
+**Honest limits.** No prediction in this plan has been scored against a production
+incident; the accuracy suites work on fixture graphs, which proves the prediction
+agrees with the gate's own closure and nothing about the world's accuracy.
+Topology is read from a snapshot, and a snapshot is only as fresh as its writer.
+Nothing in this document presents a prediction as a **guarantee** — a prediction
+is an expectation over a read graph, and the guarantee-shaped claims (across
+releases, across variants, across environments) belong to plan 22's regression
+tracking.
