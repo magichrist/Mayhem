@@ -1437,9 +1437,20 @@ def run(
     # exactly once, here at the CLI edge. Everything below — the implicit-path
     # decision and every engine built for this invocation — takes that one
     # answer; nothing downstream re-reads the environment.
-    from mayhem.cli.app import implicit_execution_allowed
+    #
+    # The deployment's refusing controls resolve the same way and for the same
+    # reason. ``run_gate`` reads MAYHEM_GATE_WITNESSES and returns the gate this
+    # deployment bound (None when it bound none — mayhem binds none of the five
+    # port witnesses, so the shipped default is an ungated run, unchanged);
+    # ``run_budget_guard`` reads MAYHEM_BUDGET_GUARD once, where the run id is
+    # known. Both are passed down to ``engine_for`` as parameters: the controller
+    # reads no environment and imports no CLI module, and a spec that cannot be
+    # loaded raises here, before a store is opened, rather than downgrading
+    # silently to "no gate".
+    from mayhem.cli.app import implicit_execution_allowed, run_budget_guard, run_gate
 
     allow_implicit = implicit_execution_allowed()
+    gate = run_gate()
     target_name = run_target or obj.target
     runtime = _runtime_context(
         engine=run_engine or _resolve_engine_from_state(),
@@ -1571,6 +1582,8 @@ def run(
                         intent=plan_intent,
                         require_intent=True,
                         allow_implicit=allow_implicit,
+                        gate=gate,
+                        budget_guard=run_budget_guard(compiled_plan.run_id),
                     )
                     result = eng.execute(compiled_plan)
                     preflight2 = _preflight_for_run(
@@ -1679,6 +1692,8 @@ def run(
                     intent=stored_intent,
                     require_intent=True,
                     allow_implicit=allow_implicit,
+                    gate=gate,
+                    budget_guard=run_budget_guard(loaded_plan.run_id),
                 )
                 result = eng.execute(loaded_plan)
                 _write_evidence_after_run(
@@ -1834,6 +1849,8 @@ def run(
             intent=run_intent,
             require_intent=True,
             allow_implicit=allow_implicit,
+            gate=gate,
+            budget_guard=run_budget_guard(compiled.run_id),
         )
         result = engine_obj.execute(compiled.plan)
         _write_evidence_after_run(
@@ -1960,11 +1977,15 @@ def maniac(
     one.
     """
     obj = _ctx(ctx)
-    from mayhem.cli.app import implicit_execution_allowed
+    from mayhem.cli.app import implicit_execution_allowed, run_budget_guard, run_gate
 
     # Resolved once here, at the CLI edge, and reused for the gate below and
-    # for the engine; nothing downstream re-reads the environment.
+    # for the engine; nothing downstream re-reads the environment. ``run_gate``
+    # is the deployment's refusing preflight gate (None when it configured one —
+    # the shipped default) and ``run_budget_guard`` its resource budget; both
+    # travel down as parameters, exactly as ``allow_implicit`` does.
     allow_implicit = implicit_execution_allowed()
+    gate = run_gate()
     runtime = _runtime_context(
         engine=_resolve_engine_from_state(),
         target=obj.target,
@@ -2104,6 +2125,8 @@ def maniac(
             intent=maniac_intent,
             require_intent=True,
             allow_implicit=allow_implicit,
+            gate=gate,
+            budget_guard=run_budget_guard(compiled.run_id),
         )
         result = run_engine.execute(compiled.plan)
         try:
