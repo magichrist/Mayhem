@@ -2507,6 +2507,51 @@ class ProviderLoader:
             failures=tuple(failures),
         )
 
+    def load_registration(
+        self,
+        registration: ProviderRegistration,
+        runtime: object,
+    ) -> ProviderInspection:
+        """Run every gate on one in-memory registration and register its runtime.
+
+        The third door into this loader, and the one an **SDK-built** declaration
+        needs: :meth:`load_catalog` wants a file and :meth:`load_entry_points`
+        wants installed entry-point metadata, so before this existed the only way
+        to load a declaration that code had just constructed was to write it to
+        disk and read it back — which also meant a declaration an SDK had just
+        validated was being validated twice, by two different readers.
+
+        It is deliberately *the same code path*, not a shortcut around it:
+        :meth:`_admit` then :meth:`_register_runtime`, in that order, so an
+        SDK-built provider is refused by exactly the gates a catalog-loaded one
+        is refused by, and refused for exactly the same named reasons. A
+        registration that loads here and would not have loaded from a catalog is
+        a bug in the gates, and this method makes that bug observable instead of
+        something a caller has to arrange a temporary file to discover.
+
+        ``runtime`` is the provider's own object, already constructed by its
+        language's loader. It is checked by :meth:`_register_runtime` *before* it
+        reaches the registry, so a runtime that advertises more than it declared
+        is refused while it is still a local variable.
+
+        Raises:
+            ProviderLoadError: From any gate, including a runtime whose behaviour
+                disagrees with its declaration.
+        """
+        profile = self._admit(registration)
+        runtime_object = self._materialize(runtime, registration.implementation)
+        self._register_runtime(registration, runtime_object, profile)
+        provider_id = registration.metadata.provider_id
+        return ProviderInspection(
+            provider_id=provider_id,
+            status="loaded",
+            source=registration.metadata.source.value,
+            metadata=registration.metadata.model_dump(mode="json", by_alias=True),
+            sandbox=profile.to_dict(),
+            compatibility=self.compatibility_report(registration.metadata),
+            evidence=self.evidence_summary(provider_id),
+        )
+
     def _register_runtime(
         self,
         registration: ProviderRegistration,
