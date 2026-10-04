@@ -77,16 +77,21 @@ go away. Both write the demotion through
 ``store_transition``, so the record's own history says why it stopped granting a
 level.
 
-Nothing here is wired into the CLI
------------------------------------
-:mod:`mayhem.cli.certify` is outside this phase's ownership, so no call site
-passes an :class:`~mayhem.infra.certification_runner.EvidenceSealer` yet. The
-consequence is stated rather than hidden: in a default deployment no certification
-chain exists, :func:`sealed_certification_gate` therefore grants nothing, and
-every fault stays capped at ``verified-unit`` — which is why the README's
-live-verified count is still ``0 of N`` (N the live catalogue size) and must
-stay there until a real cell
-both runs *and* seals.
+Where this is called from
+------------------------
+:mod:`mayhem.cli.certify` is the call site that matters: ``certify run`` hands
+:class:`CertificationEvidenceStore` to ``certify_fault`` as its
+:class:`~mayhem.infra.certification_runner.EvidenceSealer`, so a claim minted by
+the CLI always has a sealed chain behind it, and ``certify matrix`` reads through
+:func:`sealed_certification_gate` so every live claim is re-verified on read.
+
+Wiring the sealer in changed no counts. It is necessary for a claim to *count*,
+not sufficient: a sealed chain still needs a cell that actually ran, a bundle
+that matched the run, and both required engines, and no cell has run. The
+README's live-verified count is therefore still ``0 of N`` (N the live catalogue
+size) and must stay there until a real cell both runs *and* seals. A caller that
+omits the sealer still certifies and leaves no chain — which is exactly why the
+gate, not the refusal, is what closes that path.
 """
 
 from __future__ import annotations
