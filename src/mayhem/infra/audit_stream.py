@@ -134,12 +134,34 @@ DEFAULT_STREAM_ID = "mayhem.audit"
 #: These double as the ``event_kind`` of the resulting event (see
 #: :class:`AuditEntry.action`), so an auditor filtering the stream by kind uses
 #: the same strings the writers passed.
+#:
+#: **Where this table is closed, and where it is not.** It is a single declaration
+#: point with one spelling per action — and it is *not* enforced at write time.
+#: Neither :class:`AuditEntry` nor ``M0029`` refuses an action outside this list:
+#: the table's own ``CHECK`` constraints admit any non-blank, delimiter-free
+#: string, exactly as they admitted every kind before this list existed. So adding
+#: a kind here is not what makes it legal, and an entry carrying a string that is
+#: not listed here is not rejected — it is simply *undeclared*, which is worse than
+#: illegal, because nothing reports it. That is why a new action belongs here and
+#: not in the module that writes it, and why
+#: ``tests/unit/test_audit_kind_ownership.py`` fails if one of these names is ever
+#: defined outside this module. It is not yet the whole story:
+#: :mod:`mayhem.controller.advisor_service` still declares
+#: ``KIND_ADVISORY_REPLAY_COMPILED`` and ``KIND_ADVISORY_CLAIM_SEALED`` locally,
+#: which is the same deferral this table has absorbed twice and should absorb once
+#: more.
 KIND_RUN_SEALED = "audit.run.sealed"
 KIND_EVIDENCE_REGISTERED = "audit.evidence.registered"
 KIND_EVIDENCE_ARCHIVED = "audit.evidence.archived"
 KIND_EVIDENCE_DELETED = "audit.evidence.deleted"
 KIND_LEGAL_HOLD_PLACED = "audit.legal_hold.placed"
 KIND_LEGAL_HOLD_RELEASED = "audit.legal_hold.released"
+#: Folded in from :mod:`mayhem.controller.policy_evidence` (plan 07 Phase 4), which
+#: declared it locally because this module was not that phase's to edit.
+KIND_POLICY_VERSION_CHANGED = "audit.policy.version_changed"
+#: Folded in from :mod:`mayhem.controller.analytics_service` (plan 15 Phase 4),
+#: which declared it locally for the same reason.
+KIND_RESILIENCE_BOUNDARY_SEARCHED = "audit.resilience_boundary.searched"
 
 #: The only ``signature_state`` this stream can report. Imported, not re-declared:
 #: a second copy of the state string would be a second thing to keep honest, and
@@ -832,6 +854,8 @@ __all__ = [
     "KIND_EVIDENCE_REGISTERED",
     "KIND_LEGAL_HOLD_PLACED",
     "KIND_LEGAL_HOLD_RELEASED",
+    "KIND_POLICY_VERSION_CHANGED",
+    "KIND_RESILIENCE_BOUNDARY_SEARCHED",
     "KIND_RUN_SEALED",
     "NO_SECOND_FORMAT_REASON",
     "SIGNATURE_UNSIGNED_NO_SIGNING",
