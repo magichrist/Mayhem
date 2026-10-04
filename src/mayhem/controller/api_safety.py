@@ -52,17 +52,21 @@ stays ``False``.
 
 .. warning::
 
-   **The migration this module needs to record a mutation receipt is not
-   registered.** :data:`mayhem.controller.api_service.API_GATEWAY_MIGRATION`
-   (version 34) carries the idempotency table this gateway needs;
-   :data:`API_SAFETY_MIGRATION` (version 35) carries the mutation receipt table,
-   and neither is in :data:`mayhem.infra.migrations.ALL_MIGRATIONS` because
-   ``migrations.py`` was declared read-only for this work item.
-   :meth:`PlannerMutationPort.submit_create_plan` therefore writes its receipt
+   **Both tables are created by the production chain, and the receipt write is
+   still defensive.** :data:`mayhem.controller.api_service.API_GATEWAY_MIGRATION`
+   (version 34) carries the idempotency table this gateway needs and
+   :data:`API_SAFETY_MIGRATION` (version 35) carries the mutation receipt table;
+   both are in :data:`mayhem.infra.migrations.ALL_MIGRATIONS`, and both objects
+   are defined in :mod:`mayhem.infra.api_gateway_schema` rather than in either
+   controller module — registering them here would have made ``infra`` import
+   ``controller``, which the layering contract reports as broken.
+   :meth:`PlannerMutationPort.submit_create_plan` still writes its receipt
    **defensively**: it records when the table exists and reports ``recorded=False``
    with the reason in the response, rather than failing a legitimate compile or —
-   far worse — silently recording nothing. The absence is a finding to hand to the
-   migrations owner, not a gap to paper over.
+   far worse — silently recording nothing. That fallback is now the *negative
+   control* for the registration rather than a workaround for its absence: a store
+   migrated by the production chain always has the table, so
+   ``recorded=True`` on the happy path is a fact about the chain.
 """
 
 from __future__ import annotations
@@ -87,7 +91,11 @@ from mayhem.domain.execution_intent import (
     require_execution_intent,
 )
 from mayhem.domain.identity import EnvironmentScope, Principal, RoleGrant, TeamMembership
-from mayhem.infra.migrator import Migration
+from mayhem.infra.api_gateway_schema import (
+    API_SAFETY_MIGRATION,
+    API_SAFETY_VERSION,
+    MUTATION_RECEIPT_TABLE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -500,15 +508,24 @@ def _record_receipt(
     because a migration has not been registered would be trading a visible
     absence for an invisible one. The ``recorded: False`` answer is the honest
     report, and the reason names the missing migration.
+
+    **Why this stays a fallback at all.** ``API_SAFETY_MIGRATION`` *is* in
+    :data:`mayhem.infra.migrations.ALL_MIGRATIONS`, so a store migrated by the
+    production chain always has the table and always records. The branch remains
+    reachable for a store deliberately migrated with a chain that excludes
+    version 35 — which is exactly the deployment-shaped negative control
+    ``tests/unit/test_api_safety.py`` builds. The refusal path is what makes
+    "the production chain records receipts" a claim about the chain rather than
+    about this function being unconditional.
     """
     row = {
         "recorded": False,
         "reason": (
             f"the mutation-receipt table ({MUTATION_RECEIPT_TABLE}) is not present: "
             f"{API_SAFETY_MIGRATION.name} (version {API_SAFETY_VERSION}) is defined in "
-            "mayhem.controller.api_safety but is not registered in "
-            "mayhem.infra.migrations.ALL_MIGRATIONS, because migrations.py is "
-            "read-only for this work item"
+            "mayhem.infra.api_gateway_schema and is registered in "
+            "mayhem.infra.migrations.ALL_MIGRATIONS, so this store was migrated "
+            "with a chain that excludes it"
         ),
     }
     try:
@@ -534,38 +551,14 @@ def _record_receipt(
     return row
 
 
-#: The receipt table this module owns. Version 35, next after the gateway's 34.
-MUTATION_RECEIPT_TABLE: Final[str] = "api_mutation_receipts"
-
-API_SAFETY_VERSION: Final[int] = 35
-
-_MIGRATION_SQL: tuple[str, ...] = (
-    f"""
-    CREATE TABLE {MUTATION_RECEIPT_TABLE} (
-        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-        idempotency_key TEXT NOT NULL DEFAULT '',
-        route TEXT NOT NULL,
-        command_path TEXT NOT NULL,
-        principal_id TEXT NOT NULL,
-        plan_digest TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-    """,
-    f"CREATE INDEX idx_api_mutation_receipts_route "
-    f"ON {MUTATION_RECEIPT_TABLE}(route)",
-)
-
-_DOWN_SQL: tuple[str, ...] = (
-    "DROP INDEX idx_api_mutation_receipts_route",
-    f"DROP TABLE {MUTATION_RECEIPT_TABLE}",
-)
-
-API_SAFETY_MIGRATION = Migration(
-    version=API_SAFETY_VERSION,
-    name="api_safety",
-    statements=_MIGRATION_SQL,
-    down_statements=_DOWN_SQL,
-)
+#: The receipt table this module's write path targets, and the migration that
+#: creates it. Both are defined in :mod:`mayhem.infra.api_gateway_schema` —
+#: beside the row model rather than here, because registering them in
+#: :data:`mayhem.infra.migrations.ALL_MIGRATIONS` would otherwise make ``infra``
+#: import ``controller``, which is an upward edge. Re-exported here (not
+#: redefined) so ``from mayhem.controller.api_safety import API_SAFETY_MIGRATION``
+#: still resolves to the very object the chain migrates. ``API_SAFETY_VERSION`` is
+#: 35, next after the gateway's 34.
 
 
 if TYPE_CHECKING:
