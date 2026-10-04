@@ -36,18 +36,22 @@ in that run's chain; a version change is cross-run, changes what *every future*
 decision means, and belongs in the stream that spans runs. The distinction is the
 same one the audit stream's module docstring draws for its own actions.
 
-Why the audit action constant lives here
-----------------------------------------
+Why the audit action constant is re-exported here
+---------------------------------------------------
 
-:mod:`mayhem.infra.audit_stream` documents its ``KIND_*`` table as "a closed
-vocabulary … here rather than spelled inline at each call site so a new action is
-a deliberate edit someone can grep for". That module is not this phase's to edit,
-so the constant is declared here instead of added there. It is still greppable
-and still singular — :data:`KIND_POLICY_VERSION_CHANGED` is the only definition —
-and the delta for whoever next owns that table is a one-line move, not a second
-spelling of an action name. Folding it in when this module's seam is wired into a
-store is the right moment, and Phase 4 records that as pending rather than
-pretending it is done.
+:mod:`mayhem.infra.audit_stream` owns the closed ``KIND_*`` table, and
+:data:`KIND_POLICY_VERSION_CHANGED` is a member of it — declared there, with its
+``audit.policy.*`` namespace and its one spelling. It was originally declared in
+this module because the audit module was not plan 07's to edit; that deferral is
+over, so the definition has moved to its owner.
+
+The *name* did not move. It is imported here and stays in this module's namespace,
+so every existing ``mayhem.controller.policy_evidence.KIND_POLICY_VERSION_CHANGED``
+import keeps resolving unchanged. There is one declaration of the action's string
+in the repository and one exported name at each of its two import paths — a move,
+not a copy. ``tests/unit/test_audit_kind_ownership.py`` fails if this module ever
+defines the constant again, and
+``tests/unit/test_policy_evidence.py`` covers the entry it produces.
 
 What this does NOT do
 ---------------------
@@ -75,7 +79,23 @@ from mayhem.domain.attestation import GENESIS_DIGEST, RetentionClass
 from mayhem.domain.errors import DomainError
 from mayhem.domain.hashing import canonical_json, sha256_hex
 from mayhem.infra.attestation_store import RunAuthorization
-from mayhem.infra.audit_stream import AuditEntry, seal_run_evidence_at_run_close
+
+#: Re-exported, not declared: the action kind lives in the audit stream's ``KIND_*``
+#: table, which this module does not own. Kept in this namespace so existing
+#: callers keep importing it from here.
+#:
+#: The redundant alias is deliberate and is the PEP 484 explicit-re-export idiom,
+#: not a mistake: this module has no ``__all__``, so without it a type checker
+#: running with ``--no-implicit-reexport`` (the setting this repository uses) would
+#: treat the name as private and fail every caller's import. ``PLC0414`` objects to
+#: exactly that idiom, hence the suppression on the one line.
+from mayhem.infra.audit_stream import (
+    KIND_POLICY_VERSION_CHANGED as KIND_POLICY_VERSION_CHANGED,  # noqa: PLC0414
+)
+from mayhem.infra.audit_stream import (
+    AuditEntry,
+    seal_run_evidence_at_run_close,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -88,14 +108,6 @@ if TYPE_CHECKING:
     from mayhem.infra.attestation_store import SealedRun
     from mayhem.infra.audit_stream import AuditStream
     from mayhem.infra.store import Store
-
-#: The audit-stream event kind for "the policy a decision is read against changed".
-#:
-#: Namespaced ``audit.policy.*`` so a filter for the whole policy family is a
-#: prefix match, and placed on ``AuditEntry.action`` — which *is* the event's
-#: ``event_kind`` — so filtering by kind and filtering by column are the same
-#: query. See the module docstring for why the constant is declared here.
-KIND_POLICY_VERSION_CHANGED = "audit.policy.version_changed"
 
 #: A decision whose digests do not agree with the bundle it claims to come from.
 RULE_DECISION_BINDING = "policy.decision_bundle_mismatch"
