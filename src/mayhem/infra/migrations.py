@@ -2,14 +2,22 @@
 
 Most migrations are spelled out inline below. The exception is a table whose
 module already owns its own row discipline and therefore already owns its DDL:
-:mod:`mayhem.infra.fabric_journal` is imported here rather than duplicated, so
-the table the engine writes to and the table a deployment migrates to cannot
-drift apart. See the note above :data:`ALL_MIGRATIONS` for why those two are the
-same obligation and not two copies of one.
+:mod:`mayhem.infra.fabric_journal`, :mod:`mayhem.infra.api_gateway_schema`,
+:mod:`mayhem.infra.probe_seal_store` and :mod:`mayhem.infra.failover_store` are
+imported here rather than duplicated, so the table the engine writes to and the
+table a deployment migrates to cannot drift apart. See the notes above
+:data:`ALL_MIGRATIONS` for why "imported" and "spelled inline" are the same
+obligation and not two copies of one.
 """
 
+from mayhem.infra.api_gateway_schema import (
+    API_GATEWAY_MIGRATION,
+    API_SAFETY_MIGRATION,
+)
 from mayhem.infra.fabric_journal import FABRIC_JOURNAL_MIGRATION
+from mayhem.infra.failover_store import FAILOVER_MIGRATION
 from mayhem.infra.migrator import Migration
+from mayhem.infra.probe_seal_store import PROBE_SEAL_MIGRATION
 
 M0001_INITIAL = Migration(
     version=1,
@@ -2621,4 +2629,47 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     # silently applying a chain in the wrong order. See that module's
     # ``FABRIC_JOURNAL_VERSION``.
     FABRIC_JOURNAL_MIGRATION,
+    # ``api_gateway`` (version 34) is the HTTP surface's idempotency table: one
+    # row per mutating request's key, holding the request fingerprint and the
+    # response envelope so a retry replays the first answer instead of performing
+    # the action twice. Imported from ``infra.api_gateway_schema`` rather than
+    # re-spelled here, for the same reason ``fabric_journal`` is: the DDL lives
+    # beside the row model that reads and writes it, and a second spelling in
+    # this file is precisely the drift this tuple's docstring exists to prevent.
+    #
+    # **It had to move down out of ``controller/api_service.py`` to get here.**
+    # The DDL was originally defined there, and importing it from this file
+    # would have made ``infra`` import ``controller`` — an upward edge the
+    # layering contract reports as ``BROKEN``. The migration object is
+    # re-exported from ``api_service`` unchanged, so every existing import site
+    # resolves to the very object this tuple migrates.
+    API_GATEWAY_MIGRATION,
+    # ``api_safety`` (version 35) is the safety layer's mutation-receipt log:
+    # who authorized which mutation, against which plan digest. Version 35 rather
+    # than 34-adjacent-renumbered, because the receipt row describes a request
+    # ``api_gateway`` already has an idempotency row for — the chain says so. Same
+    # import-not-copy rule and same move-down-from-``controller/api_safety.py``.
+    API_SAFETY_MIGRATION,
+    # ``probe_seal`` (version 36) is plan 11 Phase 4's durable probe seal: the
+    # redacted observations, the sealed condition set and the citation verdicts a
+    # reviewer reads back, in one table with one writer. Imported from
+    # ``infra.probe_seal_store``, which already declared version 36 for it.
+    PROBE_SEAL_MIGRATION,
+    # ``ha_promotions`` (version 37) is plan 19's standby roster and promotion
+    # ledger, including the *refused* promotions — the record an incident review
+    # actually needs. Imported from ``infra.failover_store``.
+    #
+    # **Version 37, not 36: a collision the migrator cannot survive.**
+    # ``Migration.version`` *is* the migration id (it is what
+    # ``migration_id`` is spelled from), and ``failover_store`` originally
+    # hard-coded 36 independently of ``probe_seal_store``, which hard-codes 36
+    # and whose own tests pin ``36`` / ``"0036_probe_seal"`` as facts about this
+    # lane. Two migrations cannot occupy one id: ``run_migrations`` refuses
+    # duplicates outright ("migrations must be strictly increasing"), so the
+    # collision would have been a loud startup failure in every migrated store in
+    # the repository rather than one broken test. ``probe_seal``'s id was kept
+    # because it is the lower of the two and the tests already published it; this
+    # one takes the next free id, 37. ``failover_store.reserved_versions()``
+    # derives from ``FAILOVER_VERSION``, so it moved with it.
+    FAILOVER_MIGRATION,
 )
