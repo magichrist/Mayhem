@@ -224,7 +224,9 @@ def maturity_decision(
 
     ``records`` is the certification store in the shape
     :func:`evaluate_maturity` consumes — the output of
-    :meth:`~mayhem.infra.certification_repository.CertificationRepository.certification_gate`.
+    :meth:`~mayhem.infra.certification_repository.CertificationRepository.certification_gate`
+    or of the stricter
+    :func:`~mayhem.controller.certification_evidence.sealed_certification_gate`.
     It defaults to ``None``, which is the caller's statement that *this* report
     does not use certification and preserves 1.0.0 behaviour exactly. An empty
     mapping is the opposite statement — "nothing is certified" — and caps every
@@ -234,11 +236,22 @@ def maturity_decision(
     being hard-coded: ``cli/certify.py`` has the repository and always arms the
     gate, so without this seam ``mayhem discover capabilities`` could report a
     rung above ``verified-unit`` that the certification store would contradict.
-    A reported maturity level must never be higher than the evidence supports,
-    so a caller holding a repository passes it here. Callers that report
-    maturity without one should say so — see
-    :func:`certification_gate_state`, which the dashboard carries so the
-    omission is visible in the payload rather than silent.
+
+    Every reporting function in this module therefore takes ``records`` and
+    threads it here, and every payload that reports a maturity states which of
+    the three gate states it was computed under — see
+    :func:`certification_gate_state`, carried by the dashboard, the coverage
+    summary, and ``explain_catalog_fault`` — so the omission is visible in the
+    payload rather than silent.
+
+    What a store-less caller must *not* do is pass ``{}`` to look safe. ``{}``
+    asserts "I consulted a certification store and it holds nothing", and a
+    caller with no store cannot make that assertion: it would be claiming a
+    provenance it does not have, and it would make the report disagree with
+    ``mayhem certify`` in the one direction that reads as verified. ``None`` is
+    the honest answer for a pure read path — the cap that matters is enforced on
+    the surface that can mint a claim, and ``evaluate_maturity`` stays the only
+    function that decides a level.
     """
     return evaluate_maturity(
         definition,
@@ -490,10 +503,21 @@ def explain_catalog_fault(
     *,
     engine: str = "docker",
     evidence: EvidenceStore | None = None,
+    records: Mapping[str, Sequence[CertificationRecord]] | None = None,
 ) -> dict[str, object]:
+    """One fault, explained, with the certification gate state stated.
+
+    ``records`` arms the gate for the ``maturity`` field exactly as it does for
+    :func:`maturity_decision`, and ``certification_gate`` says which of the three
+    states this particular explanation was computed under. The key is here for
+    the same reason it is in :func:`build_capability_report`: an ``explain`` is
+    the one catalog read most likely to be pasted into an issue, so a reader must
+    be able to tell whether the level it quotes was capped by a certification
+    store or is simply the uncapped run-evidence level.
+    """
     definition = definition_for(fault_id)
     status = execution_status(definition, engine)
-    decision = maturity_decision(definition, evidence=evidence)
+    decision = maturity_decision(definition, evidence=evidence, records=records)
     return {
         "id": definition.id,
         "status": status,
@@ -515,6 +539,11 @@ def explain_catalog_fault(
         "unmet_criteria": list(decision.refusals),
         "promotion_criteria": list(MATURITY_PROMOTION_CRITERIA[decision.maturity]),
         "maturity_disclaimer": Maturity_DISCLAIMER,
+        # ``not-consulted`` here means this report did not use certification,
+        # not that certification was consulted and found nothing; the empty-store
+        # answer is ``asserted-empty``. Never conflate the two in a payload a
+        # reader may quote.
+        "certification_gate": certification_gate_state(records),
         "verification_date": definition.verification_date.isoformat()
         if definition.verification_date
         else None,
