@@ -71,6 +71,7 @@ from pydantic import (
 )
 
 from mayhem.domain.capabilities import Capability
+from mayhem.domain.errors import DomainError
 from mayhem.domain.faults import EngineLane, FaultCategory
 
 if TYPE_CHECKING:
@@ -448,18 +449,27 @@ class CertificationRecord(BaseModel):
         if CATALOG_FAULT_ID_RE.match(value) is not None:
             try:
                 FaultCategory.from_fault_id(value)
-            except ValueError as exc:  # unknown family prefix: not a catalogue fault
+            except (ValueError, DomainError) as exc:
+                # ``DomainError`` is load-bearing here, not belt-and-braces.
+                # ``FaultCategory.from_fault_id`` raises ``SchemaValidationError``,
+                # which subclasses ``DomainError`` and **not** ``ValueError`` — so
+                # a handler written for ``ValueError`` alone never fired, and this
+                # provider branch was unreachable: every provider fault id was
+                # refused by the catalogue lookup before the cell's pin was ever
+                # consulted, no matter which provider the cell pinned.
                 catalog_refusal = str(exc)
             else:
                 return value
         else:
-            catalog_refusal = f"it does not look like '<family>.<kind>'"
+            catalog_refusal = "it does not look like '<family>.<kind>'"
 
         cell = info.data.get("cell")
         pin = cell.provider_pin if isinstance(cell, MatrixCell) else None
         if pin is None or not isinstance(cell, MatrixCell):
-            where = cell.label if isinstance(cell, MatrixCell) else (
-                "no cell was available to scope it to"
+            where = (
+                cell.label
+                if isinstance(cell, MatrixCell)
+                else ("no cell was available to scope it to")
             )
             raise ValueError(
                 f"{value!r} is not a mayhem catalogue fault ({catalog_refusal}) and "
