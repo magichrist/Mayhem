@@ -72,17 +72,13 @@ checklist is deliberately recorded nowhere, because that path mutates nothing.
 Phase 4 binds the same records into the sealed chain; this is the operator
 surface's own record, and it says so.
 
-.. warning::
-
-   **The preflight gate is not wired into the run path.**
-   :meth:`mayhem.controller.executor.RunEngine.execute` has no ``preflight_gate``
-   field and no ``with_preflight_gate`` attach point — the budget guard's
-   :meth:`~mayhem.controller.executor.RunEngine.with_budget_guard` is the shape
-   such a seam would take, and no equivalent exists for this gate yet. Adding it
-   means editing ``controller/executor.py`` and ``cli/execution.py``, neither of
-   which this work item owns, so this module does not pretend to have done it.
-   What *is* true here: ``--preflight`` makes ``mayhem stop`` itself refuse
-   before it mutates, naming every refusing check with its evidence reference.
+**The gate is the same one the run path uses.** ``--preflight`` here and
+:meth:`mayhem.controller.executor.RunEngine.with_preflight_gate` there are two
+doors to one decision: the same :class:`PreflightGate`, the same
+:func:`mayhem.controller.preflight_gate.admit`, the same
+:class:`PreflightRefusedError`. Neither door has a second one — there is no
+``--force``, no ``--skip-preflight``, and no engine keyword that turns a refusal
+off. A stop and a run refuse or they do not, and they refuse for the same reasons.
 
 Invocations that resolve against this command::
 
@@ -106,6 +102,7 @@ import click
 from mayhem.cli import style
 from mayhem.cli.errors import MayhemCliError
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.controller.stop_engine import FREEZE_LATENCY_BOUND_S, OpenClaim
 from mayhem.domain.stop import PostflightVerdict
 
 if TYPE_CHECKING:
@@ -154,11 +151,14 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_PRINCIPAL",
     "EMERGENCY_STOP_CHECKLIST_KIND",
+    "FREEZE_LATENCY_BOUND_S",
     "PRINCIPAL_ENV",
     "STOP_ATTEMPT_KIND",
     "STOP_COMMAND_KIND",
     "STOP_SEAL_KIND",
+    "FabricJournalClaims",
     "FenceDispatchFreezer",
+    "StopEvidenceSeal",
     "StopOutcome",
     "StopRecorder",
     "StoreStopLedger",
@@ -172,6 +172,7 @@ __all__ = [
     "require_emergency_role",
     "run_state_for",
     "run_stop",
+    "seal_stop_evidence",
     "stop",
     "stop_payload",
 ]
@@ -309,6 +310,60 @@ class StoreStopLedger:
             (STOP_SEAL_KIND, run_id),
         )
         return _Sealed.model_validate(json.loads(str(rows[0]["data_json"]))) if rows else None
+
+
+class FabricJournalClaims:
+    """Plan 03's dispatch journal, read as claims that were never settled.
+
+    A :class:`~mayhem.controller.stop_engine.ClaimLedger` over the *existing*
+    :class:`mayhem.infra.fabric_journal.FabricJournalTable` — the durable,
+    append-only log the fabric already writes every claim and settlement to. It
+    re-derives the crash window from that log on each call, so a controller that
+    lost its memory reaches the same answer as one that did not, and it settles
+    nothing (see :class:`~mayhem.controller.stop_engine.ClaimLedger` for why the
+    stop path has no business asserting what an effect became).
+
+    Inert when the table is absent: an operator stopping a run in a database
+    that predates the fabric gets no claim findings and no error, because "there
+    is no journal here" is a fact about the database rather than a stall — and
+    the stage says nothing about claims at all in that case, rather than claiming
+    there were none. :attr:`available` reports which of the two happened, so a
+    caller that needs to know can ask.
+    """
+
+    def __init__(self, store: Store) -> None:
+        from mayhem.infra.fabric_journal import FabricJournalTable
+
+        self._table = FabricJournalTable(store)
+        self._available: bool | None = None
+
+    @property
+    def available(self) -> bool:
+        """Whether this database holds a fabric journal at all."""
+        if self._available is None:
+            self._available = bool(self._table.table_exists())
+        return self._available
+
+    def open_claims(self, run_id: str) -> tuple[OpenClaim, ...]:
+        from mayhem.infra.fabric_journal import FABRIC_JOURNAL_PHASES
+
+        if not self.available:
+            return ()
+        # Read the two phases off the table's own declared vocabulary rather than
+        # spelling "claimed"/"settled" here a third time; a phase this build does
+        # not know about is then a no-op rather than a silent misreading.
+        claimed, settled = FABRIC_JOURNAL_PHASES
+        rows = self._table.rows(run_id)
+        settled_commands = {row.command_id for row in rows if row.phase == settled}
+        by_command: dict[str, OpenClaim] = {}
+        for row in rows:
+            if row.phase != claimed or row.command_id in settled_commands:
+                continue
+            by_command.setdefault(
+                row.command_id,
+                OpenClaim(command_id=row.command_id, step_id=row.step_id, epoch=row.epoch),
+            )
+        return tuple(by_command[key] for key in sorted(by_command))
 
 
 class FenceDispatchFreezer:
@@ -617,6 +672,13 @@ class StopOutcome:
     preflight: PreflightReport | None = None
     held_roles: tuple[str, ...] = ()
     dry_run: bool = False
+    seals: tuple[StopEvidenceSeal, ...] = ()
+    """One sealed chain per stopped run — plan 12's, not this module's table.
+
+    Empty for a dry run and for an invocation that stopped nothing, because an
+    empty chain is not written: a row that proves nothing is noise a later reader
+    has to rule out.
+    """
 
     @property
     def verdicts(self) -> tuple[tuple[str, str], ...]:
@@ -636,6 +698,36 @@ class StopOutcome:
         if self.dry_run or not self.executions:
             return False
         return all(execution.recovered for execution in self.executions)
+
+    @property
+    def freeze_latency_s(self) -> float | None:
+        """The slowest measured freeze across every run this invocation stopped.
+
+        ``None`` when no run got far enough to measure one, and that is not the
+        same answer as ``0.0``: a stop that stalled before ``FREEZE`` established
+        nothing about how fast the freeze would have been, so this reports no
+        number rather than the best possible one.
+        """
+        measured = [execution.freeze_latency_s for execution in self.executions]
+        present = [value for value in measured if value is not None]
+        return max(present) if present else None
+
+    @property
+    def freeze_within_bound(self) -> bool:
+        """Whether every measured freeze was inside the plan's bound.
+
+        Fail-closed: an unmeasured freeze is *not* within the bound. The plan's
+        acceptance is "freeze within seconds", and a run that never got to freeze
+        has not demonstrated that, so the property answers ``False`` rather than
+        skipping the question.
+        """
+        from mayhem.controller.stop_engine import freeze_latency
+
+        if not self.executions:
+            return False
+        return all(
+            within for execution in self.executions for _, within in (freeze_latency(execution),)
+        )
 
     @property
     def verdict(self) -> PostflightVerdict:
@@ -722,6 +814,12 @@ def stop_payload(outcome: StopOutcome) -> dict[str, Any]:
 
     preflight = outcome.preflight
     return {
+        # ``freeze_latency_s`` is the *measured* seconds from taking the command
+        # to the freeze receipt, not a claim about the environment: mayhem knows
+        # how long it held the button, and nothing about how fast the system it
+        # froze noticed. The number is null rather than 0.0 when nothing was
+        # measured, and the bound is emitted beside it so a reader can judge the
+        # number instead of trusting it.
         "scope": outcome.scope.value,
         "command_id": outcome.command.id,
         "principal": outcome.command.principal,
@@ -734,6 +832,25 @@ def stop_payload(outcome: StopOutcome) -> dict[str, Any]:
         "recovered": outcome.recovered,
         "verdict": outcome.verdict.value,
         "exit_code": int(exit_code_for(outcome)),
+        "freeze_latency_s": outcome.freeze_latency_s,
+        "freeze_latency_bound_s": FREEZE_LATENCY_BOUND_S,
+        "freeze_within_bound": outcome.freeze_within_bound,
+        # Phase 4: what actually reached plan 12's attested chain, and its honest
+        # signature state. ``signed`` is false and says why — mayhem verifies
+        # integrity here and authorship nowhere.
+        "seals": [
+            {
+                "run_id": seal.run_id,
+                "command_id": seal.command_id,
+                "chain_root": seal.chain_root,
+                "events": [event.event_kind for event in seal.events],
+                "manifest_id": seal.manifest.manifest_id,
+                "signed": seal.signed,
+                "signature_state": seal.signature_state,
+                "signature_reason": seal.signature_reason,
+            }
+            for seal in outcome.seals
+        ],
         "preflight": (
             None
             if preflight is None
@@ -888,7 +1005,9 @@ def _runs_that_can_still_inject(store: Store) -> tuple[str, ...]:
     )
 
 
-def _stop_engine(store: Store, ledger: StopLedger, *, holder: str) -> Any:
+def _stop_engine(
+    store: Store, ledger: StopLedger, *, holder: str, claims: Any | None = None
+) -> Any:
     """The stop engine, with every required collaborator bound to this store."""
     from mayhem.controller.recovery import RecoveryService
     from mayhem.controller.stop_engine import StopEngine
@@ -900,6 +1019,7 @@ def _stop_engine(store: Store, ledger: StopLedger, *, holder: str) -> Any:
         recovery=RecoveryService(sink),
         dispatch=FenceDispatchFreezer(store, holder=holder),
         ledger=ledger,
+        claims=claims,
     )
 
 
@@ -1047,6 +1167,10 @@ def run_stop(
         the_ledger.record_command(command)
 
     executions: list[StopExecution] = []
+    # One reader for the whole invocation, constructed lazily *after* every write
+    # gate above so a refused or dry-run stop reads no journal at all — the
+    # refusal path must still mutate nothing and read nothing it did not name.
+    claims = FabricJournalClaims(store) if targets else None
     for target in targets:
         state = run_state_for(store, the_ledger, run_id=target)
         run_command = command
@@ -1065,12 +1189,23 @@ def run_stop(
                 ),
                 now=now,
             )
-        engine = _stop_engine(store, the_ledger, holder=f"stop:{command.principal}")
+        engine = _stop_engine(store, the_ledger, holder=f"stop:{command.principal}", claims=claims)
         executions.append(
             asyncio.run(
                 engine.execute(run_command, state=state, level=effective_level, now=now)
             )
         )
+
+    # Phase 4: the same four facts the ledger recorded, hashed into the attested
+    # chain. Written after the walk rather than inside it, so a chain this raises
+    # on cannot unwind a stop that already happened — the freeze, the cancel and
+    # the compensation are done either way, and their evidence is in the ledger
+    # regardless of what the chain writer manages to do.
+    seals = tuple(
+        seal
+        for seal in (seal_stop_evidence(store, execution) for execution in executions)
+        if seal is not None
+    )
 
     return StopOutcome(
         scope=stop_scope,
@@ -1079,6 +1214,7 @@ def run_stop(
         executions=tuple(executions),
         preflight=report,
         held_roles=held_roles,
+        seals=seals,
     )
 
 
@@ -1281,6 +1417,27 @@ def _echo_text(outcome: StopOutcome) -> None:
     )
     if outcome.held_roles:
         click.echo(f"  authorized by roles: {', '.join(outcome.held_roles)}")
+    if outcome.executions:
+        measured = outcome.freeze_latency_s
+        if measured is None:
+            click.echo(
+                style.warn(
+                    "  freeze latency: not measured — this stop never reached the freeze "
+                    "stage, which is not the same answer as a fast one",
+                    err=False,
+                )
+            )
+        else:
+            verdict = "within" if outcome.freeze_within_bound else "OVER"
+            click.echo(
+                "  freeze latency: "
+                + (style.ok if outcome.freeze_within_bound else style.orange)(
+                    f"{measured:.3f}s {verdict} bound "
+                    f"({FREEZE_LATENCY_BOUND_S:g}s, mayhem's own freeze; the environment's "
+                    "reaction is not measured here)",
+                    err=False,
+                )
+            )
     if outcome.preflight is not None:
         for line in render_preflight_checklist(outcome.preflight):
             click.echo(f"  {line}")
@@ -1302,4 +1459,134 @@ def _echo_text(outcome: StopOutcome) -> None:
     click.echo(
         "recovered: "
         + (style.ok("yes", err=False) if outcome.recovered else style.orange("no", err=False))
+    )
+
+
+# =============================================================================
+# Phase 4 — sealing the stop into plan 12's attested chain
+# =============================================================================
+#
+# :class:`StoreStopLedger` above is this surface's own record: durable, readable by
+# a second stop, and *not* evidence — nothing in that table verifies, and anyone
+# with the database can edit it. This is the half that does verify: the same four
+# facts (stop reason, per-lease compensation outcomes, residue findings,
+# postflight verdict) hashed into a chain whose links are SHA-256 over canonical
+# bytes and committed to by a manifest, through the repository that already owns
+# the boundary gate and the verifier.
+#
+# This module builds no sealer and adds no verifier — ``seal_events``,
+# ``build_manifest``, ``verify_chain``, ``verify_manifest`` and
+# ``AttestationRepository`` are plan 12's, called here. The one thing asserted is
+# the unsigned-with-a-reason state, because "sealed" must not read as "signed"
+# and ``mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED`` is False.
+
+
+@dataclass(frozen=True, slots=True)
+class StopEvidenceSeal:
+    """A sealed stop record, with the verdicts that prove it.
+
+    Mirrors plan 02's ``K8sAdmissionSeal``: the events, the manifest over them,
+    both verification verdicts, and the same explicit ``signature_state``. A
+    reader can check the chain without trusting this object — the repository it
+    was written to is the thing that verifies.
+    """
+
+    run_id: str
+    command_id: str
+    events: tuple[Any, ...]
+    manifest: Any
+    chain_verification: Any
+    manifest_verification: Any
+    signature_state: str = ""
+    signature_reason: str = ""
+
+    @property
+    def chain_root(self) -> str:
+        from mayhem.domain.attestation import chain_root
+
+        return chain_root(self.events)
+
+    @property
+    def signed(self) -> bool:
+        """Always False. Present so a caller cannot assume otherwise."""
+        return bool(self.manifest.signed)
+
+
+def seal_stop_evidence(
+    store: Store, execution: StopExecution, *, recorded_at: Any | None = None
+) -> StopEvidenceSeal | None:
+    """Seal one stop into the attested chain; returns the seal, or ``None``.
+
+    Returns ``None`` when there is nothing to seal — a chain over zero events
+    proves nothing while looking like one that does. A *stalled* stop is not in
+    that category: it seals with ``sealed=false`` and verdict ``UNKNOWN``,
+    because "this stop could not reach the agent" is the fact most worth having
+    on the chain.
+
+    Raises:
+        AttestationError: If the derived chain or manifest fails verification, in
+            which case nothing is written.
+        InvariantViolationError: From the evidence boundary, if the derived
+            record carries a secret-classified field. Nothing is written.
+    """
+    from mayhem.controller.stop_engine import (
+        stop_chain_events,
+        stop_chain_key,
+        stop_manifest_id,
+    )
+    from mayhem.domain.attestation import (
+        GENESIS_DIGEST,
+        build_manifest,
+        seal_events,
+        verify_chain,
+        verify_manifest,
+    )
+    from mayhem.infra.attestation_store import (
+        SIGNATURE_UNSIGNED_NO_SIGNING,
+        UNSIGNED_REASON_NO_SIGNING,
+        AttestationError,
+        AttestationRepository,
+        _recorded_at,
+    )
+
+    reading = _recorded_at(recorded_at)
+    events = stop_chain_events(execution, recorded_at=reading)
+    if not events:
+        return None
+    sealed_events = seal_events(events)
+    manifest = build_manifest(
+        sealed_events,
+        manifest_id=stop_manifest_id(execution.run_id),
+        run_id=execution.run_id,
+        signer_identity="",
+        trust_root_ref="",
+        created_at=reading,
+        previous_manifest_digest=GENESIS_DIGEST,
+    )
+    chain_verification = verify_chain(sealed_events)
+    if not chain_verification.valid:
+        raise AttestationError(
+            f"refusing to persist an invalid stop chain for run {execution.run_id!r}: "
+            f"{'; '.join(chain_verification.errors)}"
+        )
+    manifest_verification = verify_manifest(manifest, sealed_events)
+    if not manifest_verification.valid:
+        raise AttestationError(
+            f"refusing to persist an invalid stop manifest for run {execution.run_id!r}: "
+            f"{'; '.join(manifest_verification.errors)}"
+        )
+    repository = AttestationRepository(store)
+    repository.save_chain(
+        stop_chain_key(execution.run_id), sealed_events, sealed_at=reading.wall_clock
+    )
+    repository.save_manifest(manifest)
+    return StopEvidenceSeal(
+        run_id=execution.run_id,
+        command_id=execution.record.command.id,
+        events=sealed_events,
+        manifest=manifest,
+        chain_verification=chain_verification,
+        manifest_verification=manifest_verification,
+        signature_state=SIGNATURE_UNSIGNED_NO_SIGNING,
+        signature_reason=UNSIGNED_REASON_NO_SIGNING,
     )
