@@ -75,20 +75,66 @@ SENTENCE: Final = re.compile(r"[^.\n]*\.(?:\s|$)")
 
 
 def sentences(text: str) -> list[str]:
-    """Split into sentences, tolerating markdown lists and table rows.
+    """Split into sentences, tolerating markdown lists, wrapping and table rows.
 
-    A table row has no terminating period, so each pipe-delimited row counts as
-    its own unit. That is deliberate: the alternative is a row whose disclaimer
-    is counted as qualifying every cell above it.
+    Four separate things are going on here, and each was a bug first:
+
+    * A **table row** has no terminating period, so each pipe-delimited row counts
+      as its own unit. Without that, one disclaimer floats up to qualify every
+      cell above it.
+    * A **wrapped sentence** is one sentence. Markdown hard-wraps prose, and
+      splitting per source line cut ``"signed/verified/trusted"`` away from the
+      clause that qualifies it two lines later -- so the gate demanded a
+      disclaimer for text that carried one. Lines are joined within a paragraph
+      before sentences are counted.
+    * A **list bullet** stays its own paragraph, because consecutive ``-`` items
+      are separate claims and a reader skims them one at a time.
+    * A **heading** is its own unit, terminated so it is actually scanned. A
+      heading is the first thing a reader reads and the last thing they skip
+      back to; joining it onto the paragraph underneath let its trust word ride
+      down as somebody else's disclaimer.
     """
     units: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("|"):
-            units.append(stripped)
-        else:
-            units.extend(match.group(0) for match in SENTENCE.finditer(stripped))
+    for block in re.split(r"\n\s*\n", text):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        if all(ln.startswith("|") for ln in lines):
+            units.extend(lines)
+            continue
+        chunks: list[list[str]] = [[]]
+        for line in lines:
+            if line.startswith("#"):
+                chunks.append([line + "."])
+            else:
+                chunks[-1].append(line)
+        for chunk in chunks:
+            if not chunk:
+                continue
+            joined = " ".join(chunk)
+            units.extend(match.group(0) for match in SENTENCE.finditer(joined))
     return units
+
+
+def strips_quoted(text: str) -> bool:
+    """True when every trust word in ``text`` is quoted rather than claimed.
+
+    A page about trust labels has to be able to *name* the words it scans, and
+    the plan has to be able to describe the mutations it proved. ``The gate
+    names the words "signed/verified/trusted" as the ones it scans`` is a
+    statement about the vocabulary, not a claim that anything is signed. Both
+    double quotes and backticks count, because a backticked ``verified`` is the
+    ``ArtifactClass`` member of that name and an unquoted one is a property of a
+    package.
+
+    The rule is deliberately *all-or-nothing*. One bare trust word among quoted
+    ones is a claim wearing a quotation mark as a disguise, so the sentence is
+    scanned normally.
+    """
+    # ``\\"`` inside a quoted span is an escaped quote, not the end of it: this
+    # plan quotes a heading whose own title contains quotes.
+    outside = re.sub(r"`[^`]*`|\"(?:[^\"\\]|\\.)*\"", " ", text)
+    return not re.search(TRUST_WORD, outside, re.I)
 
 
 def unqualified_trust_words(text: str) -> list[str]:
@@ -97,7 +143,7 @@ def unqualified_trust_words(text: str) -> list[str]:
     pattern = re.compile(TRUST_WORD, re.I)
     qualifier = re.compile(QUALIFIER, re.I)
     for unit in sentences(text):
-        if pattern.search(unit) and not qualifier.search(unit):
+        if pattern.search(unit) and not strips_quoted(unit) and not qualifier.search(unit):
             offenders.append(unit.strip()[:120])
     return offenders
 
@@ -232,6 +278,19 @@ class TestTheCheckersBite:
         good = "\nThe digest is integrity-checked, which is not provenance.\n"
         assert not unqualified_trust_words(good)
 
+    def test_a_wrapped_sentence_is_one_sentence(self) -> None:
+        """Markdown hard-wraps, and the qualifier must travel with its claim.
+
+        This is the defect the first version of ``sentences`` had: splitting per
+        source line demanded a disclaimer for prose that carried one two lines
+        down.
+        """
+        wrapped = (
+            'The gate names the words "signed/verified/trusted" as the ones it\n'
+            "scans. Widening the vocabulary conforms it to real qualifications.\n"
+        )
+        assert not unqualified_trust_words(wrapped)
+
     def test_the_scan_does_not_extend_across_sentences(self) -> None:
         """The whole point of "same breath": a disclaimer below does not qualify above."""
         bad = "\nThe artifact is signed.\nA later paragraph explains that no signature exists.\n"
@@ -251,7 +310,14 @@ class TestTheCheckersBite:
 
     def test_the_ledger_checker_catches_an_overclaim(self) -> None:
         assert ledger_problems(PLAN) == []
-        assert ledger_problems(PLAN.replace("Overall: 3 of 6", "Overall: 6 of 6"))
+        # Mutate whatever the document currently claims, so this control does
+        # not go stale the moment the real count changes -- which is exactly
+        # what happened to the first version of it.
+        current = re.search(r"Overall: (\d) of 6", PLAN)
+        assert current is not None
+        inflated = PLAN.replace(f"Overall: {current.group(1)} of 6", "Overall: 6 of 6")
+        assert inflated != PLAN
+        assert ledger_problems(inflated)
 
     def test_the_ledger_checker_catches_a_missing_phase_line(self) -> None:
         stripped = re.sub(r"^- Phase 5[^\n]*\n", "", PLAN, flags=re.M)
@@ -266,6 +332,44 @@ class TestTheCheckersBite:
         assert invented_classes(GUIDE + "\nUse `verified_by_mayhem` for official builds.\n") == [
             "verified_by_mayhem"
         ]
+
+    def test_a_heading_is_its_own_unit(self) -> None:
+        """A heading is the first line read, so it cannot ride on the body.
+
+        Joining ``## Verified artifacts`` onto the paragraph under it let the
+        heading's word double as a disclaimer for that paragraph. As its own
+        unit the heading is scanned, and fails on its own.
+        """
+        doc = "## Verified artifacts\nNothing else here says anything at all.\n"
+        assert unqualified_trust_words(doc) == ["## Verified artifacts."]
+
+    def test_a_qualified_heading_still_qualifies_only_itself(self) -> None:
+        doc = "## Verified artifacts, integrity-checked\nThe build is verified.\n"
+        assert unqualified_trust_words(doc) == ["The build is verified."]
+
+    def test_a_quoted_trust_word_names_the_word_instead_of_claiming_it(self) -> None:
+        """The page about trust labels has to be able to say "signed".
+
+        ``a bare "signed"`` describes a mutation this gate rejects; demanding a
+        disclaimer for it would make the description of the gate unrepresentable.
+        """
+        naming = 'The gate also rejects a bare "signed" and a bare `verified`.\n'
+        assert not unqualified_trust_words(naming)
+
+    def test_an_escaped_quote_does_not_end_the_quoted_span(self) -> None:
+        """The plan quotes a heading whose title itself contains quotes.
+
+        Without the escape branch the span closed early, the word after it landed
+        "outside" the quotes, and a sentence naming a heading was flagged as a
+        claim about a package.
+        """
+        naming = r'The title is now "# Plan 18 — What \"Verified\" Means".' + "\n"
+        assert not unqualified_trust_words(naming)
+
+    def test_and_one_bare_word_among_quoted_ones_is_still_caught(self) -> None:
+        """Otherwise quoting one word launders a claim about another."""
+        half = 'Every catalogued build is "trusted" and verified.\n'
+        assert unqualified_trust_words(half) == [half.strip()]
 
     def test_a_table_row_qualifies_itself_not_the_row_above(self) -> None:
         """Rows have no terminating period; without this, one disclaimer floats."""
