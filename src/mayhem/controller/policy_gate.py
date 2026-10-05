@@ -1177,7 +1177,9 @@ def required_approvals(
     read off the rule rather than off ``decision.matched_rules`` on purpose: a
     denied decision reports only the rules that *refused*, and the plan's own
     example output puts the requirement on a denial ("production policy forbids
-    critical faults without two approvals / Required: SRE + service owner").
+    critical faults without two approvals / Required: service owner + SRE" — the
+    levels render sorted, because the same requirement set must render the same
+    string every time it is read).
     Reading only the deny rules would report nothing exactly when a reader most
     needs to know.
 
