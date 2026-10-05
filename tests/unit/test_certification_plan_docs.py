@@ -6,10 +6,10 @@ there next to code that has since moved. So this gate checks the three things th
 drift.
 
 * **The ledger against itself.** One line per phase, ``Overall:`` equal to the
-  ``DONE`` count, and exactly one phase open — Phase 5. That last part matters
-  more than it looks: this document has an "Overall" line that reads
-  ``5 of 6`` while deliberately *not* counting Phase 5, and a reader who only
-  reads the headline could easily think six phases were done.
+  ``DONE`` count, and no phase open. The document has been through both halves of
+  that check — it read ``5 of 6`` while deliberately not counting Phase 5, and
+  the gate existed to stop a reader taking the headline at face value. Now it
+  reads ``6 of 6`` and the gate exists to stop the walk back.
 * **The Phase 6 deliverables are present by name**, and the sentences the phase
   depends on are still there — in particular that the tiered rollout has no
   schedule, which is the honest half of that section.
@@ -52,7 +52,8 @@ REQUIRED_SECTIONS: Final[tuple[str, ...]] = (
 REQUIRED_SENTENCES: Final[tuple[str, ...]] = (
     "the honest zero is a zero",
     "unreached",
-    "the first two tiers have no schedule",
+    "calls `certify run` on a clock",
+    "Tier one has no schedule at all",
     "derived from the record store",
     "**catalog fault id**",
     "fresh database is **0**",
@@ -66,12 +67,12 @@ FORBIDDEN_CLAIMS: Final[tuple[tuple[str, str], ...]] = (
         "no live cell has been certified",
     ),
     (
-        r"\bcertification (?:runs|scheduled|schedules) nightly\b",
-        "the sweep runs on demand; nothing calls it on a clock",
+        r"\bcertify run\b[^.]{0,60}\bon a clock\b",
+        "nothing in .github/workflows calls `certify run` on a clock",
     ),
     (
-        r"\bregression blocking is wired\b",
-        "regression blocking is asserted in a test, not in a pipeline",
+        r"\bnightly (?:gate|sweep|matrix) (?:found|caught|detected)\b",
+        "no nightly run has ever found a regression; there are no claims to have one",
     ),
     (
         r"\bany fault is `?verified-live`?\b",
@@ -79,9 +80,9 @@ FORBIDDEN_CLAIMS: Final[tuple[tuple[str, str], ...]] = (
     ),
 )
 
-#: The open phase. Named so the count cannot quietly reach six while Phase 5 is
-#: still advanced-but-not-done.
-OPEN_PHASE: Final[str] = "Phase 5"
+#: Every phase, closed. Named so the count cannot quietly drop back to five with
+#: the ledger still reading DONE on all six.
+ALL_PHASES: Final[tuple[str, ...]] = tuple(f"Phase {n}" for n in range(1, 7))
 
 #: Test names the ledger cites as evidence, paired with the file they live in.
 #: Kept as data rather than prose so a rename fails here instead of quietly
@@ -213,9 +214,16 @@ def test_the_overall_count_equals_the_number_of_done_lines() -> None:
     assert overall == (done_phase_count(PLAN), len(ledger_lines(PLAN)))
 
 
-def test_exactly_one_phase_is_open_and_the_ledger_names_it() -> None:
-    """``5 of 6`` is only honest beside an explicit "and this is the one"."""
-    assert open_phases(PLAN) == [OPEN_PHASE]
+def test_no_phase_is_open_and_the_ledger_says_so() -> None:
+    """The successor to the ``5 of 6`` check, and its mirror image.
+
+    The old test existed because this document read ``5 of 6`` while
+    deliberately not counting Phase 5. Now all six are counted, so the failure
+    worth catching is the opposite one: a phase reopened in prose while its
+    ledger line still says DONE, or a count quietly walked back down.
+    """
+    assert open_phases(PLAN) == []
+    assert claimed_overall(PLAN) == (len(ALL_PHASES), len(ALL_PHASES))
 
 
 # ── the Phase 6 deliverables ─────────────────────────────────────────────────
@@ -250,15 +258,15 @@ def test_the_document_does_not_claim_a_certified_cell_or_a_schedule() -> None:
 
 _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]], ...]] = (
     (
-        "the Overall count inflated to six",
-        lambda d: d.replace("Overall: 5 of 6", "Overall: 6 of 6", 1),
+        "the Overall count walked back to five",
+        lambda d: d.replace("Overall: 6 of 6", "Overall: 5 of 6", 1),
         claimed_overall,
     ),
     (
-        "Phase 5 silently marked done",
+        "Phase 5 reopened in prose while its ledger line says DONE",
         lambda d: re.sub(
-            r"^- Phase 5: \*\*substantially advanced",
-            "- Phase 5: DONE",
+            r"^- Phase 5 \(tests, regression guards, negative controls\): DONE",
+            "- Phase 5 (tests, regression guards, negative controls): INCOMPLETE",
             d,
             count=1,
             flags=re.MULTILINE,
@@ -271,9 +279,10 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: len(missing_sections(d)),
     ),
     (
-        "the no-schedule denial dropped",
+        "the no-certify-on-a-clock denial dropped",
         lambda d: d.replace(
-            "the first two tiers have no schedule", "the first two tiers run nightly"
+            "calls `certify run` on a clock",
+            "calls `certify run` and certifies on every run",
         ),
         lambda d: len(missing_sentences(d)) + len(forbidden_claims_found(d)),
     ),
@@ -288,8 +297,13 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: len(forbidden_claims_found(d)),
     ),
     (
-        "regression blocking claimed as wired",
-        lambda d: d + "\nRegression blocking is wired into the pipeline.\n",
+        "the pipeline claimed to certify faults on a clock",
+        lambda d: d + "\nThe nightly job calls `certify run` on a clock.\n",
+        lambda d: len(forbidden_claims_found(d)),
+    ),
+    (
+        "the nightly gate credited with catching a regression",
+        lambda d: d + "\nThe nightly gate found a regression last night.\n",
         lambda d: len(forbidden_claims_found(d)),
     ),
 )
