@@ -29,6 +29,14 @@ jobs:
         run: uv run pytest tests/unit
       - name: Run integration tests
         run: uv run pytest tests/integration
+      - name: Regression gate
+        # Plan 01 Phase 5's release-time half. On a fresh checkout there is no
+        # certification database, so this reports zero live claims and exits
+        # clean: the honest zero, not a pass over the catalogue. It is here so
+        # the release pipeline carries the same command as the nightly one, and
+        # so a store with claims in it would block a release rather than being
+        # discovered afterwards. The nightly job is where the claims live.
+        run: uv run mayhem certify regress --db certification.db --json
       # NOTE: `ruff check src/` is NOT gated here — the repository's committed
       # ruff config currently reports 30-49 pre-existing violations under every
       # ruff generation (0.8-0.16); the project has no lint-green baseline in

@@ -2,15 +2,20 @@ name: Live Conformance
 
 on:
   workflow_dispatch:
+  schedule:
+    # 03:17 UTC. Off the hour on purpose: the top of every hour is when all the
+    # other scheduled workflows queue, and this job provisions containers. Until
+    # a cell is certified there is nothing to re-run, so the gate below reports
+    # zero claims and exits clean rather than blocking on an empty sweep.
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
 
 jobs:
   live-conformance:
-    name: live conformance (manual)
+    name: live conformance
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -27,8 +32,19 @@ jobs:
           kubectl version -o json >> conformance-environment.txt 2>&1 || true
       - name: Run unit conformance profile
         run: uv run pytest tests/unit -m nightly -q
+      - name: Fail on a previously certified fault going red
+        # Regression blocking, wired to RegressionReport.blocked rather than
+        # asserted only in a test. Exits non-zero when a live claim did not
+        # survive its re-run; with no live claim on this runner it reports zero
+        # and exits clean, which is the honest zero rather than a pass.
+        run: uv run mayhem certify regress --db certification.db --verdicts-out verdicts.json --json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: conformance-environment
           path: conformance-environment.txt
           if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: certification-regression-report
+          path: certification.db
+          if-no-files-found: warn
