@@ -13,7 +13,7 @@ Create a trusted ecosystem for reusable experiments, providers, and templates â€
 ## Artifact classes
 The five `ArtifactClass` values are `official`, `verified`,
 `organization_private`, `unverified` and `deprecated`; the
-[trust-label table](docs/v1.1.0/18_trust_labels.md) states what each one does
+[trust-label table](18_trust_labels.md) states what each one does
 and does not establish. An `unverified` artifact can never display a certified
 state; a `deprecated` artifact cannot back new approvals.
 
