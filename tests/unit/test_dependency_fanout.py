@@ -89,13 +89,13 @@ class TestProjectionMatchesBlastClosure:
         """
         graph = _graph()
         for node in graph.nodes:
-            fanout = dependency_fanout(graph, fault_id="dep.latency", targets=[node.id])
+            fanout = dependency_fanout(graph, fault_id="dependency.block", targets=[node.id])
             expected = frozenset({node.id}) | graph.dependents_closure(node.id)
             assert fanout.affected == expected, node.id
 
     def test_collateral_is_exactly_the_closure_minus_the_targets(self) -> None:
         graph = _graph()
-        fanout = dependency_fanout(graph, fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(graph, fault_id="dependency.block", targets=["x-pg"])
         assert fanout.collateral == graph.dependents_closure("x-pg")
         assert not (fanout.collateral & fanout.aimed)
 
@@ -108,7 +108,7 @@ class TestProjectionMatchesBlastClosure:
         check gates the call. A projection that walked only ``DEPENDS_ON`` would
         under-report the gate -- so this names the case.
         """
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         assert "n-cron" in fanout.collateral
 
     def test_a_target_is_never_reported_as_reached(self) -> None:
@@ -117,7 +117,7 @@ class TestProjectionMatchesBlastClosure:
         Without this, the record would list an aimed node as collateral and
         ``widened`` would report a widening the planner actually asked for.
         """
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg", "n-api"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg", "n-api"])
         assert "n-api" in fanout.aimed
         assert "n-api" not in fanout.collateral
         # n-web is still reached, and correctly so: it depends on n-api, which
@@ -128,7 +128,7 @@ class TestProjectionMatchesBlastClosure:
 
 class TestPathsAndDepth:
     def test_depth_counts_edges_from_the_nearest_aimed_node(self) -> None:
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         assert {node.node_id: node.depth for node in fanout.reached} == {
             "n-api": 1,
             "n-worker": 1,
@@ -139,7 +139,7 @@ class TestPathsAndDepth:
 
     def test_each_reached_node_names_the_node_it_was_reached_through(self) -> None:
         """``via`` is the proof of the path, not a restatement of the target."""
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         via = {node.node_id: node.via for node in fanout.reached}
         assert via == {
             "n-api": "x-pg",
@@ -149,7 +149,7 @@ class TestPathsAndDepth:
         }
 
     def test_reached_at_depth_separates_first_hops_from_compounding(self) -> None:
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         assert {n.node_id for n in fanout.reached_at_depth(1)} == {
             "n-api",
             "n-worker",
@@ -172,30 +172,33 @@ class TestPathsAndDepth:
                 Edge(src="n-c", dst="n-a", kind=EdgeKind.DEPENDS_ON),
             ),
         )
-        fanout = dependency_fanout(graph, fault_id="dep.latency", targets=["n-a"])
+        fanout = dependency_fanout(graph, fault_id="dependency.block", targets=["n-a"])
         assert fanout.collateral == frozenset({"n-b", "n-c"})
         assert len(fanout.reached) == 2
 
 
 class TestWidening:
     def test_a_dependency_nobody_depends_on_does_not_widen(self) -> None:
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-stripe"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-stripe"])
         assert fanout.widened is False
         assert fanout.collateral == frozenset()
         assert fanout.max_depth == 0
 
     def test_a_widened_fault_says_so(self) -> None:
-        assert dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"]).widened is True
+        assert (
+            dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"]).widened
+            is True
+        )
 
     def test_exposed_dependents_are_the_services_that_go_down(self) -> None:
         """The question a reviewer actually asks: which of my services break?"""
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         assert fanout.undeclared_dependents == frozenset({"n-api", "n-worker", "n-web", "n-cron"})
 
 
 class TestUnreachedDependencies:
     def test_it_names_the_dependencies_the_fault_does_not_touch(self) -> None:
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         assert fanout.unreached_dependencies == frozenset({"x-stripe"})
 
     def test_aiming_at_every_dependency_leaves_an_empty_and_real_statement(self) -> None:
@@ -207,22 +210,22 @@ class TestUnreachedDependencies:
         """
         graph = _graph()
         every = {n.id for n in graph.of_kind(NodeKind.EXTERNAL_DEPENDENCY)}
-        one = dependency_fanout(graph, fault_id="dep.latency", targets=["x-pg"])
+        one = dependency_fanout(graph, fault_id="dependency.block", targets=["x-pg"])
         assert one.unreached_dependencies == every - {"x-pg"}
 
-        both = dependency_fanout(graph, fault_id="dep.latency", targets=sorted(every))
+        both = dependency_fanout(graph, fault_id="dependency.block", targets=sorted(every))
         assert both.unreached_dependencies == frozenset()
 
 
 class TestUnresolvableDependency:
     def test_an_aimed_at_dependency_that_does_not_exist_refuses(self) -> None:
         """The negative control: never inject nowhere and report success."""
-        refusal = unresolved_dependency(_graph(), fault_id="dep.latency", targets=["x-mysql"])
+        refusal = unresolved_dependency(_graph(), fault_id="dependency.block", targets=["x-mysql"])
         assert refusal is not None
         assert refusal.rule == RULE_DEPENDENCY_UNRESOLVED
 
     def test_the_refusal_names_the_missing_id_and_the_real_ones(self) -> None:
-        refusal = unresolved_dependency(_graph(), fault_id="dep.latency", targets=["x-mysql"])
+        refusal = unresolved_dependency(_graph(), fault_id="dependency.block", targets=["x-mysql"])
         assert refusal is not None
         message = str(refusal)
         assert "x-mysql" in message
@@ -231,13 +234,15 @@ class TestUnresolvableDependency:
 
     def test_a_graph_with_no_dependencies_says_so_rather_than_listing_nothing(self) -> None:
         graph = TopologyGraph(nodes=(ServiceNode(id="n-a", name="a"),))
-        refusal = unresolved_dependency(graph, fault_id="dep.latency", targets=["x-pg"])
+        refusal = unresolved_dependency(graph, fault_id="dependency.block", targets=["x-pg"])
         assert refusal is not None
         assert "no dependency nodes at all" in str(refusal)
 
     def test_a_resolvable_target_refuses_nothing(self) -> None:
-        assert unresolved_dependency(_graph(), fault_id="dep.latency", targets=["x-pg"]) is None
-        assert unresolved_dependency(_graph(), fault_id="dep.latency", targets=[]) is None
+        assert (
+            unresolved_dependency(_graph(), fault_id="dependency.block", targets=["x-pg"]) is None
+        )
+        assert unresolved_dependency(_graph(), fault_id="dependency.block", targets=[]) is None
 
     def test_only_targets_are_checked_not_the_closure(self) -> None:
         """A transitively reached node is in the graph by construction.
@@ -246,14 +251,16 @@ class TestUnresolvableDependency:
         closure that somehow contained a stranger should surface as a closure
         bug -- not as a second, redundant refusal at the same rule id.
         """
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         require_resolved_dependencies(
-            _graph(), fault_id="dep.latency", targets=sorted(fanout.affected)
+            _graph(), fault_id="dependency.block", targets=sorted(fanout.affected)
         )
 
     def test_require_raises_with_the_same_rule(self) -> None:
         with pytest.raises(InvariantViolationError) as caught:
-            require_resolved_dependencies(_graph(), fault_id="dep.latency", targets=["x-mysql"])
+            require_resolved_dependencies(
+                _graph(), fault_id="dependency.block", targets=["x-mysql"]
+            )
         assert caught.value.rule == RULE_DEPENDENCY_UNRESOLVED
 
     def test_the_unresolved_rule_is_distinct_from_the_unobserved_one(self) -> None:
@@ -266,7 +273,7 @@ class TestLedger:
         """Three steps each reaching one service is not three services."""
         ledger = fanout_ledger(
             _graph(),
-            [("dep.latency", ["x-pg"]), ("dep.latency", ["x-stripe"])],
+            [("dependency.block", ["x-pg"]), ("dependency.block", ["x-stripe"])],
         )
         assert ledger.affected == frozenset(
             {"x-pg", "x-stripe", "n-api", "n-worker", "n-web", "n-cron"}
@@ -275,23 +282,23 @@ class TestLedger:
     def test_widened_steps_name_the_offending_faults(self) -> None:
         ledger = fanout_ledger(
             _graph(),
-            [("dep.latency", ["x-stripe"]), ("dep.timeout", ["x-pg"])],
+            [("dependency.block", ["x-stripe"]), ("dependency.timeout", ["x-pg"])],
         )
-        assert ledger.widened_steps() == ("dep.timeout",)
+        assert ledger.widened_steps() == ("dependency.timeout",)
 
     def test_an_unresolvable_step_refuses_before_any_projection_is_computed(self) -> None:
         """Otherwise the plan could be *reported* as a clean zero-width fan-out."""
         with pytest.raises(InvariantViolationError) as caught:
             fanout_ledger(
                 _graph(),
-                [("dep.latency", ["x-pg"]), ("dep.timeout", ["x-mysql"])],
+                [("dependency.block", ["x-pg"]), ("dependency.timeout", ["x-mysql"])],
             )
         assert caught.value.rule == RULE_DEPENDENCY_UNRESOLVED
 
     def test_the_diagnostic_escape_hatch_is_named_and_opt_in(self) -> None:
         ledger = fanout_ledger(
             _graph(),
-            [("dep.timeout", ["x-mysql"])],
+            [("dependency.timeout", ["x-mysql"])],
             require_resolved=False,
         )
         # The aim is still reported -- the plan *did* name it -- but nothing was
@@ -306,9 +313,9 @@ class TestLedger:
         assert fanout_ledger(_graph(), []).describe() == "no steps, no fan-out"
 
     def test_the_ledger_describes_its_own_widening(self) -> None:
-        ledger = fanout_ledger(_graph(), [("dep.latency", ["x-pg"])])
+        ledger = fanout_ledger(_graph(), [("dependency.block", ["x-pg"])])
         text = ledger.describe()
-        assert "widened: ['dep.latency']" in text
+        assert "widened: ['dependency.block']" in text
         # 5 of 6 nodes: x-pg plus the four services, and not x-stripe.
         assert "5 node(s)" in text
         assert "4 of them reached rather than aimed at" in text
@@ -316,25 +323,25 @@ class TestLedger:
 
 class TestSealedRecord:
     def test_the_digest_covers_the_whole_payload(self) -> None:
-        fanout = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"])
         record = fanout.record
         body = {k: v for k, v in record.items() if k != "sealed_digest"}
         assert record["sealed_digest"] == sha256_hex(canonical_json(body))
 
     def test_an_edited_reach_is_detectable(self) -> None:
         """The point of the digest: a record cannot be quietly widened."""
-        record = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"]).record
+        record = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"]).record
         record["reached"] = []
         body = {k: v for k, v in record.items() if k != "sealed_digest"}
         assert record["sealed_digest"] != sha256_hex(canonical_json(body))
 
     def test_the_record_survives_a_json_round_trip(self) -> None:
         """It has to be storable, so nothing in it may be a non-JSON value."""
-        record = dependency_fanout(_graph(), fault_id="dep.latency", targets=["x-pg"]).record
+        record = dependency_fanout(_graph(), fault_id="dependency.block", targets=["x-pg"]).record
         assert json.loads(canonical_json(record)) == record
 
     def test_the_ledger_record_covers_the_aggregate_too(self) -> None:
-        record = fanout_ledger(_graph(), [("dep.latency", ["x-pg"])]).to_dict()
+        record = fanout_ledger(_graph(), [("dependency.block", ["x-pg"])]).to_dict()
         body = {k: v for k, v in record.items() if k != "sealed_digest"}
         assert record["sealed_digest"] == sha256_hex(canonical_json(body))
         aggregate = record["aggregate"]
@@ -413,7 +420,7 @@ class TestItDoesNotSeeWhatTheGraphDoesNotDeclare:
         it missed; it does not pretend to be complete.
         """
         graph = _graph()
-        fanout = dependency_fanout(graph, fault_id="dep.latency", targets=["x-pg"])
+        fanout = dependency_fanout(graph, fault_id="dependency.block", targets=["x-pg"])
         # Nothing in the graph connects n-worker to x-stripe, so the projection
         # cannot reach it, and the record's own unreached field is where that
         # incompleteness shows up rather than being hidden behind a clean total.
@@ -430,6 +437,6 @@ class TestItDoesNotSeeWhatTheGraphDoesNotDeclare:
                 Edge(src="n-worker", dst="x-stripe", kind=EdgeKind.DEPENDS_ON),
             ),
         )
-        wider = dependency_fanout(graphier, fault_id="dep.latency", targets=["x-pg"])
+        wider = dependency_fanout(graphier, fault_id="dependency.block", targets=["x-pg"])
         assert "x-stripe" in wider.unreached_dependencies
         assert "x-stripe" not in wider.collateral  # reached the other way round
