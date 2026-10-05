@@ -10,6 +10,7 @@ committed. Since the clean break (ADR-0021) the only supported kind is
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -33,6 +34,7 @@ from mayhem.domain.leases import UndoOp, VerifyProbe
 from mayhem.domain.observability import ObservabilityConfig
 from mayhem.domain.quota import DamageQuota
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.secrets import SpecCredentialRef
 from mayhem.domain.steady_state import SteadyStateSpec
 from mayhem.domain.success import SuccessCriteria
 from mayhem.domain.target import (
@@ -444,7 +446,7 @@ def _api_group_for_kind(kind: ResourceKind) -> str:
 class DrillSpec(BaseModel):
     """Unified drill spec — single YAML file replacing config + fault spec (ADR-0019)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     kind: Literal["drill"]
     name: str
@@ -465,6 +467,38 @@ class DrillSpec(BaseModel):
     # `model_dump(exclude_none=True)` still omits the key, so every digest path
     # (toolkit.hashing.canonical_json, plan_diff) is byte-identical.
     steady_state: SteadyStateSpec | None = None
+    # v1.1.0 (plan 29 Phase 3): the `credentialRef:` block the plan's reference
+    # shape always described and this spec never had. Purely additive and
+    # optional — a spec without it parses, validates and dumps byte-identically,
+    # because the default is ``None`` and every digest path excludes none (the
+    # same reasoning as `steady_state:` above). Authors may write one block (the
+    # plan's shape) or a list of them; `credential_refs` is the one to read.
+    credential_ref: tuple[SpecCredentialRef, ...] | None = Field(
+        default=None, alias="credentialRef"
+    )
+
+    @property
+    def credential_refs(self) -> tuple[SpecCredentialRef, ...]:
+        """Every authored reference, as a tuple whether or not any exist."""
+        return self.credential_ref or ()
+
+    @field_validator("credential_ref", mode="before")
+    @classmethod
+    def _reference_block_or_list(cls, value: object) -> object:
+        """Accept the plan's single ``credentialRef:`` mapping or a list of them.
+
+        The plan documents one reference per spec, which is a shape rather than a
+        limit; accepting both means an author is never told their second
+        credential is unexpressible, and ``credentialRef: {}`` is still refused
+        by the nested model rather than silently becoming no references.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)) and not value:
+            return None
+        if isinstance(value, Mapping):
+            return [value]
+        return value
 
     @field_validator("containers")
     @classmethod

@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mayhem.domain.policy import _SECRET_KEYS
+from mayhem.domain.secrets import SECRET_FIELD_KEYS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -54,7 +54,7 @@ class RedactionResult:
 
 def _is_secret_key(key: str) -> bool:
     lowered = key.lower()
-    return lowered in _SECRET_KEYS or lowered.endswith(("_token", "_secret", "_password"))
+    return lowered in SECRET_FIELD_KEYS or lowered.endswith(("_token", "_secret", "_password"))
 
 
 def redact_text(value: str) -> tuple[str, bool]:

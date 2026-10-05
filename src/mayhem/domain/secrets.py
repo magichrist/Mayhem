@@ -37,11 +37,33 @@ from enum import StrEnum
 from fnmatch import fnmatchcase
 from itertools import pairwise
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
-from mayhem.domain.policy import _SECRET_KEYS
+
+#: Exact field names that carry a credential *value*. The vocabulary lives here
+#: rather than in :mod:`mayhem.domain.policy` so that "looks like a credential"
+#: has one home: ``policy``, ``redaction`` and this module all read it, and
+#: ``policy`` imports this module's vocabulary instead of the other way round.
+#: It was owned by ``policy`` until plan 29 Phase 3 needed ``experiments`` to
+#: hold a credential reference — and ``experiments`` cannot import ``policy``
+#: either, because ``policy`` imports ``BlastRadiusBudget`` from it.
+SECRET_FIELD_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "secret",
+        "token",
+        "credentials",
+        "api_key",
+        "apikey",
+        "kubeconfig",
+        "registry_token",
+        "registry_tokens",
+        "secret_value",
+        "secrets",
+    }
+)
 
 # --- Stable refusal codes -----------------------------------------------------
 # Part of the domain's contract with the surfaces that surface these refusals.
@@ -62,6 +84,11 @@ REFUSAL_SCOPE_NOT_GRANTED = "secret.grant_scope_not_granted"
 REFUSAL_PATTERN_MISMATCH = "secret.grant_pattern_mismatch"
 #: A literal credential value was found where a reference is required.
 REFUSAL_LITERAL_SECRET = "secret.literal_where_reference_required"
+#: A development-only provider was named without the explicit per-run marker.
+#: Stated here rather than in the resolver because the *authoring* refusal
+#: (:class:`SpecCredentialRef`) and the *resolution* refusal must be one code:
+#: an operator reading either refusal has to know it is the same rule.
+REFUSAL_DEVELOPMENT_PROVIDER = "secret.development_only_provider_not_permitted"
 #: An evidence field graded ``secret`` would be persisted.
 REFUSAL_SECRET_FIELD_PERSISTED = "secret.secret_classified_field_present"
 
@@ -90,9 +117,7 @@ class SecretProvider(StrEnum):
 #: Providers that only exist to make local development possible. The plan asks
 #: for a loud marker wherever they appear; Phase 1 states the marker (this set,
 #: and :func:`is_development_only`), Phase 3 wires it into authoring.
-DEVELOPMENT_ONLY_PROVIDERS: frozenset[SecretProvider] = frozenset(
-    {SecretProvider.ENVIRONMENT}
-)
+DEVELOPMENT_ONLY_PROVIDERS: frozenset[SecretProvider] = frozenset({SecretProvider.ENVIRONMENT})
 
 
 def is_development_only(provider: SecretProvider | str) -> bool:
@@ -203,6 +228,104 @@ class CredentialRef(BaseModel):
     def is_development_only(self) -> bool:
         """True when this reference points at a development-only provider."""
         return is_development_only(self.provider)
+
+
+class SpecCredentialRef(BaseModel):
+    """A ``credentialRef:`` block as authored in a drill spec (plan 29 Phase 3).
+
+    The authored face of :class:`CredentialRef`, and the declared alternative
+    the literal gate points at. Three differences, each forced by authoring
+    happening before a run exists:
+
+    * ``scope`` is optional. A spec is written before there is a run id to
+      scope a credential to, so ``None`` means *bind to the run* and
+      :meth:`bind` attaches the real scope once there is one. A spec that
+      names a scope names it exactly as :class:`CredentialScope` does.
+    * ``allow_development_only`` is the author's explicit marker. It is the
+      *authoring* half of the per-run marker, not a substitute for it:
+      resolution still refuses a development-only provider unless the run
+      itself was built with ``SecretResolver(allow_development_only=True)``.
+      Both halves exist because a spec is a document anyone can commit and a
+      marker that only a spec can set would let a committed file wave through
+      a rule about what a run may do.
+    * ``purpose`` is required. The engine never infers why a step holds a
+      credential, because that string is what a reviewer reads.
+
+    Attributes:
+        provider: Which provider holds the secret.
+        secret: The provider-specific path, never a value.
+        purpose: Why this credential is needed.
+        version: Optional version pin for reproducible replay.
+        scope: Optional explicit scope; ``None`` binds to the run.
+        allow_development_only: The author's explicit development-only marker.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: SecretProvider
+    secret: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    version: str | None = None
+    scope: CredentialScope | None = None
+    allow_development_only: bool = False
+
+    @field_validator("secret", "purpose", "version")
+    @classmethod
+    def _reject_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("must be non-empty when provided")
+        return value
+
+    @model_validator(mode="after")
+    def _development_only_needs_the_marker(self) -> SpecCredentialRef:
+        if is_development_only(self.provider) and not self.allow_development_only:
+            raise InvariantViolationError(
+                REFUSAL_DEVELOPMENT_PROVIDER,
+                f"credentialRef {self.canonical_key}: provider {self.provider.value!r} is "
+                "development-only and needs an explicit marker; author "
+                "`allow_development_only: true` and resolve under a run built with "
+                "allow_development_only, or name a provider that holds real secrets",
+            )
+        return self
+
+    @property
+    def canonical_key(self) -> str:
+        """``provider:path`` — the key a grant's pattern matches."""
+        return f"{self.provider.value}{SCOPE_TOKEN_SEPARATOR}{self.secret}"
+
+    @property
+    def scope_token(self) -> str | None:
+        """The authored scope's token, or ``None`` to bind to the run.
+
+        ``None`` is not "any scope": it is the instruction to bind at run start,
+        and :meth:`bind` is the only thing that may answer it.
+        """
+        return self.scope.token if self.scope is not None else None
+
+    def is_development_only(self) -> bool:
+        """True when this reference points at a development-only provider."""
+        return is_development_only(self.provider)
+
+    def bind(self, scope: CredentialScope) -> CredentialRef:
+        """The resolvable reference this authored block becomes.
+
+        Raises:
+            ValueError: If the block already named its own scope. Two scopes
+                would mean the run quietly overriding the spec, so the run
+                refuses instead of winning.
+        """
+        if self.scope is not None:
+            raise ValueError(
+                f"credentialRef {self.canonical_key} already names scope "
+                f"{self.scope.token!r}; a run may not rebind it"
+            )
+        return CredentialRef(
+            provider=self.provider,
+            secret=self.secret,
+            purpose=self.purpose,
+            version=self.version,
+            scope=scope,
+        )
 
 
 # --- Grants -------------------------------------------------------------------
@@ -363,9 +486,7 @@ def reference_is_granted(
     credential is not permission to resolve it.
     """
     return (
-        find_grant(
-            reference, grants, principal=principal, environment=environment, now=now
-        )
+        find_grant(reference, grants, principal=principal, environment=environment, now=now)
         is not None
     )
 
@@ -387,9 +508,7 @@ def validate_reference(
     grant", which would send an operator hunting for the wrong thing.
     """
     grant_list = tuple(grants)
-    if find_grant(
-        reference, grant_list, principal=principal, environment=environment, now=now
-    ):
+    if find_grant(reference, grant_list, principal=principal, environment=environment, now=now):
         return ()
     best: tuple[str, ...] = ()
     for grant in grant_list:
@@ -420,9 +539,7 @@ def require_reference(
             that every refusal names the offending field.
     """
     grant_list = tuple(grants)
-    grant = find_grant(
-        reference, grant_list, principal=principal, environment=environment, now=now
-    )
+    grant = find_grant(reference, grant_list, principal=principal, environment=environment, now=now)
     if grant is not None:
         return grant
     codes = validate_reference(
@@ -518,10 +635,10 @@ def _name_tokens(name: str) -> tuple[str, ...]:
 def is_credential_field_name(name: str) -> bool:
     """True when a mapping key looks like it carries a credential *value*.
 
-    Shares :data:`mayhem.domain.policy._SECRET_KEYS` with the redaction
-    boundary so "looks like a credential" means the same thing in both
-    places, then widens to token- and pair-level matches (``dbPassword``,
-    ``registry_token``, ``api_key``).
+    Shares :data:`SECRET_FIELD_KEYS` with the policy and redaction
+    boundaries so "looks like a credential" means the same thing in all
+    three places, then widens to token- and pair-level matches
+    (``dbPassword``, ``registry_token``, ``api_key``).
 
     Pointer-shaped keys (``secret_path``, ``credential_ref``) are excluded on
     purpose: they name where a credential lives, and a rule that flagged
@@ -530,7 +647,7 @@ def is_credential_field_name(name: str) -> bool:
     lowered = name.lower()
     if lowered.endswith(_CREDENTIAL_POINTER_SUFFIXES):
         return False
-    if lowered in _SECRET_KEYS:
+    if lowered in SECRET_FIELD_KEYS:
         return True
     tokens = _name_tokens(name)
     if any(token in _CREDENTIAL_TOKENS for token in tokens):
@@ -541,9 +658,12 @@ def is_credential_field_name(name: str) -> bool:
 def is_reference_value(value: object) -> bool:
     """True when a value is a reference rather than a credential.
 
-    Three accepted shapes: a :class:`CredentialRef`, a mapping carrying both
-    ``provider`` and ``secret`` (the plan's YAML shape), or a
-    ``secret://provider/path`` string.
+    Four accepted shapes: a :class:`CredentialRef`, a mapping carrying both
+    ``provider`` and ``secret`` (the plan's YAML shape), a non-empty list or
+    tuple in which *every* item is itself a reference (a spec needing two
+    credentials), or a ``secret://provider/path`` string. The collection form
+    requires every item, so a list that mixes a reference with something else
+    is walked rather than trusted.
     """
     if isinstance(value, CredentialRef):
         return True
@@ -551,6 +671,8 @@ def is_reference_value(value: object) -> bool:
         return {str(key).lower() for key in value} >= _REFERENCE_MAP_KEYS
     if isinstance(value, str):
         return value.startswith("secret://")
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(is_reference_value(item) for item in value)
     return False
 
 
@@ -700,9 +822,7 @@ class FieldClassifications(BaseModel):
 
     def forbidden_fields(self) -> tuple[str, ...]:
         """Names of the fields that may never be persisted, sorted."""
-        return tuple(
-            sorted(name for name, grade in self.fields.items() if must_not_persist(grade))
-        )
+        return tuple(sorted(name for name, grade in self.fields.items() if must_not_persist(grade)))
 
     def find_forbidden(self, document: object, *, path: str = "$") -> tuple[str, ...]:
         """Paths in ``document`` whose field name is graded ``secret``.
@@ -738,8 +858,7 @@ class FieldClassifications(BaseModel):
             return
         raise InvariantViolationError(
             REFUSAL_SECRET_FIELD_PERSISTED,
-            f"{path}: field(s) graded 'secret' must never be persisted: "
-            f"{', '.join(found)}",
+            f"{path}: field(s) graded 'secret' must never be persisted: {', '.join(found)}",
         )
 
 

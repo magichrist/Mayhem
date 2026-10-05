@@ -32,6 +32,7 @@ from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.experiments import BlastRadiusBudget
 from mayhem.domain.hashing import digest
 from mayhem.domain.risks import RiskLevel
+from mayhem.domain.secrets import SECRET_FIELD_KEYS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -127,26 +128,9 @@ def is_environment_allowed(profile: PolicyProfile, env: str | None) -> bool:
     )
 
 
-_SECRET_KEYS = frozenset(
-    {
-        "password",
-        "secret",
-        "token",
-        "credentials",
-        "api_key",
-        "apikey",
-        "kubeconfig",
-        "registry_token",
-        "registry_tokens",
-        "secret_value",
-        "secrets",
-    }
-)
-
-
 def contains_secret_key(data: dict[str, Any]) -> str | None:
     for key, value in data.items():
-        if key.lower() in _SECRET_KEYS:
+        if key.lower() in SECRET_FIELD_KEYS:
             return key
         if isinstance(value, dict):
             found = contains_secret_key(value)
@@ -158,7 +142,7 @@ def contains_secret_key(data: dict[str, Any]) -> str | None:
 def sanitize_for_logging(data: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key, value in data.items():
-        if key.lower() in _SECRET_KEYS:
+        if key.lower() in SECRET_FIELD_KEYS:
             sanitized[key] = "***REDACTED***"
         elif isinstance(value, dict):
             sanitized[key] = sanitize_for_logging(value)

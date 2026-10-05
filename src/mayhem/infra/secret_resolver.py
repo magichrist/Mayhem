@@ -107,6 +107,9 @@ from mayhem.domain.secrets import (
     require_no_literal_credentials,
     require_reference,
 )
+from mayhem.domain.secrets import (
+    REFUSAL_DEVELOPMENT_PROVIDER as _DOMAIN_DEVELOPMENT_PROVIDER_REFUSAL,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -122,7 +125,11 @@ if TYPE_CHECKING:
 #: No adapter is registered for the reference's provider in this build.
 REFUSAL_PROVIDER_UNAVAILABLE = "secret.provider_unavailable"
 #: A development-only provider was used without the explicit per-run marker.
-REFUSAL_DEVELOPMENT_PROVIDER = "secret.development_only_provider_not_permitted"
+#: Re-exported rather than re-spelled: Phase 3 gives the *authoring* refusal
+#: the same code (a spec naming a development-only provider without its marker),
+#: and two spellings of one rule is how an operator ends up grepping for a
+#: string that only one of them uses.
+REFUSAL_DEVELOPMENT_PROVIDER = _DOMAIN_DEVELOPMENT_PROVIDER_REFUSAL
 #: The short-lived credential window elapsed while the provider was fetching.
 REFUSAL_CREDENTIAL_EXPIRED = "secret.provider_credential_expired"
 #: A resolved value was used again after it had been zeroed.
@@ -228,9 +235,7 @@ class EnvironmentSecretProvider:
     one, because it fails at the target instead of here.
     """
 
-    _IDENTIFIER = frozenset(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-    )
+    _IDENTIFIER = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
     def __init__(
         self,
@@ -489,8 +494,7 @@ class GrantSourcePort(Protocol):
     not once when the run started.
     """
 
-    def current(self) -> tuple[SecretGrant, ...]:
-        ...
+    def current(self) -> tuple[SecretGrant, ...]: ...
 
 
 class StaticGrantSource:
@@ -892,8 +896,7 @@ class SecretLeakGuard:
         more = "" if len(hits) <= 5 else f" (+{len(hits) - 5} more)"
         raise InvariantViolationError(
             REFUSAL_SECRET_BYTES_IN_ARTIFACT,
-            f"{artifact}: resolved credential value(s) present in artifact bytes: "
-            f"{detail}{more}",
+            f"{artifact}: resolved credential value(s) present in artifact bytes: {detail}{more}",
         )
 
     def require_clean_document(
@@ -938,9 +941,7 @@ class SecretLeakGuard:
         return tuple(scanned)
 
 
-def require_clean_bundle(
-    bundle_directory: str | Path, guard: SecretLeakGuard
-) -> tuple[str, ...]:
+def require_clean_bundle(bundle_directory: str | Path, guard: SecretLeakGuard) -> tuple[str, ...]:
     """Scan a sealed bundle directory for credential bytes.
 
     The plan's Phase 4 acceptance criterion as a function: a bundle produced by
