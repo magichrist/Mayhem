@@ -62,10 +62,10 @@ Identity configuration guide, RBAC role reference, approval policy examples. Rol
 - Phase 2 (engine): DONE — `controller/approval_gate.py` (`ApprovalGateInputs`, `verify_approvals`, `ApprovalLedger`, sealed `evidence()`) wired into `controller/safety.validate_plan` behind the additive `SafetyContext.approval_gate`; executor role + environment scope authorized before any approval counts, separation of duties switchable by policy, and an emergency override that executes while sealing principal and reason into the evidence record
 - Phase 3 (surface: authentication and authorization service): DONE — `infra/identity_store.py` (migration `M0031_IDENTITY`, reversible; principals, PBKDF2-only local credentials, memberships, role grants, sessions, scoped API keys, and an append-only revocation log whose triggers refuse UPDATE/DELETE) and `controller/auth_service.py`. Local auth is implemented for real (PBKDF2-HMAC-SHA256, per-credential salt, constant-time compare) with **no new dependency**; OIDC/OAuth/SAML/SCIM are `IdentityProviderPort` seams plus `CallableIdentityProvider`/`StaticIdentityProvider`, exercised by an end-to-end walkthrough (authenticate → policy → approve → execute) against a faked IdP. Tokens issue, rotate, revoke, and expire, with `IssuedToken`/`IssuedApiKey` redacting their own secret in `__repr__`; API keys are short-lived (900s default), scoped at issue, revocable, and never readable out of the store (schema `CHECK`s make a plaintext credential unrepresentable). The service **supplies** principals, grants, memberships, and consumed ids to `approval_gate` via `gate_inputs()` and defines no second role or approval model — `effective_roles`/`has_role`/`Approval.bind` still decide. Revocation propagation is bounded at `REVOCATION_PROPAGATION_BOUND_S` (5s) on an injected monotonic clock, and cached decisions are additionally capped by the subject's own expiry so an expired credential is never served from cache
 - Phase 4 (safety and evidence integration): DONE — `controller/approval_evidence.py` re-evaluates the approvals **at seal time** against the digests the chain is about to commit to, delegating to `domain.approval.evaluate_approvals` rather than adding a second notion of validity, so the plan's "a user can never approve a modified plan with an old approval" is enforced at the boundary and not only at grant; `build_authorization` produces plan 12's `RunAuthorization` and `seal_approval_decision` hands it to plan 12's own sealer, minting no event type, digest, manifest, or sealer of its own. Six new audit kinds (`audit.approval.granted`, `audit.approval.revoked`, `audit.approval.override_exercised`, `audit.role.granted`, `audit.role.revoked`, `audit.principal.disabled`) are declared in `infra/audit_stream.py` — the table that owns that vocabulary — and `require_approval_records` makes the plan's acceptance criterion enforceable: **a run whose approvals authorized it but whose approval records are absent from the audit stream cannot be sealed**, matched by approval digest so an entry naming the right people but the wrong record does not satisfy it. Both refusals run before the store is touched, so a refusal leaves no chain, no manifest, and no audit row
-- Phase 5: not started
+- Phase 5 (tests, regression guards, negative controls): DONE — `tests/unit/test_rbac_matrix.py` (776 lines, 21 test functions, 78 cases) proves the **matrix** rather than the pieces: role x environment x action over the whole surface. Every axis is *derived* — the action axis is `api_service.ROUTES` crossed with the `Role` enum, the environment axis is real `EnvironmentScope` values — so a new route or a ninth role is covered by construction instead of by remembering to add a row. Verified by mutation: adding a `Role.DESIGN` route makes the suite fail until somebody names the layer that enforces it. Covers the approval-binding extension of the v1.0.0 execution-intent suite (the intent's `plan_hash` and the approval's `plan_digest` bind the same plan, and all three digest producers agree), the no-hierarchy property over the whole enum, the environment axis including the project-narrowing an environment-name matrix would miss, the store-backed `AuthService` agreeing with the pure predicate in every cell, and every `InvalidationReason` provoked by a real construction and *named* by the refusal. Negative controls: a revoked approver, a forked plan digest, a replayed approval token, and an approver whose grant is absent — each asserted through the real gate, not by reading a field. `test_auth_service.py` already bounded revocation propagation at `REVOCATION_PROPAGATION_BOUND_S` on an injected clock and this suite re-asserts that bound rather than duplicating it
 - Phase 6: not started
 
-Overall: 4 of 6 phases complete.
+Overall: 5 of 6 phases complete.
 
 ### Phase 3 — what this phase does *not* claim
 
@@ -133,3 +133,37 @@ Overall: 4 of 6 phases complete.
   is never mistakable for an ordinary approval. *Reviewing* it is still a human
   process with no artifact behind it; this phase records the obligation, it does
   not discharge it.
+
+### Phase 5 — what this suite does *not* claim
+
+- **It is a matrix over the surfaces that exist, not a proof about a
+  deployment.** The action axis is `api_service.ROUTES`: an action nobody
+  routed is not in the matrix, and a role enforced only at a layer with no
+  route (`approve`, `execute`, `design`) is a *finding*, recorded in
+  `ROLES_WITHOUT_A_ROUTE` with the layer that enforces it — not a covered cell.
+- **`ADMINISTER` is a real gap, and this suite names it rather than routing
+  around it.** `AuthService` has no `ADMINISTER`-checked administration of the
+  identity store itself, so `UNENFORCED_ROLES == ("administer",)` is asserted.
+  Adding a role to the enum without saying where it is enforced fails the
+  suite, which is the intended pressure.
+- **The project axis is exercised at two scopes only.** `platform` and
+  `payments` under `production` are enough to catch the asymmetry that matters
+  (a project-narrowed grant reaches the bare environment but not a sibling
+  project); they are not a tenancy model, and no claim is made about
+  hierarchical organizations.
+- **No hierarchy is asserted for `effective_roles`, not for the surfaces.** A
+  role a route never demands confers nothing *through that route*; whether some
+  other surface treats it as a superset is outside what this file checks.
+- **The store-backed comparison covers `EXECUTE` in five scopes**, not all
+  eight roles in every scope. The point is that the service and the pure
+  predicate cannot disagree, and a disagreement on any one cell is the failure
+  mode; the pure matrix above is what covers the full product.
+- **Revocation-propagation *timing* is not re-measured here.** It is bounded and
+  tested in `test_auth_service.py` against an injected monotonic clock. This
+  suite asserts the bound's existence through that suite, not a second timing
+  measurement, because two measurements of the same bound would be one number
+  and one number is not evidence.
+- **The unused-import guard is self-referential by necessity** and its first
+  draft exempted its own docstring twice before being simplified; a guard that
+  needs to exempt itself is usually the wrong guard, and this one was kept only
+  because it is cheap and caught a real unused import during development.
