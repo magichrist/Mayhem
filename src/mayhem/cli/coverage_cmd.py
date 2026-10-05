@@ -188,6 +188,12 @@ def _render_json(cells: tuple[ResilienceCell, ...]) -> str:
     default=None,
     help="Show only cells in this state.",
 )
+@click.option(
+    "--matrix",
+    "as_matrix",
+    is_flag=True,
+    help="Show the service x fault grid, with never-run cells rendered as untested.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit as JSON.")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress human output.")
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored output.")
@@ -205,6 +211,7 @@ def coverage_cmd(
     risk: str | None,
     maturity: str | None,
     state_filter: str | None,
+    as_matrix: bool,
     as_json: bool,
     quiet: bool,
     no_color: bool,
@@ -251,7 +258,21 @@ def coverage_cmd(
             risk=risk,
             maturity=maturity,
         )
-        if as_json:
+        if as_matrix:
+            # The declaration comes from the topology and the catalog, not from
+            # the cells that happen to exist, so a service nobody ever ran
+            # against still gets a row. Passing `cells` alone would answer the
+            # weaker question the summary already answers.
+            from mayhem.cli.coverage_map import coverage_matrix, render_coverage_matrix
+            from mayhem.cli.services import engine_fault_kinds
+
+            matrix = coverage_matrix(
+                cells,
+                services=sorted({node.id for node in graph.nodes}),
+                faults=sorted(engine_fault_kinds()),
+            )
+            click.echo(render_coverage_matrix(matrix, as_json=as_json))
+        elif as_json:
             click.echo(_render_json(cells))
         elif not quiet:
             click.echo(_render_summary(cells))
