@@ -283,13 +283,15 @@ def test_certify_resolves_by_prefix_like_every_other_group() -> None:
 
 
 def test_every_certify_subcommand_renders_help() -> None:
-    for sub in ("run", "matrix"):
+    for sub in ("run", "matrix", "regress"):
         result = _run("certify", sub, "--help")
         assert result.exit_code == 0, sub
         assert "Usage:" in result.output
         assert "Options:" in result.output
-    # The group advertises exactly the two documented sub-commands.
-    assert set(certify.commands) == {"run", "matrix"}
+    # The group advertises exactly the three documented sub-commands. `regress` is
+    # the regression gate Phase 5 wired to CI; its behaviour is tested in
+    # tests/unit/test_certify_regress_gate.py.
+    assert set(certify.commands) == {"run", "matrix", "regress"}
 
 
 def test_the_database_is_migrated_to_the_head_before_anything_is_reported(

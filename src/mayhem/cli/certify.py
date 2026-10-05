@@ -87,6 +87,7 @@ import platform
 import shutil
 import subprocess
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -105,11 +106,15 @@ from mayhem.domain.certification import (
     CellPrivilege,
     EvidenceBundleRef,
     MatrixCell,
+    expire_by_time,
 )
 from mayhem.domain.common import utc_now
 from mayhem.domain.experiments import DrillContainer, DrillFault, DrillSpec, ExecutionStep
 from mayhem.domain.faults import EngineLane
-from mayhem.infra.certification_repository import CertificationRepository
+from mayhem.infra.certification_repository import (
+    CertificationRepository,
+    StoredCertification,
+)
 from mayhem.infra.certification_runner import (
     CellRequest,
     CertificationRequest,
@@ -124,10 +129,15 @@ from mayhem.infra.certification_runner import (
     planned_target_identity,
     requires_recovery_verification,
 )
-from mayhem.infra.certification_sweep import sweep_certifications
+from mayhem.infra.certification_sweep import (
+    ReRunVerdict,
+    apply_regressions,
+    regression_report,
+    sweep_certifications,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from mayhem.cli.context import CliContext
     from mayhem.controller.executor import RunResult
@@ -218,12 +228,8 @@ class EngineCell:
             "(SELECT id FROM fault_leases WHERE run_id = ?)",
             (self._run_id,),
         )
-        all_verified = bool(verified) and all(
-            int(dict(row)["verified"]) == 1 for row in verified
-        )
-        mechanisms = sorted(
-            {str(dict(row)["release_mechanism"] or "") for row in released} - {""}
-        )
+        all_verified = bool(verified) and all(int(dict(row)["verified"]) == 1 for row in verified)
+        mechanisms = sorted({str(dict(row)["release_mechanism"] or "") for row in released} - {""})
         if not released:
             return None
         del mechanisms
@@ -458,9 +464,7 @@ class RunEvidenceCapturer:
         envelope = load_evidence(self.store, run.run_id)
         if envelope is None:
             return None
-        stored_plan = self.store.query(
-            "SELECT plan_json FROM m5_runs WHERE id = ?", (run.run_id,)
-        )
+        stored_plan = self.store.query("SELECT plan_json FROM m5_runs WHERE id = ?", (run.run_id,))
         if not stored_plan:
             return None
         facts = json.loads(str(dict(stored_plan[0])["plan_json"]))
@@ -511,8 +515,7 @@ def _stored_target(facts: Mapping[str, Any], fault_id: str) -> str:
             return planned_target_identity(_ScopeView(target))
         return ",".join(
             sorted(
-                ",".join(sorted(entry.get("node_ids", ())))
-                for entry in fault.get("targets") or []
+                ",".join(sorted(entry.get("node_ids", ()))) for entry in fault.get("targets") or []
             )
         )
     return ""
@@ -638,8 +641,7 @@ def _compatibility(
         missing = sorted(cap.value for cap in definition.required_caps - query.capabilities)
         if missing:
             reasons.append(
-                f"the cell does not advertise {', '.join(missing)}, which "
-                f"{definition.id} requires"
+                f"the cell does not advertise {', '.join(missing)}, which {definition.id} requires"
             )
     if definition.catalog_only:
         reasons.append(
@@ -664,9 +666,7 @@ def _certification_state(
     """What the record store says about this fault, on this cell and any cell."""
     from mayhem.domain.certification import expire_by_time
 
-    aged = [
-        expire_by_time(record, now=now) for record in records.get(definition.id, ())
-    ]
+    aged = [expire_by_time(record, now=now) for record in records.get(definition.id, ())]
     live = [record for record in aged if record.grants_live_verification]
     on_cell = [record for record in live if query.matches(record.cell)]
     return {
@@ -824,13 +824,50 @@ def certify_run(
             )
         ctx.exit(int(ExitCode.SAFETY_REFUSAL))
 
+    attempt = _execute_certification(
+        ctx,
+        request,
+        compose=compose,
+        container=container,
+        image=image,
+        bundle_out=bundle_out,
+        db=db_opt or cli_ctx.db,
+    )
+
+    _emit_attempt(attempt, as_json=as_json, quiet=quiet)
+    ctx.exit(int(ExitCode.SUCCESS) if attempt.certified else int(ExitCode.EXPERIMENT_FAILURE))
+
+
+def _execute_certification(
+    ctx: click.Context,
+    request: CertificationRequest,
+    *,
+    compose: str | None,
+    container: str | None,
+    image: str,
+    bundle_out: str | None,
+    db: str,
+) -> CertificationAttempt:
+    """Run one certification attempt end to end, and return what it concluded.
+
+    Extracted rather than copied, and that is the whole point of the exercise:
+    a regression re-run (``mayhem certify regress --rerun``) has to execute
+    through *the same* path that minted the claim it is testing, or "the re-run
+    reproduced it" is a statement about a different pipeline. One function, two
+    callers, and the cell is still provisioned and disposed exactly once.
+
+    The sealer is not optional here either, for the reason ``certify run``
+    documents: a re-run that appended an unsealed claim would be a second way
+    to mint a live claim with nothing attesting it.
+    """
     from mayhem.cli.lifecycle import _graph_from
     from mayhem.cli.services import open_store, prepare
     from mayhem.controller.planner import plan_drill
 
+    cli_ctx: CliContext = ctx.obj
     service = container or _first_container(ctx, compose)
     graph, resolved_compose = _graph_from(ctx, compose)
-    store = open_store(db_opt or cli_ctx.db)
+    store = open_store(db)
     try:
         prepared = prepare(
             config_path=cli_ctx.config,
@@ -862,7 +899,7 @@ def certify_run(
             mayhem_version=_mayhem_version(),
         )
         repository = CertificationRepository(store)
-        attempt = certify_fault(
+        return certify_fault(
             request,
             provisioner=_StaticProvisioner(cell),
             compile_plan=compile_plan,
@@ -880,13 +917,6 @@ def certify_run(
         )
     finally:
         store.close()
-
-    _emit_attempt(attempt, as_json=as_json, quiet=quiet)
-    ctx.exit(
-        int(ExitCode.SUCCESS)
-        if attempt.certified
-        else int(ExitCode.EXPERIMENT_FAILURE)
-    )
 
 
 @dataclass(slots=True)
@@ -972,9 +1002,7 @@ def certify_matrix(
     elif show_all:
         definitions = list(CATALOG)
     else:
-        click.echo(
-            "error: pass a FAULT_ID, or --all to report the whole catalog", err=True
-        )
+        click.echo("error: pass a FAULT_ID, or --all to report the whole catalog", err=True)
         ctx.exit(int(ExitCode.USAGE_ERROR))
 
     query = CellQuery(
@@ -1019,9 +1047,7 @@ def certify_matrix(
         # report a claim whose bundle had been deleted as though it were still
         # standing.
         records = evidence.gate(now=now)
-        rows = [
-            _row(definition, query, records, now=now) for definition in definitions
-        ]
+        rows = [_row(definition, query, records, now=now) for definition in definitions]
     finally:
         store.close()
 
@@ -1050,6 +1076,430 @@ def certify_matrix(
     elif not quiet:
         click.echo(_render_matrix(payload))
     ctx.exit(int(ExitCode.SUCCESS))
+
+
+# ── regression blocking (plan 01 Phase 5) ─────────────────────────────────────
+
+#: The schema tag on a verdicts file. A file without it is refused rather than
+#: parsed, because a JSON object with a ``verdicts`` key is not a certification
+#: verdict — it is whatever else happens to have one.
+VERDICTS_SCHEMA = "mayhem.certification-verdicts/1"
+
+
+#: Carried in the output whenever every considered claim landed in ``unreached``,
+#: because "nothing regressed" and "nothing was tested" are different findings
+#: and a gate that renders them identically teaches people to trust a green it
+#: did not earn.
+_NOTHING_TESTED = (
+    "every live claim was unreached: no verdict names the cell a claim was "
+    "recorded on, so this report does not say the catalogue stayed green -- it "
+    "says nothing was tested"
+)
+
+
+def _verdict_from_attempt(attempt: CertificationAttempt) -> ReRunVerdict:
+    """Turn one re-run into the verdict the regression gate compares with.
+
+    The detail is the attempt's own words — its refusals, or the reason on the
+    record it wrote — so the line that fails a build says what the cell said
+    rather than a summary written afterwards.
+    """
+    detail = "; ".join(attempt.refusals) or attempt.record.reason or attempt.verdict
+    return ReRunVerdict(
+        fault_id=attempt.fault_id,
+        certified=attempt.certified,
+        cell=attempt.cell,
+        detail=detail,
+    )
+
+
+def _verdict_to_dict(verdict: ReRunVerdict) -> dict[str, Any]:
+    return {
+        "fault_id": verdict.fault_id,
+        "certified": verdict.certified,
+        "cell": None if verdict.cell is None else verdict.cell.model_dump(mode="json"),
+        "detail": verdict.detail,
+    }
+
+
+def _verdict_from_dict(payload: Mapping[str, Any]) -> ReRunVerdict:
+    """Rebuild a verdict from a file, keeping "which cell" honest.
+
+    A verdict with no cell is a verdict about *somewhere*, and the gate's own
+    vocabulary already has a word for that: ``unreached``. It is not a pass. So a
+    file that omits the cell is read, reported as unreached, and never used to
+    fail a claim either.
+    """
+    raw_cell = payload.get("cell")
+    cell = MatrixCell.model_validate(raw_cell) if isinstance(raw_cell, Mapping) else None
+    return ReRunVerdict(
+        fault_id=str(payload.get("fault_id", "")),
+        certified=bool(payload.get("certified", False)),
+        cell=cell,
+        detail=str(payload.get("detail", "")),
+    )
+
+
+@certify.command("regress")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option(
+    "--fault-id",
+    "fault_ids",
+    multiple=True,
+    metavar="FAULT_ID",
+    help="Restrict the gate to these faults (repeatable). Omit to gate every live claim.",
+)
+@click.option(
+    "--rerun",
+    "do_rerun",
+    is_flag=True,
+    help=(
+        "Re-run every live claim through `certify run`'s own execution path, on "
+        "the cell the claim was recorded on. Provisions a container per claim."
+    ),
+)
+@click.option(
+    "--verdicts",
+    "verdicts_in",
+    default=None,
+    type=click.Path(),
+    help="Read re-run verdicts from a JSON file instead of running anything.",
+)
+@click.option(
+    "--verdicts-out",
+    "verdicts_out",
+    default=None,
+    type=click.Path(),
+    help="Write the verdicts this run produced here, for a later --verdicts gate.",
+)
+@click.option(
+    "--withdraw",
+    "do_withdraw",
+    is_flag=True,
+    help=(
+        "Persist the demotion of every claim the gate found regressed, through "
+        "`mark_failed`. Off by default: a report that changes what it reports on "
+        "should have to be asked to."
+    ),
+)
+@click.option("--compose", default=None, help="Compose file for the target graph.")
+@click.option("--target", default="", help="Container/service target inside the cell.")
+@click.option("--image", default="ghcr.io/mayhem/fault-lab:latest", help="Cell image.")
+@click.option("--duration", default=5.0, type=float, help="Seconds to sustain the fault.")
+@click.option("--seed", default=None, type=int, help="Fault seed for a repeatable re-run.")
+@click.option("--ttl-days", default=90.0, type=float, help="Validity of the re-run's record.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress human output.")
+@click.pass_context
+def certify_regress(
+    ctx: click.Context,
+    db_opt: str | None,
+    fault_ids: tuple[str, ...],
+    do_rerun: bool,
+    verdicts_in: str | None,
+    verdicts_out: str | None,
+    do_withdraw: bool,
+    compose: str | None,
+    target: str,
+    image: str,
+    duration: float,
+    seed: int | None,
+    ttl_days: float,
+    as_json: bool,
+    quiet: bool,
+) -> None:
+    """Fail when a previously certified fault went red. This is the CI gate.
+
+    ``regression_report`` decides, and this command is the part that makes the
+    verdict reach a build: it exits non-zero when
+    :attr:`~mayhem.infra.certification_sweep.RegressionReport.blocked` is true,
+    so a pipeline running it fails on a regression rather than on a human
+    reading a table.
+
+    Two properties are load-bearing and neither is a convenience:
+
+    * **Verdicts must come from somewhere.** ``--rerun`` produces them by
+      executing each live claim through ``certify run``'s own path;
+      ``--verdicts`` reads them from a matrix job's file. With live claims and
+      neither, this exits a usage error — because a gate that compared the last
+      run against itself is a gate that proves nothing and says nothing.
+    * **A verdict for the wrong cell is not a pass.** ``unreached`` is reported
+      as unreached. A fault nobody re-ran is neither green nor red, and the
+      count of claims considered is carried in the output so a reader can tell
+      the difference between "nothing regressed" and "nothing was tested".
+    """
+    cli_ctx: CliContext = ctx.obj
+    if do_rerun and verdicts_in:
+        click.echo(
+            "error: pass either --rerun or --verdicts, not both. --rerun executes; "
+            "--verdicts reads. Running and reading at once would compare a claim "
+            "against a verdict from a different run of the same fault.",
+            err=True,
+        )
+        ctx.exit(int(ExitCode.USAGE_ERROR))
+
+    now = utc_now()
+    store = _open_store(db_opt or cli_ctx.db)
+    try:
+        repository = CertificationRepository(store)
+        claims = _live_claims(repository, now=now, fault_ids=fault_ids)
+        if fault_ids and not claims:
+            # A named filter that selected nothing has gated nothing, and a gate
+            # that reports success over an empty selection is how a typo in a
+            # pipeline keeps a regression from ever being looked at.
+            click.echo(
+                f"error: --fault-id matched no live claim ({', '.join(sorted(fault_ids))}). "
+                "Refusing to report a green gate over an empty selection: either the "
+                "fault was never certified here, or it is not certified on this cell, "
+                "or its claim has already lapsed. `mayhem certify matrix FAULT_ID` says "
+                "which.",
+                err=True,
+            )
+            ctx.exit(int(ExitCode.USAGE_ERROR))
+        if claims and not do_rerun and verdicts_in is None:
+            click.echo(
+                f"error: {len(claims)} live claim(s) to gate and no verdicts. Pass "
+                "--rerun to re-run them, or --verdicts PATH to read a matrix job's "
+                "results. Without either this command would compare the stored claims "
+                "against nothing.",
+                err=True,
+            )
+            ctx.exit(int(ExitCode.USAGE_ERROR))
+
+        verdicts, source = _verdicts_for(
+            ctx,
+            claims,
+            rerun=do_rerun,
+            verdicts_in=verdicts_in,
+            compose=compose,
+            target=target,
+            image=image,
+            duration=duration,
+            seed=seed,
+            ttl_days=ttl_days,
+            db=db_opt or cli_ctx.db,
+            quiet=quiet,
+        )
+
+        if verdicts_out is not None:
+            # Written even when it is empty. A caller that asked for the file
+            # gets a file: a matrix job that finds no verdicts then has an
+            # artefact saying so, instead of a missing path it has to guess about.
+            Path(verdicts_out).write_text(
+                json.dumps(
+                    {
+                        "schema": VERDICTS_SCHEMA,
+                        "generated_at": now.isoformat(),
+                        "source": source,
+                        "verdicts": [_verdict_to_dict(v) for v in verdicts.values()],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+        report = regression_report(repository, verdicts, now=now)
+        # Withdraw BEFORE reporting, so a claim cannot outlive a gate that named
+        # it. `apply_regressions` is the only writer here and it goes through
+        # `mark_failed`, so the row keeps its sequence and gains a reason.
+        withdrawn = apply_regressions(repository, report, now=now) if do_withdraw else ()
+    finally:
+        store.close()
+
+    payload = {
+        **report.to_dict(),
+        "verdicts_source": source,
+        "verdicts_read": len(verdicts),
+        "claims_gated": len(claims),
+        "fault_filter": sorted(fault_ids),
+        "withdrawn": [row.record.label for row in withdrawn],
+        "withdraw_requested": do_withdraw,
+        "nothing_tested": _NOTHING_TESTED
+        if report.claims_considered and len(report.unreached) == report.claims_considered
+        else "",
+    }
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    elif not quiet:
+        click.echo(f"regression gate ({report.rule}): {source}")
+        click.echo(
+            f"  {report.claims_considered} live claim(s) considered, "
+            f"{len(verdicts)} verdict(s) read"
+        )
+        for fault_id in report.unreached:
+            click.echo(f"  unreached: {fault_id} (no re-run on the cell it was recorded on)")
+        for claim in report.regressed:
+            click.echo(f"  regressed: {claim.reason}")
+        if payload["nothing_tested"]:
+            click.echo(f"  {payload['nothing_tested']}")
+        if not report.blocked:
+            click.echo("  no previously certified fault went red")
+    ctx.exit(int(ExitCode.EXPERIMENT_FAILURE) if report.blocked else int(ExitCode.SUCCESS))
+
+
+def _verdicts_for(
+    ctx: click.Context,
+    claims: tuple[StoredCertification, ...],
+    *,
+    rerun: bool,
+    verdicts_in: str | None,
+    compose: str | None,
+    target: str,
+    image: str,
+    duration: float,
+    seed: int | None,
+    ttl_days: float,
+    db: str,
+    quiet: bool,
+) -> tuple[dict[str, ReRunVerdict], str]:
+    """The verdicts this gate compares with, and a sentence saying where from.
+
+    The source string is part of the output rather than a log line, because a
+    gate whose report does not say whether it executed anything is the failure
+    this whole command exists to end.
+    """
+    if rerun:
+        verdicts = _rerun_claims(
+            ctx,
+            claims,
+            compose=compose,
+            target=target,
+            image=image,
+            duration=duration,
+            seed=seed,
+            ttl_days=ttl_days,
+            db=db,
+            quiet=quiet,
+        )
+        return verdicts, "rerun: executed through `certify run`'s own path"
+    if verdicts_in is None:
+        return {}, "none: there is nothing to compare"
+    try:
+        return _read_verdicts(verdicts_in)
+    except _VerdictsFileError:
+        ctx.exit(int(ExitCode.VALIDATION_ERROR))
+        raise  # unreachable: ctx.exit raises. Kept so the type is not a lie.
+
+
+def _live_claims(
+    repository: CertificationRepository,
+    *,
+    now: datetime,
+    fault_ids: tuple[str, ...],
+) -> tuple[StoredCertification, ...]:
+    """Every stored row still granting live verification, newest per fault/cell.
+
+    The same expiry the rest of the surface reads through: a claim the clock has
+    already expired is not gated, because withdrawing it is not a regression —
+    ageing is what the sweep is for, and a gate that reported it as one would
+    train people to ignore the gate.
+    """
+    wanted = set(fault_ids)
+    live: dict[tuple[str, str], StoredCertification] = {}
+    for stored in repository.all():
+        if wanted and stored.record.fault_id not in wanted:
+            continue
+        record = expire_by_time(stored.record, now=now)
+        if record.grants_live_verification:
+            live[(record.fault_id, record.cell.fingerprint)] = stored
+    return tuple(live[key] for key in sorted(live))
+
+
+def _rerun_claims(
+    ctx: click.Context,
+    claims: tuple[StoredCertification, ...],
+    *,
+    compose: str | None,
+    target: str,
+    image: str,
+    duration: float,
+    seed: int | None,
+    ttl_days: float,
+    db: str,
+    quiet: bool,
+) -> dict[str, ReRunVerdict]:
+    """Execute every live claim again, on the cell it was recorded on.
+
+    The cell comes from the stored record, never from a probe of the current
+    host: a verdict from a different cell has not tested the claim, and the
+    report would file it as ``unreached`` — the gate would then be green over a
+    claim it never looked at, which is the exact failure mode the sweep module
+    exists to prevent.
+
+    Parameters are the catalog defaults, as ``certify run`` uses when none are
+    given, because a certification record does not store the parameters it was
+    minted with. That is a real limit of the record, stated rather than papered
+    over: a fault whose certification depended on a non-default parameter is
+    re-run with defaults, and if the defaults do not reproduce it, the gate will
+    report a regression. The honest fix belongs in the record, not here.
+    """
+    verdicts: dict[str, ReRunVerdict] = {}
+    for stored in claims:
+        cell = stored.record.cell
+        request = CertificationRequest(
+            fault_id=stored.record.fault_id,
+            cell=CellRequest(
+                engine=cell.engine,
+                engine_version=cell.engine_version,
+                os_distro=cell.os_distro,
+                kernel_version=cell.kernel_version,
+                arch=cell.arch,
+                privilege=cell.privilege,
+                capabilities=frozenset(cell.capabilities),
+            ),
+            target=target,
+            duration_s=duration,
+            seed=seed,
+            ttl=timedelta(days=ttl_days),
+            injector_version=cell.engine_version,
+            mayhem_version=_mayhem_version(),
+        )
+        attempt = _execute_certification(
+            ctx,
+            request,
+            compose=compose,
+            container=None,
+            image=image,
+            bundle_out=None,
+            db=db,
+        )
+        verdict = _verdict_from_attempt(attempt)
+        verdicts[verdict.fault_id] = verdict
+        if not quiet:
+            click.echo(
+                f"  re-ran {verdict.fault_id} on {cell.label}: "
+                f"{'reproduced' if verdict.certified else 'did not reproduce'}"
+            )
+    return verdicts
+
+
+def _read_verdicts(path: str) -> tuple[dict[str, ReRunVerdict], str]:
+    """Load a verdicts file written by ``--verdicts-out`` or by a matrix job."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, Mapping) or raw.get("schema") != VERDICTS_SCHEMA:
+        click.echo(
+            f"error: {path} is not a certification verdicts file "
+            f'(expected "schema": "{VERDICTS_SCHEMA}"). mayhem refuses to read a '
+            "regression verdict out of a file it does not recognise.",
+            err=True,
+        )
+        raise _VerdictsFileError
+    entries = raw.get("verdicts")
+    if not isinstance(entries, list):
+        raise _VerdictsFileError
+    verdicts = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise _VerdictsFileError
+        verdict = _verdict_from_dict(entry)
+        if verdict.fault_id:
+            verdicts[verdict.fault_id] = verdict
+    return verdicts, f"verdicts file {path}"
+
+
+class _VerdictsFileError(Exception):
+    """A verdicts file mayhem will not read. Reported by the command, not raised out."""
 
 
 def _row(
@@ -1117,9 +1567,7 @@ def _coerce(value: str) -> object:
         return value
 
 
-def _single_fault_spec(
-    fault_id: str, service: str, request: CertificationRequest
-) -> DrillSpec:
+def _single_fault_spec(fault_id: str, service: str, request: CertificationRequest) -> DrillSpec:
     """A one-fault drill: the smallest spec that can answer the certification question."""
     fault: dict[str, Any] = {
         "fault": fault_id,

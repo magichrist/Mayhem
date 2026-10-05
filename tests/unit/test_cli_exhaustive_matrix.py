@@ -92,7 +92,7 @@ ACTIVE_GROUP_PATHS = {
         "checkpoint",
         "resume-plan",
     ),
-    "certify": ("run", "matrix"),
+    "certify": ("run", "matrix", "regress"),
     "commands": ("show",),
     "discover": ("topology", "faults", "capabilities", "engines"),
     "experiment": ("show", "validate", "explore", "compose", "check-scenario"),
