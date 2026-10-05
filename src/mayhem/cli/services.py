@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from mayhem.cli.errors import MayhemCliError
 from mayhem.config import load_config, save_snapshot
 from mayhem.controller.executor import RunEngine, RunResult
 from mayhem.controller.planner import plan_drill, plan_maniac
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from mayhem.controller.preflight_gate import PreflightGate
     from mayhem.domain.events import Event
     from mayhem.domain.execution_intent import ExecutionIntent
+    from mayhem.domain.prediction import BlastCeilings
     from mayhem.infra.budget_enforcement import RunBudgetGuard
     from mayhem.toolkit.registry import CapabilityReport
 
@@ -848,3 +850,144 @@ def _compose_digest(graph_source: str | None) -> str:
     if graph_source is None:
         return "no-compose"
     return hashlib.sha256(Path(graph_source).read_bytes()).hexdigest()
+
+
+# =============================================================================
+# The gate context a read-only surface evaluates against
+# =============================================================================
+
+
+def gate_context_for_plan(
+    *,
+    fingerprint: str,
+    ceilings: BlastCeilings | None = None,
+) -> SafetyContext:
+    """A :class:`~mayhem.controller.safety.SafetyContext` for evaluating a plan.
+
+    Shared by every surface that evaluates a recorded plan without running it —
+    ``risk-preview`` and ``plan prove`` — because a second opinion of the limits
+    would be a second answer to "what does admission allow here".
+
+    The budget and policy come from the effective configuration when one could
+    be read and from the gate's own defaults otherwise. The defaults are the
+    gate's, not this function's, so an unconfigured evaluation asks the same
+    question admission would.
+
+    ``fingerprint`` is required rather than defaulted: the caller owns whether
+    the live identity was re-derived, and a default here would silently make
+    "the drift check did not run" indistinguishable from "the drift check
+    passed".
+    """
+    from mayhem.config import PolicyCfg
+
+    policy = PolicyCfg()
+    budget = BlastRadiusBudget()
+    try:
+        from mayhem.config import load_config
+
+        config, _sources = load_config()
+        policy = config.policy
+        budget = config.blast_radius
+    except Exception:
+        # Default limits, disclosed by the caller in its rendered notes. An
+        # evaluation that refused because mayhem.yaml was absent would be a
+        # surface nobody could use on a fresh checkout, and the gate's defaults
+        # are honest limits to report against.
+        pass
+    return SafetyContext(
+        policy=policy,
+        budget=budget,
+        fingerprint=fingerprint,
+        damage_quota=DamageQuota(),
+        blast_ceilings=ceilings,
+    )
+
+
+# =============================================================================
+# Reading what the store already holds
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRun:
+    """A run's frozen plan and the topology snapshot it was planned against.
+
+    Read out of ``runs.plan_json`` and ``topology_snapshots.graph_json`` — the
+    two blobs every read-only surface reads, so each one describes the same
+    plan and the same graph the run would. ``graph`` is ``None`` when the
+    run recorded no snapshot, which is a refusal rather than an empty graph: an
+    empty topology reads as "nothing would be affected".
+    """
+
+    run_id: str
+    plan: ExecutionPlan
+    graph: TopologyGraph | None
+    snapshot_id: str
+    environment_fingerprint: str
+
+
+def load_recorded_run(store: Store, run_id: str) -> RecordedRun:
+    """Read one run's plan and topology snapshot out of the store.
+
+    Raises:
+        MayhemCliError: ``validation_error`` if the store holds no such run, or
+            holds a plan it cannot parse.
+    """
+    from mayhem.domain.experiments import ExecutionPlan as _Plan
+    from mayhem.domain.topology import TopologyGraph as _Graph
+
+    rows = store.query(
+        "SELECT plan_json, topology_snapshot_id, environment_fingerprint FROM runs WHERE id = ?",
+        (run_id,),
+    )
+    if not rows:
+        raise MayhemCliError(
+            code="validation_error",
+            message=(
+                f"no such run {run_id!r}: mayhem holds no recorded plan for it, and a report "
+                "over nothing is not a report"
+            ),
+            details={"run_id": run_id},
+            remediation="run mayhem inspect runs to list the runs mayhem recorded",
+        )
+    row = rows[0]
+    try:
+        plan = _Plan.model_validate_json(str(row["plan_json"]))
+    except ValueError as exc:
+        raise MayhemCliError(
+            code="validation_error",
+            message=(
+                f"the stored plan for run {run_id!r} cannot be read: {exc}. mayhem "
+                "refuses to preview a plan it cannot parse, because a preview built "
+                "from a partly-read plan would describe a plan that was never run"
+            ),
+            details={"run_id": run_id},
+            remediation="re-record the run, or re-plan it against current topology",
+        ) from None
+    snapshot_id = str(row["topology_snapshot_id"] or "")
+    graph: TopologyGraph | None = None
+    if snapshot_id:
+        stored = store.query(
+            "SELECT graph_json FROM topology_snapshots WHERE id = ?", (snapshot_id,)
+        )
+        if stored:
+            try:
+                graph = _Graph.model_validate_json(str(stored[0]["graph_json"]))
+            except ValueError as exc:
+                raise MayhemCliError(
+                    code="validation_error",
+                    message=(
+                        f"the topology snapshot {snapshot_id!r} for run {run_id!r} cannot "
+                        f"be read: {exc}. mayhem will not preview against a graph it could "
+                        "not parse, because the blast radius would be computed over nothing"
+                    ),
+                    details={"run_id": run_id, "topology_snapshot_id": snapshot_id},
+                    remediation="re-run discovery and re-plan against the current topology",
+                ) from None
+    return RecordedRun(
+        run_id=run_id,
+        plan=plan,
+        graph=graph,
+        snapshot_id=snapshot_id,
+        environment_fingerprint=str(row["environment_fingerprint"] or ""),
+    )

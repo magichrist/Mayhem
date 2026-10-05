@@ -33,6 +33,7 @@ ACTIVE_COMMANDS = {
     "secrets",
     "prepare",
     "probe",
+    "prove",
     "recover",
     "risk-preview",
     "run",

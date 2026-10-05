@@ -30,6 +30,7 @@ COMMAND_HELP: dict[str, str] = {
     "prepare": "Prepare configuration, dependencies, and plans.",
     "recover": "Plan or execute recovery for a run.",
     "run": "Compile, approve, execute, and record a drill.",
+    "prove": "Render the safety proof for a recorded plan, with per-line citations.",
     "stop": "Stop one run, or every live run in an environment, and show what happened.",
     "verify": "Verify a recorded evidence envelope without mutation.",
     "bundle": "Build and verify portable evidence bundles.",
@@ -95,6 +96,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     # plan 09 emergency role it resolves before writing anything. There is no
     # `--force` and no `--no-preflight`.
     CommandSpec("stop", "recover", help_group="recover", mutating=True),
+    # `prove` is read-only: it compiles the plan-30 safety proof over a recorded
+    # plan in simulation mode (the same `simulate_gate` the preview surface uses)
+    # and renders it with per-line citations. Nothing mutates, and there is no
+    # `--force`: a proof a caller can force into PASS would be the one artifact
+    # this CLI must never be able to forge.
+    CommandSpec("prove", "inspect", help_group="inspect"),
     CommandSpec("verify", "inspect", help_group="inspect"),
     CommandSpec("bundle", "inspect", help_group="inspect"),
     # `policy` writes policy versions: `publish` inserts an immutable row and
@@ -190,6 +197,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.pack import pack
     from mayhem.cli.policy_cmd import policy_cmd
     from mayhem.cli.probe_cmd import probe
+    from mayhem.cli.proof_cmd import prove
     from mayhem.cli.risk_preview_cmd import risk_preview
     from mayhem.cli.schedule_cmd import schedule
     from mayhem.cli.secrets_cmd import secrets_cmd
@@ -214,6 +222,7 @@ def register_commands(app: Any) -> None:
         "pack": pack,
         "prepare": prepare,
         "recover": recover,
+        "prove": prove,
         "run": run,
         "stop": stop,
         "verify": verify,

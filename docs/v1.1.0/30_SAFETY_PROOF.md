@@ -58,12 +58,12 @@ Proof-reading guide (what each line means and where its citation lives), residue
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/safety_proof.py` landed `Obligation`, `ResidueObligation` with its `discharge()` path, and `SafetyProof` whose verdict is stored but re-derived on every read, with the `evaluate`/`is_valid`/`voided` predicates; 45 tests.
 - Phase 2 (engine): DONE — `controller/safety_proof.py` landed `compile_safety_proof`, which runs the real `validate_plan`, `check_fault_admission`, `check_blast_radius`, `pre_exec_assertion`, the plan-07 policy gate, the capability derivation plus the adapter, `require_execution_intent`, and the plan-14 prediction against the frozen plan, and cites each gate output's digest on its line; the never-more-permissive rule is structural (every refusable rule id is mapped to an owning line by `OBLIGATION_FOR_RULE`, and an unmapped one voids the proof); 58 tests.
-- Phase 3: not started
+- Phase 3 (surface — prove command and proof views): PARTIAL — **the command is delivered and named differently than the plan asked; the proof views in UI and PR checks are not.** `mayhem prove RUN_ID` renders the compiled proof — one line per obligation, each citing the gate output and digest behind it, `absent` for a required line the proof does not carry, and the exit code a pipeline reads (0 on PASS, 5 on FAIL and on VOID). It is read-only: the compiler runs in simulation mode, the store is opened, queried and closed, and a test counts the rows before and after. `--check PROOF_JSON` is the phase's void-on-change clause made operable: the artifact is recompiled against the plan recorded now, a moved plan digest renders the *submitted* lines VOID with the diff that voided them (statuses and citations compared line by line, so 'same verdict, different evidence' is named too), and a hand-written PASS is refused at load because the domain re-derives every verdict on construction. 22 tests in `tests/unit/test_prove_surface.py`, the golden asserted against the view-model (`ProofView` → `render_proof_lines` / `proof_payload`) rather than against the strings one renderer printed. **The name is a recorded deviation:** the plan said `mayhem plan prove`; `plan` sits in the CLI's removal inventory, which asserts a retired name is not dispatchable, so registering a group under it would make old scripts hit a surface answering a different question — the verb stands alone, as `stop` does. **What is NOT delivered, named rather than netted out:** plan 08's UI does not exist, so there is no second renderer to compare against (the view-model layer is what makes the two unable to drift when one arrives), and the PR-check half (plan 16) is unwired — `ci check` still grades checks, not proofs. This build's CLI supplies no runtime adapter, so the capability line cannot be established here and a proof compiled at this surface is VOID with that reason named; the FAIL verdict is reachable only where a caller supplies an adapter, and is pinned at the view-model layer rather than faked through the CLI.
 - Phase 4 (safety and evidence integration): DONE — `controller/safety_proof.py` maps the approval gate's three refusal rule ids onto `REQUIRED_APPROVALS` and reads the gate's verdict onto that line, and a source-parsing completeness test makes an unmapped rule in either gate module a test failure by name; `controller/proof_sealing.py` seals the proof pre-execution through plan 12's existing `seal_events`/`build_manifest`/`AttestationRepository` (no second sealer), discharges the residue obligations line by line from the plan-01 scan vocabulary (found residue voids its line; an unscanned line fails; a run with an open obligation cannot close clean), and refuses an approval whose `proof_digest` is not the sealed proof's.
 - Phase 5 (tests and negative controls): DONE — 173 tests across four suites: `tests/unit/test_safety_proof.py` (45) covers the model, `test_proof_compiler.py` (87) the engine, `test_proof_sealing.py` (35) the seal and discharge, and `test_proof_negative_controls.py` (6) the controls below. The negative controls are two-sided: breaking a *collaborator* rather than `src/mayhem` shows the property survives, so each is a statement about the property and not about the assertion. Three properties are pinned deliberately. **The plan digest alone decides `VOID` versus `PASS`** — a proof whose lines all recompute to `PASS` still reports `VOID` when the digest moves, and the control reads the *same* proof under two digests to show the lines are untouched. **A `PASS` line must cite a real gate output** — a citation is refused at construction, so a line cannot be authored without a digest and an evidence reference someone can re-derive. **Found residue `VOID`s rather than merely failing** — a dirty scan leaves `discharged=False` and names each predicate found, while a clean scan of the same fault leaves the line passing, so the verdict is a consequence of the scan and not of the author.
 - Phase 6 (guides and rollout): DONE — four sections appended below: **Proof-reading guide** (the four parts of a line; why `VOID` is the verdict readers misread; why a missing line is reported instead of tolerated), **Residue-obligation catalogue** (the six predicates, and the difference between a residue line that `VOID`s and a check that `FAIL`s), **Rollout order** (compiler and CLI, then PR integration, then residue discharge, then approval binding, least-value first), and **What a proof does not claim** (a proof is a record that checks ran, not a certificate; `SIGNATURE_VERIFICATION_IMPLEMENTED` is `False`, so a seal demonstrates integrity and never authorship; no proof in this plan has been accepted by a human approver in a live release). Honesty is enforced, not just asserted: `tests/unit/test_proof_plan_docs.py` parses this file, cross-checks the `Overall:` count against the `DONE` ledger lines, requires these four headings by name, refuses guarantee-shaped prose, and proves each of its own checkers bites by running them against mutated copies of this document.
 
-Overall: 5 of 6 phases complete (Phases 1, 2, 4, 5, and 6). **Phase 3 — the `mayhem plan prove` CLI surface — is not started**, so the compiler is reachable from Python but not from the command line.
+Overall: 5 of 6 phases complete (Phases 1, 2, 4, 5, and 6), unchanged by this pass — **Phase 3 remains PARTIAL and is still not counted.** The `mayhem prove` command landed (under that name, not the plan's `mayhem plan prove`, for a reason the ledger records), but the phase also names proof views in a UI and in PR checks, and plan 08's UI does not exist while plan 16's `ci check` does not read proofs. Counting the phase on the command alone would be the arithmetic this ledger exists to refuse.
 
 Known limitations — two deviations the implementer flagged, both deliberate and both binding on Phase 2:
 - **Gate digests are bound to 64-char lowercase sha256 hex.** `_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")` and every citation goes through `_require_digest`. The rationale is that `hashing.sha256_hex` is the project's single definition of "same input", so a gate output that cannot be named by one of these digests did not actually run. A Phase 2 compiler that emits a citation in any other form (uppercase, a prefix, a different algorithm) is refused, not normalised.
@@ -74,6 +74,46 @@ Phase 4 limitations, binding on Phase 5:
 - **The proof seal is its own attestation chain, scoped `<run_id>:proof`.** `attestation_chains.run_id` is a primary key and `save_chain` does `INSERT OR REPLACE`, so keying the proof seal on the run itself would let the later run-close seal silently overwrite the admission case. Runs therefore link at the *manifest* layer via `previous_manifest_digest`, which is the store's own stated design — `domain.attestation`'s verifier defines a chain as starting at genesis, so an event chain cannot be hung off another chain's root.
 - **The rule-mapping completeness guard reads two modules' sources, not all of them.** `tests/unit/test_proof_compiler.py` parses `controller/safety.py` and `controller/approval_gate.py` and asserts every rule id either can raise is owned by a line. Rule ids that are *not* spelled as literals at their raise site are deliberately not resolved — the k8s-admission and policy-bundle families reach the compiler as dynamic strings and are placed by kind (`POLICY_REFUSAL_OWNER`), which a source parse cannot enumerate. A new gate that raises a dynamic rule id is covered only by the fail-closed VOID, not by this test.
 - **A residue kind outside the plan-01 vocabulary is reported, not mapped.** `scan_outcome_from_certification_scan` keeps an unrecognised finding under its own name in the scan's note rather than dropping it, but it cannot express it as a `ResiduePredicate`, so it cannot by itself dirty the line. The honest reading is "reported and not silently dropped"; a catalogue that adds a class without a predicate mapping is a gap Phase 5's residue-obligation catalogue should close.
+
+## The prove command
+
+`mayhem prove RUN_ID` renders the safety proof for the plan the store holds for
+that run:
+
+```text
+SAFETY PROOF: VOID
+
+run: r-drill-a1b2c3d4
+plan digest: 4f936c851fc46ca7ff3197a0c37f238285556c1a50d0dec6467203497a265e96
+proof digest: a722e042adde6a058d9dca3ba75fb3e2fa7396d9b1d7fb10f8c197ebd52aa792
+void: lines not established: capability_requirements
+
+  pass  max_concurrent_faults  ...  [cite fc943d78d0fd | gate-output/...]
+  ...
+```
+
+Every established line cites a 64-hex gate digest and an evidence reference; a
+required line the proof does not carry prints `absent`, never `fail` and never
+nothing. `--json` emits the same structure as data, for a UI or a CI consumer.
+
+`--check PROOF_JSON` checks a submitted artifact against the plan recorded now.
+A moved plan digest renders the submitted lines **VOID with the diff that voided
+them** — statuses compared line by line, citations too, because "same verdict,
+different evidence" is a change a status-only diff would hide. An artifact that
+does not validate is refused as unread rather than reported stale: the two are
+different findings, and the domain re-derives every verdict on construction, so
+a hand-written PASS cannot reach the diff logic.
+
+Exit codes: `0` for PASS; `5` for FAIL and for VOID — a proof that is not a PASS
+is the refusal this command exists to report, and "mayhem could not establish
+this" is not "this is fine".
+
+**This build renders VOID for a reason the compiler names, and the command does
+not soften it.** The CLI supplies no runtime adapter, so the capability line is
+`void` ("no runtime adapter supplied: validate_plan skips the capability check")
+and a proof that cannot vouch for all of its lines vouches for none of them.
+FAIL is reachable only where a caller supplies an adapter. Neither is a defect
+of the surface; both are the fail-closed state this plan chose.
 
 ## Proof-reading guide
 

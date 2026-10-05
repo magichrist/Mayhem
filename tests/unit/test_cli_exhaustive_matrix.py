@@ -50,6 +50,7 @@ ACTIVE_ROOTS = {
     "policy",
     "prepare",
     "probe",
+    "prove",
     "recover",
     "risk-preview",
     "run",
