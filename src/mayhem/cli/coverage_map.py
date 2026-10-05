@@ -310,21 +310,86 @@ def render_coverage_matrix(matrix: CoverageMatrix, *, as_json: bool = False) -> 
         )
 
     label_width = max(len(service) for service in matrix.services)
-    header = "  " + " " * label_width + "  " + " ".join(_fault_column(f) for f in matrix.faults)
+    body = (
+        _render_grid(matrix, label_width)
+        if _grid_fits(matrix.faults, label_width)
+        else _render_grouped(matrix)
+    )
     lines = [
         style.cyan("coverage matrix"),
         style.info(f"  {matrix.denominator_description()}"),
-        header,
+        *body,
     ]
-    for service, row in zip(matrix.services, matrix.cells, strict=True):
-        bar = " ".join(_STATE_CHAR[cell.state] for cell in row)
-        lines.append(f"  {service:<{label_width}s}  {bar}")
     lines.append(style.info("  · never run or not established   # blocked (excluded above)"))
     for cell in matrix.unevidenced:
         lines.append(style.yellow(f"  ! {cell.service}/{cell.fault}: {cell.note}"))
     return "\n".join(lines)
 
 
-def _fault_column(fault: str) -> str:
-    """One column header, truncated to a fixed width so rows stay aligned."""
-    return fault[:6].ljust(6)
+#: Width budget for the human grid, in characters. Chosen so a row stays
+#: readable rather than merely present; past this the grouped view is used.
+GRID_WIDTH_BUDGET = 120
+
+
+def _column_width(faults: Sequence[str]) -> int:
+    """The narrowest header width that keeps every column distinguishable.
+
+    Truncating to a constant is what made ``container.kill``,
+    ``container.pause`` and ``container.restart`` all read ``contai`` in the
+    first draft: the grid was widest exactly where it was least legible. The
+    width is now derived from the data, so the fallback fires when the columns
+    genuinely do not fit rather than when a constant happened to be too small.
+    """
+    return max((len(fault) for fault in faults), default=1)
+
+
+def _grid_fits(faults: Sequence[str], label_width: int) -> bool:
+    if not faults:
+        return True
+    return 2 + label_width + 2 + len(faults) * (_column_width(faults) + 1) <= GRID_WIDTH_BUDGET
+
+
+def _render_grid(matrix: CoverageMatrix, label_width: int) -> list[str]:
+    width = _column_width(matrix.faults)
+    header = (
+        "  "
+        + " " * label_width
+        + "  "
+        + " ".join(fault[:width].ljust(width) for fault in matrix.faults)
+    )
+    lines = [header]
+    for service, row in zip(matrix.services, matrix.cells, strict=True):
+        bar = " ".join(_STATE_CHAR[cell.state] for cell in row)
+        lines.append(f"  {service:<{label_width}s}  {bar}")
+    return lines
+
+
+def _render_grouped(matrix: CoverageMatrix) -> list[str]:
+    """One line per service and fault family, when the grid will not fit.
+
+    Same cells, same states, same denominator \u2014 the information is not reduced,
+    only the layout changes. A 128-column table squashed into a terminal is not
+    a map; a per-family breakdown is, and it names every fault rather than
+    truncating it to an ambiguous prefix.
+    """
+    label_width = max(len(service) for service in matrix.services)
+    families: dict[str, list[str]] = {}
+    for fault in matrix.faults:
+        families.setdefault(fault.split(".", 1)[0], []).append(fault)
+    lines = [
+        style.info(
+            f"  {len(matrix.faults)} fault kinds across {len(families)} famil"
+            f"{'y' if len(families) == 1 else 'ies'}; grouped so no column is truncated"
+        )
+    ]
+    for family in sorted(families):
+        members = set(families[family])
+        lines.append(style.cyan(f"  {family}.*  ({len(members)} kinds)"))
+        for service, row in zip(matrix.services, matrix.cells, strict=True):
+            cells = [cell for cell in row if cell.fault in members]
+            if not cells:
+                continue
+            bar = "".join(_STATE_CHAR[cell.state] for cell in cells)
+            covered = sum(1 for cell in cells if cell.covered)
+            lines.append(f"    {service:<{label_width}s}  [{bar}] {covered}")
+    return lines

@@ -279,6 +279,64 @@ class TestTheDenominatorTravelsWithTheNumber:
         assert "0 covered of 0" in rendered
 
 
+class TestTheGridStaysReadable:
+    """A map that cannot be read is not a map.
+
+    Found by driving the real command: with 128 fault kinds the header was
+    truncated to a fixed six characters, so ``container.kill``,
+    ``container.pause`` and ``container.restart`` all read ``contai``. The grid
+    was widest exactly where it was least legible. Both halves of the fix are
+    pinned here -- the grouped view below the budget, the labelled grid above
+    it -- because either alone would let the other rot.
+    """
+
+    def test_a_small_grid_is_rendered_as_a_labelled_table(self) -> None:
+        rendered = render_coverage_matrix(_grid((_cell("api", "net.latency", CellState.PASSED),)))
+        header = next(ln for ln in rendered.splitlines() if "net.latency" in ln)
+        assert "proc.pause" in header
+
+    def test_a_wide_grid_falls_back_to_families(self) -> None:
+        faults = tuple(f"family{index}.fault_number_{index}" for index in range(40))
+        cells = tuple(_cell("api", fault, CellState.PASSED) for fault in faults)
+        matrix = coverage_matrix(cells, services=("api",), faults=faults)
+        rendered = render_coverage_matrix(matrix)
+        assert "grouped so no column is truncated" in rendered
+        assert "family0.*" in rendered
+
+    def test_the_grouped_view_names_every_fault_family(self) -> None:
+        faults = tuple(f"family{index}.fault" for index in range(30))
+        matrix = coverage_matrix((), services=("api",), faults=faults)
+        rendered = render_coverage_matrix(matrix)
+        for index in range(30):
+            assert f"family{index}.*" in rendered, index
+
+    def test_the_grouped_view_keeps_the_same_denominator(self) -> None:
+        """The layout changes; the population the percentage divides does not."""
+        faults = tuple(f"f{i}.fault" for i in range(30))
+        cells = (
+            _cell("api", faults[0], CellState.PASSED),
+            _cell("api", faults[1], CellState.BLOCKED),
+        )
+        matrix = coverage_matrix(cells, services=("api",), faults=faults)
+        assert matrix.denominator == 29
+        assert matrix.denominator_description() in render_coverage_matrix(matrix)
+
+    def test_no_column_header_is_ever_ambiguous(self) -> None:
+        """The defect itself: two distinct faults must never share a header."""
+        faults = ("container.kill", "container.pause", "container.restart")
+        matrix = coverage_matrix((), services=("api",), faults=faults)
+        rendered = render_coverage_matrix(matrix)
+        # Either the full names appear, or the grouped view names the family and
+        # the individual ids remain distinguishable in the JSON.
+        assert "container.kill" in rendered
+        payload = json.loads(render_coverage_matrix(matrix, as_json=True))
+        assert payload["faults"] == ["container.kill", "container.pause", "container.restart"]
+
+    def test_a_single_service_grid_is_grouped_not_squashed(self) -> None:
+        matrix = coverage_matrix((), services=("api",), faults=tuple(f"f{i}.x" for i in range(40)))
+        assert "grouped" in render_coverage_matrix(matrix)
+
+
 class TestTheGridIsBuiltFromTheDeclaration:
     def test_omitting_the_declaration_falls_back_to_what_is_observed(self) -> None:
         """The weaker question is still answerable, and is not pretended to be more."""

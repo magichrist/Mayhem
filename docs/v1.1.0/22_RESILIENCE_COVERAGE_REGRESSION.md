@@ -114,6 +114,13 @@ Nine mutations are each proven to fail the suite.
 * **It gates nothing.** CI minimum-coverage enforcement for selected services is
   **not** done; plan 16 consumes it and nothing consumes it yet. No release
   decision reads this number.
+* **The grid gives way to a per-family listing when it would not fit.** With 128
+  fault kinds a labelled table is unreadable, and the first draft truncated
+  column headers to six characters so that \`container.kill\`,
+  \`container.pause\` and \`container.restart\` all read \`contai\`. The
+  column width is now derived from the data and a width budget selects the
+  layout, so nothing is ever truncated to an ambiguous prefix. Driving the real
+  command is what surfaced it; no unit test would have.
 * **It is not the comparison view.** Regression deltas across releases are Phase
   2's `ComparisonService`; this map shows one release's cells.
 
