@@ -38,9 +38,9 @@ The prioritized batch uses existing IDs where the repository already has a truth
 | Database | `db.query_error` (`error`: `deadlock` / `lock_timeout` / `serialization_failure`, with `timeout_ms` bounding the wait), `db.slow_query` (`mode: latency` for real added latency, `mode: timeout` for a blackhole, and `port` names the database — `5432` for Postgres, `1433` for SQL Server), `db.connection_exhaust` |
 | Descriptors | `fd.exhaust` (`mode: exhaust` holds the table full, `mode: leak` acquires and never releases) |
 | Memory | `mem.exhaust` (`mode`: `allocate` / `reclaim` / `freeze`), `mem.leak` |
-| Storage | `fs.read_only`, `fs.inode_exhaust`, `fs.io_stress` (`op`: `read` / `write` / `both`, selecting which of `read_mb_s` and `write_mb_s` are driven), `fs.fill` (`path` selects the filesystem, e.g. `/tmp` or `/var/log`), `fs.permission_failure`, `fs.corrupt` (a file is overwritten with deterministic garbage; `path` must be absolute, and the original is copied aside and **restored** on undo rather than reconciled) |
-| Process lifecycle | `proc.pause`, `process.stop`, `process.kill`, `process.crash_loop`, `process.startup_delay`, `process.thread_exhaust` (worker threads are spawned and parked until the thread pool is spent), `process.child_exhaust` (fork until the container's **pid cgroup** refuses — the cgroup, not `RLIMIT_NPROC`) |
-| Application dependencies | `dns.timeout`, `dns.nxdomain` (**a hosts-file answer, not DNS `RCODE 3`**: it appends `<address> <domain>` to `/etc/hosts`; `address` names where the name resolves to instead), `dependency.timeout`, `dependency.connection_refuse`, `dependency.malformed_response`, `dependency.circuit_open` (the upstream is never dialled; the caller gets a 503 carrying `Retry-After`), `dependency.response_truncate` (the upstream response is cut short mid-body) |
+| Storage | `fs.read_only`, `fs.inode_exhaust`, `fs.io_stress` (`op`: `read` / `write` / `both`, selecting which of `read_mb_s` and `write_mb_s` are driven), `fs.fill` (`path` selects the filesystem, e.g. `/tmp` or `/var/log`), `fs.permission_failure` (**catalog-only, refused**: no executor — the refusal names the missing `SYS_ADMIN` control path, and no executable stand-in is offered in its place), `fs.corrupt` (a file is overwritten with deterministic garbage; `path` must be absolute, and the original is copied aside and **restored** on undo rather than reconciled) |
+| Process lifecycle | `proc.pause`, `process.stop`, `process.kill`, `process.crash_loop`, `process.startup_delay` (**catalog-only, refused**: no executor — an application-aware readiness hook is missing; use `process.stop` plus your own rollout delay), `process.thread_exhaust` (worker threads are spawned and parked until the thread pool is spent), `process.child_exhaust` (fork until the container's **pid cgroup** refuses — the cgroup, not `RLIMIT_NPROC`) |
+| Application dependencies | `dns.timeout`, `dns.nxdomain` (**a hosts-file answer, not DNS `RCODE 3`**: it appends `<address> <domain>` to `/etc/hosts`; `address` names where the name resolves to instead), `dependency.timeout`, `dependency.connection_refuse`, `dependency.malformed_response` (**catalog-only, refused**: no executor — a protocol-aware response proxy is missing; `http.response_truncate` covers the short-body case), `dependency.circuit_open` (the upstream is never dialled; the caller gets a 503 carrying `Retry-After`), `dependency.response_truncate` (the upstream response is cut short mid-body) |
 | Kubernetes control plane | `k8s.*` families — see the catalog table in [`drill-spec.md`](../drill-spec.md#fault-catalog) |
 | Container expansion | `cpu.burst`, `mem.freeze`, `mem.swap_pressure`, `fs.quota`, `fs.write_delay`, `net.corrupt`, `net.congestion`, `process.restart_delay`, `http.upstream_timeout`, `app.response_5xx` |
 | Kubernetes expansion | `k8s.pod_restart_churn`, `k8s.sidecar_termination`, `k8s.workload_stall`, `k8s.service_5xx`, `k8s.dns_timeout`, `k8s.node_disk_pressure`, `k8s.node_memory_pressure`, `k8s.node_pid_pressure`, `k8s.hpa_oscillation`, `k8s.pdb_over_eviction` |
@@ -61,6 +61,25 @@ The rows above name the parameter that carries a mechanism, so a mechanism is ne
 - **No outbound ports left** versus **no accept capacity left** is `net.conn_exhaust` with `mode: ephemeral` or `mode: accept`. They are two different ceilings, and only `accept` reads `port` — the default is not a claim about your listener.
 
 The same pattern covers the storage and descriptor families: filling `/tmp` versus `/var/log` is `fs.fill` with a different `path`, and a descriptor table that fills versus one that leaks is `fd.exhaust` with a different `mode`. New mechanisms should extend a parameter axis before a new id is added.
+
+## The id a reader reaches for first
+
+Three dependency concepts have a name everyone reaches for and **no id in the
+catalog**. The parameter-first answer is to use the id that does exist, and to
+know which one before you start looking:
+
+| You want to... | Reach for | Notes |
+|----------------|-----------|-------|
+| make an upstream slow | `dependency.timeout` | `delay_ms` is the added delay; there is no `dependency.slow` |
+| make an upstream fail closed | `dependency.circuit_open` | the caller gets a 503 carrying `Retry-After` (`retry_after_s`); the upstream is never dialled |
+| make an upstream refuse the connection | `dependency.connection_refuse` | a different failure from a circuit that is already open |
+| corrupt what an upstream returns | `dependency.malformed_response` is **catalog-only and refused** | no protocol-aware response proxy; `http.response_truncate` is the closest executable thing |
+| throttle an upstream | `dependency.rate_limit` | it shares the `http` lane's rate grammar, not the network lane's |
+
+`dependency.malformed_response` is the trap worth naming: it is a complete
+catalog entry with plausible metadata, so it reads like an available fault, and
+planning against it produces a deterministic refusal at admission. It is
+catalog-only, like the other sixteen entries, and the refusal is the deliverable.
 
 ## Maturity
 
