@@ -432,18 +432,83 @@ Measuring before asserting changed the shape of the work:
 * **It does not count towards certification.** No rung of
   `tests/unit/test_certification_badge_honesty.py` moves because of this.
 
+## Phase 6 outcome — the matrix, the gate, and the rollout order
+
+Phase 6's acceptance criterion is one sentence: *"no doc presents a retired id as
+available."* `docs/fault-catalog/reliability-matrix.md` is the document where
+that matters most — it is what an operator opens to decide which fault to reach
+for — and it had **no gate on it at all**. `tests/unit/test_reliability_matrix_honesty.py`
+is that criterion, plus two further claims the matrix makes by construction:
+
+* **Every fault id named resolves.** One deliberate carve-out: an id named on a
+  line that says it is absent. That carve-out *is* the phase's own "id someone
+  reaches for first does not exist" deliverable, and a synthetic two-sided case
+  pins that it discriminates rather than excusing any line containing a
+  negation.
+* **No family row offers a catalog-only id without saying so in that row.** The
+  refusal is attached to the id, not to the row, because a row-level check would
+  let a marked id excuse the next unmarked one.
+* **Every parameter named in a row exists in that definition's schema.**
+
+### What the gate found
+
+* **Three family rows routed readers to refusable ids.** `fs.permission_failure`
+  (Storage), `process.startup_delay` (Process lifecycle) and
+  `dependency.malformed_response` (Application dependencies) are all
+  catalog-only: complete metadata, no executor, deterministic refusal at
+  admission. The paragraph below the table explained that, and the row is where a
+  reader stops. Each is now marked where it is named, with the missing mechanism
+  named and **no executable stand-in offered** — pointing at another catalog-only
+  id would have repeated the mistake, which is exactly what a first draft of the
+  `fs.permission_failure` annotation did.
+* **Two parameters in the new table did not exist.** `dependency.timeout` takes
+  `delay_ms`; `duration` and `timeout_ms` are not among its parameters. Caught by
+  the parameter check, not by reading.
+* **There is no `dependency.slow`**, so the reachable-first table names the gap
+  rather than pretending an id exists.
+
+### Rollout order
+
+The plan's ordering holds, and the reason is unchanged: **HTTP and gRPC first;
+messaging only after the substrate ruling lands.** The `mq.*` group is the only
+part of the audit table gated on the messaging ADR. Everything else — HTTP,
+gRPC, DNS, TCP, database — proceeds on the normal dependency order, and the
+parameter extensions from Phase 2 and the `db.slow_query` defect from Phase 1
+ship on that order.
+
+### What this does not claim
+
+* **No new fault was built.** This phase documents and gates the id surface that
+  exists. The 12 genuinely-new ids remain unbuilt, and the eight unblocked ones
+  among them are ready to build but are not built.
+* **Value claims are not checked.** `ParamSpec` carries a name, a type, bounds
+  and a default, and **no enum**. So `mode: timeout` is verified only in the sense
+  that `mode` exists; whether `timeout` is accepted is a claim about the executor.
+  `test_value_claims_are_not_schema_guarantees_and_this_file_says_so` fails if a
+  future `ParamSpec` gains an enum, so the gate widens rather than going stale.
+* **The refusal window is 200 characters**, a clause rather than a cell. A cell
+  can hold several ids, and a refusal stated after the last of them says nothing
+  about the first.
+* **The gate reads one document.** `docs/v1.1.0/*.md`, the README and the
+  lowlevel report have their own gates; this one covers the matrix only.
+* **Drill-spec parameter catalogues were not extended.** The drill specs live
+  in plan 13; nothing in this phase added parameters to them, and no drill spec
+  gained a dependency-family entry.
+
 ## STATUS
 - Phase 1 (domain model): DONE — the 38-candidate collision audit is checked in above (24 already-exists, 2 param-extensions, 12 genuinely-new), the messaging substrate ruling is recorded, three open questions are logged, and one live defect (`db.slow_query`'s hardcoded 3306) was found and assigned to Phase 3.
 - Phase 2 (proxy and tool mechanisms): DONE for this lane — both param-extension mechanisms landed (the `body` branch on the proxy's canned path, the validated hosts-file line). **The 12 genuinely-new ids are not built**, so this phase is complete only for the two verdicts that were parameter work.
 - Phase 3 (params, targeting, probes): DONE for this lane — three param axes ship, `db.slow_query` can be aimed at Postgres or SQL Server, and each axis has a three-distinct-output guard. Explicit `target.dependency` selectors and the matching business-level probe definitions are **not** done.
 - Phase 4 (safety and evidence integration): DONE for the dependency half — `mayhem.domain.dependency_fanout` records what a dependency fault was aimed at, what it reached through it and which declared dependencies it did not touch, and refuses a fault aimed at a dependency the topology does not contain. It is accounting layered on the existing blast gate, not a second gate. The dependency-level **fault implementations** the audit identified, and any evidence-store wiring for them, are **not** done.
 - Phase 5 (tests, regression guards, negative controls): DONE for the sweep half — `tests/unit/test_fault_sweep_coverage.py` turns the acceptance line into a repository property: a full catalog sweep exists, redundantly, and no hardcoded id list is the only coverage of an id it names. The plan's "six deriving test files" is **wrong**: four modules sweep the catalog unfiltered and sixteen module-level id lists are literals. The proxy-program and param-inertness guards shipped in Phase 3; the unresolvable-dependency refusals shipped in Phase 4 and are re-asserted here so this phase's own negative control is reachable from this file too.
-- Phase 6: not started
+- Phase 6 (docs, honesty gates, rollout): DONE — the reliability matrix now carries the reachable-first dependency table and marks the three catalog-only ids its family rows were offering, `tests/unit/test_reliability_matrix_honesty.py` enforces "no doc presents a retired id as available" along with two further claims the matrix makes, and the rollout order below is recorded. **The 12 genuinely-new ids remain unbuilt**, so this phase describes the id surface that exists, not one that was extended.
 
-Overall: 5 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
-param extensions and the one defect, Phase 4 complete for the accounting side
-only, and Phase 5 complete for the sweep guard. The 12 genuinely-new ids, the 8
-unblocked new ids among them, and Phase 6 remain.
+Overall: 6 of 6 phases complete, with the scoping below unchanged and
+carried forward. The plan's six phases are done; the 12 genuinely-new fault ids
+it identified are **not built**, and no phase here was permitted to paper over
+that. Phase 4 delivered the accounting that makes their targeting measurable and
+Phase 6 delivered the honesty that keeps them from being described as if they
+existed.
 
 Known limitation: Phase 2 is gated on the messaging ADR **for the messaging group
 only**. The HTTP, gRPC, DNS, TCP and database rows of the audit table are not
