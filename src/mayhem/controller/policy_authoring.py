@@ -342,13 +342,22 @@ def bundle_from_mapping(
         payload["created_at"] = created_at
     if "expires_at" in document:
         payload["expires_at"] = document["expires_at"]
+    if "content_digest" in document:
+        # Stated by the author, so it has to reach the constructor: the model's
+        # validator compares the pin against the content, and building without it
+        # returned a bundle whose digest was silently `None`. That is what this
+        # branch used to do, while its comment claimed the comparison had already
+        # happened — so every bundle read back out of a store carried no digest for
+        # an approval to name. Passing it here also means a mismatch comes back
+        # as a typed PolicyAuthoringError from the `try` below rather than as the
+        # raw invariant.
+        payload["content_digest"] = str(document["content_digest"])
     try:
         bundle = PolicyBundle(**payload)
     except (InvariantViolationError, ValueError) as exc:
         raise PolicyAuthoringError(f"policy bundle is not valid: {exc}") from exc
     if "content_digest" in document:
-        # Stated by the author: the validator has already compared it to the
-        # content, so reaching here means the document's own pin agrees.
+        # Already carried through `payload`, so the validator has compared it.
         return bundle
     return bundle.pin() if pin else bundle
 

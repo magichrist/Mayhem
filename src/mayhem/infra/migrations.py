@@ -2558,6 +2558,64 @@ M0030_API_RESOURCES = Migration(
 )
 
 
+# Plan 07 Phase 3 -- authored policy bundles, the table the authoring surface
+# publishes into.
+#
+# Plan 07 Phases 1, 2 and 4 built the vocabulary, put it inside the gate and
+# sealed what it decided, and Phase 4 recorded that nothing *authored, stored or
+# selected* a bundle: `PolicyCatalog` was an in-memory registry with no IO. This
+# is the storage half of the surface, and it is deliberately the smallest table
+# that can hold the invariant the catalog already enforces.
+#
+# What these rows hold, and what they deliberately do not:
+#
+# * **The document, not the parsed rules.** `document` is the canonical JSON of
+#   the bundle as published; the derived columns beside it (`bundle_id`,
+#   `version`, `content_digest`) exist so a query can find a version and so an
+#   approval or an evidence record can be checked against a digest without
+#   loading and re-parsing the whole policy. There is no second spelling of a
+#   rule in this table, so a reader cannot find two answers to "what does this
+#   policy say".
+# * **Immutability is the primary key.** `(bundle_id, version)` written once:
+#   re-publishing the same version with different content is refused by
+#   `PolicyCatalog.publish` before it reaches this table, and a row that was
+#   somehow written anyway is visible as exactly one row per pair.
+# * **`retired_at` is a tombstone, not a delete.** An approval, an evidence
+#   record, or a replay from six weeks ago still names that version, so a
+#   registry that forgot it would make its own history unreadable. Retiring
+#   writes an instant; erasing the row is not available from any surface.
+# * **No verdict column.** A table that stored "this policy allowed X" would be a
+#   second place for a decision to live, and the decision is re-derived by the
+#   gate from the digest-named bundle on every run.
+M0038_POLICY_BUNDLES = Migration(
+    version=38,
+    name="policy_bundles",
+    statements=(
+        """
+        CREATE TABLE policy_bundles (
+            bundle_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            content_digest TEXT NOT NULL,
+            document TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            published_by TEXT NOT NULL DEFAULT '',
+            retired_at TEXT
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX idx_policy_bundles_pair
+        ON policy_bundles(bundle_id, version)
+        """,
+        "CREATE INDEX idx_policy_bundles_digest ON policy_bundles(content_digest)",
+    ),
+    down_statements=(
+        "DROP INDEX IF EXISTS idx_policy_bundles_digest",
+        "DROP INDEX IF EXISTS idx_policy_bundles_pair",
+        "DROP TABLE IF EXISTS policy_bundles",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -2672,4 +2730,11 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     # one takes the next free id, 37. ``failover_store.reserved_versions()``
     # derives from ``FAILOVER_VERSION``, so it moved with it.
     FAILOVER_MIGRATION,
+    # ``policy_bundles`` (version 38) is plan 07 Phase 3's storage for the
+    # authored policy catalog: one immutable row per ``(bundle_id, version)``,
+    # the canonical document beside its digest, and a ``retired_at`` tombstone
+    # rather than a delete. It goes last because 37 was the head when this lane
+    # took the next free id; see the migration's own comment for what it
+    # deliberately does not hold.
+    M0038_POLICY_BUNDLES,
 )

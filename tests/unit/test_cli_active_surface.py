@@ -29,6 +29,7 @@ ACTIVE_COMMANDS = {
     "lowlevel",
     "maniac",
     "pack",
+    "policy",
     "prepare",
     "probe",
     "recover",

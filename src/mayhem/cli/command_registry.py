@@ -33,6 +33,7 @@ COMMAND_HELP: dict[str, str] = {
     "stop": "Stop one run, or every live run in an environment, and show what happened.",
     "verify": "Verify a recorded evidence envelope without mutation.",
     "bundle": "Build and verify portable evidence bundles.",
+    "policy": "Author, publish and explain policy bundles.",
     # The nine groups below were written, tested, and reachable only by invoking
     # the Click object directly. Each module's docstring said so and named the
     # registration it was owed, so this block is the debt being paid rather than
@@ -95,6 +96,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("stop", "recover", help_group="recover", mutating=True),
     CommandSpec("verify", "inspect", help_group="inspect"),
     CommandSpec("bundle", "inspect", help_group="inspect"),
+    # `policy` writes policy versions: `publish` inserts an immutable row and
+    # `retire` tombstones one. `explain` mutates nothing (Phase 2's simulation
+    # mode), but one writing verb is what makes the group mutating, the same rule
+    # `schedule` and `game-day-step` are held to below.
+    CommandSpec("policy", "experiments", help_group="experiments", mutating=True),
     # ── The nine groups that existed but were unreachable ──────────────────
     #
     # `mutating` here is a published fact, not a gate: it is what
@@ -176,6 +182,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
     from mayhem.cli.lowlevel_cmd import lowlevel
     from mayhem.cli.pack import pack
+    from mayhem.cli.policy_cmd import policy_cmd
     from mayhem.cli.probe_cmd import probe
     from mayhem.cli.risk_preview_cmd import risk_preview
     from mayhem.cli.schedule_cmd import schedule
@@ -204,6 +211,7 @@ def register_commands(app: Any) -> None:
         "stop": stop,
         "verify": verify,
         "bundle": bundle_cmd,
+        "policy": policy_cmd,
         # The map is keyed by the *spec* name, not by the module attribute name.
         # Two of these differ: the attribute is `risk_preview` and
         # `game_day_step` for a command the user types `risk-preview` and

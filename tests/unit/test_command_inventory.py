@@ -27,6 +27,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "lowlevel",
         "maniac",
         "pack",
+        "policy",
         "prepare",
         "probe",
         "recover",
