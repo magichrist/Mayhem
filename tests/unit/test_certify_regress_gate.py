@@ -394,6 +394,22 @@ class TestTheNightlyJobRunsOnAClock:
 
         assert any("certify regress" in run for run in runs), runs
 
+    def test_the_expiry_sweep_runs_on_a_clock_before_the_gate(self) -> None:
+        """Ageing first, then gating.
+
+        ``--sweep`` is opt-in because a read must not change what it reports on.
+        The only place that should opt in is a job, and a job that gated before
+        ageing would compare against claims the clock had already lapsed.
+        """
+        runs = [
+            str(step.get("run", ""))
+            for step in self._workflow()["jobs"]["live-conformance"]["steps"]
+        ]
+        sweep = next(index for index, run in enumerate(runs) if "--sweep" in run)
+        gate = next(index for index, run in enumerate(runs) if "certify regress" in run)
+
+        assert sweep < gate
+
     def test_and_the_release_pipeline_carries_the_same_gate(self) -> None:
         """One command, both pipelines.
 

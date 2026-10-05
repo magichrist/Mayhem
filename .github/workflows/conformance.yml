@@ -32,6 +32,12 @@ jobs:
           kubectl version -o json >> conformance-environment.txt 2>&1 || true
       - name: Run unit conformance profile
         run: uv run pytest tests/unit -m nightly -q
+      - name: Age and invalidate claims against the wall clock
+        # The expiry/drift sweep, on a clock. `--sweep` is opt-in because a read
+        # must not change what it reports on; this step is what makes it opt-in
+        # in the only place that should be. It runs before the gate so the gate
+        # compares against claims the clock has already aged.
+        run: uv run mayhem certify matrix --all --sweep --db certification.db --json
       - name: Fail on a previously certified fault going red
         # Regression blocking, wired to RegressionReport.blocked rather than
         # asserted only in a test. Exits non-zero when a live claim did not
