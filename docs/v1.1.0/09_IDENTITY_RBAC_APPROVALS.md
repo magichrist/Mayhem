@@ -61,11 +61,11 @@ Identity configuration guide, RBAC role reference, approval policy examples. Rol
 - Phase 1 (domain model): DONE — `Principal`/`TeamMembership`/`EnvironmentScope`/`Role`/`RoleGrant` in `domain/identity.py`, plus `domain/approval.py` (`Approval`, `ApprovalState`, `InvalidationReason`) and the pure `evaluate_approvals` predicate that enumerates every invalidation trigger
 - Phase 2 (engine): DONE — `controller/approval_gate.py` (`ApprovalGateInputs`, `verify_approvals`, `ApprovalLedger`, sealed `evidence()`) wired into `controller/safety.validate_plan` behind the additive `SafetyContext.approval_gate`; executor role + environment scope authorized before any approval counts, separation of duties switchable by policy, and an emergency override that executes while sealing principal and reason into the evidence record
 - Phase 3 (surface: authentication and authorization service): DONE — `infra/identity_store.py` (migration `M0031_IDENTITY`, reversible; principals, PBKDF2-only local credentials, memberships, role grants, sessions, scoped API keys, and an append-only revocation log whose triggers refuse UPDATE/DELETE) and `controller/auth_service.py`. Local auth is implemented for real (PBKDF2-HMAC-SHA256, per-credential salt, constant-time compare) with **no new dependency**; OIDC/OAuth/SAML/SCIM are `IdentityProviderPort` seams plus `CallableIdentityProvider`/`StaticIdentityProvider`, exercised by an end-to-end walkthrough (authenticate → policy → approve → execute) against a faked IdP. Tokens issue, rotate, revoke, and expire, with `IssuedToken`/`IssuedApiKey` redacting their own secret in `__repr__`; API keys are short-lived (900s default), scoped at issue, revocable, and never readable out of the store (schema `CHECK`s make a plaintext credential unrepresentable). The service **supplies** principals, grants, memberships, and consumed ids to `approval_gate` via `gate_inputs()` and defines no second role or approval model — `effective_roles`/`has_role`/`Approval.bind` still decide. Revocation propagation is bounded at `REVOCATION_PROPAGATION_BOUND_S` (5s) on an injected monotonic clock, and cached decisions are additionally capped by the subject's own expiry so an expired credential is never served from cache
-- Phase 4: not started
+- Phase 4 (safety and evidence integration): DONE — `controller/approval_evidence.py` re-evaluates the approvals **at seal time** against the digests the chain is about to commit to, delegating to `domain.approval.evaluate_approvals` rather than adding a second notion of validity, so the plan's "a user can never approve a modified plan with an old approval" is enforced at the boundary and not only at grant; `build_authorization` produces plan 12's `RunAuthorization` and `seal_approval_decision` hands it to plan 12's own sealer, minting no event type, digest, manifest, or sealer of its own. Six new audit kinds (`audit.approval.granted`, `audit.approval.revoked`, `audit.approval.override_exercised`, `audit.role.granted`, `audit.role.revoked`, `audit.principal.disabled`) are declared in `infra/audit_stream.py` — the table that owns that vocabulary — and `require_approval_records` makes the plan's acceptance criterion enforceable: **a run whose approvals authorized it but whose approval records are absent from the audit stream cannot be sealed**, matched by approval digest so an entry naming the right people but the wrong record does not satisfy it. Both refusals run before the store is touched, so a refusal leaves no chain, no manifest, and no audit row
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 3 of 6 phases complete.
+Overall: 4 of 6 phases complete.
 
 ### Phase 3 — what this phase does *not* claim
 
@@ -88,3 +88,48 @@ Overall: 3 of 6 phases complete.
 - **The API-key scope is a narrowing on top of RBAC, not a replacement for it.**
   A scoped key can only ever reach where its scopes reach; it confers nothing on
   its own.
+
+### Phase 4 — what this phase does *not* claim
+
+- **No signature, and no claim of one.** Nothing here mints signature bytes: no
+  key material, KMS/HSM custody, or Sigstore integration exists, so every
+  artifact this phase produces is integrity-chained and *named*. A reader must
+  treat "these bytes were unaltered and in order" as established and "these
+  bytes were written by this person" as **a claim by the writer, not a proven
+  fact**. An `approval_digest` pins a record's *content*; it is not an
+  authorship proof, and `tests/unit/test_approval_evidence.py` asserts those two
+  facts separately so the distinction cannot quietly rot.
+- **Nothing in the run-close path calls it yet.** `seal_approval_decision` is
+  the seam a caller reaches with a store, an envelope, and a gate result in
+  hand. Neither `controller/executor.py` nor `cli/lifecycle.py` calls it, for
+  the reason plan 12's own `seal_run_evidence_at_run_close` is not called from
+  the executor: the envelope is assembled after the run and the gate result is a
+  `SafetyContext` local. This is the documented seam, not a silent omission.
+- **The completeness check needs an audit stream.** `seal_approval_decision`
+  takes `audit: AuditStream | None`, and the "a run without a matching approval
+  record is unrepresentable" guarantee holds only when a stream is supplied.
+  Passing `None` seals without it. The parameter is additive for the same
+  reason plan 12's authorization argument is: a run's evidence must survive even
+  when the evidence about how it was authorized is missing — an
+  incomplete-but-honest chain is worth more than no chain.
+- **`grants` and `memberships` must be handed to the re-derivation.** They
+  default to empty, and `domain.approval.approval_reasons` refuses an approval
+  whose approver holds no `APPROVE` grant in scope — so forgetting them is
+  default-deny rather than an accidental pass. The caller must therefore supply
+  the authority the gate used, which is a real burden and a real property: it is
+  what makes an approver whose grant was withdrawn between admission and close
+  caught here rather than at the gate.
+- **The environment scope is a parameter, not re-derived.** The gate result
+  records its environment as a *rendered* string. Parsing that back into a scope
+  would be a second, looser notion of what an environment is, so the scope is
+  demanded from the caller and a missing one is refused.
+- **Approval *levels* remain unbound to roles or teams.** Phase 2's gap is
+  unchanged: `quorum_from_requirements` enforces the *count* of named levels and
+  `ApprovalGateResult.unbound_levels` reports which groups it could not bind.
+  Sealing a run does not close that gap — an evidence record naming an
+  outstanding level is a record of the gap, not a resolution of it.
+- **No post-hoc review workflow.** An override's principal and reason are sealed
+  into the chain and recorded in the audit stream, and a run executed under one
+  is never mistakable for an ordinary approval. *Reviewing* it is still a human
+  process with no artifact behind it; this phase records the obligation, it does
+  not discharge it.
