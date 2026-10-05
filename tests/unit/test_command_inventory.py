@@ -28,6 +28,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "maniac",
         "pack",
         "policy",
+        "secrets",
         "prepare",
         "probe",
         "recover",

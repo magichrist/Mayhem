@@ -39,7 +39,16 @@ def _load_scenario(path: str) -> Scenario:
         payload = yaml.safe_load(text)
     else:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return load_scenario(payload or {})
+    document = payload or {}
+    # Plan 29 Phase 3's first production caller for the literal-credential gate:
+    # an authored scenario is a spec, so a credential pasted into one is refused
+    # here — before it is compiled, and long before anything executes. Author a
+    # `credentialRef` and a grant instead; the resolver is what turns that into a
+    # value, at run time, with a receipt.
+    from mayhem.infra.secret_resolver import require_no_literal_spec
+
+    require_no_literal_spec(document, field_name=f"scenario {path}")
+    return load_scenario(document)
 
 
 @experiment.command("compose")

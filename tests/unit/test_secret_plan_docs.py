@@ -99,7 +99,14 @@ def ledger_lines(document: str) -> dict[str, str]:
             in_status = False
         if not in_status:
             continue
-        match = re.match(r"^- (Phase \d)(.*?):\s*(DONE|INCOMPLETE|not started|partially)", stripped)
+        # ``PARTIAL`` is a state word like DONE and not started, so it needs its
+        # own alternative: ``partially`` would not match it. Phase 3 is recorded
+        # that way because the grant-administration half landed and the
+        # reference-syntax half did not, and a line the parser cannot read is a
+        # line nothing can be checked against.
+        match = re.match(
+            r"^- (Phase \d)(.*?):\s*(DONE|PARTIAL|INCOMPLETE|not started|partially)", stripped
+        )
         if match:
             lines[match.group(1)] = stripped
     return lines
@@ -278,10 +285,10 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: int("never rewrite sealed history" not in d),
     ),
     (
-        "the open phase no longer named in the ledger",
+        "a PARTIAL phase quietly promoted to DONE",
         lambda d: re.sub(
-            r"^- Phase 3: not started",
-            "- Phase 3: DONE",
+            r"^(- Phase 3[^\n]*?): PARTIAL",
+            r"- \1: DONE",
             d,
             count=1,
             flags=re.MULTILINE,

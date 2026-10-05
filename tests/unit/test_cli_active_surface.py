@@ -30,6 +30,7 @@ ACTIVE_COMMANDS = {
     "maniac",
     "pack",
     "policy",
+    "secrets",
     "prepare",
     "probe",
     "recover",

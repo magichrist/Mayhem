@@ -54,6 +54,7 @@ ACTIVE_ROOTS = {
     "risk-preview",
     "run",
     "schedule",
+    "secrets",
     "stop",
     "verify",
 }
@@ -96,6 +97,7 @@ ACTIVE_GROUP_PATHS = {
     "certify": ("run", "matrix", "regress"),
     "commands": ("show",),
     "policy": ("publish", "list", "show", "retire", "resolve", "explain"),
+    "secrets": ("grant", "revoke", "list", "explain"),
     "discover": ("topology", "faults", "capabilities", "engines"),
     "experiment": ("show", "validate", "explore", "compose", "check-scenario"),
     "extend": ("faults", "capabilities", "dependencies", "providers"),
