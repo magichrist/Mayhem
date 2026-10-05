@@ -39,7 +39,7 @@ a half-applied policy behind. Three rules it enforces, all default-deny:
 Inheritance is deliberately **not** decided here. :meth:`PolicyCatalog.resolve`
 builds the index from what is published and hands it over; a ``parents`` entry
 that nothing published is then refused by
-:func:`~mayhem.controller.policy_gate.detect_config_defect` as
+:func:`~mayhem.domain.policy_gate.detect_config_defect` as
 ``ConfigDefect.PARENT_MISSING``, with a remediation written for whoever wrote
 the bundle. Two answers to "is this bundle resolvable" would be two places for a
 regression to hide.
@@ -48,9 +48,9 @@ regression to hide.
 plan's acceptance is that the ``DENY`` block in its own text is produced by the
 engine rather than hand-written, and it is: :func:`explain_decision` renders
 exactly those four lines from a real
-:class:`~mayhem.controller.policy_gate.PolicyGateResult`, the reason coming off
+:class:`~mayhem.domain.policy_gate.PolicyGateResult`, the reason coming off
 the deciding rule's own ``reason`` field and the ``Required`` line off the
-requirements :func:`~mayhem.controller.policy_gate.required_approvals`
+requirements :func:`~mayhem.domain.policy_gate.required_approvals`
 surfaced. :func:`explain_refusal` adds the promotion-refusal detail underneath:
 every rule that was evaluated, what it observed, and what it wanted instead.
 
@@ -66,7 +66,7 @@ What this module does NOT claim
 -------------------------------
 
 * **Not a second rule evaluator.** Every decision shown here was reached by
-  :func:`~mayhem.controller.policy_gate.evaluate_gate`; this only reads its
+  :func:`~mayhem.domain.policy_gate.evaluate_gate`; this only reads its
   result and the same rules the gate read. :func:`explain_decision` refuses to
   invent a reason when it cannot name the rule that produced one.
 * **Not an enforcement path.** :func:`explain_refusal` explains; it never
@@ -84,11 +84,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from mayhem.controller.policy_gate import (
-    PolicyGateInputs,
-    effective_compatibility,
-    required_approvals,
-)
 from mayhem.domain.common import utc_now
 from mayhem.domain.errors import DomainError, InvariantViolationError
 from mayhem.domain.lowlevel_admission import collision_edges as lowlevel_collision_edges
@@ -103,13 +98,18 @@ from mayhem.domain.policy import (
     effective_rules,
     resolve_precedence,
 )
+from mayhem.domain.policy_gate import (
+    PolicyGateInputs,
+    effective_compatibility,
+    required_approvals,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
 
-    from mayhem.controller.policy_gate import PolicyGateResult, RequiredApproval
     from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.policy_gate import PolicyGateResult, RequiredApproval
 
 __all__ = [
     "APPROVAL_LEVEL_LABELS",
@@ -134,7 +134,7 @@ __all__ = [
 #: The ``APPROVAL_LEVEL`` value a caller supplies to say "no approver has signed
 #: this plan yet".
 #:
-#: It exists because :func:`~mayhem.controller.policy_gate.required_approvals`
+#: It exists because :func:`~mayhem.domain.policy_gate.required_approvals`
 #: only reports a requirement whose rule *matched* the facts, and an
 #: ``approval_level in (sre, service_owner)`` rule cannot match an unheld level —
 #: every level it names would then be dropped as already satisfied. The
@@ -221,9 +221,7 @@ _BUNDLE_KEYS = frozenset(
         "content_digest",
     }
 )
-_EDGE_KEYS = frozenset(
-    {"left_fault", "right_fault", "verdict", "reason", "conditions"}
-)
+_EDGE_KEYS = frozenset({"left_fault", "right_fault", "verdict", "reason", "conditions"})
 
 
 def _as_mapping(value: Any, *, where: str) -> Mapping[str, Any]:
@@ -444,7 +442,7 @@ def builtin_collision_graph() -> tuple[CompatibilityEdge, ...]:
     the same edges rather than re-derive them.
 
     **What registering them does and does not buy, stated exactly.**
-    :func:`~mayhem.controller.policy_gate.check_compatibility` asks about
+    :func:`~mayhem.domain.policy_gate.check_compatibility` asks about
     ``PlannedFault.fault_id``. These fifteen edges are keyed by *primitive* ids
     (``io.read_delay``, ``kernel.syscall_latency``, …), and no id in the fault
     catalogue carries one of those names — the catalogue's ``clock.*`` members
@@ -595,7 +593,7 @@ class PolicyCatalog:
                 "amendment is a new version"
             )
             raise PolicyAuthoringError(msg)
-        published = tuple(sorted(self.bundles, key=_version_order) + [bundle.pin()])
+        published = (*sorted(self.bundles, key=_version_order), bundle.pin())
         return replace(self, bundles=published)
 
     # -- read -----------------------------------------------------------------
@@ -628,10 +626,10 @@ class PolicyCatalog:
             )
             raise PolicyAuthoringError(msg)
         known = self.versions(bundle_id)
-        msg = (
-            f"no policy version {bundle_id} v{version} is published"
-            + (f"; published versions are {list(known)}" if known else f"; {bundle_id!r} is unknown")
+        detail = (
+            f"; published versions are {list(known)}" if known else f"; {bundle_id!r} is unknown"
         )
+        msg = f"no policy version {bundle_id} v{version} is published{detail}"
         raise PolicyAuthoringError(msg)
 
     def resolve(
@@ -708,7 +706,7 @@ class PolicyCatalog:
         it is — "decide *this plan* under *this policy*" — and so a future
         budget-path derivation has the plan in hand without changing every call
         site. ``compatibility`` defaults to the catalog's own edges, which
-        :func:`~mayhem.controller.policy_gate.effective_compatibility` then
+        :func:`~mayhem.domain.policy_gate.effective_compatibility` then
         unions under the bundle's.
         """
         resolved = self.resolve(bundle_id, version, now=now)
@@ -799,9 +797,7 @@ def _reason_text(result: PolicyGateResult, rules: Sequence[PolicyRule]) -> str:
     """
     matched = set(result.decision.matched_rules)
     quoted = [
-        (rule.reason or rule.explain(result.facts))
-        for rule in rules
-        if rule.rule_id in matched
+        (rule.reason or rule.explain(result.facts)) for rule in rules if rule.rule_id in matched
     ]
     if quoted:
         return "; ".join(quoted)
@@ -837,7 +833,7 @@ def explain_decision(
     Produced by the engine from a real gate result, not written by hand: the
     headline is the gate's own verdict, the reason is the deciding rule's
     authored ``reason``, the ``Required`` line is whatever
-    :func:`~mayhem.controller.policy_gate.required_approvals` surfaced, and the
+    :func:`~mayhem.domain.policy_gate.required_approvals` surfaced, and the
     digest is the caller's, abbreviated because an explanation is read by a
     person and the full digest belongs in the evidence record.
 
@@ -871,7 +867,8 @@ def explain_rules(
     can see what else was in the policy and what the plan satisfied — which is
     the half of an explanation that names only refusals never gives.
     """
-    return tuple(rule.explain_detail(result.facts) for rule in _resolved_rules(result, bundle, index))
+    resolved = _resolved_rules(result, bundle, index)
+    return tuple(rule.explain_detail(result.facts) for rule in resolved)
 
 
 def explain_refusal(
@@ -921,14 +918,13 @@ def explain_facts(facts: PolicyFacts) -> str:
     if not facts.values:
         return "<no dimensions observed>"
     return "\n".join(
-        f"{dimension.value}: "
-        + (", ".join(sorted(values)) if values else "<observed, empty>")
+        f"{dimension.value}: " + (", ".join(sorted(values)) if values else "<observed, empty>")
         for dimension, values in sorted(facts.values.items(), key=lambda item: item[0].value)
     )
 
 
 def compatibility_inputs(inputs: PolicyGateInputs) -> tuple[CompatibilityEdge, ...]:
-    """:func:`~mayhem.controller.policy_gate.effective_compatibility`, re-exported.
+    """:func:`~mayhem.domain.policy_gate.effective_compatibility`, re-exported.
 
     Present so a surface that wants to *report* the graph — a ``mayhem policy
     explain`` listing "the pairs this policy forbids" — reads the merged graph the
@@ -942,7 +938,7 @@ def outstanding_requirements(
 ) -> tuple[RequiredApproval, ...]:
     """The requirements to show, from the result or re-derived from ``rules``.
 
-    The result's own :attr:`~mayhem.controller.policy_gate.PolicyGateResult.
+    The result's own :attr:`~mayhem.domain.policy_gate.PolicyGateResult.
     required_approvals` is authoritative and is what a caller should read.
     Re-deriving from ``rules`` exists for the one case the result cannot cover: a
     caller holding rules but no gate result — a preview screen, a lint — where the

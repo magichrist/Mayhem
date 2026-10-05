@@ -74,7 +74,7 @@ from mayhem.controller.advisor_service import (
     RULE_SUBMISSION_SPEC_NOT_BOUND,
     SubmissionAuthorization,
 )
-from mayhem.controller.policy_gate import MutationSink
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.advisor import (
     Approval,
     CustomerCriterion,

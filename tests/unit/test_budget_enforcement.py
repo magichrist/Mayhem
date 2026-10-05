@@ -714,7 +714,7 @@ def test_budget_enforcement_imports_no_damage_ledger_and_no_safety_gate() -> Non
         "mayhem.domain.quota",
         "mayhem.domain.policy",
         "mayhem.controller.safety",
-        "mayhem.controller.policy_gate",
+        "mayhem.domain.policy_gate",
     }
     assert not imported & forbidden, imported & forbidden
 

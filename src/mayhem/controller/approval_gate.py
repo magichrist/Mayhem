@@ -45,7 +45,7 @@ answer and never derives it itself.
 
 **What this phase does not claim.** A policy decision's approval *levels*
 (``sre``, ``service_owner`` — see
-:func:`mayhem.controller.policy_gate.required_approvals`) are not yet bound to
+:func:`mayhem.domain.policy_gate.required_approvals`) are not yet bound to
 roles or teams, so :func:`quorum_from_requirements` enforces their **count** and
 the refusal *names* every outstanding level. Which named group satisfies which
 level is plan 09 Phase 3's approval-flow work, and until it lands the levels a
@@ -91,9 +91,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from datetime import datetime
 
-    from mayhem.controller.policy_gate import RequiredApproval
     from mayhem.domain.approval import ApprovalState, ChangeTicket
     from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.policy_gate import RequiredApproval
 
 # =============================================================================
 # Rule ids
@@ -263,7 +263,7 @@ class ApprovalRefusal:
 class ApprovalGateResult:
     """The verdict plus everything it was reached through.
 
-    Carried whole, like :class:`mayhem.controller.policy_gate.PolicyGateResult`,
+    Carried whole, like :class:`mayhem.domain.policy_gate.PolicyGateResult`,
     so a later phase can bind it to evidence without re-running the gate and
     hoping the inputs still agree.
     """
@@ -372,7 +372,7 @@ class ApprovalGateInputs:
     """Everything the approval gate needs that the plan does not carry.
 
     ``now`` is a required field for the same reason
-    :class:`~mayhem.controller.policy_gate.PolicyGateInputs` makes it one: the
+    :class:`~mayhem.domain.policy_gate.PolicyGateInputs` makes it one: the
     decision is a pure function of its inputs, and a default clock is how that
     promise gets quietly broken. ``executor`` and ``proof`` are required for the
     same default-deny reason — an authority with no principal is an omission, and
@@ -586,7 +586,7 @@ def verify_approvals(
     """Decide whether ``inputs`` authorize running *this* plan, here, now.
 
     ``requirements`` are the approval requirements a policy decision surfaced
-    (:attr:`~mayhem.controller.policy_gate.PolicyGateResult.required_approvals`).
+    (:attr:`~mayhem.domain.policy_gate.PolicyGateResult.required_approvals`).
     They raise the quorum; see :func:`quorum_from_requirements` for what is and
     is not enforced about them.
 

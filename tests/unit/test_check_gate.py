@@ -52,7 +52,7 @@ import pytest
 from mayhem.config import PolicyCfg
 from mayhem.controller import check_gate
 from mayhem.controller import check_gate as cg
-from mayhem.controller.policy_gate import RULE_BUNDLE_DENY
+from mayhem.domain.policy_gate import RULE_BUNDLE_DENY
 from mayhem.controller.safety import SafetyContext, validate_plan
 from mayhem.controller.safety_proof import OBLIGATION_FOR_RULE
 from mayhem.domain.certification import (

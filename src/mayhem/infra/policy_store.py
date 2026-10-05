@@ -3,7 +3,7 @@
 Plan 07 Phases 1, 2 and 4 built the policy vocabulary, put it inside the real
 gate, and sealed what the gate decided. Between them sat the hole Phase 4
 recorded and this module closes: **nothing authored, stored, or selected a
-bundle.** :class:`~mayhem.controller.policy_authoring.PolicyCatalog` was an
+bundle.** :class:`~mayhem.domain.policy_authoring.PolicyCatalog` was an
 in-memory registry with no IO, so a policy that could be written down could not
 be kept, and every run still reached the gate with the older ``config.py``
 policy block alone deciding.
@@ -27,7 +27,7 @@ What is persisted, and what this store refuses to do
 
 Everything this module enforces beyond the row shape is enforced by the
 catalog, so the storage layer holds no policy rules of its own — a rule that
-reads differently here than in :mod:`mayhem.controller.policy_authoring` is a
+reads differently here than in :mod:`mayhem.domain.policy_authoring` is a
 bug in one of them, not a policy variant.
 """
 
@@ -37,13 +37,13 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mayhem.controller.policy_authoring import (
+from mayhem.domain.common import utc_now
+from mayhem.domain.policy_authoring import (
     PolicyAuthoringError,
     PolicyCatalog,
     ResolvedPolicy,
     bundle_from_mapping,
 )
-from mayhem.domain.common import utc_now
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

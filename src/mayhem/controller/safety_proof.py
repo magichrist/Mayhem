@@ -146,7 +146,7 @@ module exists to prevent).
   catalog-risk resolution, including its ``LOW`` floor for an unknown fault id.
   Re-deriving the risk ladder here would be a second implementation that could
   disagree with admission about which faults need the critical opt-in. It is
-  imported from :mod:`mayhem.controller.policy_gate`, which owns it: admission
+  imported from :mod:`mayhem.domain.policy_gate`, which owns it: admission
   (``controller.safety``) and the policy facts both resolve risk through that
   one function, and ``policy_gate`` is the lower of the two modules.
 * **The authoritative pass calls ``validate_plan`` without an adapter.** That is
@@ -246,15 +246,6 @@ from mayhem.controller.approval_gate import (
     RULE_APPROVAL_REQUIRED as APPROVAL_RULE_REQUIRED,
 )
 from mayhem.controller.plan_diff import diff_plans
-from mayhem.controller.policy_gate import (
-    RULE_BUDGET_EXHAUSTED,
-    RULE_BUNDLE_DENY,
-    RULE_BUNDLE_EXPIRED,
-    RULE_COMPAT_CONFLICT,
-    RULE_LOCK_CONTENDED,
-    _risk_of,
-    capability_requirements_for,
-)
 from mayhem.controller.safety import (
     SafetyRefusedError,
     check_blast_radius,
@@ -268,6 +259,15 @@ from mayhem.domain.execution_intent import require_execution_intent
 from mayhem.domain.hashing import digest as digest_of
 from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.observations import CriterionKind, CriterionOperator, SloCriterion
+from mayhem.domain.policy_gate import (
+    RULE_BUDGET_EXHAUSTED,
+    RULE_BUNDLE_DENY,
+    RULE_BUNDLE_EXPIRED,
+    RULE_COMPAT_CONFLICT,
+    RULE_LOCK_CONTENDED,
+    _risk_of,
+    capability_requirements_for,
+)
 from mayhem.domain.prediction import (
     RULE_FORBIDDEN_FAULT_PAIRS,
     RULE_MAX_AFFECTED_NODES,
@@ -298,11 +298,11 @@ from mayhem.domain.safety_proof import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from mayhem.controller.policy_gate import RequiredApproval
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.execution_intent import ExecutionIntent
     from mayhem.domain.experiments import ExecutionPlan, PlannedFault, PlannedStep
     from mayhem.domain.policy import PolicyDecision
+    from mayhem.domain.policy_gate import RequiredApproval
     from mayhem.domain.prediction import ImpactPrediction
     from mayhem.domain.runtime_adapter import RuntimeAdapter
     from mayhem.domain.topology import TopologyGraph

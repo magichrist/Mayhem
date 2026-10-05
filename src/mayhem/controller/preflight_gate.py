@@ -54,7 +54,7 @@ those are opposite findings.
 **The gate is additive, and absence is byte-identical.** :func:`admit` with
 ``gate=None`` returns ``None`` without reading a single input: no port is called, no
 decision is recorded, no object is mutated. That is the same contract
-:mod:`mayhem.controller.policy_gate` and :mod:`mayhem.controller.safety` made for
+:mod:`mayhem.domain.policy_gate` and :mod:`mayhem.controller.safety` made for
 their optional fields, and ``tests/unit/test_preflight_gate.py`` pins it with a golden
 rendering of the whole admission sequence.
 
@@ -85,8 +85,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, Protocol
 
-from mayhem.controller.policy_gate import plan_faults
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.policy_gate import plan_faults
 from mayhem.domain.stop import PostflightVerdict, StopSignal, StopTrigger
 from mayhem.domain.topology import NodeKind
 
@@ -469,7 +469,7 @@ class PreflightInputs:
     """Everything the gate reads, named explicitly.
 
     ``now`` has **no default**, for the reason
-    :class:`~mayhem.controller.policy_gate.PolicyGateInputs` has none either: a
+    :class:`~mayhem.domain.policy_gate.PolicyGateInputs` has none either: a
     clock with a default is a clock a test can forget to pin, and a gate whose
     verdict depends on when it ran must make the moment a chosen input. Every other
     field is likewise a declared input rather than something read from the

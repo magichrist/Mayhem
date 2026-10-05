@@ -330,7 +330,7 @@ def test_every_role_without_a_route_names_the_layer_that_enforces_it() -> None:
 #: executor's own intent gate.
 #:
 #: ``DESIGN`` gates publishing a policy bundle in
-#: :mod:`mayhem.controller.policy_authoring`.
+#: :mod:`mayhem.domain.policy_authoring`.
 #:
 #: ``ADMINISTER`` is the honest exception: **no layer gates it yet.**
 #: ``AuthService`` has no ``ADMINISTER``-checked administration of the identity
@@ -339,7 +339,7 @@ def test_every_role_without_a_route_names_the_layer_that_enforces_it() -> None:
 ROLES_WITHOUT_A_ROUTE: dict[str, str] = {
     "approve": "mayhem.controller.approval_gate",
     "execute": "mayhem.controller.safety (the execution intent gate)",
-    "design": "mayhem.controller.policy_authoring",
+    "design": "mayhem.domain.policy_authoring",
     "administer": "",
 }
 

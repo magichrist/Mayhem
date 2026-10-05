@@ -47,7 +47,7 @@ from typing import Any
 import pytest
 
 from mayhem.agents.capabilities import AgentCapabilities, AgentIdentity, CapabilityKind
-from mayhem.controller.policy_gate import plan_faults
+from mayhem.domain.policy_gate import plan_faults
 from mayhem.controller.preflight_gate import (
     ALL_CHECKS,
     CHECK_AGENT_AVAILABILITY,

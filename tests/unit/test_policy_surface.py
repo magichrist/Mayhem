@@ -444,12 +444,12 @@ class TestTheDocumentedExampleIsTheEngines:
 
     @staticmethod
     def _engine_block() -> list[str]:
-        from mayhem.controller.policy_authoring import (
+        from mayhem.domain.policy_authoring import (
             bundle_from_mapping,
             explain_decision,
             with_pending_approvals,
         )
-        from mayhem.controller.policy_gate import PolicyGateInputs, simulate_gate
+        from mayhem.domain.policy_gate import PolicyGateInputs, simulate_gate
         from mayhem.domain.common import utc_now
 
         bundle = bundle_from_mapping(yaml.safe_load(BUNDLE_YAML))

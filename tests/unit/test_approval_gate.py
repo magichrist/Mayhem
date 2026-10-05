@@ -51,7 +51,7 @@ from mayhem.controller.approval_gate import (
     verify_approvals,
 )
 from mayhem.controller.plan_diff import diff_plans
-from mayhem.controller.policy_gate import PolicyGateInputs, evaluate_gate
+from mayhem.domain.policy_gate import PolicyGateInputs, evaluate_gate
 from mayhem.controller.safety import (
     SafetyContext,
     SafetyRefusedError,
@@ -1118,7 +1118,7 @@ def test_policy_surfaced_approval_levels_are_now_enforced_at_admission() -> None
 
 
 def test_quorum_from_requirements_is_the_maximum_of_configuration_and_levels() -> None:
-    from mayhem.controller.policy_gate import required_approvals as _required
+    from mayhem.domain.policy_gate import required_approvals as _required
 
     bundle = _approval_bundle("sre", "service_owner", "oncall")
     inputs = PolicyGateInputs(

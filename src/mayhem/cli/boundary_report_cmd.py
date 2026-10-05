@@ -142,9 +142,9 @@ from mayhem.domain.search import (
 
 if TYPE_CHECKING:
     from mayhem.controller.analytics_service import BoundaryReport
-    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.controller.safety_proof import SafetyCompilation
     from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.topology import TopologyGraph
 
 __all__ = [

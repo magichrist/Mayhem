@@ -21,7 +21,7 @@ lease client, and no agent sink. There is no code path from a
 The purity claim is then *measured*, the way
 :mod:`mayhem.controller.prediction_service` measures it rather than promising it:
 every method here evaluates through :meth:`AdvisorService.detached` — a copy of
-the service with its :class:`~mayhem.controller.policy_gate.MutationSink`
+the service with its :class:`~mayhem.domain.policy_gate.MutationSink`
 removed — and then reports :attr:`AdvisorAnalysis.purity` by reading
 :func:`len` off whatever sink the *caller* held. A caller that pre-loads the sink
 with a recorded call and still sees zero calls afterwards has evidence, which is
@@ -247,8 +247,8 @@ from mayhem.infra.audit_stream import AuditEntry, AuditStream
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from mayhem.controller.policy_gate import MutationSink, PolicyGateResult
     from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.policy_gate import MutationSink, PolicyGateResult
     from mayhem.domain.runtime_adapter import RuntimeAdapter
     from mayhem.domain.scenarios import ScenarioInstantiation
     from mayhem.domain.topology import TopologyGraph

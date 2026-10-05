@@ -39,8 +39,8 @@ EXAMPLE_LINES: Final[int] = 4
 
 #: Files the ledger cites as evidence. Data, not prose, so a rename fails here.
 CITED_PATHS: Final[tuple[str, ...]] = (
-    "src/mayhem/controller/policy_authoring.py",
-    "src/mayhem/controller/policy_gate.py",
+    "src/mayhem/domain/policy_authoring.py",
+    "src/mayhem/domain/policy_gate.py",
     "src/mayhem/infra/policy_store.py",
     "src/mayhem/cli/policy_cmd.py",
     "tests/unit/test_policy_surface.py",

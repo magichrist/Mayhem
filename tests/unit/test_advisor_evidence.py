@@ -932,7 +932,7 @@ def test_the_purity_measurement_still_holds_after_phase_4(
     engine: AdvisorService, recommendation: Recommendation
 ) -> None:
     """The mutation sink is pre-loaded, so a reported count is a measurement."""
-    from mayhem.controller.policy_gate import MutationSink
+    from mayhem.domain.policy_gate import MutationSink
 
     loaded = MutationSink().record("lease", "acquire run lease")
     measured = replace(engine, sink=loaded)

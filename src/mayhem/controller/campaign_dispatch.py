@@ -73,7 +73,6 @@ from typing import TYPE_CHECKING, Final
 
 from mayhem.controller.approval_gate import verify_approvals
 from mayhem.controller.planner import plan_drill
-from mayhem.controller.policy_gate import plan_faults
 from mayhem.controller.safety import simulate_plan_policy, validate_plan
 from mayhem.controller.safety_proof import compile_safety_evidence
 from mayhem.controller.scheduler import (
@@ -84,6 +83,7 @@ from mayhem.controller.scheduler import (
     PlannedDispatch,
 )
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.policy_gate import plan_faults
 from mayhem.domain.quota import damage_weight
 from mayhem.domain.safety_proof import ObligationStatus, ProofVerdict
 
@@ -91,11 +91,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mayhem.controller.approval_gate import ApprovalGateInputs
-    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.controller.safety import SafetyContext
     from mayhem.controller.safety_proof import SafetyCompilation
     from mayhem.domain.experiments import DrillSpec, ExecutionPlan
     from mayhem.domain.policy import BudgetCharge, BudgetNode
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.runtime_adapter import RuntimeAdapter
     from mayhem.domain.topology import TopologyGraph
 
@@ -478,7 +478,7 @@ def campaign_budget_verdict(
     different thing and refuses, carrying the hierarchy's own rule id.
 
     The damage weight per fault comes from 07's
-    :func:`~mayhem.controller.policy_gate.damage_weight`, not from a second
+    :func:`~mayhem.domain.policy_gate.damage_weight`, not from a second
     formula here, so a campaign budget and a policy budget cannot disagree about
     what one fault costs.
     """

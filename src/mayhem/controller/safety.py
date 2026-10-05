@@ -11,7 +11,10 @@ from mayhem.controller.approval_gate import (
     ApprovalGateResult,
     verify_approvals,
 )
-from mayhem.controller.policy_gate import (
+from mayhem.domain.decisions import SafetyDecision, SafetySeverity
+from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
+from mayhem.domain.identity import RuntimeLabel
+from mayhem.domain.policy_gate import (
     RULE_APPROVAL_REQUIRED,
     RULE_BUNDLE_ALLOW,
     PolicyGateInputs,
@@ -21,9 +24,6 @@ from mayhem.controller.policy_gate import (
     evaluate_gate,
     simulate_gate,
 )
-from mayhem.domain.decisions import SafetyDecision, SafetySeverity
-from mayhem.domain.errors import InvariantViolationError, TargetResolutionError
-from mayhem.domain.identity import RuntimeLabel
 from mayhem.domain.prediction import (
     customer_facing_node_ids,
     dependency_fan_out,
@@ -42,8 +42,8 @@ if TYPE_CHECKING:
 
     from mayhem.config import PolicyCfg
     from mayhem.controller.k8s_admission import K8sAdmissionInput
-    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.prediction import BlastCeilings
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
@@ -1000,7 +1000,7 @@ def simulate_plan_policy(plan: ExecutionPlan, ctx: SafetyContext) -> PolicyGateR
     "no policy bundle configured" answer :func:`validate_plan` gives.
 
     Purity is structural. The gate is a pure function (see
-    :mod:`mayhem.controller.policy_gate`) and this helper is the only thing
+    :mod:`mayhem.domain.policy_gate`) and this helper is the only thing
     that could have recorded into ``ctx`` — it does not. The caller's
     ``ctx.decisions`` and ``ctx.warnings`` are therefore byte-for-byte
     unchanged, which is exactly the property plan 14's preview and the 30 proof
@@ -1122,7 +1122,7 @@ def explain_fault_refusal(exc: SafetyRefusedError) -> dict[str, str]:
     }
 
 
-# ``_risk_of`` is re-exported from :mod:`mayhem.controller.policy_gate` (see the
+# ``_risk_of`` is re-exported from :mod:`mayhem.domain.policy_gate` (see the
 # import at the top of this module) rather than reimplemented here. Admission and
 # the policy facts both resolve a fault's risk through it, including the ``LOW``
 # floor for an unresolvable fault id, and those two answers must never disagree:

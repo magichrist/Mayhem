@@ -113,7 +113,7 @@ def publish(
     ctx: click.Context, path: str, db_opt: str | None, published_by: str, as_json: bool
 ) -> None:
     """Author a bundle document and publish it as a new, immutable version."""
-    from mayhem.controller.policy_authoring import PolicyAuthoringError
+    from mayhem.domain.policy_authoring import PolicyAuthoringError
 
     try:
         document = _read_document(path)
@@ -201,7 +201,7 @@ def show(
     ctx: click.Context, bundle_id: str, version: int | None, db_opt: str | None, as_json: bool
 ) -> None:
     """Print one published version: its rules, its edges, and its digest."""
-    from mayhem.controller.policy_authoring import PolicyAuthoringError
+    from mayhem.domain.policy_authoring import PolicyAuthoringError
 
     store, policies = _open(ctx, db_opt)
     try:
@@ -238,7 +238,7 @@ def retire(
     ctx: click.Context, bundle_id: str, version: int, db_opt: str | None, as_json: bool
 ) -> None:
     """Tombstone a published version. There is no delete, by design."""
-    from mayhem.controller.policy_authoring import PolicyAuthoringError
+    from mayhem.domain.policy_authoring import PolicyAuthoringError
 
     store, policies = _open(ctx, db_opt)
     try:
@@ -274,7 +274,7 @@ def resolve(
     ctx: click.Context, bundle_id: str, version: int | None, db_opt: str | None, as_json: bool
 ) -> None:
     """Which version a run would decide under. Never silently substitutes."""
-    from mayhem.controller.policy_authoring import PolicyAuthoringError
+    from mayhem.domain.policy_authoring import PolicyAuthoringError
 
     store, policies = _open(ctx, db_opt)
     try:
@@ -355,15 +355,15 @@ def explain(
     wanted instead. Exits non-zero on a DENY so this can be a pre-flight check.
     Nothing is mutated: the evaluation is Phase 2's simulation mode.
     """
-    from mayhem.controller.policy_authoring import (
+    from mayhem.controller.safety_proof import canonical_plan_digest
+    from mayhem.domain.common import utc_now
+    from mayhem.domain.policy_authoring import (
         PolicyAuthoringError,
         explain_facts,
         explain_refusal,
         with_pending_approvals,
     )
-    from mayhem.controller.policy_gate import simulate_gate
-    from mayhem.controller.safety_proof import canonical_plan_digest
-    from mayhem.domain.common import utc_now
+    from mayhem.domain.policy_gate import simulate_gate
 
     loaded = _load_plan(plan)
     if loaded is None:
@@ -432,7 +432,7 @@ def _observed(team: str, approvals_held: tuple[str, ...]) -> dict[PolicyDimensio
 
     Only what the caller declared: the team, and the approval levels already
     granted. "None granted" is **not** spelled here — that is
-    :func:`~mayhem.controller.policy_authoring.with_pending_approvals`'s job, and
+    :func:`~mayhem.domain.policy_authoring.with_pending_approvals`'s job, and
     duplicating it here would be a second answer to "what does an unheld approval
     look like as a fact".
     """

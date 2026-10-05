@@ -16,7 +16,7 @@ policy path, which runs exactly once per evaluation:
       └── controller.safety_proof.compile_safety_evidence
             ├── the per-obligation probes the compiler already owns
             └── the plan-07 policy gate, simulate_gate, via simulate_plan_policy
-    mayhem.controller.policy_gate.plan_faults
+    mayhem.domain.policy_gate.plan_faults
     mayhem.domain.catalog.definition_for            (syntax: what exists)
     mayhem.domain.certification.CertificationRecord (what is certified)
 
@@ -137,14 +137,6 @@ from mayhem.controller.approval_gate import (
     RULE_APPROVAL_PROOF_NOT_PASS,
     RULE_APPROVAL_REQUIRED,
 )
-from mayhem.controller.policy_gate import (
-    RULE_BUDGET_EXHAUSTED,
-    RULE_BUNDLE_DENY,
-    RULE_BUNDLE_EXPIRED,
-    RULE_COMPAT_CONFLICT,
-    RULE_LOCK_CONTENDED,
-    plan_faults,
-)
 from mayhem.controller.safety_proof import SafetyCompilation, compile_safety_evidence
 from mayhem.domain.catalog import definition_for
 from mayhem.domain.certification import CertificationState
@@ -176,6 +168,14 @@ from mayhem.domain.pipeline import (
     PlanMerge,
     PRCheck,
     blocking_reasons,
+)
+from mayhem.domain.policy_gate import (
+    RULE_BUDGET_EXHAUSTED,
+    RULE_BUNDLE_DENY,
+    RULE_BUNDLE_EXPIRED,
+    RULE_COMPAT_CONFLICT,
+    RULE_LOCK_CONTENDED,
+    plan_faults,
 )
 from mayhem.domain.prediction import (
     RULE_FORBIDDEN_FAULT_PAIRS,

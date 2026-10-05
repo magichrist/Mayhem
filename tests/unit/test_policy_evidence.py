@@ -48,7 +48,7 @@ from mayhem.controller.policy_evidence import (
     seal_policy_decision,
     verify_decision_binding,
 )
-from mayhem.controller.policy_gate import (
+from mayhem.domain.policy_gate import (
     RULE_BUDGET_EXHAUSTED,
     RULE_POLICY_CONFIG,
     BudgetAuthority,
@@ -501,7 +501,7 @@ def test_the_quota_probe_can_only_move_a_refusal_earlier_never_past_one() -> Non
     implementation that charged the closure wrongly, or that compared totals
     instead of the worst target, would break one row of this loop.
     """
-    from mayhem.controller.policy_gate import probe_quota
+    from mayhem.domain.policy_gate import probe_quota
 
     graph = _graph()
     plans = (
@@ -522,7 +522,7 @@ def test_the_quota_probe_can_only_move_a_refusal_earlier_never_past_one() -> Non
 
 def test_the_quota_probe_and_the_authoritative_ledger_agree_on_a_single_target() -> None:
     """With no closure widening them, the two are the same numbers, not similar."""
-    from mayhem.controller.policy_gate import probe_quota
+    from mayhem.domain.policy_gate import probe_quota
 
     quota = _quota(budget_s=1e6)
     plan = _plan("proc.pause", "net.latency")
@@ -1129,7 +1129,7 @@ def test_the_unknown_fault_pricing_is_shared_with_the_quota() -> None:
     authoritative ledger uses, so a gate-side pre-check cannot be cheaper than the
     check it stands in front of.
     """
-    from mayhem.controller.policy_gate import probe_quota
+    from mayhem.domain.policy_gate import probe_quota
 
     quota = _quota(per_fault_ceiling_s=1.0)
     view = probe_quota(_plan("proc.no_such_fault"), _inputs(damage_quota=quota))

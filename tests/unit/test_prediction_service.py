@@ -32,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.controller.policy_gate import (
+from mayhem.domain.policy_gate import (
     MutationSink,
     PolicyGateInputs,
     capability_requirements_for,

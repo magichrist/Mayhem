@@ -68,7 +68,7 @@ from mayhem.controller.advisor_service import (
 )
 from mayhem.controller.analytics_service import AUTHORITY_FIELDS as PLAN15_AUTHORITY_FIELDS
 from mayhem.controller.analytics_service import compile_candidate
-from mayhem.controller.policy_gate import MutationSink, PolicyGateInputs
+from mayhem.domain.policy_gate import MutationSink, PolicyGateInputs
 from mayhem.controller.safety import SafetyContext
 from mayhem.domain.advisor import (
     AdvisorAuthority,
@@ -940,7 +940,7 @@ def test_the_advisor_context_holds_no_mutation_backend_and_no_lease_sink() -> No
         assert "Connection" not in text, name
     assert field_types["sink"] in {
         "MutationSink | None",
-        "mayhem.controller.policy_gate.MutationSink | None",
+        "mayhem.domain.policy_gate.MutationSink | None",
     }
 
 

@@ -197,7 +197,7 @@ CITED_SYMBOLS: Final[tuple[tuple[str, str], ...]] = (
     ("src/mayhem/controller/approval_evidence.py", "RULE_APPROVAL_NOT_REPRODUCIBLE"),
     ("src/mayhem/controller/auth_service.py", "REVOCATION_PROPAGATION_BOUND_S"),
     ("src/mayhem/controller/auth_service.py", "class IdentityProviderPort"),
-    ("src/mayhem/controller/policy_authoring.py", "def"),
+    ("src/mayhem/domain/policy_authoring.py", "def"),
     ("src/mayhem/infra/audit_stream.py", "KIND_APPROVAL_GRANTED"),
     ("src/mayhem/infra/audit_stream.py", "KIND_EMERGENCY_OVERRIDE_EXERCISED"),
     ("src/mayhem/infra/audit_stream.py", "KIND_PRINCIPAL_DISABLED"),

@@ -17,7 +17,7 @@ the failure it makes impossible.
    involved: the module does not even import ``subprocess``.
 3. **Demo mode is the existing simulate path.** The suite runs through
    :meth:`~mayhem.controller.prediction_service.PredictionService.simulate_plan`
-   with a **pre-loaded** :class:`~mayhem.controller.policy_gate.MutationSink`, so
+   with a **pre-loaded** :class:`~mayhem.domain.policy_gate.MutationSink`, so
    the no-mutation proof is a difference of two readings of a real object rather
    than a constant — and the pre-existing calls cancel, which is what proves the
    measurement is real rather than merely absent.
@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.controller.policy_gate import MutationSink
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import CeilingName
 from mayhem.controller.safety import SafetyContext
 from mayhem.controller.sandbox_service import (

@@ -47,7 +47,7 @@ elsewhere. Phase 4 replaces the emergent split with an explicit, named state —
 :meth:`PredictionService.detached`, a copy of the service holding no mutation
 backend at all. It also accepts whatever backend the caller holds and never
 routes a call through it, and reports :attr:`MutationProof.calls` — the
-*observed* length of that :class:`~mayhem.controller.policy_gate.MutationSink`
+*observed* length of that :class:`~mayhem.domain.policy_gate.MutationSink`
 after the call, read off a real object. The predicate tested is the policy_gate
 one: a sink is accepted and never written. So a simulate is not a code path that
 is careful; it is a code path with no call site for the thing that mutates, and
@@ -127,11 +127,6 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from mayhem.controller.policy_gate import (
-    MutationSink,
-    capability_requirements_for,
-    derive_facts,
-)
 from mayhem.controller.safety import (
     SafetyRefusedError,
     simulate_plan_policy,
@@ -149,6 +144,11 @@ from mayhem.domain.attestation import (
 from mayhem.domain.errors import DomainError, InvariantViolationError
 from mayhem.domain.hashing import digest as digest_of
 from mayhem.domain.policy import PolicyDimension, PolicyFacts
+from mayhem.domain.policy_gate import (
+    MutationSink,
+    capability_requirements_for,
+    derive_facts,
+)
 from mayhem.domain.prediction import (
     KNOWN_RULE_IDS,
     RULE_MAX_AFFECTED_NODES,
@@ -184,7 +184,6 @@ from mayhem.infra.attestation_store import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.attestation import (
         AttestedTimestamp,
@@ -194,6 +193,7 @@ if TYPE_CHECKING:
     )
     from mayhem.domain.decisions import SafetyDecision
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.quota import DamageQuota
     from mayhem.domain.runtime_adapter import CapabilityRequirements
     from mayhem.domain.topology import TopologyGraph
@@ -587,7 +587,7 @@ class MutationProof:
     ``backend_attached`` is false because :func:`PredictionService.simulate_plan`
     evaluates through :meth:`PredictionService.detached`. ``calls`` and
     ``calls_detail`` are read *after* the call off whatever
-    :class:`~mayhem.controller.policy_gate.MutationSink` the caller held, so the
+    :class:`~mayhem.domain.policy_gate.MutationSink` the caller held, so the
     evidence is a length rather than a promise.
     """
 

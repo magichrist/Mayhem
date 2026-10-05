@@ -67,7 +67,7 @@ What this does NOT do
   that changes, and no doc or output may imply otherwise before then.
 * **It is not wired to the gates.** ``record_*`` methods exist and are called by
   :mod:`mayhem.infra.retention`; the policy/approval gates do not call in yet,
-  because ``controller/policy_gate.py`` and ``controller/approval_gate.py`` are
+  because ``domain/policy_gate.py`` and ``controller/approval_gate.py`` are
   read-only for this phase. The seam is :meth:`AuditStream.record`.
 
 What this IS inside

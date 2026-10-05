@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.controller.policy_gate import (
+from mayhem.domain.policy_gate import (
     RULE_APPROVAL_REQUIRED,
     RULE_BUDGET_EXHAUSTED,
     RULE_BUNDLE_ALLOW,

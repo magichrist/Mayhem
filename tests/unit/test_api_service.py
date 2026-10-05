@@ -970,11 +970,18 @@ def test_the_evidence_facade_states_what_it_cannot_prove(api: ApiStore) -> None:
 
 
 class TestTheGatewayMigration:
-    def test_it_is_the_next_version_after_the_chain_head(self) -> None:
-        head = max(migration.version for migration in ALL_MIGRATIONS)
-        assert head < API_GATEWAY_VERSION, (
-            "reservation needed: version 34 collides with a registered migration"
-        )
+    def test_the_reserved_version_is_this_lane_s_own_and_nobody_else_s(self) -> None:
+        # The claim this test used to make — "34 is above the chain head" — was
+        # true when the reservation was written and became false the moment a
+        # later plan registered 35, 36, 37. The chain is append-only, so
+        # "nothing newer exists" is not an invariant this repository has; the
+        # one it does have is that the id belongs to this lane and to nothing
+        # else. That is strictly more useful, because a duplicate version in
+        # the chain is a real corruption and an old reservation is not.
+        registered = {migration.version: migration.name for migration in ALL_MIGRATIONS}
+
+        assert registered[API_GATEWAY_VERSION] == "api_gateway"
+        assert API_GATEWAY_MIGRATION.version == API_GATEWAY_VERSION
 
     def test_it_applies_and_the_table_exists(self, store: Store) -> None:
         names = {

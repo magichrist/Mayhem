@@ -36,7 +36,7 @@ miscounted environment cannot claim to be ready.
 contains no second simulation mechanism and no second purity argument.
 :class:`DemoModeService` builds a
 :class:`~mayhem.controller.prediction_service.PredictionService`, hands it the
-caller's :class:`~mayhem.controller.policy_gate.MutationSink`, and calls
+caller's :class:`~mayhem.domain.policy_gate.MutationSink`, and calls
 :meth:`~mayhem.controller.prediction_service.PredictionService.simulate_plan` —
 which evaluates through its own ``detached()`` copy and reports the *observed*
 length of that sink afterwards.
@@ -135,10 +135,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-    from mayhem.controller.policy_gate import MutationSink
     from mayhem.controller.prediction_service import CeilingVerdict, SimulateReport
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.experiments import ExecutionPlan
+    from mayhem.domain.policy_gate import MutationSink
     from mayhem.infra.network_policy import (
         CaResolution,
         EgressAttempt,

@@ -67,7 +67,7 @@ it is not turning something on.
 | Role | Grants |
 | --- | --- |
 | `view` | Read. |
-| `design` | Author a design; gates publishing a policy bundle in `controller/policy_authoring.py`. |
+| `design` | Author a design; gates publishing a policy bundle in `domain/policy_authoring.py`. |
 | `plan` | Compile a plan. `POST /api/v1/plans`. |
 | `approve` | Grant an approval. Never implied by holding anything else. |
 | `execute` | Run a plan. Never implied by `approve`, and never implies it. |

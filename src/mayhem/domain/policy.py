@@ -1049,7 +1049,7 @@ class BudgetLedgerEntry(BaseModel):
 
     This is that record, and it is the record that makes the hierarchy a budget
     over **time**. It is an append-only charge rather than a running total on
-    purpose — see the ledger port in :mod:`mayhem.controller.policy_gate` — so a
+    purpose — see the ledger port in :mod:`mayhem.domain.policy_gate` — so a
     stored total can never disagree with the charges that produced it, and a
     reader can always show the arithmetic instead of a number nobody can account
     for.

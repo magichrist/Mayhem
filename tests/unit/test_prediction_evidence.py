@@ -55,7 +55,7 @@ import pytest
 from test_prediction_service import FP, STEP_S, _ctx, _graph, _plan, _service
 
 from mayhem.controller import safety as safety_mod
-from mayhem.controller.policy_gate import MutationSink
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import (
     ADMISSION_WIRING_NOTE,
     ENFORCED_CEILING_RULE_IDS,

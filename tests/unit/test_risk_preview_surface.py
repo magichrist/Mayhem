@@ -24,7 +24,7 @@ one property that is easy to fake:
   state, an unpriced estimate, and a claim that cannot cite its rule.
 * **mutation evidence.** The command is asserted to write nothing, measured
   against the store itself (row counts before and after) *and* against a
-  pre-loaded :class:`~mayhem.controller.policy_gate.MutationSink` — the same
+  pre-loaded :class:`~mayhem.domain.policy_gate.MutationSink` — the same
   shape ``test_prediction_service.py`` uses, because a hard-coded zero in the
   report would satisfy a naive assertion.
 
@@ -67,7 +67,7 @@ from mayhem.cli.risk_preview_cmd import (
     render_preview_lines,
     risk_preview,
 )
-from mayhem.controller.policy_gate import MutationSink
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import (
     RULE_PREDICTION_CALMER_THAN_GATE,
     RULE_PREDICTION_UNMODELLED_GATE_REFUSAL,

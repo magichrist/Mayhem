@@ -10,7 +10,7 @@ decision below is delegated to the module that already owns it.
   with a different answer. A principal holding ``EXECUTE`` who submits a plan
   nobody approved is refused here.
 * **Policy decisions** — :class:`~mayhem.controller.api_planner.PolicyService`.
-  Reads what :mod:`mayhem.controller.policy_gate` recorded; decides nothing.
+  Reads what :mod:`mayhem.domain.policy_gate` recorded; decides nothing.
 * **Approvals bound to plan digests** —
   :func:`mayhem.controller.approval_gate.verify_approvals`, reached through
   :func:`authorize_mutation`. An approval is evaluated against the *plan digest the

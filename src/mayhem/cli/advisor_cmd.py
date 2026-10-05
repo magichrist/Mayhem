@@ -1823,7 +1823,7 @@ def advisor_service_for(inputs: AdvisorInputs, *, sink: Any | None = None) -> Ad
     """An :class:`~mayhem.controller.advisor_service.AdvisorService` over a document.
 
     No database, no engine, no clock. ``sink`` is the caller's own
-    :class:`~mayhem.controller.policy_gate.MutationSink`, handed in only to be
+    :class:`~mayhem.domain.policy_gate.MutationSink`, handed in only to be
     *read* afterwards: the engine evaluates through
     :meth:`~mayhem.controller.advisor_service.AdvisorService.detached`, so a
     pre-loaded sink whose length does not change is the evidence that viewing

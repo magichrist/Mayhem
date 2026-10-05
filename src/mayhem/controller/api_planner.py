@@ -12,7 +12,7 @@ that already exists** rather than a reimplementation:
   the same function :func:`mayhem.cli.services.plan_from_spec` calls;
 * :class:`PolicyService` reads what :meth:`~mayhem.infra.api_store.ApiStore.list_policy_decisions`
   stored; it *decides* nothing, because the decision belongs to
-  :mod:`mayhem.controller.policy_gate`;
+  :mod:`mayhem.domain.policy_gate`;
 * :class:`EvidenceService` reads what the executor sealed; it *seals* nothing,
   because sealing belongs to :mod:`mayhem.infra.attestation_store`.
 

@@ -1,6 +1,6 @@
 """Plan 07 Phase 4 — sealing the policy decision, and recording what changed it.
 
-Phase 2's gate produced a :class:`~mayhem.controller.policy_gate.PolicyGateResult`
+Phase 2's gate produced a :class:`~mayhem.domain.policy_gate.PolicyGateResult`
 and stopped there. The result was reachable, reproducible, and *undiscoverable*:
 nothing wrote it down, so "why was this plan allowed?" was answerable only by
 re-running the gate against inputs that might since have changed. This module is
@@ -59,7 +59,7 @@ What this does NOT do
 * **It does not post a budget charge.** Phase 2's probe-then-commit shape is still
   probe-only: spending a ledger is a write, and this module's other two jobs
   already take a store. The reconciliation decision (which budget system wins)
-  lives in :func:`~mayhem.controller.policy_gate.reconcile_budgets`, not here.
+  lives in :func:`~mayhem.domain.policy_gate.reconcile_budgets`, not here.
 * **It does not sign anything.** Every artifact it produces is integrity-chained
   and *named*, never authenticated — no key material exists yet. A reader must
   treat the sealed chain as proof that the recorded bytes were unaltered and in
@@ -74,10 +74,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from mayhem.controller.policy_gate import PolicyRefusal
 from mayhem.domain.attestation import GENESIS_DIGEST, RetentionClass
 from mayhem.domain.errors import DomainError
 from mayhem.domain.hashing import canonical_json, sha256_hex
+from mayhem.domain.policy_gate import PolicyRefusal
 from mayhem.infra.attestation_store import RunAuthorization
 
 #: Re-exported, not declared: the action kind lives in the audit stream's ``KIND_*``
@@ -100,11 +100,11 @@ from mayhem.infra.audit_stream import (
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from mayhem.controller.policy_gate import PolicyGateResult
     from mayhem.domain.approval import ApprovalState
     from mayhem.domain.attestation import AttestedEvent, AttestedTimestamp
     from mayhem.domain.evidence import EvidenceEnvelope
     from mayhem.domain.policy import PolicyBundle, PolicyDecision
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.infra.attestation_store import SealedRun
     from mayhem.infra.audit_stream import AuditStream
     from mayhem.infra.store import Store
@@ -127,7 +127,7 @@ class PolicyAuthorizationRefusedError(PolicyEvidenceError):
     """A typed refusal from the evidence seam, carrying the gate's own vocabulary.
 
     Not an admission refusal — nothing about *this plan* is wrong — but shaped
-    like one (it holds a :class:`~mayhem.controller.policy_gate.PolicyRefusal`) so
+    like one (it holds a :class:`~mayhem.domain.policy_gate.PolicyRefusal`) so
     the rule id, reason, and remediation are the same three things a caller reads
     everywhere else, and so :func:`build_authorization`'s refusal can be recorded
     verbatim by a caller that would rather log the gap than traceback it.
@@ -189,7 +189,7 @@ def verify_decision_binding(
        re-derivation disagrees.
     3. **Resolution.** ``rule_digest`` must be non-empty. An empty one means no
        rule set was ever resolved — which is what a
-       :class:`~mayhem.controller.policy_gate.ConfigDefect` produces — and there
+       :class:`~mayhem.domain.policy_gate.ConfigDefect` produces — and there
        is then no statement to seal, only the fact that the gate could not read
        its configuration.
     4. **Currency.** When ``now`` is supplied the bundle must still authorize it.

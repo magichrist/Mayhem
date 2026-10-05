@@ -650,14 +650,19 @@ class TestARefusedMutationWritesNothing:
         assert str(API_SAFETY_VERSION) in receipt["reason"]
         store.close()
 
-    def test_the_reporting_migration_is_the_next_version_after_the_safety_one(
+    def test_the_safety_migration_is_registered_immediately_after_the_gateway(
         self,
     ) -> None:
-        head = max(migration.version for migration in ALL_MIGRATIONS)
-        assert max(API_GATEWAY_VERSION, head) < API_SAFETY_VERSION, (
-            f"reservation needed: version {API_SAFETY_VERSION} collides with a "
-            "registered migration"
-        )
+        # This asserted "nothing is registered above 35", which was true when the
+        # reservation was written and stopped being true when 36, 37 and 38 were
+        # appended by later plans. An append-only chain has no "head is below me"
+        # invariant; what it does have is that this id is this lane's own and
+        # sits directly on the gateway's, which is what a reader of the chain
+        # relies on.
+        registered = {migration.version: migration.name for migration in ALL_MIGRATIONS}
+
+        assert registered[API_SAFETY_VERSION] == "api_safety"
+        assert API_SAFETY_VERSION == API_GATEWAY_VERSION + 1
 
     def test_the_safety_migration_round_trips(self, store: Store) -> None:
         names = {
