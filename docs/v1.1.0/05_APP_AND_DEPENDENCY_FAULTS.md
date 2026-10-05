@@ -304,17 +304,85 @@ row, still unbuilt) is no longer blocked on a port that could not be named.
   the benign case.
 - A test that fails if `docs/05` stops stating the `dns.nxdomain` mismatch.
 
+## Phase 4 outcome — dependency fan-out accounting
+
+Blast-radius gating was already correct: `check_blast_radius` walked
+`_affected_node_ids`, which unions each target with
+`TopologyGraph.dependents_closure`, and the caps counted what came out. What was
+missing was that nobody could *read* the widening. A targeted service and a
+service reached because something it depends on was targeted both arrived as
+strings in one `frozenset`, so a plan whose fan-out tripled after someone widened
+a selector read identically to the plan it replaced.
+
+`mayhem.domain.dependency_fanout` makes it explicit, and it is deliberately
+**accounting rather than a second blast-radius rule**:
+
+* `DependencyFanout.aimed` is what the plan named; `.collateral` is only what it
+  reached. The two being separate fields is the whole point — the flattened set
+  cannot tell them apart.
+* `.reached` carries each node's `depth` and `via`, so a first hop (`depth == 1`)
+  is distinguishable from a compounded one. In the reference graph in
+  `tests/unit/test_dependency_fanout.py`, aiming at `x-pg` reaches `n-api`,
+  `n-worker` and `n-cron` at depth 1, and `n-web` at depth 2 through `n-api`.
+* `.unreached_dependencies` names the dependency nodes the graph *does* contain
+  that this fan-out does **not** touch. That is the half a hits-only list would
+  hide, and it is what makes an empty value meaningful: it means "nothing was
+  missed", which is interpretable only because the same field is non-empty one
+  target earlier in the same graph.
+* `.widened` answers the one question a reviewer asks — did this fault reach
+  anything it did not aim at? — as a property of the record, so it can be asked
+  without knowing what the planner believed.
+* `FanoutLedger` aggregates a plan's steps and its aggregate is the **union**:
+  three faults each reaching one service is not three services.
+* `.record` and `.to_dict()` carry a `sealed_digest` over every other key, so a
+  projection edited after the fact is detectable.
+
+The refusal is `dependency.unresolved`: a fault aimed at a dependency the
+topology snapshot does not contain resolves to no node, affects nothing, and
+historically passed every cap. `fanout_ledger` refuses **before** computing any
+projection, so a plan cannot be reported as having a clean zero-width fan-out when
+the truth is that one of its steps aims at nothing. Disabling it is a named
+opt-in (`require_resolved=False`) for diagnostics, not the default.
+
+### What this does not claim
+
+* **It does not change any decision.** The projection walks the same
+  `DEPENDS_ON` and `CONNECTS_VIA` edges as `dependents_closure`, and
+  `test_the_gate_gives_the_same_answer_from_targets_and_from_the_record` asserts
+  the gate returns the identical verdict across three budgets whether handed the
+  raw target set or the record's `affected` set. Minting no limit and refusing
+  nothing new is what makes this Phase 4 rather than a rewrite of the gate.
+* **It does not see dependencies the graph does not declare.** Fan-out is
+  computed from declared edges. A service calling a third-party API with no edge
+  in the topology is not in the closure;
+  `test_an_undeclared_dependency_is_absent_and_that_is_reported` declares the
+  missing edge and shows the same call then sees it — the limit was the input,
+  not the walk.
+* **It does not claim a fault *did* reach anything.** It reports what the graph
+  says *would* be reached, at plan time, from the topology snapshot in hand. Live
+  reach is evidence; this is a projection.
+* **It is not wired into the executor.** Nothing in `executor.execute` calls it
+  yet, and no sealed fan-out record reaches the evidence store. The ledger is
+  produced on request, and the existing blast caps remain the enforcement path.
+* **It does not re-derive the per-service caps.** `services_hit` and `hosts_hit`
+  still count what the flattened set contains, and this module adds no cumulative
+  limit of its own.
+* **It does not implement the 12 genuinely-new fault ids.** The audit table
+  above still stands; this phase made their targeting measurable, not their
+  behaviour real.
+
 ## STATUS
 - Phase 1 (domain model): DONE — the 38-candidate collision audit is checked in above (24 already-exists, 2 param-extensions, 12 genuinely-new), the messaging substrate ruling is recorded, three open questions are logged, and one live defect (`db.slow_query`'s hardcoded 3306) was found and assigned to Phase 3.
 - Phase 2 (proxy and tool mechanisms): DONE for this lane — both param-extension mechanisms landed (the `body` branch on the proxy's canned path, the validated hosts-file line). **The 12 genuinely-new ids are not built**, so this phase is complete only for the two verdicts that were parameter work.
 - Phase 3 (params, targeting, probes): DONE for this lane — three param axes ship, `db.slow_query` can be aimed at Postgres or SQL Server, and each axis has a three-distinct-output guard. Explicit `target.dependency` selectors and the matching business-level probe definitions are **not** done.
-- Phase 4: not started
+- Phase 4 (safety and evidence integration): DONE for the dependency half — `mayhem.domain.dependency_fanout` records what a dependency fault was aimed at, what it reached through it and which declared dependencies it did not touch, and refuses a fault aimed at a dependency the topology does not contain. It is accounting layered on the existing blast gate, not a second gate. The dependency-level **fault implementations** the audit identified, and any evidence-store wiring for them, are **not** done.
 - Phase 5: not started
 - Phase 6: not started
 
-Overall: 3 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
-param extensions and the one defect. The 12 genuinely-new ids, the 8 unblocked
-new ids among them, and everything in Phases 4-6 remain.
+Overall: 4 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
+param extensions and the one defect, and Phase 4 complete for the accounting side
+only. The 12 genuinely-new ids, the 8 unblocked new ids among them, and
+everything in Phases 5-6 remain.
 
 Known limitation: Phase 2 is gated on the messaging ADR **for the messaging group
 only**. The HTTP, gRPC, DNS, TCP and database rows of the audit table are not
