@@ -163,6 +163,29 @@ KIND_POLICY_VERSION_CHANGED = "audit.policy.version_changed"
 #: which declared it locally for the same reason.
 KIND_RESILIENCE_BOUNDARY_SEARCHED = "audit.resilience_boundary.searched"
 
+# --------------------------------------------------------------------------- #
+# Plan 09 Phase 4: the identity and approval vocabulary                           #
+# --------------------------------------------------------------------------- #
+#
+# Six actions, all cross-run facts about *people* rather than about one run's
+# evidence, which is why they are here and not in an approval table: an approval
+# granted on Tuesday speaks for a plan that may not run until Friday, and a role
+# withdrawn on Wednesday speaks for every run in between.
+#
+# Three of the six are about a *lifecycle transition* rather than a fact, and the
+# distinction is enforced by the writer, not by this table: a grant entry for a
+# grant that was not issued, or a revocation entry for an approval that was not
+# revoked, is refused in
+# :mod:`mayhem.controller.approval_evidence`. A closed vocabulary of action
+# *names* is not a closed set of claimable events, and the comment above the
+# ``KIND_*`` table already says the names are not enforced.
+KIND_APPROVAL_GRANTED = "audit.approval.granted"
+KIND_APPROVAL_REVOKED = "audit.approval.revoked"
+KIND_EMERGENCY_OVERRIDE_EXERCISED = "audit.approval.override_exercised"
+KIND_ROLE_GRANT_ISSUED = "audit.role.granted"
+KIND_ROLE_GRANT_REVOKED = "audit.role.revoked"
+KIND_PRINCIPAL_DISABLED = "audit.principal.disabled"
+
 #: The only ``signature_state`` this stream can report. Imported, not re-declared:
 #: a second copy of the state string would be a second thing to keep honest, and
 #: this module's entire claim is that it adds no second anything.
@@ -849,13 +872,19 @@ __all__ = [
     "ATTESTATION_SCHEMA_VERSION",
     "AUDIT_ARTIFACT_PREFIX",
     "DEFAULT_STREAM_ID",
+    "KIND_APPROVAL_GRANTED",
+    "KIND_APPROVAL_REVOKED",
+    "KIND_EMERGENCY_OVERRIDE_EXERCISED",
     "KIND_EVIDENCE_ARCHIVED",
     "KIND_EVIDENCE_DELETED",
     "KIND_EVIDENCE_REGISTERED",
     "KIND_LEGAL_HOLD_PLACED",
     "KIND_LEGAL_HOLD_RELEASED",
     "KIND_POLICY_VERSION_CHANGED",
+    "KIND_PRINCIPAL_DISABLED",
     "KIND_RESILIENCE_BOUNDARY_SEARCHED",
+    "KIND_ROLE_GRANT_ISSUED",
+    "KIND_ROLE_GRANT_REVOKED",
     "KIND_RUN_SEALED",
     "NO_SECOND_FORMAT_REASON",
     "SIGNATURE_UNSIGNED_NO_SIGNING",
