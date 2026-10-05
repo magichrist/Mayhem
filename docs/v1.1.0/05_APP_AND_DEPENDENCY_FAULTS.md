@@ -371,18 +371,79 @@ opt-in (`require_resolved=False`) for diagnostics, not the default.
   above still stands; this phase made their targeting measurable, not their
   behaviour real.
 
+## Phase 5 outcome — the sweep criterion, made checkable
+
+The acceptance line for this phase is one sentence: *"new ids swept into the six
+deriving test files automatically."* `tests/unit/test_fault_sweep_coverage.py`
+turns it into two properties of the repository:
+
+1. **A full sweep exists, redundantly.** Some module derives its parametrization
+   from `CATALOG` itself, so a new id is collected the moment it lands. The
+   minimum is two *independent* modules, not a file count.
+2. **A hardcoded list is never the only coverage.** Every id a literal list
+   names must also be swept by a deriving module.
+
+### What the survey found
+
+Measuring before asserting changed the shape of the work:
+
+* **The plan says six; four is the real number.** `test_certification_badge_honesty.py`,
+  `test_failure_modes.py`, `test_fault_catalog_all.py` and
+  `test_fault_catalog_exhaustive.py` each perform an unfiltered sweep over all
+  145 ids. The minimum is therefore asserted as *two independent sweepers* rather
+  than as a file count, because the property worth keeping is redundancy and a
+  count would break when someone usefully splits a file in two.
+* **Sixteen module-level id lists in `tests/unit/` are literals.** That is
+  legitimate — a family-specific suite should name its family — and it is also the
+  exact shape that silently stops covering a new id. The guard's job is to prove
+  each one is a narrowing rather than a sole owner.
+* **There are no `dep.*` ids.** The catalog's dependency family is
+  `dependency.` (eight ids). The Phase 4 suite had been labelling a nonexistent
+  `dep.latency`, which is corrected.
+
+### Three defects the negative controls found
+
+* **The guard was counting itself.** It imports `CATALOG` and holds the full id
+  set, so it satisfied its own `MINIMUM_FULL_SWEEPS`. With three of the four real
+  sweepers collapsed to literals the suite still passed — the redundancy it exists
+  to enforce was unenforced. It is now excluded by path identity, and
+  `test_the_guard_never_counts_itself` names the bug.
+* **Two assertions could not fail.** `ids <= CATALOG_IDS` and
+  `ids - CATALOG_IDS` are both true by construction once `_id_sets` has filtered,
+  and deleting either left the suite green. Both were removed rather than kept as
+  decoration. The real limit they papered over is now written down: **a literal
+  naming an id the catalog has since retired is invisible to this file**, because
+  the stale member disqualifies the whole set. That belongs to the module that
+  owns the list, which is the only place that knows what the id meant.
+* **Nine mutations, all behaving as designed.** Seven are caught. The eighth is
+  survived on purpose — collapsing one of four sweepers must be absorbed by the
+  other three — and the ninth, collapsing three, is caught.
+
+### What this does not claim
+
+* **It does not make hardcoded lists obsolete.** Sixteen remain, and they are
+  allowed to. The claim is only that none of them is the sole owner of an id.
+* **It does not catch stale ids.** See above.
+* **It does not cover non-catalog ids.** A test module that parameterizes over
+  engine names, node kinds or providers is outside its view entirely.
+* **It does not assert the sweep *tests* pass.** It inspects which ids a module
+  parametrizes over; running them is pytest's job. A sweep whose assertions are
+  wrong is still a sweep as far as this file is concerned.
+* **It does not count towards certification.** No rung of
+  `tests/unit/test_certification_badge_honesty.py` moves because of this.
+
 ## STATUS
 - Phase 1 (domain model): DONE — the 38-candidate collision audit is checked in above (24 already-exists, 2 param-extensions, 12 genuinely-new), the messaging substrate ruling is recorded, three open questions are logged, and one live defect (`db.slow_query`'s hardcoded 3306) was found and assigned to Phase 3.
 - Phase 2 (proxy and tool mechanisms): DONE for this lane — both param-extension mechanisms landed (the `body` branch on the proxy's canned path, the validated hosts-file line). **The 12 genuinely-new ids are not built**, so this phase is complete only for the two verdicts that were parameter work.
 - Phase 3 (params, targeting, probes): DONE for this lane — three param axes ship, `db.slow_query` can be aimed at Postgres or SQL Server, and each axis has a three-distinct-output guard. Explicit `target.dependency` selectors and the matching business-level probe definitions are **not** done.
 - Phase 4 (safety and evidence integration): DONE for the dependency half — `mayhem.domain.dependency_fanout` records what a dependency fault was aimed at, what it reached through it and which declared dependencies it did not touch, and refuses a fault aimed at a dependency the topology does not contain. It is accounting layered on the existing blast gate, not a second gate. The dependency-level **fault implementations** the audit identified, and any evidence-store wiring for them, are **not** done.
-- Phase 5: not started
+- Phase 5 (tests, regression guards, negative controls): DONE for the sweep half — `tests/unit/test_fault_sweep_coverage.py` turns the acceptance line into a repository property: a full catalog sweep exists, redundantly, and no hardcoded id list is the only coverage of an id it names. The plan's "six deriving test files" is **wrong**: four modules sweep the catalog unfiltered and sixteen module-level id lists are literals. The proxy-program and param-inertness guards shipped in Phase 3; the unresolvable-dependency refusals shipped in Phase 4 and are re-asserted here so this phase's own negative control is reachable from this file too.
 - Phase 6: not started
 
-Overall: 4 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
-param extensions and the one defect, and Phase 4 complete for the accounting side
-only. The 12 genuinely-new ids, the 8 unblocked new ids among them, and
-everything in Phases 5-6 remain.
+Overall: 5 of 6 phases complete, with Phase 2 and Phase 3 scoped to the two
+param extensions and the one defect, Phase 4 complete for the accounting side
+only, and Phase 5 complete for the sweep guard. The 12 genuinely-new ids, the 8
+unblocked new ids among them, and Phase 6 remain.
 
 Known limitation: Phase 2 is gated on the messaging ADR **for the messaging group
 only**. The HTTP, gRPC, DNS, TCP and database rows of the audit table are not
