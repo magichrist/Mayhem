@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 from click.testing import CliRunner
@@ -90,7 +90,7 @@ def _run(*args: str) -> Any:
 
 
 def _payload(result: Any) -> dict[str, Any]:
-    return json.loads(result.output)
+    return cast("dict[str, Any]", json.loads(result.output))
 
 
 def _plan(fault_id: str = "net.latency") -> ExecutionPlan:
