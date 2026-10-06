@@ -167,10 +167,11 @@ def enroll(
     upgrade path from an existing record is `rotate` (plan 19), not a second
     enrollment that would reset its version to 1.
     """
+    from pydantic import ValidationError
+
     from mayhem.domain.agent_identity import AgentCredential, AgentIdentity
     from mayhem.domain.errors import InvariantViolationError
     from mayhem.domain.identity import EnvironmentScope, Principal, PrincipalKind
-    from pydantic import ValidationError
 
     store, identities = _open(ctx, db_opt)
     try:
@@ -297,7 +298,8 @@ def show(ctx: click.Context, agent_id: str, db_opt: str | None, as_json: bool) -
     click.echo(f"scope {identity.scope.environment} version={identity.version}")
     click.echo(
         f"credential {identity.credential.credential_id} "
-        f"{identity.credential.issued_at.isoformat()} -> {identity.credential.expires_at.isoformat()}"
+        f"{identity.credential.issued_at.isoformat()} -> "
+        f"{identity.credential.expires_at.isoformat()}"
     )
     click.echo(f"state {payload['state']}")
     for revocation in payload["revocations"]:
