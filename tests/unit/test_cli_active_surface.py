@@ -8,6 +8,7 @@ from mayhem.cli.app import app
 
 ACTIVE_COMMANDS = {
     "advisor",
+    "agent",
     "api",
     "boundary",
     "bundle",

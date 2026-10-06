@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 ACTIVE_ROOTS = {
     "advisor",
+    "agent",
     "api",
     "boundary",
     "bundle",
@@ -158,6 +159,10 @@ ACTIVE_GROUP_PATHS = {
     "game-day-step": ("hold", "inject", "note", "release", "steps"),
     "ha": ("cert", "promote", "rotate", "update"),
     "ci": ("check", "status", "summary", "workflow"),
+    # Plan 03 Phase 3's enrollment surface: one row per leaf, like every other
+    # group in this table, so `list` and `show` are enumerated rather than
+    # assumed to exist next to the two writing verbs.
+    "agent": ("enroll", "list", "show", "revoke"),
 }
 
 REMOVED_ROOTS = {

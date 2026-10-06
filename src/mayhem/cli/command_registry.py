@@ -15,6 +15,7 @@ class CommandSpec:
 COMMAND_HELP: dict[str, str] = {
     "campaign": "Create, inspect, and run chaos campaigns.",
     "certify": "Certify faults on live runtime cells and query the certification matrix.",
+    "agent": "Enroll agents, read their identity state, and revoke them.",
     "commands": "Show the command migration map.",
     "completion": "Generate a shell completion script for this Mayhem build.",
     "discover": "Discover targets, engines, and capabilities.",
@@ -108,12 +109,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     # `retire` tombstones one. `explain` mutates nothing (Phase 2's simulation
     # mode), but one writing verb is what makes the group mutating, the same rule
     # `schedule` and `game-day-step` are held to below.
-    CommandSpec("policy", "experiments", help_group="experiments", mutating=True),
+    # `workflow` for `policy` and `secrets` is `experiment` — the singular value
+    # the closed vocabulary in `test_command_registry` and `test_cli_certify`
+    # both allow. The plural spelling shipped with these two specs and left that
+    # assertion red; the plural belongs to `help_group`, where it already is.
+    CommandSpec("policy", "experiment", help_group="experiments", mutating=True),
     # `secrets` writes grants: `grant` inserts one and `revoke` withdraws one.
     # `list` and `explain` read. Mutating because one verb is, and because a
     # command that changes who may resolve a credential is mutating in the way an
     # operator has to be told about.
-    CommandSpec("secrets", "experiments", help_group="experiments", mutating=True),
+    CommandSpec("secrets", "experiment", help_group="experiments", mutating=True),
     # ── The nine groups that existed but were unreachable ──────────────────
     #
     # `mutating` here is a published fact, not a gate: it is what
@@ -174,11 +179,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     # proceed. `ci check` grades the plan a run would execute and renders a
     # workflow that runs it, so it belongs to that workflow and no other.
     CommandSpec("ci", "run", help_group="experiments"),
+    # `agent` is mutating because `enroll` inserts an identity row and `revoke`
+    # appends a revocation and bumps the identity's version — durable state a
+    # verifier reads before it authenticates anything. `list` and `show` read,
+    # but one writing verb is enough, the same rule `policy` and `secrets` are
+    # held to. `recover` is the workflow `ha` already declares: agent identity
+    # is cluster-recovery vocabulary, and widening the workflow set would split
+    # a group that has a home.
+    CommandSpec("agent", "recover", mutating=True),
 )
 
 
 def register_commands(app: Any) -> None:
     from mayhem.cli.advisor_cmd import advisor
+    from mayhem.cli.agent_cmd import agent
     from mayhem.cli.api_cmd import api
     from mayhem.cli.boundary_report_cmd import boundary
     from mayhem.cli.campaign import campaign
@@ -206,6 +220,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.workflows import discover, extend, inspect, prepare
 
     command_map = {
+        "agent": agent,
         "campaign": campaign,
         "certify": certify,
         "commands": commands,

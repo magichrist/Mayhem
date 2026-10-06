@@ -76,6 +76,15 @@ def _report(
             f"{provider.provider_id:<24} {provider.status:<8} "
             f"version={(provider.metadata or {}).get('version', '?')} source={provider.source}"
         )
+        # Permissions are printed for every inspection, including the
+        # metadata-only one: an operator has to be able to see what a
+        # third-party provider asks for *before* any of its implementation
+        # code is loaded, and the default posture — a declaration that asks
+        # for nothing — is only visible if the empty case prints too.
+        permissions = (provider.metadata or {}).get("permissions")
+        if isinstance(permissions, list):
+            names = ", ".join(str(name) for name in permissions) or "none (default posture)"
+            click.echo(f"  permissions: {names}")
         if provider.error is not None:
             click.echo(f"  {provider.error.code}: {provider.error.message}")
     click.echo(f"loaded={len(report.loaded)} failures={len(report.failures)}")

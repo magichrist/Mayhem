@@ -6,6 +6,7 @@ from mayhem.cli.exit_codes import ExitCode
 ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
     {
         "advisor",
+        "agent",
         "api",
         "boundary",
         "bundle",
