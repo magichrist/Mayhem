@@ -150,12 +150,65 @@ a stored finding has no close/resolve state, so "open" means "every stored
 finding". Both are consequences of the phase list — lifecycle and CI callers
 belong to the phases that name them — and neither is papered over here.
 
+## Coverage methodology — what counts as tested
+
+**Only cited evidence counts.** A cell counts as tested when executed or
+`certified` evidence cites it — a `run_id` and a sha256 digest, sealed by the
+run that produced it. Catalog presence is declared and never counted: the
+`CoverageEvidenceKind` type has no `catalog` member, so "we wrote the test" is
+not a value the accounting can receive. A percentage without its denominator
+has no meaning, and every renderer here prints `denominator_description()`
+beside the number; blocked cells stay out of the denominator (a refused
+environment is not a gap), never-run cells stay in it (they are the gap the
+map exists to surface), and an empty cell renders as untested — never as
+passing-by-absence.
+
+## Journey authoring guide
+
+A journey is an authored program, versioned and digest-pinned — `name@version#digest`,
+every byte — so two runs of the same program compare and an edited program is a
+different program. Every step asserts something (a step with no assertions is
+refused at construction), every assertion names exactly one basis (threshold,
+or baseline-plus-tolerance, never both, never neither), a business-correctness
+assertion states the business claim in words, and dependencies resolve only to
+steps declared before them. Re-pinning the program lands its evidence on a
+different cell — the version lives in the cell's parameter band — so old
+evidence stays addressable. Authoring proves nothing: `authored_cells`
+projects every cell as `unknown`, and only executed evidence ever moves one.
+
+## Regression-triage guide
+
+A finding is two runs and a sentence: it cites baseline and candidate run ids
+with evidence digests, and it says why in prose. Comparability is the pin
+vector's — same experiment, environment, plan/policy/catalog/agent/runtime
+versions and journey pin, release deliberately excluded (it is the axis being
+compared). A refused comparison is never scored, a refused comparison is not a
+pass, and a proven regression outranks a missing metric — three unmeasurable
+metrics and one regressed one still read "regressed". `insufficient_data` is
+an outcome, never a pass. Findings feed the release gate (`release_gate` blocks
+while the cited release is an open finding's candidate) and the advisor
+(`regression_citations` returns one FINDING citation per finding — a regression
+is not a gap Finding, and the two never share a type). Triage starts from the
+refusal's rule id: every refusal in this system names itself.
+
+## Rollout order
+
+1. **Service×fault cells first** — the coverage map and its accounting are the
+   floor: `mayhem inspect coverage --matrix`, cited-evidence-only counting,
+   denominators on every number.
+2. **Journeys and business metrics second** — authored programs pinned into
+   plans, business KPIs as first-class criteria, `authoring proves nothing`
+   until the runs land.
+3. **Continuous comparison third** — nightly/post-deploy suites feeding the
+   comparison store, findings opening from graded regressions, the release
+   gate and the advisor consuming them.
+
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/journeys.py` (versioned, per-step-asserted journey programs with citable business-metric criteria, projecting untested coverage cells) and `domain/comparison.py` (pin equivalence predicate, delta report with improved/regressed/unchanged/insufficient-data/incomparable outcomes, two-run-cited regression findings) landed with unit tests.
 - Phase 2: DONE — largely landed by a prior lane, then verified and completed. `infra/coverage_service.py` provides the five-dimension accounting (`CoverageDimensions` → existing `CoverageCell`: service→target, fault→fault_kind, environment→execution_context, version|dependency→parameter_band; probe class and certification state as cell attributes), the `ComparisonService`, and the `TriggerEngine`, over `M0027_COVERAGE_FINDINGS` — which already covered the schema, so no migration was added. Coverage is counted only from cited `EXECUTED`/`CERTIFIED` evidence: `CoverageEvidenceKind` has no `catalog` member, the sighting table's CHECK refuses an uncited or laundered row, and `DimensionCoverage.counted` requires a covering state *and* a cited sighting, so a declared-but-unrun cell renders untested. `ComparisonService.score` delegates comparability to `comparison.equivalent_pins` and cross-checks it against `compare()`, refusing to serve when the two disagree; `open_finding` persists both run ids and both evidence digests. Trigger suggestions are advisory `Literal[True]` data over a schema with no run/status column, and the engine holds no runner or gate handle. Two defects found during verification were fixed: `CoverageDimensions` was missing from `__all__` despite being `DimensionCell`'s required constructor argument, and `record_evidence`/`set_certification_state` called `declare()`, so executing a cell inflated `catalog_presence` — recording a run now upserts the dimension row without manufacturing a catalog sighting. Regression tests added for both, plus a re-scoped chain-contiguity assertion (contiguity up to M0027 only; whole-chain contiguity stays in `test_additive_schema.py`).
 - Phase 3 (surface): DONE for the map — `mayhem.cli.coverage_map` materialises the declared service×fault cross product so an empty cell has somewhere to be, and `mayhem inspect coverage --matrix` renders it. Journey builders and **CI minimum-coverage enforcement are not done**; nothing gates on a number this view produces.
+- Phase 5 (tests, regression guards, negative controls): DONE — the plan's named groups already existed, which the ledger records rather than rewrites: **cell-transition tests** in `test_coverage_repository.py` (idempotent same-run recording, same-state-across-runs staying covered, blocked excluded from testable, covered→inconclusive dropping the rollup bar, the covered column true iff the state is covered, unblock recording a tested state) and `test_coverage_service.py` (a blocked cell executed later, certification vocabulary shared with the domain, executed-is-not-certified, moving a claim without a reference refused); **comparison tests on fixture run pairs** in `test_comparison.py` (48 collected cases: improved, regressed, unchanged, insufficient-data, incomparable, the tolerance-boundary worked example, a proven regression outranking a missing metric, a zero baseline never within tolerance of anything else) and the service-level scoring/negative-control set in `test_coverage_service.py` (equivalence agreement, self-comparison, findings citing exactly two runs and both digests, nothing but a regression opened as a finding); **journey-execution tests** in `test_journeys.py` (43: every step asserting something, one basis per assertion, program-level criterion uniqueness, dependencies resolving to earlier steps, `authored_cells` projecting unknown cells only); **trigger-mapping tests** in `test_coverage_service.py` (nightly selecting only continuous suites, an unopted-in suite never becoming nightly, dependency-version and database-upgrade events selecting their tagged suites). **The two negative controls the plan names are already load-bearing and pinned where the behavior lives:** catalog presence asserted as coverage fails three ways in `test_coverage_service.py` (the `CoverageEvidenceKind` type with no `catalog` member, the sighting CHECK refusing an uncited row, executing a cell never manufacturing the presence it lacked), and a comparison across different pins is refused not scored (`test_comparison.py`'s incomparable-report-with-no-deltas refusal plus `test_coverage_service.py`'s `equivalence_disagreement` control, which makes `equivalent_pins` lie and proves the service stops rather than serves). Plan 22's own phase-4 additions bring the nine-suite collected count to **290 tests, all green** — counted by `pytest --collect-only`, since `def test` lines under-report every parametrised case. New negative controls in `test_plan22_phase4.py` prove the phase-4 wiring: findings refused over unrecorded runs, refusals over digests the runs are not sealed against, the green control that the honest path persists, the omitted-journey link blocking, and the gate blocking on the cited release's own finding while ignoring findings on other experiments.
+- Phase 6 (docs, honesty gates, rollout): DONE — three guides written into this document below the ledger, plus the rollout order, and asserted rather than left to review: **coverage methodology** (what counts as tested — cited executed/certified evidence only, catalog presence never, blocked cells out of the denominator, never-run cells in it, and the denominator printed beside every number), **journey authoring guide** (a program is versioned and digest-pinned, every step asserts something, every assertion names one basis, business-correctness assertions state the claim in words, re-pinning lands on a different cell, and authoring proves nothing until executed evidence moves the cell), and **regression-triage guide** (a finding is two runs and a sentence, comparability is the pin vector's, insufficient data is an outcome and never a pass, proven regressions outrank missing metrics, findings feed the release gate and the advisor as citations, and triage starts from the refusal's rule id). **Rollout:** service×fault cells first, journeys and business metrics second, continuous comparison third. Honesty gates live in `tests/unit/test_plan22_plan_docs.py`, which parses this document: the `Overall:` count against the DONE lines, every refusal code quoted against the source, the methodology's five claims pinned, the denominator rule, the three rollout tiers in order, forbidden false claims refused, and every checker proven to bite against a mutated copy of the document. The known gap is stated rather than hidden: no production caller passes `open_findings` to `release_gate` yet, and the plan-21 surface does not read `regression_citations` yet — both are recorded in the Phase 4 ledger line above.
 - Phase 4 (safety and evidence integration): DONE — three seams closed, each with its negative control in `tests/unit/test_plan22_phase4.py` (16 tests). **Findings are computed from sealed evidence only:** `ComparisonService.record_finding` verifies both cited runs are stored (`record_run`) and that the digests the finding cites are the ones its runs are sealed against — `comparison_service.finding_cites_unrecorded_run` and `comparison_service.finding_cites_wrong_digest` close the direct path a hand-built finding could otherwise take past `open_finding` (which reaches it only through stored runs, so the acceptance "a regression finding without two cited runs is unrepresentable" now holds at the store boundary too, not only in the domain types). **Journey probes are versioned and pinned into plans:** `PipelinePins` carries the cited run's journey program pin as `journey` — `JourneyPin.identity`, `name@version#digest`, every byte — via `from_run`; the axis is deliberately not in `REQUIRED_PINS` (a run need not be a journey run) but a *disagreement* about it blocks: a link that never recorded which journey program version its run carried cannot cite it, and `blocking_reasons` names the `journey` axis in its existing disagreement sentence. **Findings feed release decisions (16):** `release_gate(..., open_findings=())` blocks while an open regression finding's *candidate* is the release the cited run measured (same experiment, same candidate release), and the refusal carries the finding id, its summary, and both cited run labels; findings on other experiments, or with this run on the *baseline* side of the comparison, do not block — the gate blocks what the evidence names, nothing else. **Findings feed advisor input (21):** `mayhem.domain.advisor.regression_citations` converts findings into the advisor's own citation vocabulary — one `CitedFact(kind=FINDING)` per finding, detail naming the summary, both run labels, and the regressed metrics — because a regressed experiment is not a gap `Finding` (which refuses `FAILED` cells for exactly that reason) and the two must never share a type. What the phase does not claim: no CLI or dashboard consumes `open_findings` yet — `release_gate` is the wired consumer and has no production caller until plan 16's CI runners invoke it; the plan-21 surface (whose inputs document refuses unknown fields by design) is a closed lane, so the feed is delivered at the type boundary and adopting it there is recorded as the remaining gap rather than worked around; and a finding has no close/resolve state, so "open" means every stored finding.
-- Phase 5: not started
-- Phase 6: not started
 
-Overall: 4 of 6 phases complete.
+Overall: 6 of 6 phases complete (Phases 1, 2, 3, 4, 5, and 6).
