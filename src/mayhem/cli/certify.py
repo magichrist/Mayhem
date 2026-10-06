@@ -284,6 +284,59 @@ class EngineCell:
         return (done.stdout or "").strip()
 
 
+def _persist_attempt_evidence(
+    store: Store,
+    *,
+    graph: Any,
+    prepared: Any,
+    plan: ExecutionPlan,
+    result: Any,
+    engine: str,
+    intent: Any,
+) -> None:
+    """Write the run's evidence envelope — the artefact ``capture`` later cites.
+
+    ``mayhem run`` writes an envelope after every run, and ``certify run``
+    drives the same engine, so the same artefact has to exist on this path too:
+    without it :meth:`RunEvidenceCapturer.capture` answers *nothing* to "what
+    evidence does this run carry?" and every attempt would be refused
+    ``no_evidence`` no matter how clean the cell was — which is exactly what a
+    fresh database produced before this line existed, first as a crash (the
+    envelope table does not exist until something writes it) and then, once
+    readers tolerated its absence, as a permanent refusal.
+
+    Written after the run and before the result is handed back, so the envelope
+    is durable by the time ``certify_fault`` reaches the capture step. Failures
+    are not raised at the caller: ``_write_evidence_after_run`` already
+    degrades the envelope it can describe, and anything it cannot is reported
+    the only way this pipeline reports missing evidence — ``capture`` returns
+    ``None`` and the attempt is refused with ``no_evidence``. A certification
+    with nothing to cite is refused, never certified, so the honest failure
+    mode here is a refusal rather than an exception.
+    """
+    from mayhem.cli.lifecycle import _preflight_for_run, _write_evidence_after_run
+
+    try:
+        preflight = _preflight_for_run(
+            graph=graph,
+            store=store,
+            prepared=prepared,
+            plan=plan,
+            target=None,
+            engine=engine,
+        )
+    except Exception:
+        return
+    _write_evidence_after_run(
+        store=store,
+        preflight=preflight,
+        result=result,
+        engine=engine,
+        evidence_dir=None,
+        intent=intent,
+    )
+
+
 def _engine_execute(
     store: Store,
     graph: Any,
@@ -300,15 +353,40 @@ def _engine_execute(
     from mayhem.cli.services import engine_for
 
     def execute(plan: ExecutionPlan) -> RunResult:
+        # ``--execute`` *is* the approval this gate asks for, so mint the
+        # intent it stands for, bound to the plan about to run — the same
+        # shape ``cli/lifecycle`` mints for ``mayhem run --execute``, with the
+        # same ``plan_hash_for`` the gate re-derives. Without this line the
+        # live path could never succeed: ``require_intent=True`` and no intent
+        # is a refusal by construction, and the only way through would have
+        # been the implicit-execution compatibility switch — a certification
+        # cell reached by bypassing the intent contract is not a cell this
+        # command should be able to produce.
+        from mayhem.domain.execution_intent import intent_for_plan
+
+        intent = intent_for_plan(plan, engine=engine, actor="cli:certify --execute")
         runner = engine_for(
             store,
             engine,
             live_graph=lambda: graph,
             recovery_grace=prepared.recovery_grace,
+            intent=intent,
             require_intent=True,
             allow_implicit=implicit_execution_allowed(),
         )
-        return runner.execute(plan)
+        result = runner.execute(plan)
+        # The run's own evidence, persisted before the capturer can ask for it
+        # — same artefact `mayhem run` writes after every run.
+        _persist_attempt_evidence(
+            store,
+            graph=graph,
+            prepared=prepared,
+            plan=plan,
+            result=result,
+            engine=engine,
+            intent=intent,
+        )
+        return result
 
     return execute
 
@@ -464,8 +542,12 @@ class RunEvidenceCapturer:
         envelope = load_evidence(self.store, run.run_id)
         if envelope is None:
             return None
-        stored_plan = self.store.query("SELECT plan_json FROM m5_runs WHERE id = ?", (run.run_id,))
+        stored_plan = self.store.query("SELECT plan_json FROM runs WHERE id = ?", (run.run_id,))
         if not stored_plan:
+            # The executor writes the plan into `runs`; `m5_runs` has no writer
+            # on this path (its legacy `save_run_record` has no callers), so
+            # reading it made every capture a silent `no evidence` — a refusal
+            # that looked like the run's fault rather than a query's.
             return None
         facts = json.loads(str(dict(stored_plan[0])["plan_json"]))
         digests = expected_evidence_digests(
@@ -865,8 +947,10 @@ def _execute_certification(
     from mayhem.controller.planner import plan_drill
 
     cli_ctx: CliContext = ctx.obj
-    service = container or _first_container(ctx, compose)
     graph, resolved_compose = _graph_from(ctx, compose)
+    # After the graph: the fallback target is chosen against the topology that
+    # will actually be planned against, not against the compose file alone.
+    service = container or _first_container(ctx, compose, graph=graph)
     store = open_store(db)
     try:
         prepared = prepare(
@@ -893,28 +977,39 @@ def _execute_certification(
             )
 
         cell = _provision(request, store=store, graph=graph, prepared=prepared, image=image)
-        capturer = RunEvidenceCapturer(
-            store=store,
-            out_dir=None if bundle_out is None else Path(bundle_out),
-            mayhem_version=_mayhem_version(),
-        )
-        repository = CertificationRepository(store)
-        return certify_fault(
-            request,
-            provisioner=_StaticProvisioner(cell),
-            compile_plan=compile_plan,
-            capture=capturer,
-            sink=repository,
-            now=utc_now(),
-            # Phase 5 plumbing. Phase 4 made the sealer optional so the
-            # pre-Phase-4 surface kept working, and named this call site as the
-            # place it belongs. On *this* surface it is not optional: a claim
-            # that reaches a stored `certified` row is a claim whose bytes can be
-            # re-verified later, and a claim whose bundle cannot be sealed is a
-            # refusal. Leaving it off here would have meant this command was the
-            # one way to mint a live claim with nothing attesting it.
-            evidence_sealer=CertificationEvidenceStore(store, repository=repository),
-        )
+        try:
+            capturer = RunEvidenceCapturer(
+                store=store,
+                out_dir=None if bundle_out is None else Path(bundle_out),
+                mayhem_version=_mayhem_version(),
+            )
+            repository = CertificationRepository(store)
+            return certify_fault(
+                request,
+                provisioner=_StaticProvisioner(cell),
+                compile_plan=compile_plan,
+                capture=capturer,
+                sink=repository,
+                now=utc_now(),
+                # Phase 5 plumbing. Phase 4 made the sealer optional so the
+                # pre-Phase-4 surface kept working, and named this call site as the
+                # place it belongs. On *this* surface it is not optional: a claim
+                # that reaches a stored `certified` row is a claim whose bytes can be
+                # re-verified later, and a claim whose bundle cannot be sealed is a
+                # refusal. Leaving it off here would have meant this command was the
+                # one way to mint a live claim with nothing attesting it.
+                evidence_sealer=CertificationEvidenceStore(store, repository=repository),
+            )
+        finally:
+            # `_provision` starts the container *outside* `certify_fault`'s own
+            # try/finally, and `certify_fault` compiles the plan before it takes
+            # ownership of the cell — so a planning refusal (a target the
+            # topology does not know, seen live on `certify regress --rerun`)
+            # raised a running disposable cell with nobody left to dispose it.
+            # `EngineCell.dispose` is idempotent: the runner's disposal stays
+            # the normal path and this is the backstop that makes "disposable"
+            # true on every path, including the ones that never reach the runner.
+            cell.dispose()
     finally:
         store.close()
 
@@ -1586,21 +1681,52 @@ def _single_fault_spec(fault_id: str, service: str, request: CertificationReques
     )
 
 
-def _first_container(ctx: click.Context, compose: str | None) -> str:
+def _first_container(ctx: click.Context, compose: str | None, *, graph: Any) -> str:
+    """The container to target when the caller (or a stored claim) named none.
+
+    Chosen against the *graph*, not just the compose file: a compose file may
+    call a service ``api`` while giving it ``container_name: testcase-api``, and
+    the topology graph's subtree keys follow the container name — so guessing
+    the alphabetically-first *service* name produced a plan the planner refuses
+    (``container 'api' not found in topology``), which made ``certify regress
+    --rerun`` — the nightly gate's own execution path — fail on exactly the
+    bundled example stack people certify against. First entry whose name the
+    graph recognises wins: the service's ``container_name`` if it has one, then
+    the service name itself (graphs built from service keys). A graph that
+    knows none of them falls back to its own first container, then to the first
+    service, then to the historical placeholder.
+    """
     from mayhem.cli.topology import _resolve_compose
 
     resolved = _resolve_compose(compose)
+    candidates: list[str] = []
     if resolved is not None:
         try:
             import yaml
 
             with Path(resolved).open(encoding="utf-8") as handle:
                 services = (yaml.safe_load(handle) or {}).get("services") or {}
-            if services:
-                return str(sorted(services)[0])
+            for name in sorted(services):
+                spec = services.get(name)
+                container_name = spec.get("container_name") if isinstance(spec, dict) else None
+                if container_name:
+                    candidates.append(str(container_name))
+                candidates.append(str(name))
         except Exception:
-            pass
+            candidates = []
     del ctx
+    if graph is not None:
+        for candidate in candidates:
+            try:
+                if graph.node_ids_for_container(candidate):
+                    return candidate
+            except Exception:
+                continue
+        names = graph.container_names()
+        if names:
+            return names[0]
+    if candidates:
+        return candidates[0]
     return "mayhem-certify"
 
 

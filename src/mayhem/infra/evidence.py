@@ -249,8 +249,31 @@ def write_evidence(store: Any, envelope: EvidenceEnvelope) -> None:
         )
 
 
+def _envelope_rows(store: Any, sql: str, params: tuple[object, ...] = ()) -> list[Any]:
+    """Read ``evidence_envelopes``, treating a store that has none as empty.
+
+    The table is created lazily by :func:`write_evidence` — and a *refused*
+    write deliberately leaves no row *and* no table behind — so "no table" is
+    the store's own answer to "is there any evidence here?" (``no``), not an
+    error for the caller to surface. ``mayhem run`` never meets this case
+    because it writes before it reads, but ``mayhem certify run``, ``mayhem
+    inspect`` and ``mayhem verify-bundle`` open stores that may have seen no
+    run at all, and asking them a question must not raise ``no such table`` at
+    the operator. Any other query failure is still raised: a corrupt database
+    is not "no evidence".
+    """
+    try:
+        return store.query(sql, params)
+    except Exception as exc:
+        if "no such table" in str(exc):
+            return []
+        raise
+
+
 def load_evidence(store: Any, run_id: str) -> EvidenceEnvelope | None:
-    rows = store.query("SELECT envelope_json FROM evidence_envelopes WHERE run_id = ?", (run_id,))
+    rows = _envelope_rows(
+        store, "SELECT envelope_json FROM evidence_envelopes WHERE run_id = ?", (run_id,)
+    )
     if not rows:
         return None
     raw = (
@@ -268,8 +291,10 @@ def load_evidence(store: Any, run_id: str) -> EvidenceEnvelope | None:
 
 
 def list_evidence(store: Any, limit: int = 20) -> list[EvidenceEnvelope]:
-    rows = store.query(
-        "SELECT envelope_json FROM evidence_envelopes ORDER BY created_at DESC LIMIT ?", (limit,)
+    rows = _envelope_rows(
+        store,
+        "SELECT envelope_json FROM evidence_envelopes ORDER BY created_at DESC LIMIT ?",
+        (limit,),
     )
     out: list[EvidenceEnvelope] = []
     for row in rows:

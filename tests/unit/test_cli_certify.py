@@ -217,9 +217,7 @@ def _sealed_bundle(engine: EngineLane) -> EvidenceBundleRef:
     digests = expected_evidence_digests(
         params={},
         target=f"{engine.value}/testcase-api",
-        observed_effect=(
-            f"process execution state changes|observed=SIGSTOP on {engine.value}"
-        ),
+        observed_effect=(f"process execution state changes|observed=SIGSTOP on {engine.value}"),
         recovery=_GOOD_RECOVERY,
         residue=ResidueScan(performed=True),
     )
@@ -269,8 +267,15 @@ def test_certify_is_registered_in_the_single_inventory() -> None:
     assert "certify" in set(app.commands)
     spec = next(spec for spec in COMMAND_SPECS if spec.name == "certify")
     assert spec.mutating is True, "certify run provisions a container and injects a fault"
-    assert spec.workflow in {"discover", "prepare", "experiment", "run", "inspect", "recover",
-                             "extend"}
+    assert spec.workflow in {
+        "discover",
+        "prepare",
+        "experiment",
+        "run",
+        "inspect",
+        "recover",
+        "extend",
+    }
     assert app.commands["certify"].help == COMMAND_HELP["certify"]
     assert "certify" in COMMAND_HELP
 
@@ -313,8 +318,7 @@ def test_the_database_is_migrated_to_the_head_before_anything_is_reported(
         assert store.schema_version == len(ALL_MIGRATIONS)
         assert list(
             store.query(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='certification_records'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='certification_records'"
             )
         )
     finally:
@@ -373,9 +377,7 @@ def test_a_claim_with_no_sealed_chain_is_reported_withdrawn(tmp_path: Path) -> N
     present it as a standing claim, and it must say *why* rather than quietly
     counting a fault that no longer has evidence behind it.
     """
-    db = _store_with_certification(
-        tmp_path, EngineLane.DOCKER, EngineLane.PODMAN, seal=False
-    )
+    db = _store_with_certification(tmp_path, EngineLane.DOCKER, EngineLane.PODMAN, seal=False)
     result = _run("--db", db, "certify", "matrix", FAULT_ID, "--json")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -443,16 +445,15 @@ def test_the_matrix_sweep_persists_ageing_and_is_still_opt_in(tmp_path: Path) ->
     finally:
         store.close()
 
-    swept = json.loads(
-        _run("--db", db, "certify", "matrix", FAULT_ID, "--sweep", "--json").output
-    )
+    swept = json.loads(_run("--db", db, "certify", "matrix", FAULT_ID, "--sweep", "--json").output)
     assert swept["expiry_sweep"]["performed"] is True
     assert swept["expiry_sweep"]["aged"] == 2
     store = Store.open_migrated(db)
     try:
-        assert sorted(
-            row.record.state.value for row in CertificationRepository(store).all()
-        ) == ["stale", "stale"]
+        assert sorted(row.record.state.value for row in CertificationRepository(store).all()) == [
+            "stale",
+            "stale",
+        ]
     finally:
         store.close()
 
@@ -489,8 +490,7 @@ def test_a_lapsed_record_is_reported_as_not_live_without_any_sweep(
     try:
         # ... and the stored rows are untouched: ageing is not a mutation.
         assert all(
-            row.record.state.value == "certified"
-            for row in CertificationRepository(store).all()
+            row.record.state.value == "certified" for row in CertificationRepository(store).all()
         )
     finally:
         store.close()
@@ -738,8 +738,7 @@ def test_the_only_execution_path_is_run_engine_execute() -> None:
         and node.func.value.id == "runner"
     ]
     assert len(execute_calls) == 1, (
-        "mayhem certify must reach RunEngine.execute exactly once, through the "
-        "normal run path"
+        "mayhem certify must reach RunEngine.execute exactly once, through the normal run path"
     )
     factories = [
         node
@@ -749,10 +748,428 @@ def test_the_only_execution_path_is_run_engine_execute() -> None:
         and node.func.id == "engine_for"
     ]
     assert len(factories) == 1, "one place builds the run engine"
-    assert (
-        RunEngine.__module__ + "." + RunEngine.__name__
-        == "mayhem.controller.executor.RunEngine"
+    assert RunEngine.__module__ + "." + RunEngine.__name__ == "mayhem.controller.executor.RunEngine"
+
+
+def test_the_live_path_mints_the_intent_require_intent_demands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--execute`` mints the approval it stands for, bound to this plan.
+
+    ``engine_for(..., require_intent=True)`` with no intent is a refusal by
+    construction — which is exactly what the live path did before this: it
+    demanded an intent and built none, so no certification cell could ever be
+    reached except through the implicit-execution compatibility switch. A
+    certification reached by bypassing the intent contract is not a
+    certification this command should be able to produce, so the intent is
+    minted here, from the same ``intent_for_plan``/``plan_hash_for`` the
+    preflight gate re-derives, and this test pins all three properties: an
+    intent exists, its hash is *this* plan's hash, and ``require_intent`` stays
+    armed.
+    """
+    from mayhem.cli import services
+    from mayhem.cli.certify import _engine_execute
+    from mayhem.domain.experiments import ExecutionPlan, ExperimentKind
+    from mayhem.domain.preflight import plan_hash_for
+
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.plans: list[object] = []
+
+        def execute(self, plan: object) -> str:
+            self.plans.append(plan)
+            return "ran"
+
+    runner = FakeRunner()
+
+    def capture(store: object, engine: str | None = None, **kwargs: object) -> FakeRunner:
+        captured["engine"] = engine
+        captured.update(kwargs)
+        return runner
+
+    # The import inside ``_engine_execute`` resolves when it is called, so the
+    # patch has to be in place before the factory below is built.
+    monkeypatch.setattr(services, "engine_for", capture)
+
+    plan = ExecutionPlan(
+        run_id="r-certify-intent",
+        kind=ExperimentKind.DRILL,
+        steps=(),
+        config_snapshot_id="cfg-0001",
+        topology_snapshot_id="topo-0001",
+        environment_fingerprint="env-fp-1",
     )
+    graph = object()
+    execute = _engine_execute(
+        Store.open_migrated(":memory:"),
+        graph,
+        SimpleNamespace(recovery_grace=123.0),
+        "podman",
+    )
+
+    assert execute(plan) == "ran"
+
+    intent = captured.get("intent")
+    assert intent is not None, (
+        "certify's execute path must mint the ExecutionIntent it demands: "
+        "require_intent=True with no intent is a refusal by construction"
+    )
+    assert intent.plan_hash == plan_hash_for(plan), (
+        "the intent must bind the plan about to run, with the same hash the "
+        "preflight gate re-derives"
+    )
+    assert intent.engine == "podman"
+    assert intent.actor == "cli:certify --execute"
+    assert captured["require_intent"] is True, "the gate stays armed"
+    assert captured["recovery_grace"] == 123.0
+    assert captured["live_graph"]() is graph  # type: ignore[union-attr]
+    assert runner.plans == [plan], "the bound plan is the plan that executes"
+
+
+# ── the live capture chain: envelope written, envelope read, digests agree ────
+#
+# The three tests below are the ones a container engine would have found. The
+# chain is: the run writes its evidence envelope (as `mayhem run` does),
+# `RunEvidenceCapturer` reads that envelope plus the plan the executor stored,
+# and the digests it derives from those durable artifacts must equal what the
+# runner derives from the live plan. Each link had silently been broken — the
+# crash, then a permanent `no_evidence` refusal, is what a live cell saw.
+
+
+def test_a_store_that_never_wrote_evidence_says_so_instead_of_raising() -> None:
+    """A fresh database answers ``no evidence``; it does not raise at the operator.
+
+    ``evidence_envelopes`` is created lazily by :func:`write_evidence`, and a
+    *refused* write deliberately leaves no table at all — so "no table" is the
+    store's own answer to "is there any evidence here?". Before the readers
+    tolerated it, ``certify run`` on a fresh ``--db`` crashed with
+    ``OperationalError: no such table: evidence_envelopes`` *after* the run
+    completed, having provisioned, injected, recovered, and disposed a cell.
+    """
+    from mayhem.infra.evidence import list_evidence, load_evidence
+
+    store = Store.open_migrated(":memory:")
+    try:
+        tables = {
+            str(row["name"])
+            for row in store.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "evidence_envelopes" not in tables, (
+            "precondition: nothing has written evidence, so the table must not exist"
+        )
+        assert load_evidence(store, "r-fresh-store") is None
+        assert list_evidence(store) == []
+    finally:
+        store.close()
+
+
+def test_the_fallback_target_is_chosen_against_the_graph_not_the_compose_alone(
+    tmp_path: Path,
+) -> None:
+    """``regress --rerun``'s default target must be a container the graph knows.
+
+    A compose file may call a service ``api`` and give it ``container_name:
+    testcase-api``; the topology's subtree keys follow the container name, so
+    guessing the alphabetically-first *service* produced a plan the planner
+    refuses (``container 'api' not found in topology``) — which made the nightly
+    gate's own execution path fail on exactly the bundled example stack people
+    certify against. The fallback is chosen against the resolved graph.
+    """
+    from mayhem.cli.certify import _first_container
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  api:\n"
+        "    container_name: testcase-api\n"
+        "  web:\n"
+        "    container_name: testcase-web\n",
+        encoding="utf-8",
+    )
+
+    class Graph:
+        def node_ids_for_container(self, name: str) -> frozenset[str]:
+            return frozenset({"node"}) if name.startswith("testcase-") else frozenset()
+
+        def container_names(self) -> tuple[str, ...]:
+            return ("testcase-api", "testcase-web")
+
+    ctx = SimpleNamespace()
+    chosen = _first_container(ctx, str(compose), graph=Graph())  # type: ignore[arg-type]
+    assert chosen == "testcase-api", (
+        "the service name 'api' is not a topology subtree; the fallback must be "
+        "the name the graph resolves"
+    )
+
+    # A graph that knows none of them still yields its own container, and an
+    # absent compose still yields the historical placeholder rather than None.
+    class Empty:
+        def node_ids_for_container(self, name: str) -> frozenset[str]:
+            return frozenset()
+
+        def container_names(self) -> tuple[str, ...]:
+            return ()
+
+    assert _first_container(ctx, str(compose), graph=Empty()) == "testcase-api"  # type: ignore[arg-type]
+    assert _first_container(ctx, None, graph=Empty()) == "mayhem-certify"  # type: ignore[arg-type]
+
+
+def test_a_failure_after_provisioning_cannot_leave_the_cell_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever fails after ``_provision``, the disposable cell is disposed.
+
+    The cell is started *outside* ``certify_fault``'s own try/finally, and
+    ``certify_fault`` compiles the plan before it takes ownership — so a planning
+    refusal used to raise with a running container behind it. Seen live:
+    ``certify regress --rerun`` against a target the topology did not know left
+    a ``mayhem-certify-*`` container up with nothing to ever remove it.
+    ``EngineCell.dispose`` is idempotent, so the backstop costs nothing on the
+    path where the runner already disposed.
+    """
+    import click
+
+    from mayhem.cli import certify as certify_module
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    container_name: testcase-api\n",
+        encoding="utf-8",
+    )
+
+    class FakeCell:
+        def __init__(self) -> None:
+            self.disposals = 0
+
+        def dispose(self) -> None:
+            self.disposals += 1
+
+    cells: list[FakeCell] = []
+
+    def fake_provision(request: object, **kwargs: object) -> FakeCell:
+        cell = FakeCell()
+        cells.append(cell)
+        return cell
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise click.ClickException("the planner refused the target")
+
+    monkeypatch.setattr(certify_module, "_provision", fake_provision)
+    monkeypatch.setattr(certify_module, "certify_fault", boom)
+
+    result = _run(
+        "--db",
+        _db(tmp_path),
+        "certify",
+        "run",
+        FAULT_ID,
+        "--execute",
+        "--engine",
+        "docker",
+        "--container",
+        "testcase-api",
+        "--compose",
+        str(compose),
+    )
+    assert result.exit_code != 0
+    assert "refused" in result.output
+    assert cells, "the attempt provisioned before it failed"
+    assert cells[0].disposals == 1, "the provisioned cell must be disposed exactly once"
+
+
+def test_the_live_path_persists_the_evidence_capture_cites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``execute`` writes the run's envelope before ``capture`` can ask for it.
+
+    ``mayhem run`` writes an evidence envelope after every run; ``certify run``
+    drives the same engine, so without this write the capturer answered *nothing*
+    to "what evidence does this run carry?" and every attempt — however clean the
+    cell — was refused ``no_evidence``. The test pins the seam itself: the
+    callable ``_engine_execute`` returns must leave a durable, loadable envelope
+    for the run id, carrying this plan's hash.
+    """
+    from mayhem.cli import services
+    from mayhem.cli.certify import _engine_execute
+    from mayhem.controller.executor import RunResult
+    from mayhem.domain.experiments import ExecutionPlan, ExperimentKind
+    from mayhem.domain.preflight import plan_hash_for
+    from mayhem.infra.evidence import load_evidence
+
+    class FakeRunner:
+        def execute(self, plan: ExecutionPlan) -> RunResult:
+            return RunResult(
+                run_id=plan.run_id,
+                status="completed",
+                started_at_epoch_s=1.0,
+                ended_at_epoch_s=2.0,
+            )
+
+    monkeypatch.setattr(services, "engine_for", lambda *args, **kwargs: FakeRunner())
+
+    plan = ExecutionPlan(
+        run_id="r-evidence-persist",
+        kind=ExperimentKind.DRILL,
+        steps=(),
+        config_snapshot_id="cfg-0001",
+        topology_snapshot_id="topo-0001",
+        environment_fingerprint="env-fp-1",
+    )
+    store = Store.open_migrated(":memory:")
+    try:
+        execute = _engine_execute(store, None, SimpleNamespace(recovery_grace=300.0), "podman")
+        result = execute(plan)
+        assert result.status == "completed"
+        envelope = load_evidence(store, plan.run_id)
+        assert envelope is not None, (
+            "the live path must persist the run's evidence envelope: capture reads "
+            "it, and without it a clean cell is refused no_evidence"
+        )
+        assert envelope.plan_hash == plan_hash_for(plan)
+    finally:
+        store.close()
+
+
+def test_the_capturer_cites_the_stored_plan_and_its_digests_agree() -> None:
+    """``capture`` derives digests from the durable artifacts — and they match.
+
+    This is the corroboration the capturer's docstring promises: its digests come
+    from the store (the envelope + the plan row the executor wrote), while the
+    runner derives its own from the in-memory plan and the step report. If the
+    two derivations ever disagree, ``_evidence_refusals`` refuses the bundle as
+    fabricate — so the store-side path must be exercised, not assumed. It reads
+    ``runs.plan_json``, the table the executor actually writes; its earlier
+    query of ``m5_runs`` (a table with no writer on this path) made every capture
+    a silent ``no evidence``.
+    """
+    from mayhem.cli.certify import RunEvidenceCapturer
+    from mayhem.domain.experiments import (
+        ExecutionPlan,
+        ExperimentKind,
+        InjectFault,
+        PlannedFault,
+        PlannedStep,
+        ResolvedTarget,
+    )
+    from mayhem.domain.topology import NodeKind, TargetSelector
+    from mayhem.infra.evidence import build_evidence, write_evidence
+
+    store = Store.open_migrated(":memory:")
+    try:
+        selector = TargetSelector(kind=NodeKind.CONTAINER, expr="testcase-api")
+        step = PlannedStep(
+            id="step-1",
+            seq=0,
+            raw_action=InjectFault(fault=FAULT_ID, selectors=(selector,), duration="5s"),
+            fault=PlannedFault(
+                fault_id=FAULT_ID,
+                targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"testcase-api"})),),
+                params={"hold": 2},
+                duration=5.0,
+            ),
+        )
+        plan = ExecutionPlan(
+            run_id="r-capture-chain",
+            kind=ExperimentKind.DRILL,
+            steps=(step,),
+            config_snapshot_id="cfg-0001",
+            topology_snapshot_id="topo-0001",
+            environment_fingerprint="env-fp-1",
+        )
+        detail = "SIGSTOP delivered to 4242"
+
+        # What the live path writes before capture runs.
+        write_evidence(
+            store,
+            build_evidence(
+                run_id=plan.run_id,
+                plan=plan,
+                target_profile=None,
+                engine="podman",
+                safety_decisions=("safety: plan validated",),
+                step_reports=(),
+                lease_timeline=(),
+                observations=(),
+                verdict="pass",
+                recovery_state="recovered",
+                remediation=(),
+            ),
+        )
+        # What the executor writes when the run opens.
+        with store.write() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO config_snapshots (id, resolved_json, source_map, created_at)"
+                " VALUES (?, '{}', '{}', ?)",
+                (plan.config_snapshot_id, "2026-10-06T00:00:00+00:00"),
+            )
+            conn.execute(
+                """INSERT INTO runs (id, experiment_name, kind, spec_json, plan_json, seed,
+                    status, environment_fingerprint, config_snapshot_id, started_at,
+                    governing_decisions_json, controller_pid)
+                   VALUES (?, ?, 'drill', '{}', ?, NULL, 'completed', ?, ?, ?, '[]', 0)""",
+                (
+                    plan.run_id,
+                    plan.run_id,
+                    plan.model_dump_json(),
+                    plan.environment_fingerprint,
+                    plan.config_snapshot_id,
+                    "2026-10-06T00:00:00+00:00",
+                ),
+            )
+
+        residue = ResidueScan(performed=True, note="probe ran")
+        run = SimpleNamespace(
+            run_id=plan.run_id,
+            status="completed",
+            steps=(SimpleNamespace(step_id="step-1", detail=detail, ok=True),),
+            dirty_leases=(),
+        )
+        request = CertificationRequest(
+            fault_id=FAULT_ID,
+            cell=CellRequest(
+                engine=EngineLane.PODMAN,
+                engine_version="5.3.1",
+                os_distro="Fedora 41",
+                kernel_version="6.11.0",
+                arch=Arch.ARM64,
+                privilege=CellPrivilege.ROOTLESS,
+                capabilities=frozenset({Capability.PROCESS_CONTROL}),
+            ),
+            target="",
+            duration_s=5.0,
+            ttl=timedelta(days=30),
+            injector_version="5.3.1",
+            mayhem_version="1.1.0",
+        )
+
+        ref = RunEvidenceCapturer(store=store, mayhem_version="1.1.0").capture(
+            run,  # type: ignore[arg-type]
+            request=request,
+            cell=_cell(EngineLane.PODMAN),
+            plan=plan,
+            residue=residue,
+            recovery=None,
+        )
+        assert ref is not None, "a stored envelope + stored plan must yield a bundle"
+
+        expected = expected_evidence_digests(
+            params={"hold": 2},
+            target="testcase-api",
+            observed_effect=f"{_definition(FAULT_ID).observable_effect}|observed={detail}",
+            recovery=None,
+            residue=residue,
+            demotions=(),
+            compensated=True,
+        )
+        assert ref.digests == expected, (
+            "store-derived digests must equal the runner's live derivation: this is "
+            "the fabrication check _evidence_refusals performs"
+        )
+        assert len(ref.bundle_hash) == 64
+    finally:
+        store.close()
 
 
 def test_the_cell_cannot_execute_anything_by_itself() -> None:
@@ -982,9 +1399,7 @@ def test_a_refused_attempt_cannot_display_a_certified_badge() -> None:
         cell=_cell(),
         injector_version="1.0.0",
         expires_at=NOW + DEFAULT_CERTIFICATION_TTL,
-    ).model_copy(
-        update={"outcome": "refused", "reason": "refused:residue: netem on eth0"}
-    )
+    ).model_copy(update={"outcome": "refused", "reason": "refused:residue: netem on eth0"})
     attempt = CertificationAttempt(
         fault_id=FAULT_ID,
         cell=_cell(),
