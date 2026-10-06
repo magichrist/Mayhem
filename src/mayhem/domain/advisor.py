@@ -101,6 +101,8 @@ from mayhem.domain.hashing import digest
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from mayhem.domain.comparison import RegressionFinding
+
 __all__ = [
     "RULE_APPROVAL_MISMATCH",
     "RULE_APPROVAL_WITHOUT_AN_APPROVER",
@@ -153,6 +155,7 @@ __all__ = [
     "is_certified_evidence",
     "rank_drafts",
     "recommendations_for",
+    "regression_citations",
 ]
 
 # -- rule ids ----------------------------------------------------------------------
@@ -268,6 +271,37 @@ class CitedFact:
 
     def to_dict(self) -> dict[str, str]:
         return {"kind": self.kind.value, "ref": self.ref, "detail": self.detail}
+
+
+def regression_citations(*findings: RegressionFinding) -> tuple[CitedFact, ...]:
+    """Open regression findings, as the citations an advisor surface may carry.
+
+    Plan 22 phase 4's feed into this module's input vocabulary. A regression
+    finding is *not* a :class:`Finding`: a gap cell is an uncovered failure
+    mode, a regressed experiment is a measured one, and the two must never
+    share a type — :class:`Finding` already refuses a :data:`CellState.FAILED`
+    cell for exactly that reason. What crosses the boundary instead is a
+    citation: one :class:`CitedFact` of kind :data:`CitedFactKind.FINDING` per
+    finding, whose ``ref`` is the finding id and whose detail names both cited
+    runs and the metrics that moved. Pure and total: one citation per finding,
+    none for no findings, and every digest the finding cites travels inside the
+    run labels.
+    """
+    facts: list[CitedFact] = []
+    for finding in findings:
+        baseline = finding.report.baseline
+        candidate = finding.report.candidate
+        facts.append(
+            CitedFact(
+                kind=CitedFactKind.FINDING,
+                ref=finding.finding_id,
+                detail=(
+                    f"{finding.summary} (runs {baseline.label} -> {candidate.label}; "
+                    f"regressed: {', '.join(finding.regressed_metrics)})"
+                ),
+            )
+        )
+    return tuple(facts)
 
 
 # -- findings ---------------------------------------------------------------------
@@ -439,8 +473,7 @@ class Finding:
                         kind=CitedFactKind.INCIDENT,
                         ref=self.incident.incident_id,
                         detail=(
-                            f"{self.incident.failure_signature} observed on "
-                            f"{self.incident.service}"
+                            f"{self.incident.failure_signature} observed on {self.incident.service}"
                         ),
                     ),
                 )
@@ -1207,9 +1240,7 @@ class Recommendation:
                 f"recommendation {self.recommendation_id!r} has no rationale, so there "
                 "is nothing for a reader to check"
             )
-        missing = tuple(
-            name for name in self.priority.criteria_names if name not in self.rationale
-        )
+        missing = tuple(name for name in self.priority.criteria_names if name not in self.rationale)
         if missing:
             return (
                 f"recommendation {self.recommendation_id!r} is weighted against "
@@ -1243,8 +1274,7 @@ class Recommendation:
             lines.append(f"  suggested stop conditions: {list(self.candidate.stop_conditions)}")
         lines.append("  cites:")
         lines.extend(
-            f"    - {fact.kind.value}: {fact.ref} — {fact.detail}"
-            for fact in self.cited_facts
+            f"    - {fact.kind.value}: {fact.ref} — {fact.detail}" for fact in self.cited_facts
         )
         return "\n".join(lines)
 
@@ -1437,12 +1467,8 @@ def rank_drafts(
     by id, so a tie never renders as "whoever the sort happened to put first" and
     the same inputs always produce the same list.
     """
-    _require_readings_match_findings(
-        [draft.finding.finding_id for draft in drafts], readings
-    )
-    compiled = [
-        draft.compile(criteria, readings[draft.finding.finding_id]) for draft in drafts
-    ]
+    _require_readings_match_findings([draft.finding.finding_id for draft in drafts], readings)
+    compiled = [draft.compile(criteria, readings[draft.finding.finding_id]) for draft in drafts]
     return tuple(sorted(compiled, key=lambda r: (-r.total, r.recommendation_id)))
 
 

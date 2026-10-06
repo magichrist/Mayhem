@@ -409,6 +409,18 @@ class JourneyPin(BaseModel):
         """``name@version#digest[:12]`` — short enough for a report line."""
         return f"{self.name}@{self.version}#{self.digest[:12]}"
 
+    @property
+    def identity(self) -> str:
+        """``name@version#digest`` — the whole pin, every digest byte.
+
+        :attr:`label` is for a report line, where twelve hex characters are
+        enough to recognise a program. A *pin* is not a report line: a change
+        link that records which journey program version its run carried stores
+        this string, so two programs sharing a name and a version but differing
+        in bytes can never read as the same pin.
+        """
+        return f"{self.name}@{self.version}#{self.digest}"
+
     def to_dict(self) -> dict[str, object]:
         payload = self.model_dump(mode="json")
         payload["label"] = self.label

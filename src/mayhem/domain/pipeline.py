@@ -232,6 +232,17 @@ class PipelinePins(BaseModel):
     names. The axes are the same five, in the same order, that
     :class:`mayhem.domain.comparison.RunPin` requires outright, so a pin that
     passes this check cannot fail plan 22's.
+
+    A run that was a journey probe also carries a journey program pin
+    (:attr:`~mayhem.domain.comparison.RunPin.journey`), and :attr:`journey`
+    records it here as ``name@version#digest`` — the whole pin, so two
+    programs sharing a name and a version but differing in bytes can never
+    read as one. The journey axis is deliberately **not** in
+    :data:`REQUIRED_PINS` (a run need not be a journey run), but a
+    *disagreement* about it blocks all the same: a link that never recorded
+    which journey program version its run carried attributes the decision to a
+    program nobody pinned. Plan 22 phase 4 calls this "journey probes
+    versioned and pinned into plans".
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -241,14 +252,19 @@ class PipelinePins(BaseModel):
     catalog_version: str = ""
     agent_version: str = ""
     runtime_version: str = ""
+    #: The journey program pin the cited run carried, as
+    #: :attr:`~mayhem.domain.journeys.JourneyPin.identity`, or ``""`` when the
+    #: run was not a journey run. Not a required axis — most runs are not
+    #: journeys — but a disagreement about it is reportable and blocking: see
+    #: :meth:`differences_from`.
+    journey: str = ""
 
     def axis(self, name: str) -> str:
         """One pinned value by axis name; ``""`` when unpinned or unknown."""
         if name not in REQUIRED_PINS:
             raise InvariantViolationError(
                 "pipeline.unknown_pin_axis",
-                f"{name!r} is not a pipeline pin axis: the axes are "
-                + ", ".join(REQUIRED_PINS),
+                f"{name!r} is not a pipeline pin axis: the axes are " + ", ".join(REQUIRED_PINS),
             )
         return str(getattr(self, name))
 
@@ -265,9 +281,7 @@ class PipelinePins(BaseModel):
         can answer, "2 missing" is not.
         """
         return tuple(
-            name
-            for name, value in zip(REQUIRED_PINS, self.values, strict=True)
-            if not value
+            name for name, value in zip(REQUIRED_PINS, self.values, strict=True) if not value
         )
 
     @property
@@ -276,22 +290,39 @@ class PipelinePins(BaseModel):
         return not self.missing
 
     def differences_from(self, other: PipelinePins) -> tuple[str, ...]:
-        """Axes on which this pin and ``other`` disagree, both ways included."""
-        return tuple(
+        """Axes on which this pin and ``other`` disagree, both ways included.
+
+        The five required axes are compared in :data:`REQUIRED_PINS` order, and
+        the journey axis after them. A blank journey disagrees with a set one,
+        because a link that omitted the journey program version of a
+        journey-probe run attributes the decision to a pin nobody wrote down;
+        two blank journeys (or the same journey at the same bytes) do not.
+        """
+        names = [
             name
             for name, mine, theirs in zip(REQUIRED_PINS, self.values, other.values, strict=True)
             if mine != theirs
-        )
+        ]
+        if self.journey != other.journey:
+            names.append("journey")
+        return tuple(names)
 
     @classmethod
     def from_run(cls, pin: RunPin) -> PipelinePins:
-        """The pins a run actually carried, as a pipeline link records them."""
+        """The pins a run actually carried, as a pipeline link records them.
+
+        A journey-probe run's program pin travels with it
+        (:attr:`JourneyPin.identity`), so a link built from a run pins the
+        journey it ran; a link authored before the run exists leaves the axis
+        blank and :meth:`matches_run` reads the omission as a disagreement.
+        """
         return cls(
             plan_version=pin.plan_version,
             policy_version=pin.policy_version,
             catalog_version=pin.catalog_version,
             agent_version=pin.agent_version,
             runtime_version=pin.runtime_version,
+            journey="" if pin.journey is None else pin.journey.identity,
         )
 
     def matches_run(self, pin: RunPin) -> bool:
@@ -299,7 +330,9 @@ class PipelinePins(BaseModel):
 
         A link pinned to policy 8 that cites a run under policy 7 attributes the
         decision to a policy the run never saw, so a release gate reads the
-        disagreement as blocking rather than cosmetic.
+        disagreement as blocking rather than cosmetic. The same holds for the
+        journey axis: a link with no journey pin cannot cite a journey-probe
+        run, because the decision would not say which program version ran.
         """
         return not self.differences_from(PipelinePins.from_run(pin))
 
@@ -731,9 +764,7 @@ class PipelineVerdict(BaseModel):
     @property
     def unknown_checks(self) -> tuple[PRCheck, ...]:
         """Checks that could not reach an answer — blocking, not a soft pass."""
-        return tuple(
-            check for check in self.checks if check.outcome is CheckOutcome.UNKNOWN
-        )
+        return tuple(check for check in self.checks if check.outcome is CheckOutcome.UNKNOWN)
 
     @property
     def resilient(self) -> bool:
@@ -743,9 +774,7 @@ class PipelineVerdict(BaseModel):
         and collapsing them is how a release gate reads well on the strength of
         a check nobody ran.
         """
-        return any(
-            check.scope is CheckScope.RESILIENCE and check.is_pass for check in self.checks
-        )
+        return any(check.scope is CheckScope.RESILIENCE and check.is_pass for check in self.checks)
 
     def verdict_digest(self) -> str:
         """Canonical digest of the whole decision, for sealing into evidence."""
@@ -929,8 +958,7 @@ def blocking_reasons(
         )
     if verdict.cited_run is None:
         reasons.append(
-            "no run is cited, and a run that cannot be cited cannot back a "
-            "release-gate decision"
+            "no run is cited, and a run that cannot be cited cannot back a release-gate decision"
         )
     missing = verdict.change.pins.missing
     if missing:

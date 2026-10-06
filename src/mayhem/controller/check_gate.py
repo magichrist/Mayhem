@@ -146,7 +146,7 @@ from mayhem.domain.certification import CertificationState
 # ``ReleaseGateDecision.suites``, so pydantic has to resolve ``RunPin`` to
 # build this module's schema. Moving it under ``TYPE_CHECKING`` compiles
 # and then raises at first ``ReleaseGateDecision(...)``.
-from mayhem.domain.comparison import RunPin  # noqa: TC001
+from mayhem.domain.comparison import RegressionFinding, RunPin  # noqa: TC001
 from mayhem.domain.errors import DomainError, InvariantViolationError
 from mayhem.domain.identity import (
     EnvironmentScope,
@@ -877,8 +877,7 @@ def coverage_check(surface: CoverageSurface, *, name: str | None = None) -> PRCh
             cell=cell,
         ),
         detail=(
-            f"{len(gaps)} of {surface.denominator} declared cells uncovered "
-            f"({surface.describe()})"
+            f"{len(gaps)} of {surface.denominator} declared cells uncovered ({surface.describe()})"
         ),
     )
 
@@ -963,9 +962,7 @@ class CheckReport:
     @property
     def evidence_refs(self) -> tuple[str, ...]:
         """Every check's citations, de-duplicated, in check order."""
-        return tuple(
-            dict.fromkeys(ref for check in self.checks for ref in check.evidence_refs)
-        )
+        return tuple(dict.fromkeys(ref for check in self.checks for ref in check.evidence_refs))
 
     def verdict(
         self,
@@ -1038,8 +1035,7 @@ def evaluate_pr_checks(inputs: CheckInputs) -> CheckReport:
     claims = _claims_for(inputs)
     checks = [_check_from_scope(inputs, compilation, scope, claims) for scope in CHECK_ORDER]
     checks.extend(
-        coverage_check(surface, name=f"coverage:{surface.service}")
-        for surface in inputs.coverage
+        coverage_check(surface, name=f"coverage:{surface.service}") for surface in inputs.coverage
     )
     return CheckReport(
         checks=tuple(checks),
@@ -1339,9 +1335,7 @@ def _pass_detail(
             f"{live} of {len(claims)} planned faults hold a live certification "
             f"record ({', '.join(sorted({c.state.value for c in claims}))}){suffix}"
         )
-    owned = tuple(
-        name for name, owning in OBLIGATION_CHECK.items() if owning is scope
-    )
+    owned = tuple(name for name, owning in OBLIGATION_CHECK.items() if owning is scope)
     passing = sum(
         1
         for name in owned
@@ -1368,8 +1362,7 @@ def _unreachable_report(inputs: CheckInputs) -> CheckReport:
         for scope in CHECK_ORDER
     )
     checks = checks + tuple(
-        coverage_check(surface, name=f"coverage:{surface.service}")
-        for surface in inputs.coverage
+        coverage_check(surface, name=f"coverage:{surface.service}") for surface in inputs.coverage
     )
     return CheckReport(
         checks=checks,
@@ -1595,8 +1588,7 @@ class ReleaseGateDecision(BaseModel):
             if not self.reasons:
                 raise InvariantViolationError(
                     RULE_BLOCK_WITHOUT_REASON,
-                    f"a release gate for {self.subject!r} blocked without saying "
-                    "what blocked it",
+                    f"a release gate for {self.subject!r} blocked without saying what blocked it",
                 )
             return self
         if not self.evidence_refs:
@@ -1612,9 +1604,7 @@ class ReleaseGateDecision(BaseModel):
                 f"a release gate for {self.subject!r} was allowed while naming "
                 f"blocking reasons: {list(self.reasons)}",
             )
-        unrun = tuple(
-            name for name in self.required_suites if not _suite_passed(name, self.suites)
-        )
+        unrun = tuple(name for name in self.required_suites if not _suite_passed(name, self.suites))
         if unrun:
             raise InvariantViolationError(
                 RULE_ALLOW_WITHOUT_EVIDENCE,
@@ -1657,6 +1647,7 @@ def release_gate(
     request: ReleaseGateRequest,
     *,
     suites: Sequence[ResilienceSuite] = (),
+    open_findings: Sequence[RegressionFinding] = (),
 ) -> ReleaseGateDecision:
     """Decide whether ``request``'s change may open a release. Fails closed.
 
@@ -1664,6 +1655,14 @@ def release_gate(
     :func:`mayhem.domain.pipeline.blocking_reasons` is called, never
     re-implemented, so "may this open a release" has one answer in this codebase
     and the gate cannot drift from the verdict predicate Phase 1 shipped.
+
+    The findings half is plan 22 phase 4's feed into release decisions: an open
+    regression finding whose *candidate* is the release the cited run measured
+    (same experiment, same candidate release) blocks, and the reason carries the
+    finding's id, its summary, and both runs it cites. Findings on other
+    experiments, or with this run on the *baseline* side of the comparison, do
+    not block — the gate blocks what the evidence names, nothing else. When the
+    verdict cites no run at all the pipeline half has already blocked.
 
     The suite half is the gap-103 half, and every branch of it blocks:
 
@@ -1684,6 +1683,19 @@ def release_gate(
     # pipeline never passed in the first place.
     pipeline_reasons = blocking_reasons(verdict, request.merge)
     reasons: list[str] = [*pipeline_reasons]
+    cited = verdict.cited_run
+    if cited is not None:
+        # Plan 22 phase 4: an open regression finding on the release this run
+        # measured blocks, with the finding's own citations carried in the
+        # reason so the refusal is re-derivable from the sentence alone.
+        for finding in open_findings:
+            candidate = finding.report.candidate
+            if candidate.experiment == cited.experiment and candidate.release == cited.release:
+                reasons.append(
+                    f"regression finding {finding.finding_id!r} is open against this "
+                    f"release: {finding.summary} (cites {finding.report.baseline.label} "
+                    f"-> {candidate.label})"
+                )
     supplied = {suite.name: suite for suite in suites}
     evidence: list[str] = list(verdict.evidence_refs)
     for name in request.required_suites:

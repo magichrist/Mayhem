@@ -1209,8 +1209,38 @@ class ComparisonService:
         return finding
 
     def record_finding(self, finding: RegressionFinding) -> None:
-        """Persist a regression finding with its exact run and evidence references."""
+        """Persist a regression finding with its exact run and evidence references.
+
+        Both cited runs must already be stored (:meth:`record_run`), and the
+        digests the finding cites must be the ones those runs are sealed
+        against: a finding is computed from sealed evidence only, and a citation
+        this store cannot re-derive is a claim about a comparison nobody made.
+        :meth:`open_finding` reaches here only through stored runs; this check
+        closes the direct path, where a hand-built finding could otherwise
+        persist citations to runs that were never recorded.
+        """
         report = finding.report
+        for role, pin in (("baseline", report.baseline), ("candidate", report.candidate)):
+            stored = self._store.query(
+                "SELECT evidence_digest FROM comparison_runs WHERE run_id = ?", (pin.run_id,)
+            )
+            if not stored:
+                raise InvariantViolationError(
+                    "comparison_service.finding_cites_unrecorded_run",
+                    f"finding {finding.finding_id!r} cites {role} run {pin.run_id!r}, "
+                    "which has no stored measurements: a regression finding is computed "
+                    "from sealed evidence, and a run this store cannot produce is a "
+                    "citation nobody can re-derive",
+                )
+            sealed = str(dict(stored[0])["evidence_digest"])
+            if sealed != pin.evidence_digest:
+                raise InvariantViolationError(
+                    "comparison_service.finding_cites_wrong_digest",
+                    f"finding {finding.finding_id!r} cites {role} run {pin.run_id!r} "
+                    f"against evidence {pin.evidence_digest[:12]}, but the stored run is "
+                    f"sealed against {sealed[:12]}: a finding must cite the evidence "
+                    "its run actually carries",
+                )
         payload = json.dumps(finding.to_dict(), sort_keys=True)
         with self._store.write() as conn:
             conn.execute(
