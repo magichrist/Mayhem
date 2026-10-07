@@ -62,6 +62,11 @@ COMMAND_HELP: dict[str, str] = {
     # module docstring named this registration as the debt it owed. One rendered
     # line, for the same reason as every entry here.
     "ci": "Render a pinned CI workflow and gate a pull request on mayhem's checks.",
+    # Plan 06 Phase 3. One rendered line, for the same reason as every entry
+    # here: `test_every_active_root_parses_help` asserts the whole string is
+    # present in `--help`, and CliRunner wraps at 80 columns — every entry in
+    # this dict fits that width, so this one does too.
+    "cloud": "Read cloud capabilities, permissions, and costs before any run.",
 }
 
 
@@ -187,6 +192,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     # is cluster-recovery vocabulary, and widening the workflow set would split
     # a group that has a home.
     CommandSpec("agent", "recover", mutating=True),
+    # ── Plan 06 Phase 3: the cloud analysis surface ─────────────────────────
+    #
+    # `cloud` is read-only on evidence, not on optimism: `capabilities` renders
+    # the adapter tables, `check-permission` and `estimate-cost` answer the
+    # domain's own decision functions, and none of the three touches a
+    # transport — the adapter is constructed over a stub that raises on any
+    # call, so a future edit that made one of these verbs reach a provider
+    # would fail loudly rather than quietly become a mutation surface. There
+    # is no execute verb anywhere in the group: executing a cloud action is
+    # plan 09's admission gate, not a CLI flag. `inspect` is the workflow the
+    # other pure-analysis groups (`advisor`, `lowlevel`, `prove`) already
+    # declare.
+    CommandSpec("cloud", "inspect", help_group="inspect"),
 )
 
 
@@ -198,6 +216,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.campaign import campaign
     from mayhem.cli.certify import certify
     from mayhem.cli.ci_cmd import ci
+    from mayhem.cli.cloud_cmd import cloud
     from mayhem.cli.commands import commands
     from mayhem.cli.completion import completion
     from mayhem.cli.doctor import doctor_cmd
@@ -260,6 +279,7 @@ def register_commands(app: Any) -> None:
         "game-day-step": game_day_step,
         "ha": ha,
         "ci": ci,
+        "cloud": cloud,
     }
     for spec in COMMAND_SPECS:
         command = command_map[spec.name]

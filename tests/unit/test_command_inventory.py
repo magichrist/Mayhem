@@ -13,6 +13,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "campaign",
         "certify",
         "ci",
+        "cloud",
         "commands",
         "completion",
         "discover",

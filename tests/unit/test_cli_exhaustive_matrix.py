@@ -33,6 +33,7 @@ ACTIVE_ROOTS = {
     "campaign",
     "certify",
     "ci",
+    "cloud",
     "commands",
     "completion",
     "discover",
@@ -163,6 +164,10 @@ ACTIVE_GROUP_PATHS = {
     # group in this table, so `list` and `show` are enumerated rather than
     # assumed to exist next to the two writing verbs.
     "agent": ("enroll", "list", "show", "revoke"),
+    # Plan 06 Phase 3's read-only cloud analysis group: the three leaves are
+    # enumerated like every other group, so a fourth verb added later fails
+    # here rather than appearing untested.
+    "cloud": ("capabilities", "check-permission", "estimate-cost"),
 }
 
 REMOVED_ROOTS = {
