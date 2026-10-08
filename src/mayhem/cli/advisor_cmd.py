@@ -666,10 +666,7 @@ def _readable_cell(cell: CoverageCell) -> str:
     the key because that is what the domain, the citations, and every artifact
     downstream use.
     """
-    return (
-        f"{cell.target} / {cell.fault_kind} @ {cell.execution_context}"
-        f":{cell.parameter_band}"
-    )
+    return f"{cell.target} / {cell.fault_kind} @ {cell.execution_context}:{cell.parameter_band}"
 
 
 def _declared_weights(criteria: PriorityCriteria) -> tuple[DeclaredWeight, ...]:
@@ -861,9 +858,7 @@ def advisor_dashboard(
     """
     declared: dict[str, dict[str, CriterionReading]] = {}
     for finding in analysis.findings:
-        declared[finding.cell_key] = _readings_for(
-            criteria, readings.get(finding.cell_key, ())
-        )
+        declared[finding.cell_key] = _readings_for(criteria, readings.get(finding.cell_key, ()))
     orphans = sorted(set(readings) - set(declared))
     if orphans:
         raise AdvisorViewRefused(
@@ -878,8 +873,7 @@ def advisor_dashboard(
     # here, so the domain's one-to-one check is done against exactly the findings
     # it is ranking.
     by_finding = {
-        draft.finding.finding_id: declared[draft.finding.cell_key]
-        for draft in analysis.drafts
+        draft.finding.finding_id: declared[draft.finding.cell_key] for draft in analysis.drafts
     }
     ranked = ranked_views(rank_drafts(analysis.drafts, criteria, by_finding), criteria)
     return AdvisorDashboard(
@@ -1066,9 +1060,7 @@ def replay_view(replay: IncidentReplay, *, topology_snapshot_id: str) -> ReplayV
             f"{topology_snapshot_id!r}: there is no candidate to show, because the one "
             "this would render reproduces a different incident",
         )
-    untraced = tuple(
-        trace.parameter for trace in replay.parameters if not trace.source.strip()
-    )
+    untraced = tuple(trace.parameter for trace in replay.parameters if not trace.source.strip())
     if untraced:
         raise AdvisorViewRefused(
             RULE_VIEW_REPLAY_UNTRACED,
@@ -1632,9 +1624,7 @@ class AdvisorInputs:
                 ),
                 parameter_band=str(_require(row, "parameter_band", where="a coverage cell row")),
             )
-            states[cell.key] = _State(
-                str(_require(row, "state", where="a coverage cell row"))
-            )
+            states[cell.key] = _State(str(_require(row, "state", where="a coverage cell row")))
             cells.append(cell)
 
         incidents: dict[str, _Incident] = {}
@@ -1642,9 +1632,7 @@ class AdvisorInputs:
             capture = _Incident.normalise(
                 incident_id=str(_require(row, "incident_id", where="an incident row")),
                 service=str(_require(row, "service", where="an incident row")),
-                failure_signature=str(
-                    _require(row, "failure_signature", where="an incident row")
-                ),
+                failure_signature=str(_require(row, "failure_signature", where="an incident row")),
                 dependency=str(_require(row, "dependency", where="an incident row")),
                 topology_snapshot_id=str(
                     _require(row, "topology_snapshot_id", where="an incident row")
@@ -1673,9 +1661,7 @@ class AdvisorInputs:
         established = tuple(
             _SealedCell(
                 cell_key=str(_require(row, "cell_key", where="a sealed cell row")),
-                evidence_digest=str(
-                    _require(row, "evidence_digest", where="a sealed cell row")
-                ),
+                evidence_digest=str(_require(row, "evidence_digest", where="a sealed cell row")),
                 run_label=str(_require(row, "run_label", where="a sealed cell row")),
             )
             for row in _require(document, "established", where="the inputs document")
@@ -1687,9 +1673,7 @@ class AdvisorInputs:
             cell = _Cell(
                 target=str(_require(row, "target", where="a readings row")),
                 fault_kind=str(_require(row, "fault_kind", where="a readings row")),
-                execution_context=str(
-                    _require(row, "execution_context", where="a readings row")
-                ),
+                execution_context=str(_require(row, "execution_context", where="a readings row")),
                 parameter_band=str(_require(row, "parameter_band", where="a readings row")),
             )
             if cell.key in readings:
@@ -2082,9 +2066,7 @@ def render_dashboard(dashboard: AdvisorDashboard) -> tuple[str, ...]:
             f"{row.priority_total:.3f}  [{row.origin} / authority {row.authority}]"
         )
         lines.append(f"     failure mode: {row.failure_mode}")
-        lines.append(
-            f"     cell: {row.cell_ref} — {row.cell_state} in {row.landscape_id!r}"
-        )
+        lines.append(f"     cell: {row.cell_ref} — {row.cell_state} in {row.landscape_id!r}")
         lines.append(f"     topology: {list(row.topology_node_ids)}")
         lines.append(f"     hypothesis: {row.hypothesis}")
         for traced in row.declared_criteria:
@@ -2107,8 +2089,7 @@ def render_dashboard(dashboard: AdvisorDashboard) -> tuple[str, ...]:
     lines.append(style.cyan(f"declined cells ({len(dashboard.suppressed)})"))
     for declined in dashboard.suppressed:
         lines.append(
-            f"  - {declined.cell_key.replace(chr(31), '/')}: {declined.reason} — "
-            f"{declined.detail}"
+            f"  - {declined.cell_key.replace(chr(31), '/')}: {declined.reason} — {declined.detail}"
         )
     lines.append(
         f"mutation: {dashboard.mutation_calls} call(s), backend "
@@ -2125,8 +2106,7 @@ def render_replay(view: ReplayView) -> tuple[str, ...]:
         style.cyan(f"incident {view.incident_id} → candidate {view.fault_id}"),
         f"  service: {view.service}   dependency: {view.dependency}",
         f"  signature: {view.failure_signature}",
-        f"  pinned to snapshot: {view.topology_snapshot_id!r}   graph: "
-        f"{view.graph_identity[:12]}…",
+        f"  pinned to snapshot: {view.topology_snapshot_id!r}   graph: {view.graph_identity[:12]}…",
         f"  cell: {view.cell_key}   finding: {view.finding_id}",
         f"  hypothesis: {view.hypothesis}",
         f"  duration: {view.duration_s:g}s",
@@ -2333,8 +2313,7 @@ _RUN_OPTIONS = _compose(
         "fingerprint",
         default="",
         metavar="HEX",
-        help="The environment fingerprint (64 hex characters), or "
-        f"${ADVISORY_FINGERPRINT_ENV}.",
+        help=f"The environment fingerprint (64 hex characters), or ${ADVISORY_FINGERPRINT_ENV}.",
     ),
 )
 
@@ -2462,9 +2441,7 @@ def _scenario_ref(library: ScenarioLibrary, ref: str) -> ScenarioTemplate:
     version it resolved to, so a report citing the scenario can name it.
     """
     template_id, _, version = ref.partition("@")
-    template = (
-        library.get(template_id, version) if version else library.latest(template_id)
-    )
+    template = library.get(template_id, version) if version else library.latest(template_id)
     if template is None:
         raise MayhemCliError(
             code="validation_error",
@@ -2556,17 +2533,13 @@ def replay(
     engine = advisor_service_for(inputs)
     request = _replay_request(fault_id, execution_context, parameter_band, bindings)
     compiled = _call(lambda: engine.replay(request, capture, engine.landscape()))
-    view = _call(
-        lambda: replay_view(compiled, topology_snapshot_id=inputs.topology_snapshot_id)
-    )
+    view = _call(lambda: replay_view(compiled, topology_snapshot_id=inputs.topology_snapshot_id))
     if echo_machine(view.to_dict(), as_json=as_json):
         return
     _echo(render_replay(view))
 
 
-@advisor.command(
-    "submit", help="Take a replayed candidate through the shared compile/gate path."
-)
+@advisor.command("submit", help="Take a replayed candidate through the shared compile/gate path.")
 @_INPUTS_OPTION
 @_REPLAY_OPTIONS
 @_RUN_OPTIONS
@@ -2665,8 +2638,7 @@ def scenario_list(as_json: bool) -> None:
             f"{len(view.timeline)} moment(s), faults {list(view.fault_ids)})"
             for view in views
         ),
-        f"standing: {ADVISORY_STANDING}   grants_approval: false   "
-        "grants_authorization: false",
+        f"standing: {ADVISORY_STANDING}   grants_approval: false   grants_authorization: false",
     ]
     _echo(lines)
 

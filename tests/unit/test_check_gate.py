@@ -52,7 +52,6 @@ import pytest
 from mayhem.config import PolicyCfg
 from mayhem.controller import check_gate
 from mayhem.controller import check_gate as cg
-from mayhem.domain.policy_gate import RULE_BUNDLE_DENY
 from mayhem.controller.safety import SafetyContext, validate_plan
 from mayhem.controller.safety_proof import OBLIGATION_FOR_RULE
 from mayhem.domain.certification import (
@@ -97,6 +96,7 @@ from mayhem.domain.pipeline import (
     PlanMerge,
     PRCheck,
 )
+from mayhem.domain.policy_gate import RULE_BUNDLE_DENY
 from mayhem.domain.quota import DamageQuota
 from mayhem.domain.runtime_adapter import (
     AdapterCapabilities,
@@ -198,19 +198,13 @@ def _plan(
             PlannedStep(
                 id=f"s{index}",
                 seq=index,
-                raw_action=InjectFault(
-                    fault=fault_id, selectors=(selector,), duration=duration
-                ),
+                raw_action=InjectFault(fault=fault_id, selectors=(selector,), duration=duration),
                 fault=PlannedFault(
                     fault_id=fault_id,
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                     duration=duration,
                     undo_ops=(UndoOp(op="tc.del_qdisc"),) if compensate else (),
-                    verify_probes=(
-                        (VerifyProbe(probe="tc.qdisc_absent"),) if compensate else ()
-                    ),
+                    verify_probes=((VerifyProbe(probe="tc.qdisc_absent"),) if compensate else ()),
                 ),
             )
         )
@@ -253,9 +247,7 @@ class _Adapter(RuntimeAdapter):
         )
 
     def evaluate(self, reqs: Any) -> VerdictResult:
-        verdict = (
-            CapabilityVerdict.UNSUPPORTED if self.blocking else CapabilityVerdict.SUPPORTED
-        )
+        verdict = CapabilityVerdict.UNSUPPORTED if self.blocking else CapabilityVerdict.SUPPORTED
         return VerdictResult(
             engine=self.id,
             requirements=reqs,
@@ -469,9 +461,7 @@ def test_a_passing_check_cites_the_gate_output_it_was_read_from() -> None:
 
 
 def test_a_blast_radius_breach_is_reported_on_the_blast_radius_check_alone() -> None:
-    report = cg.evaluate_pr_checks(
-        _inputs(safety=_ctx(_permissive(max_concurrent_faults=1)))
-    )
+    report = cg.evaluate_pr_checks(_inputs(safety=_ctx(_permissive(max_concurrent_faults=1))))
 
     blast = report.check("blast-radius")
     assert blast is not None
@@ -489,9 +479,7 @@ def test_a_blast_radius_breach_is_reported_on_the_blast_radius_check_alone() -> 
 
 
 def test_a_damage_budget_breach_is_reported_on_the_damage_budget_check() -> None:
-    report = cg.evaluate_pr_checks(
-        _inputs(safety=_ctx(_permissive(max_duration_per_fault_s=5.0)))
-    )
+    report = cg.evaluate_pr_checks(_inputs(safety=_ctx(_permissive(max_duration_per_fault_s=5.0))))
 
     budget = report.check("damage-budget")
     assert budget is not None
@@ -975,9 +963,7 @@ def test_a_coverage_gap_does_not_fail_the_pipeline() -> None:
 
 
 def test_a_lost_coverage_cell_does_fail_the_pipeline() -> None:
-    report = cg.evaluate_pr_checks(
-        _inputs(coverage=(_surface(lost=(CHECKOUT_POSTGRES,)),))
-    )
+    report = cg.evaluate_pr_checks(_inputs(coverage=(_surface(lost=(CHECKOUT_POSTGRES,)),)))
     verdict = report.verdict()
 
     blocking = report.blocking
@@ -1002,9 +988,7 @@ def test_every_reportable_state_is_a_state_the_record_store_holds() -> None:
 def test_a_catalog_only_fault_is_never_reported_as_runtime_certified() -> None:
     from mayhem.domain.catalog import definition_for
 
-    catalog_only = next(
-        definition for definition in _catalog_only_definitions()
-    )
+    catalog_only = next(definition for definition in _catalog_only_definitions())
     assert catalog_only.catalog_only
 
     # Even handed a live record, a catalog-only fault cannot claim it.
@@ -1308,9 +1292,7 @@ def test_a_suite_that_passes_with_no_run_cannot_be_built() -> None:
 
 def test_an_unknown_suite_must_say_why() -> None:
     with pytest.raises(InvariantViolationError) as excinfo:
-        cg.ResilienceSuite(
-            name="resilience.post-deploy", outcome=CheckOutcome.UNKNOWN, detail="  "
-        )
+        cg.ResilienceSuite(name="resilience.post-deploy", outcome=CheckOutcome.UNKNOWN, detail="  ")
 
     assert excinfo.value.rule == cg.RULE_SUITE_UNKNOWN_UNEXPLAINED
 
@@ -1398,9 +1380,7 @@ def test_a_gate_records_which_part_blocked_and_cites_what_it_read() -> None:
         merged_at=NOW,
     )
 
-    decision = cg.release_gate(
-        verdict, _gate(merge=merge), suites=(_passing_suite(),)
-    )
+    decision = cg.release_gate(verdict, _gate(merge=merge), suites=(_passing_suite(),))
 
     payload = decision.to_dict()
     assert payload["decision"] == cg.GATE_BLOCK
@@ -1432,9 +1412,7 @@ def test_a_suite_joins_a_verdict_as_a_resilience_check() -> None:
     assert check.is_pass
     assert check.evidence_refs == ("bundle:sha-abc",)
 
-    verdict = PipelineVerdict.decide(
-        _link(), (check,), cited_run=_pin(), decided_at=NOW
-    )
+    verdict = PipelineVerdict.decide(_link(), (check,), cited_run=_pin(), decided_at=NOW)
     assert verdict.resilient
 
     failing = cg.ResilienceSuite(
@@ -1632,12 +1610,8 @@ def test_a_team_grant_authorizes_through_an_active_membership() -> None:
         _request(principal),
         transport=transport,
         validate=validator,
-        grants=(
-            RoleGrant(role=Role.APPROVE, scope=_scope(), team_id="t-sre", granted_at=NOW),
-        ),
-        memberships=(
-            TeamMembership(principal=principal, team_id="t-sre", joined_at=NOW),
-        ),
+        grants=(RoleGrant(role=Role.APPROVE, scope=_scope(), team_id="t-sre", granted_at=NOW),),
+        memberships=(TeamMembership(principal=principal, team_id="t-sre", joined_at=NOW),),
         now=NOW,
     )
 
@@ -1720,11 +1694,7 @@ def test_the_chat_ops_vocabulary_is_closed() -> None:
 def test_the_chatops_transport_is_a_seam_and_not_an_implementation() -> None:
     """No Slack client, and no accidental network: the seam is one method."""
     assert hasattr(cg.ChatOpsTransport, "send")
-    methods = {
-        name
-        for name in vars(cg.ChatOpsTransport)
-        if not name.startswith("_")
-    }
+    methods = {name for name in vars(cg.ChatOpsTransport) if not name.startswith("_")}
     assert methods == {"send"}
 
 

@@ -254,9 +254,11 @@ def test_a_seal_cannot_be_dressed_up_as_a_run_authorization(
     )
     assert not hasattr(seal, "policy_decision")
     assert not hasattr(seal, "approval_state")
-    assert seal.claim.grants_authorization if hasattr(seal.claim, "grants_authorization") else (
-        seal.claim.payload()["grants_authorization"]
-    ) is False
+    assert (
+        seal.claim.grants_authorization
+        if hasattr(seal.claim, "grants_authorization")
+        else (seal.claim.payload()["grants_authorization"]) is False
+    )
 
 
 def test_a_seal_chain_is_namespaced_and_reloads_byte_identically(
@@ -700,9 +702,7 @@ def test_a_version_the_library_cannot_sort_is_refused() -> None:
                 TimelineStep(at_s=0.0, fault_id="dns.servfail", duration_s=5.0, expects="nx"),
             ),
             stop_conditions=("abort if p99 > 2s",),
-            recovery=RecoveryPlan(
-                expects="back", compensation="undo", verified_by="probe 200"
-            ),
+            recovery=RecoveryPlan(expects="back", compensation="undo", verified_by="probe 200"),
         )
 
 

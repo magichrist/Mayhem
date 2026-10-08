@@ -52,7 +52,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import CeilingName
 from mayhem.controller.safety import SafetyContext
 from mayhem.controller.sandbox_service import (
@@ -112,6 +111,7 @@ from mayhem.domain.experiments import (
     PlannedStep,
     ResolvedTarget,
 )
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.prediction import (
     RULE_MAX_AFFECTED_NODES,
     RULE_MAX_AFFECTED_PCT,
@@ -292,14 +292,10 @@ def _plan(
             PlannedStep(
                 id="s0",
                 seq=0,
-                raw_action=InjectFault(
-                    fault=fault_id, selectors=(selector,), duration=duration
-                ),
+                raw_action=InjectFault(fault=fault_id, selectors=(selector,), duration=duration),
                 fault=PlannedFault(
                     fault_id=fault_id,
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({node_id})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({node_id})),),
                     duration=duration,
                 ),
             ),
@@ -496,9 +492,7 @@ def test_a_production_mode_is_refused_because_a_sandbox_is_not_production(
     provisioner = SandboxProvisioner(runner=runner)
     with pytest.raises(SandboxRefusedError) as refusal:
         provisioner.provision(
-            SandboxRequest(
-                name="sbx", directory=sandbox_dir, mode=ExecutionMode.PRODUCTION
-            )
+            SandboxRequest(name="sbx", directory=sandbox_dir, mode=ExecutionMode.PRODUCTION)
         )
     assert refusal.value.rule == RULE_SANDBOX_PRODUCTION_MODE_REFUSED
     assert "does not come through it" in str(refusal.value)
@@ -722,9 +716,7 @@ def test_the_demo_flag_is_not_production_safe_so_a_production_run_is_refused_it(
     assert [refusal.rule for refusal in production.refusals] == ["flag.production_unsafe"]
 
 
-def test_the_demo_service_refuses_a_production_mode_outright(
-    sandbox_dir: Path, runner: FakeRunner
-):
+def test_the_demo_service_refuses_a_production_mode_outright(sandbox_dir: Path, runner: FakeRunner):
     _, environment = _provision(sandbox_dir, runner)
     graph = sandbox_topology(environment.compose_path)
     with pytest.raises(SandboxRefusedError) as refusal:
@@ -795,15 +787,11 @@ def test_a_demo_marker_forged_outside_the_sealed_path_is_refused(
     )
 
 
-def test_a_banner_missing_the_no_mutation_phrase_is_refused(
-    sandbox_dir: Path, runner: FakeRunner
-):
+def test_a_banner_missing_the_no_mutation_phrase_is_refused(sandbox_dir: Path, runner: FakeRunner):
     _, environment = _provision(sandbox_dir, runner)
     graph = sandbox_topology(environment.compose_path)
     evidence = _training_run(_demo_service(), graph, _plan("svc-cache", graph))
-    stripped = replace(
-        evidence.claim.marker, marker="training", mutates=False, basis="stripped"
-    )
+    stripped = replace(evidence.claim.marker, marker="training", mutates=False, basis="stripped")
     verification = verify_demo_run(
         replace(evidence, claim=replace(evidence.claim, marker=stripped))
     )
@@ -811,9 +799,7 @@ def test_a_banner_missing_the_no_mutation_phrase_is_refused(
     assert any(item.startswith(RULE_DEMO_MARKER_MISSING) for item in verification.refusals)
 
 
-def test_a_run_that_performed_a_mutation_is_refused(
-    sandbox_dir: Path, runner: FakeRunner
-):
+def test_a_run_that_performed_a_mutation_is_refused(sandbox_dir: Path, runner: FakeRunner):
     """If the simulate path ever wrote a call, this layer refuses rather than reporting clean.
 
     Simulated by moving the pre-run reading, which is exactly the assertion: the
@@ -844,9 +830,7 @@ def test_the_banner_is_a_property_and_cannot_be_dropped_by_a_renderer(
     assert "mode" not in set(evidence.__dataclass_fields__)
 
 
-def test_the_evidence_records_the_flags_that_were_in_force(
-    sandbox_dir: Path, runner: FakeRunner
-):
+def test_the_evidence_records_the_flags_that_were_in_force(sandbox_dir: Path, runner: FakeRunner):
     _, environment = _provision(sandbox_dir, runner)
     graph = sandbox_topology(environment.compose_path)
     evidence = _training_run(_demo_service(), graph, _plan("svc-cache", graph))
@@ -972,9 +956,7 @@ def test_a_non_sandbox_demo_run_discloses_a_refusal_instead_of_raising(
     assert evidence.verify().ok is True
 
 
-def test_a_sandbox_run_with_no_admission_record_is_refused(
-    sandbox_dir: Path, runner: FakeRunner
-):
+def test_a_sandbox_run_with_no_admission_record_is_refused(sandbox_dir: Path, runner: FakeRunner):
     """The negative control: an unattested sandbox run is not evidence."""
     _, environment = _provision(sandbox_dir, runner)
     graph = sandbox_topology(environment.compose_path)
@@ -1013,9 +995,12 @@ def test_the_facade_runs_against_the_provisioned_sandbox_and_its_own_guard(
     assert evidence.network.resolved is True
     assert NO_MUTATION_PHRASE in evidence.banner
     assert isinstance(service, SandboxService)
-    assert SandboxAdmission.from_report(
-        evidence.report, ceilings=SANDBOX_CEILINGS, deployment_model=DeploymentModel.LOCAL
-    ).admitted is True
+    assert (
+        SandboxAdmission.from_report(
+            evidence.report, ceilings=SANDBOX_CEILINGS, deployment_model=DeploymentModel.LOCAL
+        ).admitted
+        is True
+    )
 
 
 def test_a_second_provision_of_the_same_directory_is_independent(
@@ -1093,9 +1078,7 @@ def test_an_undeclared_host_is_refused_by_the_enforced_allowlist():
 
 def test_an_enforced_but_empty_allowlist_permits_nothing():
     """Distinct from "no allowlist configured", and a valid way to run."""
-    decision = resolve_egress(
-        NetworkPolicy(allowlist_enforced=True), "anything.example"
-    )
+    decision = resolve_egress(NetworkPolicy(allowlist_enforced=True), "anything.example")
     assert decision.allowed is False
     assert decision.rule_id == RULE_ALLOWLIST_DENIED
     # Not enforced: unrestricted egress, disclosed as a configuration fact.
@@ -1291,9 +1274,7 @@ def test_an_existing_connector_is_guarded_by_passing_the_opener():
     """The integration seam: one argument guards every request an existing helper makes."""
     transport = FakeTransport(b'{"result": [1]}')
     guard = NetworkPolicyGuard.build(
-        NetworkPolicy(
-            allowlist_enforced=True, outbound_allowlist=frozenset({"metrics.internal"})
-        ),
+        NetworkPolicy(allowlist_enforced=True, outbound_allowlist=frozenset({"metrics.internal"})),
         transport=transport,
     )
     assert fetch_json("http://metrics.internal/api/v1/query", opener=guard.opener()) == {
@@ -1370,9 +1351,7 @@ def test_sandbox_provisioning_refuses_an_undeclared_registry_under_an_allowlist(
     provisioner = SandboxProvisioner(
         runner=runner,
         guard=NetworkPolicyGuard.build(
-            NetworkPolicy(
-                allowlist_enforced=True, outbound_allowlist=frozenset({"docker.io"})
-            ),
+            NetworkPolicy(allowlist_enforced=True, outbound_allowlist=frozenset({"docker.io"})),
             model=DeploymentModel.LOCAL,
         ),
     )
@@ -1402,9 +1381,7 @@ def test_sandbox_provisioning_refuses_when_the_policy_cannot_be_enforced(
             SandboxRequest(
                 name="sbx",
                 directory=sandbox_dir,
-                policy=NetworkPolicy(
-                    air_gapped=True, outbound_allowlist=frozenset({"docker.io"})
-                ),
+                policy=NetworkPolicy(air_gapped=True, outbound_allowlist=frozenset({"docker.io"})),
             )
         )
     assert refusal.value.rule == RULE_SANDBOX_POLICY_UNRESOLVED
@@ -1440,9 +1417,10 @@ def test_the_facade_shares_one_guard_between_provisioning_and_runs(
     )
     service = sandbox_service(runner, policy=policy)
     environment = service.provision(SandboxRequest(name="sbx", directory=sandbox_dir))
-    assert service.provisioner.guard_for(
-        SandboxRequest(name="x", directory=sandbox_dir)
-    ) is not service.guard()
+    assert (
+        service.provisioner.guard_for(SandboxRequest(name="x", directory=sandbox_dir))
+        is not service.guard()
+    )
     assert service.guard().policy == policy
     assert [attempt.host for attempt in environment.attempts] == ["docker.io", "ghcr.io"]
 
@@ -1474,9 +1452,7 @@ def test_the_enterprise_policy_matrix_end_to_end_through_one_guard():
     assert permitted.via_proxy == CORP_PROXY
     # Drop the proxy from the allowlist and the same destination is refused for a
     # different, named reason: a direct fallback would be unsanctioned egress.
-    policy_without_proxy = replace(
-        policy, outbound_allowlist=frozenset({"registry.corp.example"})
-    )
+    policy_without_proxy = replace(policy, outbound_allowlist=frozenset({"registry.corp.example"}))
     denied = resolve_egress_url(
         policy_without_proxy, "https://registry.corp.example/v2/", model=DeploymentModel.LOCAL
     )
@@ -1486,7 +1462,7 @@ def test_the_enterprise_policy_matrix_end_to_end_through_one_guard():
 
 
 def test_the_guard_reports_the_policys_own_rule_id_and_not_a_generic_one():
-    """"Your policy is inadmissible" is the conclusion; the rule id is the cause to fix."""
+    """ "Your policy is inadmissible" is the conclusion; the rule id is the cause to fix."""
     guard = NetworkPolicyGuard.build(
         NetworkPolicy(air_gapped=True, outbound_allowlist=frozenset({"a.example"}))
     )

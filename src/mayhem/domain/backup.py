@@ -193,9 +193,7 @@ class SnapshotDescriptor(BaseModel):
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
         _require_aware(self.taken_at, "snapshot.time_aware", f"snapshot {self.snapshot_id}")
-        _require_aware(
-            self.covers_through, "snapshot.time_aware", f"snapshot {self.snapshot_id}"
-        )
+        _require_aware(self.covers_through, "snapshot.time_aware", f"snapshot {self.snapshot_id}")
         if self.covers_through > self.taken_at:
             msg = (
                 f"snapshot {self.snapshot_id} claims to cover data through "
@@ -409,9 +407,7 @@ class RestoreCheckResult(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
-        _require_aware(
-            self.observed_at, "restore_check.time_aware", f"check {self.check_id}"
-        )
+        _require_aware(self.observed_at, "restore_check.time_aware", f"check {self.check_id}")
         if self.passed and not self.detail.strip():
             msg = (
                 f"restore check {self.check_id} claims it passed but records no "
@@ -479,12 +475,8 @@ class RestoreVerification(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
-        _require_aware(
-            self.started_at, "restore.time_aware", f"restore {self.restore_id}"
-        )
-        _require_aware(
-            self.completed_at, "restore.time_aware", f"restore {self.restore_id}"
-        )
+        _require_aware(self.started_at, "restore.time_aware", f"restore {self.restore_id}")
+        _require_aware(self.completed_at, "restore.time_aware", f"restore {self.restore_id}")
         if self.completed_at < self.started_at:
             msg = (
                 f"restore {self.restore_id} completed ({self.completed_at.isoformat()}) "
@@ -598,11 +590,7 @@ class RestoreVerification(BaseModel):
         return status
 
     def describe(self) -> str:
-        loss = (
-            "unmeasured"
-            if self.data_loss_seconds is None
-            else f"{self.data_loss_seconds:g}s"
-        )
+        loss = "unmeasured" if self.data_loss_seconds is None else f"{self.data_loss_seconds:g}s"
         return (
             f"{self.restore_id} of {self.snapshot_id}: {self.status.value} "
             f"({len(self.results)}/{len(self.plan.required_checks)} required checks, "
@@ -804,8 +792,7 @@ class ObjectiveComparison(BaseModel):
                     f"no verified restore evidence ({considered} restore(s) ran, none verified)"
                 )
             return (
-                f"{self.metric.value} not demonstrated: target {self.target_seconds:g}s, "
-                f"{detail}"
+                f"{self.metric.value} not demonstrated: target {self.target_seconds:g}s, {detail}"
             )
         mark = "within" if self.met else "OVER"
         return (

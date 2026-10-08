@@ -168,18 +168,18 @@ class ConfidenceInterval:
     def overlaps(self, other: ConfidenceInterval) -> bool:
         """True when the two intervals share at least one value.
 
-    Touching intervals count as overlapping: a difference of exactly one
-    combined half-width puts both bounds on the same number, and rounding
-    in a reported figure must not turn that into a clean separation.
+        Touching intervals count as overlapping: a difference of exactly one
+        combined half-width puts both bounds on the same number, and rounding
+        in a reported figure must not turn that into a clean separation.
 
-    Overlap is **not** a significance test and does not imply one. Two wide
-    intervals on series of very different sizes can overlap while the
-    difference between them is firmly distinguishable, and two tight
-    intervals on the *same* number of samples cannot overlap while the
-    difference is real — neither reading travels in the other direction
-    either. :class:`Comparison` therefore decides its outcome on the interval
-    of the difference and reports the overlap beside it, never instead of it.
-    """
+        Overlap is **not** a significance test and does not imply one. Two wide
+        intervals on series of very different sizes can overlap while the
+        difference between them is firmly distinguishable, and two tight
+        intervals on the *same* number of samples cannot overlap while the
+        difference is real — neither reading travels in the other direction
+        either. :class:`Comparison` therefore decides its outcome on the interval
+        of the difference and reports the overlap beside it, never instead of it.
+        """
         return self.low <= other.high and other.low <= self.high
 
     def to_dict(self) -> dict[str, object]:
@@ -559,15 +559,12 @@ class SamplePolicy:
             if value < 1:
                 raise InvariantViolationError(
                     "analytics.sample_floor_below_one",
-                    f"{name}={value}: a floor below one sample grades a number nobody "
-                    "measured",
+                    f"{name}={value}: a floor below one sample grades a number nobody measured",
                 )
 
     def check(self, baseline_samples: int, window_samples: int) -> Sufficiency:
         """Judge two sample counts against this floor."""
-        sufficient = (
-            baseline_samples >= self.min_baseline and window_samples >= self.min_window
-        )
+        sufficient = baseline_samples >= self.min_baseline and window_samples >= self.min_window
         reason = (
             ""
             if sufficient

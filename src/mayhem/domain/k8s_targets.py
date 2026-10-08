@@ -348,9 +348,7 @@ class K8sSelector(BaseModel):
         still comes back as an explicit empty selection, because eligibility
         and ordering are enforced separately in :meth:`select`.
         """
-        return all(
-            predicate(candidate) for stated, predicate in self._dimensions() if stated
-        )
+        return all(predicate(candidate) for stated, predicate in self._dimensions() if stated)
 
     def _dimensions(
         self,
@@ -387,7 +385,9 @@ class K8sSelector(BaseModel):
         excluded = tuple(self._exclude(c) for c in matched if not c.live_eligible)
         picked = self._dispatch(ordered, seed=seed)
         targets = tuple(
-            c.target for c in picked if c.target is not None  # narrowed by live_eligible
+            c.target
+            for c in picked
+            if c.target is not None  # narrowed by live_eligible
         )
         return K8sSelection(
             selector=self.render(),
@@ -502,8 +502,7 @@ class K8sSelector(BaseModel):
             # Defensive default: a source added after this phase (and not
             # LIVE/BLUEPRINT/UNRESOLVED) must never fall through into `targets`.
             reason=(
-                f"{candidate.namespace}/{candidate.name} matched but is not a live "
-                "resolved target"
+                f"{candidate.namespace}/{candidate.name} matched but is not a live resolved target"
             ),
         )
 
@@ -787,10 +786,7 @@ def check_pdb(facts: WorkloadFacts, *, kill_count: int) -> K8sAdmissionVerdict:
             kill_count=kill_count,
             observed=expected,
             required=required,
-            note=(
-                f"expected availability after fault = {expected}, "
-                f"PDB requires >= {required}"
-            ),
+            note=(f"expected availability after fault = {expected}, PDB requires >= {required}"),
         )
     return K8sAdmissionVerdict.deny(
         K8sAdmissionCheck.PDB,
@@ -871,9 +867,7 @@ def check_daemonset_coverage(facts: WorkloadFacts, *, kill_count: int) -> K8sAdm
             workload_kind=facts.kind,
             kill_count=kill_count,
             observed=expected,
-            note=(
-                f"expected DaemonSet coverage after fault = {expected} of {total} node(s)"
-            ),
+            note=(f"expected DaemonSet coverage after fault = {expected} of {total} node(s)"),
         )
     return K8sAdmissionVerdict.deny(
         K8sAdmissionCheck.DAEMONSET_COVERAGE,
@@ -919,10 +913,7 @@ def check_anti_affinity(facts: WorkloadFacts, *, kill_count: int) -> K8sAdmissio
             observed=free,
             note=f"expected free anti-affinity domains for replacement = {free}",
         )
-    leading = (
-        f"replicas={facts.replicas}, "
-        f"required anti-affinity topology domains={domains}"
-    )
+    leading = f"replicas={facts.replicas}, required anti-affinity topology domains={domains}"
     return K8sAdmissionVerdict.deny(
         K8sAdmissionCheck.ANTI_AFFINITY,
         f"{_denial_head(facts, kill_count, leading)}, "

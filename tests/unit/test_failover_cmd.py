@@ -208,18 +208,14 @@ class TestTheGroup:
 
 class TestPromoteCommand:
     def test_an_empty_scope_is_claimed_rather_than_failed_over(self, db_path: Path) -> None:
-        result = invoke(
-            db_path, ["promote", "--operator", "ana", "--reason", "fresh cluster"]
-        )
+        result = invoke(db_path, ["promote", "--operator", "ana", "--reason", "fresh cluster"])
         assert result.exit_code == ExitCode.SUCCESS
         assert "claimed by ctl-local" in result.output
         assert "nothing was deposed" in result.output
 
     def test_a_live_lease_is_refused_and_nothing_moves(self, db_path: Path) -> None:
         leadership(db_path, "ctl-a")
-        result = invoke(
-            db_path, ["promote", "--operator", "ana", "--reason", "I think it is hung"]
-        )
+        result = invoke(db_path, ["promote", "--operator", "ana", "--reason", "I think it is hung"])
         assert result.exit_code == ExitCode.SAFETY_REFUSAL
         assert "REFUSED promotion" in result.output
         assert "primary_indeterminate" in result.output
@@ -232,9 +228,7 @@ class TestPromoteCommand:
         import time
 
         time.sleep(0.01)
-        result = invoke(
-            db_path, ["promote", "--operator", "ana", "--reason", "lease lapsed"]
-        )
+        result = invoke(db_path, ["promote", "--operator", "ana", "--reason", "lease lapsed"])
         assert result.exit_code == ExitCode.SUCCESS
         assert "promoted ctl-local" in result.output
         assert "term 1 → 2" in result.output
@@ -294,9 +288,7 @@ class TestPromoteCommand:
         result = invoke(db_path, ["promote", "--operator", "ana", "--reason", "r"])
         assert "standby_id is a claim this process wrote" in result.output
 
-    def test_json_output_names_the_refusals_and_the_claim(
-        self, db_path: Path
-    ) -> None:
+    def test_json_output_names_the_refusals_and_the_claim(self, db_path: Path) -> None:
         leadership(db_path, "ctl-a")
         result = invoke(
             db_path,
@@ -325,18 +317,14 @@ class TestPromoteHelpers:
             clock=clock,
         )
 
-    def test_the_evidence_comes_from_the_store_not_the_prompt(
-        self, db_path: Path
-    ) -> None:
+    def test_the_evidence_comes_from_the_store_not_the_prompt(self, db_path: Path) -> None:
         now = NOW
         service = self.service(db_path, Clock(now))
         leadership(db_path, "ctl-a", Clock(now))
 
         result = failover_cmd.run_promote(
             service=service,
-            observations=failover_cmd.lease_expiry_observation(
-                term=1, at=now, expired=False
-            ),
+            observations=failover_cmd.lease_expiry_observation(term=1, at=now, expired=False),
             operator="ana",
             reason="cannot reach it",
         )
@@ -346,9 +334,7 @@ class TestPromoteHelpers:
         assert "primary_indeterminate" in result.refusals
 
     def test_an_expired_lease_reads_as_death_evidence(self) -> None:
-        (observation,) = failover_cmd.lease_expiry_observation(
-            term=4, at=NOW, expired=True
-        )
+        (observation,) = failover_cmd.lease_expiry_observation(term=4, at=NOW, expired=True)
         assert observation.observed_term == 4
         assert observation.source == "lease-store"
         assert observation.establishes_death is True
@@ -359,9 +345,7 @@ class TestPromoteHelpers:
         Calling it liveness evidence would contradict the operator's attested
         process-absence and refuse a legitimate break-glass handover.
         """
-        (observation,) = failover_cmd.lease_expiry_observation(
-            term=4, at=NOW, expired=False
-        )
+        (observation,) = failover_cmd.lease_expiry_observation(term=4, at=NOW, expired=False)
         assert observation.establishes_death is False
         assert observation.establishes_liveness is False
         assert "NOT expired" in observation.detail
@@ -394,9 +378,7 @@ class TestRotateCommand:
         assert isinstance(result.exception, MayhemCliError)
         assert result.exception.code == "usage_error"
 
-    def test_a_keyless_rotation_is_reported_as_a_window_not_a_success(
-        self, db_path: Path
-    ) -> None:
+    def test_a_keyless_rotation_is_reported_as_a_window_not_a_success(self, db_path: Path) -> None:
         store = Store.open_migrated(str(db_path), migrations=MIGRATIONS)
         AgentIdentityRepository(store).save(identity())
         store.close()
@@ -430,13 +412,9 @@ class TestRotateCommand:
         assert payload[0]["key_provisioned"] is False
         assert payload[0]["action"] == "rotated"
 
-    def test_a_degenerate_policy_is_refused_before_anything_is_written(
-        self, db_path: Path
-    ) -> None:
+    def test_a_degenerate_policy_is_refused_before_anything_is_written(self, db_path: Path) -> None:
         """The policy object refuses it, so no rotation is attempted at all."""
-        result = invoke(
-            db_path, ["rotate", "--all", "--ttl", "10", "--rotate-before", "100"]
-        )
+        result = invoke(db_path, ["rotate", "--all", "--ttl", "10", "--rotate-before", "100"])
         assert isinstance(result.exception, InvariantViolationError)
         assert "rotate_before" in str(result.exception)
 
@@ -447,9 +425,7 @@ class TestRotateCommand:
 
     def test_run_rotate_requires_exactly_one_target(self) -> None:
         with pytest.raises(MayhemCliError) as caught:
-            failover_cmd.run_rotate(
-                _StubRotationService(), agent_id="ag-1", sweep=True
-            )
+            failover_cmd.run_rotate(_StubRotationService(), agent_id="ag-1", sweep=True)
         assert caught.value.code == "usage_error"
 
 
@@ -523,9 +499,7 @@ class TestCertCommand:
         # A fixture verdict can never be mistaken for a PKI result.
         assert "fixture-ca-hmac-sha256" in result.output
 
-    def test_an_unpinned_certificate_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_unpinned_certificate_is_refused(self, tmp_path: Path) -> None:
         """No anchor configured is a refusal, never an implicit trust."""
         result = CliRunner().invoke(
             failover_cmd.ha,
@@ -760,9 +734,7 @@ class TestUpdateCommand:
 
     def test_the_command_never_applies_anything(self, tmp_path: Path) -> None:
         """``UpdateApplier`` is not reachable from this command at all."""
-        source = (
-            __import__("mayhem.cli.failover_cmd", fromlist=["x"]).__doc__ or ""
-        )
+        source = __import__("mayhem.cli.failover_cmd", fromlist=["x"]).__doc__ or ""
         assert "It never installs" in source
         assert "UpdateApplier" not in source
 
@@ -794,9 +766,7 @@ class TestRenderers:
         from mayhem.infra.certificate_authority import TrustReason, TrustVerdict
 
         lines = failover_cmd.render_trust(
-            TrustVerdict(
-                reason=TrustReason.TRUSTED, detail="d", algorithm="fixture-ca-hmac-sha256"
-            )
+            TrustVerdict(reason=TrustReason.TRUSTED, detail="d", algorithm="fixture-ca-hmac-sha256")
         )
         assert "trusted" in lines[0]
         assert "REFUSED" not in lines[0]

@@ -190,9 +190,7 @@ def _manifest_provides(capability: str) -> bool:
     """
     from mayhem.toolkit.registry import default_registry
 
-    return any(
-        capability in manifest.provides for manifest in default_registry().manifests
-    )
+    return any(capability in manifest.provides for manifest in default_registry().manifests)
 
 
 # ── 1. the refusals ──────────────────────────────────────────────────────────
@@ -228,9 +226,7 @@ class TestRefusals:
         assert CHECK_MECHANISM_APPLY in unavailable, primitive_id
 
     @pytest.mark.parametrize("primitive_id", BLOCKED_IDS)
-    def test_a_refusal_lists_the_first_unmet_demand_and_its_trap(
-        self, primitive_id: str
-    ) -> None:
+    def test_a_refusal_lists_the_first_unmet_demand_and_its_trap(self, primitive_id: str) -> None:
         gaps = descriptor_for(primitive_id).substrate_gaps(CURRENT_SUBSTRATE)
         assert gaps, primitive_id
         report = evaluate(_request(primitive_id))
@@ -336,9 +332,7 @@ class TestDurationAndParameters:
     def test_a_window_too_short_to_observe_is_refused(self, primitive_id: str) -> None:
         """A fault nobody can see is the inert parameter wearing a duration."""
         ceiling = descriptor_for(primitive_id).max_safe_duration_s
-        report = evaluate(
-            _request(primitive_id, duration_s=ceiling * MIN_OBSERVABLE_FRACTION / 2)
-        )
+        report = evaluate(_request(primitive_id, duration_s=ceiling * MIN_OBSERVABLE_FRACTION / 2))
         duration = report.check(CHECK_DURATION)
         assert duration is not None
         assert duration.status is LowLevelStatus.REFUSED
@@ -352,10 +346,7 @@ class TestDurationAndParameters:
             MechanismPorts(mechanism=_FakePort()),
         )
         real = [
-            c
-            for c in report.checks
-            if c.name
-            not in {CHECK_MECHANISM_PROBE, CHECK_MECHANISM_APPLY}
+            c for c in report.checks if c.name not in {CHECK_MECHANISM_PROBE, CHECK_MECHANISM_APPLY}
         ]
         assert real and all(check.status is LowLevelStatus.PASS for check in real), (
             f"{primitive_id} was refused by {[(c.name, c.status.value) for c in real]}"
@@ -416,9 +407,7 @@ class TestCollisions:
         assert backward.check(CHECK_COLLISION_PAIRS).status is LowLevelStatus.REFUSED
 
     def test_a_compatible_pair_is_admitted_by_this_check(self) -> None:
-        report = evaluate(
-            _request("io.read_delay", active_primitives=("io.capacity_exhaustion",))
-        )
+        report = evaluate(_request("io.read_delay", active_primitives=("io.capacity_exhaustion",)))
         assert report.check(CHECK_COLLISION_PAIRS).status is LowLevelStatus.PASS
 
     def test_an_active_set_mayhem_cannot_resolve_is_refused(self) -> None:
@@ -462,18 +451,14 @@ class TestRequirementsRow:
         )
 
     @pytest.mark.parametrize("primitive_id", BLOCKED_IDS)
-    def test_every_blocked_primitive_trips_at_least_one_inert_trap(
-        self, primitive_id: str
-    ) -> None:
+    def test_every_blocked_primitive_trips_at_least_one_inert_trap(self, primitive_id: str) -> None:
         assert inert_demands(primitive_id), (
             f"{primitive_id} is blocked but a requirements row could still gate it: "
             "revisit the decision to publish no row"
         )
 
     @pytest.mark.parametrize("primitive_id", BLOCKED_IDS)
-    def test_the_restatement_matches_the_real_impact_gate_tables(
-        self, primitive_id: str
-    ) -> None:
+    def test_the_restatement_matches_the_real_impact_gate_tables(self, primitive_id: str) -> None:
         """The four traps, checked against ``agents/impact.py`` rather than trusted.
 
         This is the load-bearing half of "no requirements row": each blocked
@@ -501,11 +486,7 @@ class TestRequirementsRow:
 
     def test_the_demanded_bins_that_the_gate_never_probes_are_the_named_ones(self) -> None:
         """The bin half of the trap, spelled out rather than summed."""
-        unprobed = {
-            binary
-            for binary in unprobeable_demands()
-            if binary not in impact._PROBE_BINS
-        }
+        unprobed = {binary for binary in unprobeable_demands() if binary not in impact._PROBE_BINS}
         assert unprobed == {"bpftool", "dmsetup", "faketime", "fusermount3", "jcmd", "mount"}, (
             "the set of bins a blocked primitive needs and the gate cannot probe changed; "
             "revisit the decision to publish no requirements row"
@@ -607,9 +588,7 @@ class TestResidueScan:
         "primitive_id",
         ("kernel.syscall_errno", "io.read_delay", "jvm.method_delay", "io.capacity_exhaustion"),
     )
-    def test_a_scan_that_covered_every_declared_facet_is_clean(
-        self, primitive_id: str
-    ) -> None:
+    def test_a_scan_that_covered_every_declared_facet_is_clean(self, primitive_id: str) -> None:
         scan = residue_scan(primitive_id, self._clean(primitive_id))
         assert scan.complete
         assert scan.clean
@@ -620,7 +599,9 @@ class TestResidueScan:
         primitive_id = "kernel.syscall_errno"
         observations = list(self._clean(primitive_id))
         observations[0] = ResidueObservation(
-            facet=observations[0].facet, probe=observations[0].probe, clean=False,
+            facet=observations[0].facet,
+            probe=observations[0].probe,
+            clean=False,
             detail="a kprobe entry is still attached",
         )
         scan = residue_scan(primitive_id, observations)
@@ -640,9 +621,10 @@ class TestResidueScan:
     def test_an_observation_for_an_undeclared_facet_is_recorded_not_counted(self) -> None:
         """Extra assurance is not the promised assurance."""
         primitive_id = "io.capacity_exhaustion"
-        observations = (*self._clean(primitive_id), ResidueObservation(
-            facet="capability", probe="grep CapEff", clean=True
-        ))
+        observations = (
+            *self._clean(primitive_id),
+            ResidueObservation(facet="capability", probe="grep CapEff", clean=True),
+        )
         scan = residue_scan(primitive_id, observations)
         assert scan.complete
         assert scan.undeclared_facets == ("capability",)
@@ -727,9 +709,7 @@ class TestNoFallback:
     def test_a_duplicate_check_name_is_refused_at_construction(self) -> None:
         check = LowLevelCheck(name="x", status=LowLevelStatus.PASS, detail="d", evidence_ref="r")
         with pytest.raises(InvariantViolationError, match="repeats a check"):
-            AdmissionReport(
-                request=_request(), checks=(check, check), applied_primitive=None
-            )
+            AdmissionReport(request=_request(), checks=(check, check), applied_primitive=None)
 
     def test_the_disposition_is_read_from_phase_three_not_re_derived(self) -> None:
         for primitive_id in BLOCKED_IDS:
@@ -763,9 +743,10 @@ class TestNoFallback:
         assert "nothing has decided what happens to it" in known.detail
         assert not report.granted
         # And the restore is exact, so the control proves something.
-        assert evaluate(_request("jvm.gc_pressure", params={})).check(
-            CHECK_PRIMITIVE_KNOWN
-        ).status is LowLevelStatus.PASS
+        assert (
+            evaluate(_request("jvm.gc_pressure", params={})).check(CHECK_PRIMITIVE_KNOWN).status
+            is LowLevelStatus.PASS
+        )
 
 
 # ── 9. negative controls ─────────────────────────────────────────────────────
@@ -783,6 +764,7 @@ class TestNegativeControls:
 
     def test_a_port_answering_none_is_unavailable(self) -> None:
         ports = MechanismPorts(mechanism=_FakePort(answer=None, applied=True))
+
         # ``answer=None`` means "use the defaults", so the wrong-shape case needs
         # a port whose answer is genuinely not an observation.
         class _WrongShape:

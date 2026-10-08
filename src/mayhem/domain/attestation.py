@@ -103,9 +103,7 @@ def _normalize(value: Any, *, path: str = "$") -> Any:
         normalized: dict[str, Any] = {}
         for raw_key, raw_value in value.items():
             if not isinstance(raw_key, str):
-                raise TypeError(
-                    f"object key at {path} must be str, got {type(raw_key).__name__}"
-                )
+                raise TypeError(f"object key at {path} must be str, got {type(raw_key).__name__}")
             key = unicodedata.normalize("NFC", raw_key)
             normalized[key] = _normalize(raw_value, path=f"{path}.{key}")
         return normalized
@@ -280,9 +278,7 @@ def wall_clock_offset(reference: AttestedTimestamp, other: AttestedTimestamp) ->
     return OrderedOffset(seconds=seconds, lower=lower, upper=upper, ordering=ordering)
 
 
-def wall_clock_ordering_ambiguous(
-    reference: AttestedTimestamp, other: AttestedTimestamp
-) -> bool:
+def wall_clock_ordering_ambiguous(reference: AttestedTimestamp, other: AttestedTimestamp) -> bool:
     """True when the uncertainty bounds overlap and the wall clock cannot order.
 
     When this is True, :func:`monotonic_ordering` is the honest fallback — but
@@ -873,8 +869,7 @@ class Manifest(BaseModel):
     def _parallel_roots(self) -> Manifest:
         if self.event_ids and len(self.event_ids) != len(self.event_roots):
             raise ValueError(
-                f"manifest covers {len(self.event_ids)} event ids but "
-                f"{len(self.event_roots)} roots"
+                f"manifest covers {len(self.event_ids)} event ids but {len(self.event_roots)} roots"
             )
         return self
 
@@ -982,9 +977,7 @@ def _check_signer_honesty(manifest: Manifest) -> tuple[list[str], list[str]]:
             f"{manifest.trust_root_ref!r} but no signer"
         )
     if not manifest.signed:
-        warnings.append(
-            "manifest is unsigned: integrity is verified, authorship is not"
-        )
+        warnings.append("manifest is unsigned: integrity is verified, authorship is not")
     return errors, warnings
 
 

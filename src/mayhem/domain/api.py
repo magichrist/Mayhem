@@ -187,6 +187,7 @@ API_SCHEMA_VERSION: Final[str] = "1.0"
 #: pins command frames.
 Sha256Hex = str
 
+
 def _require_sha256(value: str, rule: str, subject: str) -> str:
     """A lowercase sha256 hex digest, or a typed refusal naming the subject."""
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
@@ -242,10 +243,7 @@ def _parse_plan_json(plan_json: str, subject: str) -> dict[str, Any]:
         )
         raise InvariantViolationError("api.run_plan_unreadable", msg) from exc
     if not isinstance(parsed, dict):
-        msg = (
-            f"{subject} stores a plan_json that is not a JSON object, so it names no "
-            "frozen plan"
-        )
+        msg = f"{subject} stores a plan_json that is not a JSON object, so it names no frozen plan"
         raise InvariantViolationError("api.run_plan_unreadable", msg)
     return parsed
 
@@ -1343,6 +1341,7 @@ RECOVERY_RULES_ARE_CLAIMS: Final[str] = (
     "failures"
 )
 
+
 def _detail_lookup(detail: Mapping[str, Any], field: str) -> str:
     """First non-empty detail value for ``field``, or ``""``."""
     for key in CLAIM_DETAIL_KEYS[field]:
@@ -1551,8 +1550,7 @@ class RunTimeline(BaseModel):
     def points(self) -> tuple[TimelinePoint, ...]:
         """The derived timeline. Recomputed on every read; never stored."""
         return tuple(
-            timeline_point_of(event, sequence)
-            for sequence, event in enumerate(self.ordered_events)
+            timeline_point_of(event, sequence) for sequence, event in enumerate(self.ordered_events)
         )
 
     @property
@@ -1725,10 +1723,7 @@ class FailureExplanation(_Resource):
         withheld_sections = {entry.section for entry in self.withheld}
         both = sorted(section.value for section in explained & withheld_sections)
         if both:
-            msg = (
-                f"failure explanation both claims and withholds {both}: one section, one "
-                "answer"
-            )
+            msg = f"failure explanation both claims and withholds {both}: one section, one answer"
             raise InvariantViolationError("api.section_claimed_and_withheld", msg)
         # Order matters, and it is the informative one. "You named a cause over an
         # ungraded verdict" says what is actually wrong; "you are silent on four
@@ -1745,9 +1740,7 @@ class FailureExplanation(_Resource):
             )
             raise InvariantViolationError("api.root_failure_without_verdict", msg)
         addressed = explained | withheld_sections
-        silent = sorted(
-            section.value for section in ExplanationSection if section not in addressed
-        )
+        silent = sorted(section.value for section in ExplanationSection if section not in addressed)
         if silent:
             msg = (
                 f"failure explanation is silent on {silent}: every section is either "
@@ -2064,9 +2057,7 @@ def _observed_section(
         withheld.append(
             WithheldClaim(
                 section=ExplanationSection.OBSERVED_VS_TOLERANCE,
-                reason=(
-                    f"{entry.get('phase')}/{entry.get('check_id')} was not graded: {note}"
-                ),
+                reason=(f"{entry.get('phase')}/{entry.get('check_id')} was not graded: {note}"),
                 missing=(f"{entry.get('phase')}/{entry.get('check_id')}",),
             )
         )
@@ -2340,6 +2331,7 @@ def _envelope_ref(evidence: EvidenceReference) -> ObservationRef:
         key=evidence.ref_id,
         detail=f"plan={evidence.plan_digest[:12]} status={evidence.envelope.evidence_status}",
     )
+
 
 def _section_index(section: ExplanationSection) -> int:
     return EXPLANATION_SECTIONS.index(section)

@@ -85,9 +85,7 @@ class Clock:
 
 
 def fence(*, epoch: int = 1, holder: str = "ctl-a", step_id: str = STEP_ID) -> FencingToken:
-    return FencingToken(
-        run_id=RUN_ID, step_id=step_id, holder=holder, epoch=epoch, issued_at=NOW
-    )
+    return FencingToken(run_id=RUN_ID, step_id=step_id, holder=holder, epoch=epoch, issued_at=NOW)
 
 
 def command(
@@ -149,9 +147,7 @@ def leadership(store: Store, clock: Clock) -> SqliteLeadershipStore:
 def controller(
     store: SqliteLeadershipStore, controller_id: str, clock: Clock, *, ttl_s: float = TTL_S
 ) -> LeaderElection:
-    return LeaderElection(
-        store=store, controller_id=controller_id, ttl_s=ttl_s, clock=clock
-    )
+    return LeaderElection(store=store, controller_id=controller_id, ttl_s=ttl_s, clock=clock)
 
 
 # --------------------------------------------------------------------------- #
@@ -214,9 +210,7 @@ def test_scopes_are_independent(
     store: Store, clock: Clock, leadership: SqliteLeadershipStore
 ) -> None:
     controller(leadership, "ctl-a", clock).campaign()
-    other = LeaderElection(
-        store=leadership, controller_id="ctl-b", scope="cell-a", clock=clock
-    )
+    other = LeaderElection(store=leadership, controller_id="ctl-b", scope="cell-a", clock=clock)
 
     assert other.campaign().leader_id == "ctl-b"
 
@@ -299,9 +293,7 @@ def test_a_deposed_leader_cannot_dispatch_even_with_an_unexpired_lease(
     recorder = Recorder()
 
     with pytest.raises(LeaderNotCurrentError):
-        controller(leadership, "ctl-a", clock).dispatch(
-            deposed, command(), recorder
-        )
+        controller(leadership, "ctl-a", clock).dispatch(deposed, command(), recorder)
 
     assert recorder.seen == []
     # The epoch was not spent either, so the successor owns an untouched step.
@@ -366,9 +358,7 @@ def test_a_deposed_leader_cannot_mint_a_fence(
         )
 
 
-def test_fences_are_per_step(
-    store: Store, clock: Clock, leadership: SqliteLeadershipStore
-) -> None:
+def test_fences_are_per_step(store: Store, clock: Clock, leadership: SqliteLeadershipStore) -> None:
     """One step's epoch says nothing about another's — that is plan 03's scope rule."""
     lease = controller(leadership, "ctl-a", clock).campaign()
     engine = controller(leadership, "ctl-a", clock)
@@ -534,15 +524,11 @@ def test_leader_kill_drill_forces_a_handover_and_cannot_double_dispatch(
     assert recorder.seen == ["fc-1"]
 
     # (5) the successor cannot reuse the old epoch.
-    token_b = controller_b.fence_for(
-        lease_b, run_id=RUN_ID, step_id=STEP_ID, holder="ctl-b"
-    )
+    token_b = controller_b.fence_for(lease_b, run_id=RUN_ID, step_id=STEP_ID, holder="ctl-b")
     assert token_b.epoch == 2
     assert token_b.holder == "ctl-b"
     with pytest.raises(StepAlreadyDispatchedError):
-        controller_b.dispatch(
-            lease_b, command(command_id="fc-dup", token=fence(epoch=1)), recorder
-        )
+        controller_b.dispatch(lease_b, command(command_id="fc-dup", token=fence(epoch=1)), recorder)
 
     # (6) the successor dispatches under its own, newer fence.
     result = controller_b.dispatch(
@@ -632,13 +618,10 @@ def test_m0032_is_reversible_and_reapplies_cleanly(tmp_path: Path) -> None:
     assert ha_dr.migration_id == "0032_ha_dr"  # the literal subject of this test
     head = store.schema_version
     assert head is not None and head >= HA_DR_VERSION, (
-        "0032 must actually be applied to this database, or the drill below "
-        "proves nothing about it"
+        "0032 must actually be applied to this database, or the drill below proves nothing about it"
     )
 
-    engine = LeaderElection(
-        store=SqliteLeadershipStore(store), controller_id="ctl-a", ttl_s=30.0
-    )
+    engine = LeaderElection(store=SqliteLeadershipStore(store), controller_id="ctl-a", ttl_s=30.0)
     engine.campaign(now=NOW)
 
     reversed_ids = store.migrate_down(HA_DR_VERSION - 1)
@@ -646,8 +629,7 @@ def test_m0032_is_reversible_and_reapplies_cleanly(tmp_path: Path) -> None:
     assert reversed_ids[-1] == ha_dr.migration_id
     assert store.schema_version == HA_DR_VERSION - 1
     tables = {
-        str(row["name"])
-        for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
+        str(row["name"]) for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert "control_plane_leaders" not in tables
 
@@ -655,8 +637,7 @@ def test_m0032_is_reversible_and_reapplies_cleanly(tmp_path: Path) -> None:
     assert ha_dr.migration_id in reapplied
     assert store.schema_version == head
     tables = {
-        str(row["name"])
-        for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
+        str(row["name"]) for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {"control_plane_leaders", "control_plane_step_fences"} <= tables
     # The leadership row went with the table, so a re-claim starts from term 1 again.

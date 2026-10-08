@@ -166,9 +166,7 @@ class Fixture:
                     ),
                     fault=PlannedFault(
                         fault_id=fault_id,
-                        targets=(
-                            ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                        ),
+                        targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                         duration=duration,
                         undo_ops=(UndoOp(op="tc.del_qdisc"),) if self.compensate else (),
                         verify_probes=(
@@ -372,12 +370,8 @@ class TestFixturePullRequests:
         """
         from mayhem.domain.catalog import definition_for
 
-        catalog_only = next(
-            definition.id for definition in _catalog() if definition.catalog_only
-        )
-        report = _evaluate(
-            Fixture(name="catalog-only", faults=(catalog_only,), durations=(10.0,))
-        )
+        catalog_only = next(definition.id for definition in _catalog() if definition.catalog_only)
+        report = _evaluate(Fixture(name="catalog-only", faults=(catalog_only,), durations=(10.0,)))
         syntax = report.check(cg.CHECK_NAME[CheckScope.SYNTAX])
         compat = report.check(cg.CHECK_NAME[CheckScope.FAULT_COMPATIBILITY])
         assert syntax.outcome is CheckOutcome.FAIL
@@ -440,9 +434,7 @@ class TestFixturePullRequests:
         assert compat.finding.blocks is False
 
     def test_a_certified_fault_reports_no_warning(self) -> None:
-        records = {
-            fault_id: [_certified(fault_id)] for fault_id in ("proc.pause", "net.latency")
-        }
+        records = {fault_id: [_certified(fault_id)] for fault_id in ("proc.pause", "net.latency")}
         report = _evaluate(Fixture(name="certified"), certifications=records)
         compat = report.check(cg.CHECK_NAME[CheckScope.FAULT_COMPATIBILITY])
         assert compat.finding is None
@@ -512,12 +504,16 @@ def _certified(fault_id: str) -> CertificationRecord:
 
 
 POSTGRES_CELL = CoverageCell(
-    target="checkout", fault_kind="postgres_failure",
-    execution_context="container", parameter_band="default",
+    target="checkout",
+    fault_kind="postgres_failure",
+    execution_context="container",
+    parameter_band="default",
 )
 TIMEOUT_CELL = CoverageCell(
-    target="checkout", fault_kind="http_timeout",
-    execution_context="container", parameter_band="default",
+    target="checkout",
+    fault_kind="http_timeout",
+    execution_context="container",
+    parameter_band="default",
 )
 
 
@@ -540,9 +536,7 @@ class TestCoverageOnAPullRequest:
         assert "1 of 2" in check.finding.message
 
     def test_lost_coverage_is_an_error_and_fails(self) -> None:
-        check = cg.coverage_check(
-            self._surface(covered=frozenset(), lost=(TIMEOUT_CELL,))
-        )
+        check = cg.coverage_check(self._surface(covered=frozenset(), lost=(TIMEOUT_CELL,)))
         assert check.outcome is CheckOutcome.FAIL
         assert check.finding.severity.value == "error"
 
@@ -1110,9 +1104,7 @@ class TestChatOpsAuthorizationEndToEnd:
         return bot
 
     def test_an_authorized_run_reaches_validation_once(self) -> None:
-        grant = _RoleGrant(
-            role=Role.EXECUTE, scope=STAGING, principal=OPERATOR, granted_at=NOW
-        )
+        grant = _RoleGrant(role=Role.EXECUTE, scope=STAGING, principal=OPERATOR, granted_at=NOW)
         validator, transport = _RecordingValidator(), _RecordingTransport()
         outcome, _ = self._bot(grant).dispatch(
             _chat_message("mayhem run run-ci-0001"),
@@ -1126,9 +1118,7 @@ class TestChatOpsAuthorizationEndToEnd:
 
     def test_an_unauthorized_approve_never_reaches_validation(self) -> None:
         """The ordering, through the bot rather than through the seam."""
-        grant = _RoleGrant(
-            role=Role.EXECUTE, scope=STAGING, principal=OPERATOR, granted_at=NOW
-        )
+        grant = _RoleGrant(role=Role.EXECUTE, scope=STAGING, principal=OPERATOR, granted_at=NOW)
         validator, transport = _RecordingValidator(), _RecordingTransport()
         outcome, detail = self._bot(grant).dispatch(
             _chat_message("mayhem approve run-ci-0001"),

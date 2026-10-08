@@ -215,9 +215,7 @@ def _topology_with_one_service() -> TopologyGraph:
     reach the refusal this file is about.
     """
     return TopologyGraph(
-        nodes=(
-            ServiceNode(id="svc-1", name="testcase-api", container_name="testcase-api"),
-        ),
+        nodes=(ServiceNode(id="svc-1", name="testcase-api", container_name="testcase-api"),),
         edges=(),
     )
 
@@ -228,9 +226,7 @@ def _drill_spec(fault_id: str) -> DrillSpec:
         name="lowlevel-refusal",
         config=DrillConfig(),
         containers={
-            "testcase-api": DrillContainer(
-                faults=(DrillFault(fault=fault_id, duration="3s"),)
-            )
+            "testcase-api": DrillContainer(faults=(DrillFault(fault=fault_id, duration="3s"),))
         },
         execution=(ExecutionStep(parallel=("testcase-api",)),),
     )
@@ -256,8 +252,7 @@ class TestSelectionRule:
             f"{sorted(blocked - accounted)}"
         )
         assert accounted - blocked == set(), (
-            f"these outcomes name primitives that are not blocked: "
-            f"{sorted(accounted - blocked)}"
+            f"these outcomes name primitives that are not blocked: {sorted(accounted - blocked)}"
         )
 
     @pytest.mark.parametrize("fault_id", NEW_IDS)
@@ -270,9 +265,7 @@ class TestSelectionRule:
         )
 
     @pytest.mark.parametrize("fault_id", NEW_IDS)
-    def test_a_refusal_covers_only_primitives_that_cannot_be_injected(
-        self, fault_id: str
-    ) -> None:
+    def test_a_refusal_covers_only_primitives_that_cannot_be_injected(self, fault_id: str) -> None:
         blocked = _blocked_primitives()
         for primitive_id in COVERED_BY_CATALOG[fault_id]:
             assert primitive_id in blocked
@@ -343,9 +336,7 @@ class TestDescriptorOnlyJustifications:
     @pytest.mark.parametrize(
         "primitive_id", [p for p, rule in DESCRIPTOR_ONLY.items() if rule == "R4"]
     )
-    def test_r4_the_family_prefix_is_not_a_registered_fault_prefix(
-        self, primitive_id: str
-    ) -> None:
+    def test_r4_the_family_prefix_is_not_a_registered_fault_prefix(self, primitive_id: str) -> None:
         family = primitive_id.split(".", 1)[0]
         for candidate in (primitive_id, f"{family}.probe"):
             with pytest.raises(SchemaValidationError):
@@ -366,9 +357,7 @@ class TestDescriptorOnlyJustifications:
         assert torn.risk is RiskLevel.CRITICAL
         assert torn.category is FaultCategory.STORAGE
         assert "fs.torn_write" not in {d.id for d in CATALOG}
-        critical_scopes = [
-            d.applicable_node_kinds for d in CATALOG if d.risk is RiskLevel.CRITICAL
-        ]
+        critical_scopes = [d.applicable_node_kinds for d in CATALOG if d.risk is RiskLevel.CRITICAL]
         assert critical_scopes, "the catalog no longer has a CRITICAL rung to compare against"
         assert all(
             scopes <= frozenset({NodeKind.POD, NodeKind.K8S_NODE}) for scopes in critical_scopes
@@ -522,9 +511,7 @@ class TestRefusalNamesAMechanism:
     def test_refusal_cites_only_faults_that_exist(self, fault_id: str) -> None:
         """A refusal naming a renamed or removed fault is worse than none."""
         cited = {
-            ref
-            for ref in _DOTTED_REF.findall(_refusal(fault_id))
-            if ref != "catalog.unsupported"
+            ref for ref in _DOTTED_REF.findall(_refusal(fault_id)) if ref != "catalog.unsupported"
         }
         assert cited, f"{fault_id} points at nothing, so a reader has no next step"
         for ref in cited:
@@ -541,9 +528,7 @@ class TestRefusalNamesAMechanism:
         cited as *different* failures, never as equivalents.
         """
         cited = {
-            ref
-            for ref in _DOTTED_REF.findall(_refusal(fault_id))
-            if ref != "catalog.unsupported"
+            ref for ref in _DOTTED_REF.findall(_refusal(fault_id)) if ref != "catalog.unsupported"
         }
         assert not cited & set(COVERED_BY_CATALOG[fault_id]), (
             "a refusal must not point at another refusal as if it were usable"
@@ -598,9 +583,7 @@ class TestImpactGateTrap:
         assert verdict.note == "no in-image tooling required"
 
     @pytest.mark.parametrize("fault_id", NEW_IDS)
-    def test_scan_plan_gates_a_refusal_without_probing_a_container(
-        self, fault_id: str
-    ) -> None:
+    def test_scan_plan_gates_a_refusal_without_probing_a_container(self, fault_id: str) -> None:
         plan = _plan_carrying_only(fault_id)
         verdicts, engine_probed = impact.scan_plan_faults(
             plan,  # type: ignore[arg-type] - see _plan_carrying_only

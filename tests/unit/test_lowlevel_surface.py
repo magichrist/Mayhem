@@ -107,17 +107,19 @@ _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 #: the enums themselves rather than from literals, so adding a member to one of
 #: them does not silently make this test fail — and does not silently make it
 #: *weaker*, because the tables are the same objects the validators read.
-_CLOSED_VOCABULARIES: frozenset[str] = frozenset(
-    code.value for code in ErrorCode
-) | frozenset(RETURN_MUTATIONS) | frozenset(
-    value
-    for enum in (
-        IoOperation,
-        JVMInstrumentation,
-        ClockId,
-        ReverseAttachment,
+_CLOSED_VOCABULARIES: frozenset[str] = (
+    frozenset(code.value for code in ErrorCode)
+    | frozenset(RETURN_MUTATIONS)
+    | frozenset(
+        value
+        for enum in (
+            IoOperation,
+            JVMInstrumentation,
+            ClockId,
+            ReverseAttachment,
+        )
+        for value in (member.value for member in enum)
     )
-    for value in (member.value for member in enum)
 )
 
 
@@ -332,9 +334,7 @@ class TestDerivedGrammar:
         assert parameter_grammar(descriptor_for(primitive_id))
 
     @pytest.mark.parametrize("primitive_id", ALL_IDS)
-    def test_every_primitive_parameter_name_is_identifier_shaped(
-        self, primitive_id: str
-    ) -> None:
+    def test_every_primitive_parameter_name_is_identifier_shaped(self, primitive_id: str) -> None:
         """``Identifier``-shaped, because a parameter reaches a drill spec as a key."""
         grammar = parameter_grammar(descriptor_for(primitive_id))
         assert len({param.name for param in grammar}) == len(grammar), (
@@ -348,9 +348,7 @@ class TestDerivedGrammar:
     def test_a_parameter_name_that_is_not_identifier_shaped_is_refused(self) -> None:
         """Negative control for the line above: the shape is enforced, not assumed."""
         with pytest.raises(ValidationError):
-            PrimitiveParam(
-                name="Delay Ms", kind=ParamKind.INTEGER, unit="ms", minimum=1, maximum=2
-            )
+            PrimitiveParam(name="Delay Ms", kind=ParamKind.INTEGER, unit="ms", minimum=1, maximum=2)
 
     @pytest.mark.parametrize("primitive_id", ALL_IDS)
     def test_every_enum_choice_comes_from_a_closed_table(self, primitive_id: str) -> None:
@@ -550,9 +548,10 @@ class TestExplanation:
         if primitive_id in CATALOG_REFUSAL_BY_PRIMITIVE:
             assert explanation.disposition is PrimitiveDisposition.REFUSED_IN_CATALOG
             assert explanation.catalog_refusal
-            assert explanation.catalog_refusal == definition_for(
-                CATALOG_REFUSAL_BY_PRIMITIVE[primitive_id]
-            ).refusal_reason
+            assert (
+                explanation.catalog_refusal
+                == definition_for(CATALOG_REFUSAL_BY_PRIMITIVE[primitive_id]).refusal_reason
+            )
         else:
             assert explanation.disposition is PrimitiveDisposition.DESCRIPTOR_ONLY
             assert explanation.rule_id in DESCRIPTOR_ONLY_RULES.values()
@@ -820,9 +819,7 @@ class TestSurface:
             # dropped: ``mayhem lowlevel explain X`` becomes ``["explain", "X"]``.
             argv = spelling.removeprefix("mayhem lowlevel").split()
             result = CliRunner().invoke(lowlevel, argv)
-            expected = (
-                ExitCode.SAFETY_REFUSAL if argv[0] == "admit" else ExitCode.SUCCESS
-            )
+            expected = ExitCode.SAFETY_REFUSAL if argv[0] == "admit" else ExitCode.SUCCESS
             assert result.exit_code == int(expected), (
                 f"documented invocation {spelling!r} exited {result.exit_code}: {result.output}"
             )

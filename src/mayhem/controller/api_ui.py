@@ -232,9 +232,7 @@ class Page:
         )
         caveat_rows = "".join(f"<li>{html.escape(text)}</li>" for text in self.caveats)
         caveat_block = (
-            f"<h2>what this page does not claim</h2><ul>{caveat_rows}</ul>"
-            if caveat_rows
-            else ""
+            f"<h2>what this page does not claim</h2><ul>{caveat_rows}</ul>" if caveat_rows else ""
         )
         evidence = (
             f"<p>evidence: {html.escape(', '.join(self.evidence_refs))}</p>"
@@ -242,7 +240,7 @@ class Page:
             else ""
         )
         return (
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f"<title>mayhem: {html.escape(self.title)}</title></head><body>"
             f"<h1>{html.escape(self.title)}</h1>"
             f'<nav><p>API object: <a href="{html.escape(self.api_path)}">'
@@ -433,9 +431,7 @@ def render_builder_page(payload: Mapping[str, Any], *, api_path: str) -> Page:
             + _esc(f"{control.get('fault_id', '?')}.{control.get('name', '?')}")
             + "</th><td>"
             + _widget(control)
-            + _esc(
-                f" default={control.get('default')!r} — " + "; ".join(annotations)
-            )
+            + _esc(f" default={control.get('default')!r} — " + "; ".join(annotations))
             + "</td></tr>"
         )
     claims = preview.get("claims") or []
@@ -443,11 +439,7 @@ def render_builder_page(payload: Mapping[str, Any], *, api_path: str) -> Page:
         (
             str(claim.get("rule_id", "?")),
             f"{claim.get('stance', '?')} — {claim.get('reason', '')}"
-            + (
-                f" [remediation: {claim['remediation']}]"
-                if claim.get("remediation")
-                else ""
-            ),
+            + (f" [remediation: {claim['remediation']}]" if claim.get("remediation") else ""),
         )
         for claim in claims
     ]
@@ -458,7 +450,7 @@ def render_builder_page(payload: Mapping[str, Any], *, api_path: str) -> Page:
         '<input type="hidden" name="idempotency_key" value="">'
         '<button type="submit">submit this experiment</button></form>'
         if usable
-        else '<p><strong>not submittable:</strong> this preview is not usable for '
+        else "<p><strong>not submittable:</strong> this preview is not usable for "
         "approval, so no submit control is offered.</p>"
     )
     body = (
@@ -527,7 +519,7 @@ def _widget(control: Mapping[str, Any]) -> str:
         ]
         if control.get("default") is not None:
             attrs.append(f'value="{control["default"]}"')
-        return f'<input {" ".join(attrs)}>'
+        return f"<input {' '.join(attrs)}>"
     if kind == "direction_selector":
         attrs = [
             f'name="{label}"',
@@ -544,13 +536,17 @@ def _widget(control: Mapping[str, Any]) -> str:
                 f'<option value="{_esc(bound)}">toward {_esc(bound)}</option>'
                 for bound in (control.get("minimum"), control.get("maximum"))
             )
-            + f'</select><input {" ".join(attrs)} hidden>'
+            + f"</select><input {' '.join(attrs)} hidden>"
         )
     if kind == "select":
-        return f'<select name="{label}">' + "".join(
-            f'<option value="{_esc(choice)}">{_esc(choice)}</option>'
-            for choice in control.get("choices", ())
-        ) + "</select>"
+        return (
+            f'<select name="{label}">'
+            + "".join(
+                f'<option value="{_esc(choice)}">{_esc(choice)}</option>'
+                for choice in control.get("choices", ())
+            )
+            + "</select>"
+        )
     if kind == "boolean":
         checked = " checked" if control.get("default") else ""
         return f'<input type="checkbox" name="{label}"{checked}>'
@@ -668,9 +664,8 @@ def render_boundary_page(payload: Mapping[str, Any], *, api_path: str) -> Page:
         if signal.get("reportable"):
             value = f"{signal.get('tolerance', '')} — {signal.get('graded_verdict', '')}"
         else:
-            value = (
-                "WITHHELD: "
-                + str(signal.get("refusal") or signal.get("withheld_reason") or "not reportable")
+            value = "WITHHELD: " + str(
+                signal.get("refusal") or signal.get("withheld_reason") or "not reportable"
             )
         signal_rows.append((label, value))
     return Page(

@@ -76,9 +76,10 @@ class TestTheAuthorizationMatrixIsRenderedNotTranscribed:
         }
 
     def test_the_module_matrix_agrees_with_the_engine(self) -> None:
-        assert tuple(
-            (command.value, role.value) for command, role in CHATOPS_REQUIRED_ROLE.items()
-        ) == chatops_module.AUTHORIZATION_MATRIX
+        assert (
+            tuple((command.value, role.value) for command, role in CHATOPS_REQUIRED_ROLE.items())
+            == chatops_module.AUTHORIZATION_MATRIX
+        )
 
 
 class TestPinsAreQuotedNotTranscribed:
@@ -257,7 +258,7 @@ class TestTheHonestyGates:
 
     def test_the_cookbook_states_the_untrusted_input_containment_rule(self) -> None:
         text = _text(COOKBOOK)
-        assert 'run: echo ${{ github.event.pull_request.title }}' in text
+        assert "run: echo ${{ github.event.pull_request.title }}" in text
         assert '"$MAYHEM_PLAN_REF"' in text
 
 

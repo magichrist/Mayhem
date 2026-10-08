@@ -230,9 +230,7 @@ def _breach(threshold_ms: float = 250.0, *, for_samples: int = 2, name: str = "l
 
 def _healthy_sweep(*, value: float = 10.0, conditions=()) -> ProbeSweep:
     return ProbeSweep(
-        service=_service(
-            _http(), ports=_bound((ProbeFamily.HTTP, FakePort("api", value=value)))
-        ),
+        service=_service(_http(), ports=_bound((ProbeFamily.HTTP, FakePort("api", value=value)))),
         conditions=tuple(conditions),
         stages=WALKED,
         stage_times=dict(WALKED_TIMES),
@@ -351,9 +349,7 @@ class TestTheStopFiresAtTheEvidenceNotAtTheEnd:
         it per sweep — a sweep that forgot would produce a second stop command for
         the same condition moments after the first.
         """
-        condition = _breach(for_samples=2, name="latency").model_copy(
-            update={"cooldown": 60.0}
-        )
+        condition = _breach(for_samples=2, name="latency").model_copy(update={"cooldown": 60.0})
         port = FakePort("api", value=400.0)
         service = _service(_http(), ports=_bound((ProbeFamily.HTTP, port)))
         times = _stage_times()
@@ -373,9 +369,11 @@ class TestTheStopFiresAtTheEvidenceNotAtTheEnd:
         assert second.firings == ()
         assert second.stop_command is None
         # Without threading it, the same sweep would fire again.
-        assert ProbeSweep(service=service, conditions=(condition,), stage_times=times).run(
-            run_id="r-x", principal="u-ana", command_id="cmd-3"
-        ).firings
+        assert (
+            ProbeSweep(service=service, conditions=(condition,), stage_times=times)
+            .run(run_id="r-x", principal="u-ana", command_id="cmd-3")
+            .firings
+        )
 
 
 # -- 2. silence produces no stop and no verdict ---------------------------------------
@@ -466,13 +464,9 @@ class TestSilenceProducesNoStopAndNoVerdict:
             cadence=1.0,
             warmup=5.0,
         )
-        service = _service(
-            warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=10.0)))
-        )
+        service = _service(warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=10.0))))
 
-        outcome = ProbeSweep(
-            service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)
-        ).run()
+        outcome = ProbeSweep(service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)).run()
 
         assert outcome.coverage.blind
         assert outcome.coverage.settling_only == ("http.warm",)
@@ -493,9 +487,7 @@ class TestSilenceProducesNoStopAndNoVerdict:
 
     def test_a_block_describes_itself_as_mayhems_finding_not_the_systems(self) -> None:
         service = _service(_http())
-        outcome = ProbeSweep(
-            service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)
-        ).run()
+        outcome = ProbeSweep(service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)).run()
 
         assert outcome.block is not None
         summary = outcome.describe()
@@ -523,9 +515,7 @@ class TestABlockIsNotAFiring:
         non-empty sample list to do anything, and this test would say so.
         """
         service = _service(_http())
-        outcome = ProbeSweep(
-            service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)
-        ).run()
+        outcome = ProbeSweep(service=service, stages=WALKED, stage_times=dict(WALKED_TIMES)).run()
 
         block = outcome.block
         assert block is not None

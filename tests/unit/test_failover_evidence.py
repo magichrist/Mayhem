@@ -447,9 +447,7 @@ class TestReadingBack:
         assert first is not None and second is not None
         assert second.previous_manifest_digest == first.manifest_digest
 
-    def test_an_empty_scope_has_no_chain_and_no_manifest(
-        self, store: Store
-    ) -> None:
+    def test_an_empty_scope_has_no_chain_and_no_manifest(self, store: Store) -> None:
         assert load_failover_chain(store, "nothing-here") == ()
         assert load_failover_manifest(store, "nothing-here") is None
         assert verify_failover_chain(store, "nothing-here").valid is True

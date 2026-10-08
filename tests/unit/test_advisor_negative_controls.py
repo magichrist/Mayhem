@@ -46,9 +46,9 @@ from mayhem.controller.advisor_service import (
     AdvisorService,
     SealedCell,
 )
-from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.advisor import RULE_LANDSCAPE_EMPTY
 from mayhem.domain.errors import InvariantViolationError
+from mayhem.domain.policy_gate import MutationSink
 
 #: A sink that is already loaded, so ``calls == 0`` could only mean "nothing was
 #: written" and never "nothing was there to write".

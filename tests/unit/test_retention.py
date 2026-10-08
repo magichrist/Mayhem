@@ -254,9 +254,7 @@ def test_unexpired_evidence_cannot_be_deleted(tmp_path: Path) -> None:
     store, engine, _backend, _sealed = archived_engine(tmp_path)
 
     with pytest.raises(RetentionRefusedError, match="not expired until"):
-        engine.expire(
-            "run-1:manifest", requester="ana", approver="bo", now=T0, reason="tidy up"
-        )
+        engine.expire("run-1:manifest", requester="ana", approver="bo", now=T0, reason="tidy up")
 
     assert engine.get("run-1:manifest").state is RetentionState.ARCHIVE
     assert RetentionRepository(store).load_tombstone("run-1:manifest") is None
@@ -297,9 +295,7 @@ def test_released_then_deleted(tmp_path: Path) -> None:
     """The Phase 5 sequence: held-then-released deletes with a tombstone."""
     store, engine, _backend, _sealed = archived_engine(tmp_path, RetentionClass.EPHEMERAL)
     engine.place_legal_hold("run-1:manifest", reason="incident 4471", now=T0)
-    engine.release_legal_hold(
-        "run-1:manifest", actor="casey", reason="case closed", now=T0
-    )
+    engine.release_legal_hold("run-1:manifest", actor="casey", reason="case closed", now=T0)
 
     tombstone = engine.expire(
         "run-1:manifest", requester="ana", approver="bo", reason="lapsed", now=EXPIRED_AT

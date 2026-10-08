@@ -818,13 +818,9 @@ def demote_certifications_losing_evidence(
     for stored in certification_evidence_dependents(
         repository, store, manifest_id=manifest_id, now=moment
     ):
-        why = reason or (
-            f"{_DELETED_EVIDENCE_REASON}: manifest {manifest_id!r} was deleted"
-        )
+        why = reason or (f"{_DELETED_EVIDENCE_REASON}: manifest {manifest_id!r} was deleted")
         withdrawn.append(
-            repository.store_transition(
-                stored, mark_failed(stored.record, reason=why), now=moment
-            )
+            repository.store_transition(stored, mark_failed(stored.record, reason=why), now=moment)
         )
     return tuple(withdrawn)
 
@@ -961,9 +957,7 @@ class CertificationEvidenceStore:
         retention_class: RetentionClass = RetentionClass.HOT,
     ) -> None:
         self._store = store
-        self._repository = (
-            repository if repository is not None else CertificationRepository(store)
-        )
+        self._repository = repository if repository is not None else CertificationRepository(store)
         self._retention = retention
         self._retention_class = retention_class
 
@@ -1001,9 +995,7 @@ class CertificationEvidenceStore:
             run_id=run.run_id,
             residue=residue,
             recovery=recovery,
-            recovery_required=requires_recovery_verification(
-                definition_for(request.fault_id)
-            ),
+            recovery_required=requires_recovery_verification(definition_for(request.fault_id)),
             compensated=not run.dirty_leases,
             demotions=demotions,
         )

@@ -318,20 +318,14 @@ def _refuse_unknown(
 
 def _block(value: object, *, where: str, rule: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise BoundaryViewRefused(
-            rule, f"{where} must be a mapping, got {type(value).__name__}"
-        )
+        raise BoundaryViewRefused(rule, f"{where} must be a mapping, got {type(value).__name__}")
     return value
 
 
 def _rows(value: object, *, where: str, rule: str) -> list[Mapping[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise BoundaryViewRefused(
-            rule, f"{where} must be a list, got {type(value).__name__}"
-        )
-    return [
-        _block(item, where=f"{where}[{index}]", rule=rule) for index, item in enumerate(value)
-    ]
+        raise BoundaryViewRefused(rule, f"{where} must be a list, got {type(value).__name__}")
+    return [_block(item, where=f"{where}[{index}]", rule=rule) for index, item in enumerate(value)]
 
 
 def _number(value: object, *, where: str, rule: str = RULE_REPORT_VALUE_UNKNOWN) -> float:
@@ -381,9 +375,7 @@ def _boolean(value: object, *, where: str, rule: str = RULE_REPORT_VALUE_UNKNOWN
 
 def _text(value: object, *, where: str, rule: str = RULE_REPORT_VALUE_UNKNOWN) -> str:
     if not isinstance(value, str):
-        raise BoundaryViewRefused(
-            rule, f"{where} must be a string, got {type(value).__name__}"
-        )
+        raise BoundaryViewRefused(rule, f"{where} must be a string, got {type(value).__name__}")
     if not value.strip():
         raise BoundaryViewRefused(
             rule,
@@ -497,7 +489,9 @@ class SearchDocument:
     @classmethod
     def from_document(cls, document: Mapping[str, Any]) -> SearchDocument:
         _refuse_unknown(
-            document, _ALLOWED_REPORT_FIELDS, where="the search document",
+            document,
+            _ALLOWED_REPORT_FIELDS,
+            where="the search document",
             rule=RULE_REPORT_UNKNOWN_FIELD,
         )
         policy = SearchPolicy.model_validate(
@@ -506,8 +500,11 @@ class SearchDocument:
         trials = tuple(
             _trial_row(raw, policy, index)
             for index, raw in enumerate(
-                _rows(document.get("trials", []), where="search document trials",
-                      rule=RULE_REPORT_UNKNOWN_FIELD)
+                _rows(
+                    document.get("trials", []),
+                    where="search document trials",
+                    rule=RULE_REPORT_UNKNOWN_FIELD,
+                )
             )
         )
         if not trials:
@@ -525,16 +522,21 @@ class SearchDocument:
             signals=tuple(
                 _signal_document(raw, index)
                 for index, raw in enumerate(
-                    _rows(document.get("signals", []), where="search document signals",
-                          rule=RULE_REPORT_UNKNOWN_FIELD)
+                    _rows(
+                        document.get("signals", []),
+                        where="search document signals",
+                        rule=RULE_REPORT_UNKNOWN_FIELD,
+                    )
                 )
             ),
             failure_cases=tuple(
                 _failure_case(raw, index)
                 for index, raw in enumerate(
-                    _rows(document.get("failure_cases", []),
-                          where="search document failure_cases",
-                          rule=RULE_REPORT_UNKNOWN_FIELD)
+                    _rows(
+                        document.get("failure_cases", []),
+                        where="search document failure_cases",
+                        rule=RULE_REPORT_UNKNOWN_FIELD,
+                    )
                 )
             ),
         )
@@ -572,10 +574,12 @@ def _trial_row(raw: Mapping[str, Any], policy: SearchPolicy, position: int) -> T
 def _signal_document(raw: Mapping[str, Any], position: int) -> SignalDocument:
     where = f"search document signals[{position}]"
     _refuse_unknown(raw, _ALLOWED_SIGNAL_FIELDS, where=where, rule=RULE_REPORT_UNKNOWN_FIELD)
-    window_raw = _block(raw.get("window", {}), where=f"{where}.window",
-                        rule=RULE_REPORT_UNKNOWN_FIELD)
-    _refuse_unknown(window_raw, _ALLOWED_WINDOW_FIELDS, where=f"{where}.window",
-                    rule=RULE_REPORT_UNKNOWN_FIELD)
+    window_raw = _block(
+        raw.get("window", {}), where=f"{where}.window", rule=RULE_REPORT_UNKNOWN_FIELD
+    )
+    _refuse_unknown(
+        window_raw, _ALLOWED_WINDOW_FIELDS, where=f"{where}.window", rule=RULE_REPORT_UNKNOWN_FIELD
+    )
     materiality = raw.get("materiality_pct")
     return SignalDocument(
         name=_text(raw.get("name"), where=f"{where}.name"),
@@ -592,15 +596,16 @@ def _signal_document(raw: Mapping[str, Any], position: int) -> SignalDocument:
                 window_raw.get("measured", MIN_COMPARABLE_SAMPLES),
                 where=f"{where}.window.measured",
             ),
-            cooldown=_integer(
-                window_raw.get("cooldown", 0), where=f"{where}.window.cooldown"
-            ),
+            cooldown=_integer(window_raw.get("cooldown", 0), where=f"{where}.window.cooldown"),
         ),
         captures=tuple(
             _capture(item, where, index)
             for index, item in enumerate(
-                _rows(raw.get("captures", []), where=f"{where}.captures",
-                      rule=RULE_REPORT_UNKNOWN_FIELD)
+                _rows(
+                    raw.get("captures", []),
+                    where=f"{where}.captures",
+                    rule=RULE_REPORT_UNKNOWN_FIELD,
+                )
             )
         ),
     )
@@ -1021,9 +1026,7 @@ def _minimal_view(case: Any, evidence: Any) -> MinimalCaseView:
     )
 
 
-def boundary_report_view(
-    document: SearchDocument, *, only_signal: str = ""
-) -> BoundaryReportView:
+def boundary_report_view(document: SearchDocument, *, only_signal: str = "") -> BoundaryReportView:
     """Turn a recorded search into the report a reader is allowed to see.
 
     Every number here is the engine's. A metric's boundary is
@@ -1046,9 +1049,7 @@ def boundary_report_view(
             "was not recorded is not a report about that metric with an empty result",
         )
     selected = tuple(
-        signal
-        for signal in document.signals
-        if not only_signal or signal.name == only_signal
+        signal for signal in document.signals if not only_signal or signal.name == only_signal
     )
     recorded_history = _recorded_history(document)
     recorded = boundary_report(document.policy, recorded_history)
@@ -1071,9 +1072,7 @@ def boundary_report_view(
         index = _boundary_trial_index(history, report.boundary)
         comparison = comparisons.get(index) if index is not None else None
         segment = segments.get(index) if index is not None else None
-        signals.append(
-            _signal_view(signal, report, comparison, segment, boundary_claim(report))
-        )
+        signals.append(_signal_view(signal, report, comparison, segment, boundary_claim(report)))
     analysis = analyze_run(
         document.policy,
         recorded_history,
@@ -1093,9 +1092,9 @@ def boundary_report_view(
         stop_reason=record.stop.value,
         budget_remaining=record.budget_remaining,
         signals=tuple(signals),
-        minimal_case=None if analysis.minimal_case is None else _minimal_view(
-            analysis.minimal_case, evidence
-        ),
+        minimal_case=None
+        if analysis.minimal_case is None
+        else _minimal_view(analysis.minimal_case, evidence),
         evidence_complete=evidence.complete,
         notes=analysis.notes,
     )
@@ -1508,7 +1507,10 @@ def candidate_review_view(
             "authored", SearchOrigin.AUTHORED, authored_plan, authored_compilation, authored_policy
         ),
         generated=_arm_view(
-            "generated", SearchOrigin.GENERATED, generated_plan, generated_compilation,
+            "generated",
+            SearchOrigin.GENERATED,
+            generated_plan,
+            generated_compilation,
             generated_policy,
         ),
         safety_decisions_recorded=len(ctx.decisions),
@@ -1590,9 +1592,7 @@ def render_boundary_report(view: BoundaryReportView) -> tuple[str, ...]:
             lines.append(f"  note: {case.note}")
         lines.append(f"  support: {len(case.support_refs)} citation(s)")
         if case.withheld:
-            lines.append(
-                style.warn(f"  withheld [{case.withheld_rule}]: {case.withheld_reason}")
-            )
+            lines.append(style.warn(f"  withheld [{case.withheld_rule}]: {case.withheld_reason}"))
     if view.withholdings:
         lines.append(
             style.warn(
@@ -1795,8 +1795,7 @@ def report(search_path: Path, only_signal: str, as_json: bool) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
     metavar="FILE",
-    help="A serialized topology graph — the environment both plans are compiled and gated "
-    "against.",
+    help="A serialized topology graph — the environment both plans are compiled and gated against.",
 )
 @click.option(
     "--run-id",

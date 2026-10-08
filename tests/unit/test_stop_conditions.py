@@ -154,9 +154,7 @@ class TestThresholdExtendsTheVerdictCore:
         assert _above().breaches(missing) is True
 
     def test_fires_when_met_inverts_the_reading(self) -> None:
-        completion = Threshold(
-            expect=AbsoluteExpect(lte=250.0), fires_when=FiresWhen.MET
-        )
+        completion = Threshold(expect=AbsoluteExpect(lte=250.0), fires_when=FiresWhen.MET)
         assert completion.breaches(_sample(value=100.0)) is True
         assert completion.breaches(_sample(value=300.0)) is False
 
@@ -486,9 +484,7 @@ class TestGates:
     def test_consecutive_count_requires_uninterrupted_breaches(self) -> None:
         condition = _latency(for_samples=3)
         interrupted = _series([400.0, 400.0, 100.0, 400.0])
-        assert condition.evaluate(interrupted, now_epoch_s=3.0).status is (
-            ConditionStatus.PENDING
-        )
+        assert condition.evaluate(interrupted, now_epoch_s=3.0).status is (ConditionStatus.PENDING)
         fired = condition.evaluate(
             _series([400.0, 400.0, 100.0, 400.0, 400.0, 400.0]), now_epoch_s=5.0
         )
@@ -502,9 +498,7 @@ class TestGates:
 
     def test_a_clear_sample_resets_the_count(self) -> None:
         condition = _latency(for_samples=2)
-        result = condition.evaluate(
-            _series([400.0, 100.0, 400.0, 400.0]), now_epoch_s=3.0
-        )
+        result = condition.evaluate(_series([400.0, 100.0, 400.0, 400.0]), now_epoch_s=3.0)
         assert result.status is ConditionStatus.FIRED
         assert [sample.at_epoch_s for sample in result.samples] == [2.0, 3.0]
 
@@ -642,9 +636,7 @@ class TestUnmeasured:
 
     def test_error_status_is_also_unmeasured_not_clear(self) -> None:
         samples = [_sample("latency_ms", None, 0.0, status=ObservationStatus.ERROR)]
-        assert _latency().evaluate(samples, now_epoch_s=0.0).status is (
-            ConditionStatus.UNMEASURED
-        )
+        assert _latency().evaluate(samples, now_epoch_s=0.0).status is (ConditionStatus.UNMEASURED)
 
     def test_unmeasured_branch_poisons_a_conjunction(self) -> None:
         tree = Condition.all(_latency(), _errors())
@@ -764,9 +756,7 @@ class TestNegativeControls:
         assert "a sample is a recorded observation" in str(refusal.value)
 
     def test_a_sample_time_must_be_finite(self) -> None:
-        observation = ObservationResult(
-            metric="latency_ms", value=1.0, unit="ms", window_s=1.0
-        )
+        observation = ObservationResult(metric="latency_ms", value=1.0, unit="ms", window_s=1.0)
         with pytest.raises(InvariantViolationError) as refusal:
             Sample(observation, float("nan"))
         assert "cannot be placed on a timeline" in str(refusal.value)

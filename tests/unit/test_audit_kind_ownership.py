@@ -71,9 +71,7 @@ FOLDED_IN: dict[str, str] = {
 
 #: ``NAME: str = ...``, ``NAME = ...``, and the annotated spelling. Matched at the
 #: start of a line so an import or a *use* never reads as a declaration.
-_DECLARATION = re.compile(
-    r"^(?P<name>KIND_[A-Z0-9_]+)\s*(?::\s*[^=]+)?=", re.MULTILINE
-)
+_DECLARATION = re.compile(r"^(?P<name>KIND_[A-Z0-9_]+)\s*(?::\s*[^=]+)?=", re.MULTILINE)
 
 
 def declared_kinds() -> dict[str, list[str]]:
@@ -180,9 +178,7 @@ def test_the_old_import_paths_are_importable_by_name() -> None:
     from mayhem.controller.policy_evidence import KIND_POLICY_VERSION_CHANGED
 
     assert KIND_POLICY_VERSION_CHANGED == audit_stream.KIND_POLICY_VERSION_CHANGED
-    assert KIND_RESILIENCE_BOUNDARY_SEARCHED == (
-        audit_stream.KIND_RESILIENCE_BOUNDARY_SEARCHED
-    )
+    assert KIND_RESILIENCE_BOUNDARY_SEARCHED == (audit_stream.KIND_RESILIENCE_BOUNDARY_SEARCHED)
 
 
 # --------------------------------------------------------------------------- #
@@ -231,11 +227,7 @@ def test_the_owning_module_is_where_every_audit_kind_the_audit_stream_records_is
     this work item does not own. Asserting the full set here would fail on another
     agent's open item and turn this guard into noise it gets deleted to silence.
     """
-    members = {
-        name
-        for name, files in declared_kinds().items()
-        if files == [OWNING_MODULE]
-    }
+    members = {name for name, files in declared_kinds().items() if files == [OWNING_MODULE]}
     assert FOLDED_IN.keys() <= members
     # And the table's pre-existing members are still exactly one declaration each.
     assert {

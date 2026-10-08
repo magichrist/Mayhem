@@ -585,9 +585,9 @@ class FixtureCertificateAuthority:
             )
             raise SignaturePortUnavailableError(CA_ALGORITHM_FIXTURE, msg)
         payload = canonical_event_bytes(dict(sorted(body.items())))
-        return base64.urlsafe_b64encode(
-            hmac.new(secret, payload, hashlib.sha256).digest()
-        ).decode("ascii")
+        return base64.urlsafe_b64encode(hmac.new(secret, payload, hashlib.sha256).digest()).decode(
+            "ascii"
+        )
 
     def issue(
         self,
@@ -622,9 +622,7 @@ class FixtureCertificateAuthority:
             roles=tuple(roles),
             authority_signature="A" * 64,
         )
-        fingerprint = hashlib.sha256(
-            canonical_event_bytes(draft.core_body())
-        ).hexdigest()
+        fingerprint = hashlib.sha256(canonical_event_bytes(draft.core_body())).hexdigest()
         # The signed body carries the *real* fingerprint, so a certificate whose
         # fingerprint was swapped fails signature verification rather than pinning
         # itself to another certificate's anchor.

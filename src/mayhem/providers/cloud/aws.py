@@ -149,6 +149,6 @@ class AwsCloudAdapter(CloudAdapter):
 
     provider_key: ClassVar[str] = AWS_PROVIDER.key
     services: ClassVar[Mapping[CloudResourceClass, str]] = AWS_SERVICES
-    capabilities: ClassVar[
-        Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]
-    ] = AWS_CAPABILITIES
+    capabilities: ClassVar[Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]] = (
+        AWS_CAPABILITIES
+    )

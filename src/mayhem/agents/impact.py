@@ -907,9 +907,7 @@ def validate_substrate_mirrors() -> tuple[str, ...]:
         if only_live:
             detail.append(f"in {table} but not CURRENT_SUBSTRATE: {', '.join(only_live)}")
         if only_mirrored:
-            detail.append(
-                f"in CURRENT_SUBSTRATE but not {table}: {', '.join(only_mirrored)}"
-            )
+            detail.append(f"in CURRENT_SUBSTRATE but not {table}: {', '.join(only_mirrored)}")
         problems.append(
             f"{table} and mayhem.domain.lowlevel.CURRENT_SUBSTRATE disagree — "
             + "; ".join(detail)
@@ -921,6 +919,4 @@ def validate_substrate_mirrors() -> tuple[str, ...]:
 
 _SUBSTRATE_MIRROR_PROBLEMS = validate_substrate_mirrors()
 if _SUBSTRATE_MIRROR_PROBLEMS:  # pragma: no cover - only reachable via a bad edit
-    raise InvariantViolationError(
-        "substrate.mirror_drift", "; ".join(_SUBSTRATE_MIRROR_PROBLEMS)
-    )
+    raise InvariantViolationError("substrate.mirror_drift", "; ".join(_SUBSTRATE_MIRROR_PROBLEMS))

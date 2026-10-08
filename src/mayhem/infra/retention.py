@@ -681,9 +681,7 @@ class RetentionEngine:
         elif not expired:
             blocked = f"not expired until {deadline}"
         elif record.state is not RetentionState.ARCHIVE:
-            blocked = (
-                "no external copy: archive before deleting, or the evidence would not survive"
-            )
+            blocked = "no external copy: archive before deleting, or the evidence would not survive"
         return RetentionAssessment(
             record=record,
             expired=expired,

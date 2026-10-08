@@ -233,9 +233,7 @@ def test_the_nonce_is_the_only_thing_that_diffs(tmp_path: Path) -> None:
     graph = _graph()
     cli_plan = plan_from_spec(str(spec_path), graph, prepared=_Prepared()).plan
     api_compiled = api_plan(
-        PlanSubmission(
-            run_id=RUN_ID, spec=DrillSpec.model_validate(SPEC_DOCUMENT), **SNAPSHOTS
-        ),
+        PlanSubmission(run_id=RUN_ID, spec=DrillSpec.model_validate(SPEC_DOCUMENT), **SNAPSHOTS),
         graph,
     )
     differing = _diff_paths(

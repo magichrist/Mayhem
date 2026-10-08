@@ -810,8 +810,7 @@ class IncidentReplay:
         if len(traced) != len(self.parameters):
             raise InvariantViolationError(
                 RULE_REPLAY_PARAMETER_UNTRACEABLE,
-                f"replay of {self.incident.incident_id!r} traces the same parameter "
-                "twice",
+                f"replay of {self.incident.incident_id!r} traces the same parameter twice",
             )
         if self.cell.key != self.finding.cell.key:
             raise InvariantViolationError(
@@ -1325,9 +1324,7 @@ class AdvisorService:
                 "incident's name on it",
             )
 
-        parameters = tuple(
-            _trace_for(incident, binding) for binding in request.bindings
-        )
+        parameters = tuple(_trace_for(incident, binding) for binding in request.bindings)
         cell = _cell_for(incident, request)
         finding = _finding_for(
             cell,
@@ -1369,39 +1366,39 @@ class AdvisorService:
     ) -> AdvisorSubmission:
         """Take one recommendation through compile -> proof -> policy.
 
-        Identical for both origins, and deliberately not parameterised on origin
-        at all: there is no ``generated=`` branch anywhere below this line, so an
-        AI-drafted recommendation reaches the planner, the proof compiler, and
-        the policy gate exactly as an authored one does and acquires nothing on
-        the way.
+            Identical for both origins, and deliberately not parameterised on origin
+            at all: there is no ``generated=`` branch anywhere below this line, so an
+            AI-drafted recommendation reaches the planner, the proof compiler, and
+            the policy gate exactly as an authored one does and acquires nothing on
+            the way.
 
-        The order is the guarantee. ``plan_drill`` compiles the frozen
-        :class:`~mayhem.domain.experiments.ExecutionPlan`, and a candidate that
-        will not compile raises *here* — as
-        :data:`RULE_SUBMISSION_WILL_NOT_COMPILE` — which is upstream of both the
-        proof compiler and the policy gate, so a draft nobody can run never gets
-        a safety case or a policy verdict either. Then
-        :func:`~mayhem.controller.safety_proof.compile_safety_evidence` runs the
-        real gates and assembles the proof, and
-        :func:`~mayhem.controller.safety.simulate_plan_policy` produces the
-        verdict.
+            The order is the guarantee. ``plan_drill`` compiles the frozen
+            :class:`~mayhem.domain.experiments.ExecutionPlan`, and a candidate that
+            will not compile raises *here* — as
+            :data:`RULE_SUBMISSION_WILL_NOT_COMPILE` — which is upstream of both the
+            proof compiler and the policy gate, so a draft nobody can run never gets
+            a safety case or a policy verdict either. Then
+            :func:`~mayhem.controller.safety_proof.compile_safety_evidence` runs the
+            real gates and assembles the proof, and
+            :func:`~mayhem.controller.safety.simulate_plan_policy` produces the
+            verdict.
 
-        ``traces`` is what ties a *generated* parameter set back to the incident
-        facts behind it: supply it and every entry must correspond exactly to a
-        submitted parameter (:data:`RULE_SUBMISSION_UNTRACEABLE_PARAMETER`).
+            ``traces`` is what ties a *generated* parameter set back to the incident
+            facts behind it: supply it and every entry must correspond exactly to a
+            submitted parameter (:data:`RULE_SUBMISSION_UNTRACEABLE_PARAMETER`).
 
-        ``adapter`` is forwarded to the proof compiler unchanged. Left ``None`` —
-        the default — the ``capability_requirements`` line is unestablished and
-        the proof comes out ``VOID`` saying so, which is the honest answer: the
-        advisor read sealed inputs and has no live runtime to ask what the
-        cluster can do. Supplying an adapter is a statement about the runtime,
-        not about the incident, so it is the caller's to make and not this
-        method's to assume.
+            ``adapter`` is forwarded to the proof compiler unchanged. Left ``None`` —
+            the default — the ``capability_requirements`` line is unestablished and
+            the proof comes out ``VOID`` saying so, which is the honest answer: the
+            advisor read sealed inputs and has no live runtime to ask what the
+            cluster can do. Supplying an adapter is a statement about the runtime,
+            not about the incident, so it is the caller's to make and not this
+            method's to assume.
 
-    A ``PASS`` on the proof's ``required_approvals`` line is *not* a refusal here,
-    and Phase 4 decided that deliberately: see
-    :attr:`AdvisorSubmission.authorization` for the four states that line can be
-    in and why the advisor's is always :data:`SubmissionAuthorization.REQUIREMENTS_ONLY`.
+        A ``PASS`` on the proof's ``required_approvals`` line is *not* a refusal here,
+        and Phase 4 decided that deliberately: see
+        :attr:`AdvisorSubmission.authorization` for the four states that line can be
+        in and why the advisor's is always :data:`SubmissionAuthorization.REQUIREMENTS_ONLY`.
         """
         service = self.detached()
         _require_traced(parameters, traces)
@@ -1800,8 +1797,7 @@ def _payload_str(payload: Mapping[str, object], field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvariantViolationError(
             RULE_DRAFT_UNKNOWN_FIELD,
-            f"advisor payload field {field_name!r} must be a non-blank string, got "
-            f"{value!r}",
+            f"advisor payload field {field_name!r} must be a non-blank string, got {value!r}",
         )
     return value
 

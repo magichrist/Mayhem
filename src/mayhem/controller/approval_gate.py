@@ -513,9 +513,7 @@ def _proof_refusal(
         ),
         # A superseded plan is also a digest mismatch, and naming it here means
         # the operator sees "the plan moved" and not only "the proof is void".
-        triggers=order_reasons(
-            {InvalidationReason.PROOF_DIGEST_MISMATCH} if superseded else set()
-        ),
+        triggers=order_reasons({InvalidationReason.PROOF_DIGEST_MISMATCH} if superseded else set()),
         inputs={
             "proof_verdict": verdict.value,
             "declared_verdict": proof.verdict.value,

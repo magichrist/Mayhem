@@ -331,9 +331,7 @@ class LowLevelCheck:
         for field_name in ("name", "detail", "evidence_ref"):
             if not getattr(self, field_name).strip():
                 msg = f"a low-level check's {field_name} must be non-blank"
-                raise InvariantViolationError(
-                    "lowlevel.check_field_not_blank", msg
-                )
+                raise InvariantViolationError("lowlevel.check_field_not_blank", msg)
 
     @property
     def refuses(self) -> bool:
@@ -429,9 +427,7 @@ class AdmissionReport:
                 f"low-level admission for {self.request.primitive_id!r} granted: all "
                 f"{len(self.checks)} checks passed"
             )
-        blocking = "; ".join(
-            f"{c.name}={c.status.value}: {c.detail}" for c in self.refusing_checks
-        )
+        blocking = "; ".join(f"{c.name}={c.status.value}: {c.detail}" for c in self.refusing_checks)
         return (
             f"low-level admission for {self.request.primitive_id!r} refused "
             f"{len(self.refusing_checks)} of {len(self.checks)} checks: {blocking}"
@@ -612,8 +608,7 @@ def check_substrate(
     if primitive is None:
         return _unavailable(
             CHECK_SUBSTRATE,
-            f"cannot ask about the substrate for undeclared primitive "
-            f"{request.primitive_id!r}",
+            f"cannot ask about the substrate for undeclared primitive {request.primitive_id!r}",
             primitive_ref(request.primitive_id),
         )
     verdict = primitive.substrate_verdict(surface)
@@ -632,8 +627,7 @@ def check_substrate(
     )
     if missing is not None and missing.unachievable_substrate:
         detail += (
-            "; and the host does not offer the operation at all, so no mechanism work "
-            "closes this"
+            "; and the host does not offer the operation at all, so no mechanism work closes this"
         )
     return _refuse(CHECK_SUBSTRATE, detail, primitive_ref(primitive.id))
 
@@ -716,8 +710,7 @@ def check_duration(
         )
     return _pass(
         CHECK_DURATION,
-        f"{request.duration_s:g}s is within {primitive.id}'s window "
-        f"[{floor:g}s, {ceiling:g}s]",
+        f"{request.duration_s:g}s is within {primitive.id}'s window [{floor:g}s, {ceiling:g}s]",
         primitive_ref(primitive.id),
     )
 
@@ -1005,18 +998,14 @@ def evaluate(
 
     specification = _specification_for(request)
     refusing = any(result.refuses for result in results)
-    apply_check = next(
-        (result for result in results if result.name == CHECK_MECHANISM_APPLY), None
-    )
+    apply_check = next((result for result in results if result.name == CHECK_MECHANISM_APPLY), None)
     # ``applied_primitive`` names what *this gate* left attached, so it is only set
     # when nothing refused. A report that refuses on any check and still names an
     # applied primitive would be the exact shape the plan forbids: a run that
     # recorded an injection it also refused.
     applied = (
         request.primitive_id
-        if not refusing
-        and apply_check is not None
-        and apply_check.status is LowLevelStatus.PASS
+        if not refusing and apply_check is not None and apply_check.status is LowLevelStatus.PASS
         else None
     )
     return AdmissionReport(
@@ -1075,9 +1064,7 @@ def refusing_names(
     return type is a tuple of names and :func:`admit` is the only thing that
     grants, so it cannot be mistaken for a decision.
     """
-    return tuple(
-        check.name for check in evaluate(request, ports, surface=surface).refusing_checks
-    )
+    return tuple(check.name for check in evaluate(request, ports, surface=surface).refusing_checks)
 
 
 # =============================================================================
@@ -1140,9 +1127,9 @@ class ResidueScan:
 
     def describe(self) -> str:
         if not self.complete:
-            skipped = sorted(set(self.declared_facets) - {
-                observation.facet for observation in self.observations
-            })
+            skipped = sorted(
+                set(self.declared_facets) - {observation.facet for observation in self.observations}
+            )
             return (
                 f"residue scan for {self.primitive_id} is incomplete: it looked at "
                 f"{len(self.observations)} of {len(self.declared_facets)} declared facet(s), "
@@ -1160,9 +1147,7 @@ class ResidueScan:
         )
 
 
-def residue_scan(
-    primitive_id: str, observations: Sequence[ResidueObservation]
-) -> ResidueScan:
+def residue_scan(primitive_id: str, observations: Sequence[ResidueObservation]) -> ResidueScan:
     """Compare what was observed against what the descriptor declares.
 
     Pure and total over a declared primitive. An undeclared primitive is a
@@ -1252,8 +1237,11 @@ def scan_after_recovery(
     )
     for index in range(1, max_passes + 1):
         observations = tuple(
-            observe(ResidueProbe(facet=check.facet.value, probe=check.probe,
-                                 expectation=check.expectation))
+            observe(
+                ResidueProbe(
+                    facet=check.facet.value, probe=check.probe, expectation=check.expectation
+                )
+            )
             for check in primitive.residue_checks
         )
         scan = residue_scan(primitive_id, observations)
@@ -1365,9 +1353,7 @@ INERT_GAP_REASONS: Final[frozenset[GapReason]] = frozenset(
 )
 
 
-def requirements_rows_needed(
-    *, surface: SubstrateSurface = CURRENT_SUBSTRATE
-) -> tuple[str, ...]:
+def requirements_rows_needed(*, surface: SubstrateSurface = CURRENT_SUBSTRATE) -> tuple[str, ...]:
     """Which blocked primitives would earn an impact-gate ``REQUIREMENTS`` row.
 
     Today: **none of them**, and that empty answer is the decision the plan's

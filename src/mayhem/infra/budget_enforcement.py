@@ -203,10 +203,7 @@ class DimensionLedger:
     def describe(self) -> str:
         state = self.coverage.value if self.measured else "NOT MEASURED"
         where = f" at seam {self.seam}" if self.seam else ""
-        return (
-            f"{self.dimension.value}: {state}{where} via {self.method}. "
-            f"{self.rationale}"
-        )
+        return f"{self.dimension.value}: {state}{where} via {self.method}. {self.rationale}"
 
 
 DIMENSION_LEDGER: Mapping[ResourceDimension, DimensionLedger] = {
@@ -448,10 +445,7 @@ class BudgetReview:
 
     def describe(self) -> str:
         who = f" by {self.decided_by}" if self.decided_by else ""
-        return (
-            f"{self.decision.value} after a {self.dimension.value} breach{who}: "
-            f"{self.rationale}"
-        )
+        return f"{self.decision.value} after a {self.dimension.value} breach{who}: {self.rationale}"
 
 
 class BudgetPauseUnreviewed(Exception):  # noqa: N818 — a pause is not an error, it is a state
@@ -924,8 +918,7 @@ class RunBudgetGuard:
         if self.breach is None:
             return False
         return any(
-            review.decision is ReviewDecision.RESUME
-            and review.dimension is self.breach.dimension
+            review.decision is ReviewDecision.RESUME and review.dimension is self.breach.dimension
             for review in self.reviews
         )
 

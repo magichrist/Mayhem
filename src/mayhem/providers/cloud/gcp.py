@@ -139,6 +139,6 @@ class GcpCloudAdapter(CloudAdapter):
 
     provider_key: ClassVar[str] = GCP_PROVIDER.key
     services: ClassVar[Mapping[CloudResourceClass, str]] = GCP_SERVICES
-    capabilities: ClassVar[
-        Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]
-    ] = GCP_CAPABILITIES
+    capabilities: ClassVar[Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]] = (
+        GCP_CAPABILITIES
+    )

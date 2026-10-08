@@ -961,9 +961,7 @@ class Condition(BaseModel):
                     self,
                     qualifying=_Qualification(
                         start_at=min(
-                            r.fired_at_epoch_s
-                            for _, r in results
-                            if r.fired_at_epoch_s is not None
+                            r.fired_at_epoch_s for _, r in results if r.fired_at_epoch_s is not None
                         ),
                         samples=_dedupe(sample for _, r in results for sample in r.samples),
                     ),
@@ -1011,9 +1009,7 @@ class Condition(BaseModel):
         assert self.reference is not None
         series = index.get(self.reference.metric, ())
         if self.reference.source_id:
-            series = tuple(
-                sample for sample in series if sample.source == self.reference.source_id
-            )
+            series = tuple(sample for sample in series if sample.source == self.reference.source_id)
         return tuple(sorted(series, key=lambda sample: sample.at_epoch_s))
 
 
@@ -1175,8 +1171,7 @@ def _leaf_note(condition: Condition, run: Sequence[Sample], *, now_epoch_s: floa
         return f"breaching on {len(run)} of {condition.for_samples} required consecutive sample(s)"
     held = now_epoch_s - run[0].at_epoch_s
     return (
-        f"breaching for {held:.3f}s of the {float(condition.debounce):.3f}s this "
-        "condition requires"
+        f"breaching for {held:.3f}s of the {float(condition.debounce):.3f}s this condition requires"
     )
 
 
@@ -1211,12 +1206,8 @@ def _composite_note(
     status: "clear" on a conjunction whose branches are ``fired`` and ``clear``
     is technically true and completely useless to whoever reads the run.
     """
-    parts = [
-        f"{operand.describe_name()}={result.status.value}" for operand, result in results
-    ]
-    lead = (
-        "not every branch fired" if condition.kind is NodeKind.ALL else "no branch fired"
-    )
+    parts = [f"{operand.describe_name()}={result.status.value}" for operand, result in results]
+    lead = "not every branch fired" if condition.kind is NodeKind.ALL else "no branch fired"
     return f"{lead}: " + ", ".join(parts)
 
 

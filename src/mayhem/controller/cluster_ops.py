@@ -388,9 +388,7 @@ class ClusterOperations:
             controller_id=controller_id,
             scope=self._scope,
         )
-        self._rotation = CredentialRotationService(
-            identities=self._identities, policy=policy
-        )
+        self._rotation = CredentialRotationService(identities=self._identities, policy=policy)
 
     # -- accessors ------------------------------------------------------------
     @property

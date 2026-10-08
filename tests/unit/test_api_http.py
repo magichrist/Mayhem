@@ -76,9 +76,7 @@ NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 PEPPER = b"unit-test-pepper-for-plan-08-http"
 PASSWORD = "correct horse battery staple"
 
-MIGRATIONS = (
-    *(m for m in ALL_MIGRATIONS if m.version < API_GATEWAY_VERSION),
-)
+MIGRATIONS = (*(m for m in ALL_MIGRATIONS if m.version < API_GATEWAY_VERSION),)
 
 
 @pytest.fixture()
@@ -211,9 +209,7 @@ class TestTheHttpSurfaceEndToEnd:
         self, wired: dict[str, Any]
     ) -> None:
         with _Live(ApiApplication(wired["gateway"])) as live:
-            status, headers, body = live.get(
-                f"{API_PREFIX}/runs", headers=_headers(wired["token"])
-            )
+            status, headers, body = live.get(f"{API_PREFIX}/runs", headers=_headers(wired["token"]))
         assert status == 200
         assert headers["content-type"] == "application/json; charset=utf-8"
         payload = json.loads(body)
@@ -228,9 +224,7 @@ class TestTheHttpSurfaceEndToEnd:
         }
         assert payload["status"] == "ok"
 
-    def test_an_unauthenticated_read_returns_a_401_envelope(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_an_unauthenticated_read_returns_a_401_envelope(self, wired: dict[str, Any]) -> None:
         with _Live(ApiApplication(wired["gateway"])) as live:
             status, _headers_out, body = live.get(f"{API_PREFIX}/runs")
         assert status == 401
@@ -239,9 +233,7 @@ class TestTheHttpSurfaceEndToEnd:
         assert payload["meta"]["rule_id"] == "auth.session_unknown"
         assert payload["errors"]
 
-    def test_a_stored_run_is_readable_with_its_digest(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_a_stored_run_is_readable_with_its_digest(self, wired: dict[str, Any]) -> None:
         resource = RunResource.of(_record("run-http-1"))
         wired["api"].save_run(resource)
         with _Live(ApiApplication(wired["gateway"])) as live:
@@ -251,9 +243,7 @@ class TestTheHttpSurfaceEndToEnd:
         assert status == 200
         assert json.loads(body)["data"]["run"]["run_id"] == "run-http-1"
 
-    def test_a_query_string_is_parsed_and_percent_decoded(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_a_query_string_is_parsed_and_percent_decoded(self, wired: dict[str, Any]) -> None:
         """A filter value with a space in it survives the round trip."""
         wired["api"].save_run(RunResource.of(_record("run-http-1")))
         with _Live(ApiApplication(wired["gateway"])) as live:
@@ -265,9 +255,7 @@ class TestTheHttpSurfaceEndToEnd:
         assert status == 200
         assert json.loads(body)["data"]["items"] == []
 
-    def test_the_openapi_document_is_served_unauthenticated(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_the_openapi_document_is_served_unauthenticated(self, wired: dict[str, Any]) -> None:
         with _Live(ApiApplication(wired["gateway"])) as live:
             status, _headers_out, body = live.get(f"{API_PREFIX}/openapi.json")
         assert status == 200
@@ -325,9 +313,7 @@ class TestTheHtmlJsonSplitIsReal:
         assert "<h1>401" in text
         assert "auth.session_unknown" in text
 
-    def test_a_browser_navigation_header_alone_gets_html(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_a_browser_navigation_header_alone_gets_html(self, wired: dict[str, Any]) -> None:
         """``Sec-Fetch-Mode: navigate`` with no ``Accept`` — a real browser shape."""
         with _Live(ApiApplication(wired["gateway"])) as live:
             status, headers, _body = live.get(
@@ -380,9 +366,7 @@ class TestTheApplicationNeverLeaks:
         )
         gateway._read_boom = _explode  # type: ignore[attr-defined]
         with _Live(ApiApplication(gateway)) as live:
-            status, headers, body = live.get(
-                f"{API_PREFIX}/boom", headers=_headers(wired["token"])
-            )
+            status, headers, body = live.get(f"{API_PREFIX}/boom", headers=_headers(wired["token"]))
         assert status == 500
         assert headers["content-type"].startswith("application/json")
         payload = json.loads(body)
@@ -460,9 +444,7 @@ class TestTheControlPlaneApplicationComposesBothSurfaces:
         assert "api/v1/dashboard" in text
         assert "what this page does not claim" in text
 
-    def test_a_page_needing_a_named_object_is_501_not_404(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_a_page_needing_a_named_object_is_501_not_404(self, wired: dict[str, Any]) -> None:
         """A route with no object to name must not pretend to have one."""
         app = ControlPlaneApplication(wired["gateway"], ui_token=wired["token"])
         with _Live(app) as live:
@@ -470,9 +452,7 @@ class TestTheControlPlaneApplicationComposesBothSurfaces:
         assert status == 501
         assert "ui.no_path_payload" in body.decode()
 
-    def test_an_unknown_ui_page_is_a_404_naming_the_pages(
-        self, wired: dict[str, Any]
-    ) -> None:
+    def test_an_unknown_ui_page_is_a_404_naming_the_pages(self, wired: dict[str, Any]) -> None:
         app = ControlPlaneApplication(wired["gateway"], ui_token=wired["token"])
         with _Live(app) as live:
             status, _headers_out, body = live.get("/ui/no-such-page")

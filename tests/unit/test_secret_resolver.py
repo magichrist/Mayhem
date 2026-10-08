@@ -283,29 +283,21 @@ class TestGrantMatrix:
     def test_development_only_provider_requires_the_marker(self) -> None:
         engine = SecretResolver(
             providers=default_providers({"MAYHEM_TEST_DB_PASSWORD": SECRET_VALUE}),
-            grant_source=StaticGrantSource(
-                (grant(pattern="environment:MAYHEM_TEST_DB_PASSWORD"),)
-            ),
+            grant_source=StaticGrantSource((grant(pattern="environment:MAYHEM_TEST_DB_PASSWORD"),)),
             clock=Clock(),
         )
         with pytest.raises(InvariantViolationError) as excinfo:
-            engine.resolve(
-                env_ref(), principal=ALICE, environment=PROD, step_id="inject-db"
-            )
+            engine.resolve(env_ref(), principal=ALICE, environment=PROD, step_id="inject-db")
         assert refusal_code(excinfo.value) == REFUSAL_DEVELOPMENT_PROVIDER
 
     def test_development_only_provider_resolves_with_the_marker(self) -> None:
         engine = SecretResolver(
             providers=default_providers({"MAYHEM_TEST_DB_PASSWORD": SECRET_VALUE}),
-            grant_source=StaticGrantSource(
-                (grant(pattern="environment:MAYHEM_TEST_DB_PASSWORD"),)
-            ),
+            grant_source=StaticGrantSource((grant(pattern="environment:MAYHEM_TEST_DB_PASSWORD"),)),
             clock=Clock(),
             allow_development_only=True,
         )
-        secret = engine.resolve(
-            env_ref(), principal=ALICE, environment=PROD, step_id="inject-db"
-        )
+        secret = engine.resolve(env_ref(), principal=ALICE, environment=PROD, step_id="inject-db")
         with secret.use() as value:
             assert value == SECRET_VALUE
 
@@ -339,9 +331,7 @@ class TestShortLivedCredentials:
             clock.advance(400)
             return SECRET_VALUE.encode()
 
-        engine = callable_resolver(
-            slow, (grant(),), clock=clock, credential_ttl_seconds=300
-        )
+        engine = callable_resolver(slow, (grant(),), clock=clock, credential_ttl_seconds=300)
         with pytest.raises(InvariantViolationError) as excinfo:
             engine.resolve(
                 step_ref("inject-db"), principal=ALICE, environment=PROD, step_id="inject-db"
@@ -481,9 +471,7 @@ class TestCrossStepScope:
     def test_run_scoped_reference_is_bound_to_its_own_run(self, secret_tree: Path) -> None:
         engine = fixture_resolver(secret_tree, (grant(scopes=("run:r-1",)),))
         with pytest.raises(InvariantViolationError) as excinfo:
-            engine.resolve(
-                run_ref("r-2"), principal=ALICE, environment=PROD, step_id="inject-db"
-            )
+            engine.resolve(run_ref("r-2"), principal=ALICE, environment=PROD, step_id="inject-db")
         assert refusal_code(excinfo.value) == REFUSAL_SCOPE_NOT_GRANTED
 
 

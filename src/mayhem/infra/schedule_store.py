@@ -202,9 +202,9 @@ class ScheduleEntry(BaseModel):
     def body_digest(self) -> str:
         return digest(self.schedule.model_dump(mode="json"))
 
-    def after_dispatch(self, *, slot_start: datetime, at: datetime, window_index: int) -> (
-        ScheduleEntry
-    ):
+    def after_dispatch(
+        self, *, slot_start: datetime, at: datetime, window_index: int
+    ) -> ScheduleEntry:
         """This entry with its run budget and window advanced by one dispatch."""
         return self.model_copy(
             update={

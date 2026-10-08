@@ -133,9 +133,7 @@ def test_policy_bounds_are_refused_at_construction(overrides: dict[str, object])
         policy(**overrides)
 
 
-@pytest.mark.parametrize(
-    "overrides", [{"start": float("inf")}, {"resolution": float("inf")}]
-)
+@pytest.mark.parametrize("overrides", [{"start": float("inf")}, {"resolution": float("inf")}])
 def test_non_finite_policy_bounds_are_domain_refusals(overrides: dict[str, object]) -> None:
     """An infinite ladder never terminates and an infinite resolution never
     resolves; both are domain claims about the search, not value ranges."""
@@ -202,7 +200,18 @@ def test_the_ladder_adds_step_each_time() -> None:
     decision, walked, _ = run(search, lambda _value: False)
 
     assert [value for value, _ in walked] == [
-        1.0, 4.0, 7.0, 10.0, 13.0, 16.0, 19.0, 22.0, 25.0, 28.0, 31.0, 34.0
+        1.0,
+        4.0,
+        7.0,
+        10.0,
+        13.0,
+        16.0,
+        19.0,
+        22.0,
+        25.0,
+        28.0,
+        31.0,
+        34.0,
     ]
     assert decision.stop is StopReason.LADDER_EXHAUSTED
     assert decision.boundary is None
@@ -596,9 +605,10 @@ def test_an_approval_binds_to_the_plan_that_was_read() -> None:
     approved = SearchPlan(
         step=step(5.0),
         origin=SearchOrigin.AUTHORED,
-        approval=Approval(approved_by="sre-oncall", plan_digest=SearchPlan(
-            step=step(5.0), origin=SearchOrigin.AUTHORED
-        ).plan_digest),
+        approval=Approval(
+            approved_by="sre-oncall",
+            plan_digest=SearchPlan(step=step(5.0), origin=SearchOrigin.AUTHORED).plan_digest,
+        ),
     )
 
     with pytest.raises(InvariantViolationError) as caught:

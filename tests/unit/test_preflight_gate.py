@@ -47,7 +47,6 @@ from typing import Any
 import pytest
 
 from mayhem.agents.capabilities import AgentCapabilities, AgentIdentity, CapabilityKind
-from mayhem.domain.policy_gate import plan_faults
 from mayhem.controller.preflight_gate import (
     ALL_CHECKS,
     CHECK_AGENT_AVAILABILITY,
@@ -124,6 +123,7 @@ from mayhem.domain.experiments import (
 )
 from mayhem.domain.leases import FaultLease, LeaseState, UndoOp, VerifyProbe
 from mayhem.domain.policy import PolicyDecision
+from mayhem.domain.policy_gate import plan_faults
 from mayhem.domain.preflight import Preflight
 from mayhem.domain.stop import (
     STOP_FLOW,
@@ -347,9 +347,7 @@ def _graph() -> TopologyGraph:
     )
 
 
-def _plan(
-    *fault_ids: str, node_ids: frozenset[str] = frozenset({"n-web"})
-) -> ExecutionPlan:
+def _plan(*fault_ids: str, node_ids: frozenset[str] = frozenset({"n-web"})) -> ExecutionPlan:
     selector = TargetSelector(kind=NodeKind.SERVICE, expr="web")
     steps = tuple(
         PlannedStep(
@@ -899,9 +897,10 @@ def test_port_status_is_a_pure_function_of_its_two_arguments() -> None:
     assert port_status(None) is CheckStatus.UNAVAILABLE
     assert port_status(None, error=ConnectionError("down")) is CheckStatus.UNAVAILABLE
     # An error alongside an answer is still an error: the answer is unverified.
-    assert port_status(
-        PortObservation(healthy=True, evidence_ref="o"), error=RuntimeError()
-    ) is CheckStatus.UNAVAILABLE
+    assert (
+        port_status(PortObservation(healthy=True, evidence_ref="o"), error=RuntimeError())
+        is CheckStatus.UNAVAILABLE
+    )
     assert port_status(PortObservation(healthy=True, evidence_ref="o")) is CheckStatus.PASS
     assert port_status(PortObservation(healthy=False, evidence_ref="o")) is CheckStatus.FAIL
     # There is deliberately no fifth row: an error never degrades to FAIL.
@@ -1067,9 +1066,7 @@ def _admission_rendering(gate: PreflightGate | None, inputs: PreflightInputs) ->
             probes[field] = getattr(gate.ports, field)
     result = admit(gate, inputs)
     trace = tuple(
-        f"{name}.{call['method']}"
-        for name in sorted(probes)
-        for call in probes[name].calls
+        f"{name}.{call['method']}" for name in sorted(probes) for call in probes[name].calls
     )
     budget = inputs.budget
     counter = getattr(budget, "_counter", None)
@@ -1574,9 +1571,7 @@ def test_control_empty_check_set_is_refused_with_no_checks_to_name() -> None:
 def test_control_an_agent_that_cannot_undo_is_refused_even_though_it_can_inject() -> None:
     with pytest.raises(PreflightRefusedError) as refusal:
         _gate().admit(
-            _inputs(
-                agents=(_agent(faults=("proc.pause",), kinds=(CapabilityKind.FAULT_INJECT,)),)
-            )
+            _inputs(agents=(_agent(faults=("proc.pause",), kinds=(CapabilityKind.FAULT_INJECT,)),))
         )
     entry = refusal.value.report.check(CHECK_AGENT_CAPABILITY)
     assert entry is not None

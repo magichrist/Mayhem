@@ -417,10 +417,7 @@ class PrimitiveExplanation(BaseModel):
                 f"{self.mechanism} is missing, and it has no catalog id because "
                 f"{self.rule_reason}."
             )
-        return (
-            f"{self.primitive_id} cannot be injected by this build: "
-            f"{self.mechanism} is missing."
-        )
+        return f"{self.primitive_id} cannot be injected by this build: {self.mechanism} is missing."
 
     def to_payload(self) -> dict[str, object]:
         """The machine-readable projection, for ``--json`` and any later surface."""
@@ -484,8 +481,7 @@ def _limits(primitive: LowLevelPrimitive, gaps: tuple[CapabilityGap, ...]) -> tu
     limits: list[str] = []
     for gap in gaps:
         limits.append(
-            f"{gap.demand} is unmet ({gap.reason.value}); "
-            f"{_GAP_REASON_TEXT[gap.reason.value]}"
+            f"{gap.demand} is unmet ({gap.reason.value}); {_GAP_REASON_TEXT[gap.reason.value]}"
         )
     if primitive.need_root:
         limits.append(
@@ -511,17 +507,14 @@ _GAP_REASON_TEXT: Final[Mapping[str, str]] = MappingProxyType(
             "fault INERT rather than probe for it"
         ),
         "cap_bit_undefined": (
-            "the cap name is in no _CAP_BITS row, so has_cap would return False "
-            "unconditionally"
+            "the cap name is in no _CAP_BITS row, so has_cap would return False unconditionally"
         ),
         "bin_not_installable": (
             "the bin has no _PM_PACKAGES row, so `mayhem prepare dependencies install` "
             "can never supply it"
         ),
         "host_tool_absent": "the host binary is absent and is not probed inside a container",
-        "capability_not_offered": (
-            "no agent handshake on this surface advertises the capability"
-        ),
+        "capability_not_offered": ("no agent handshake on this surface advertises the capability"),
         "tool_not_manifested": (
             "no toolkit manifest declares the capability in `provides`, so the "
             "capability is not installable as a tool"
@@ -725,9 +718,7 @@ def describe_explanation(explanation: PrimitiveExplanation) -> str:
     return "\n".join(lines)
 
 
-def describe_primitive(
-    primitive_id: str, *, surface: SubstrateSurface = CURRENT_SUBSTRATE
-) -> str:
+def describe_primitive(primitive_id: str, *, surface: SubstrateSurface = CURRENT_SUBSTRATE) -> str:
     """One primitive as printable lines, explaining it first.
 
     Kept beside :func:`explain_primitive` so the vocabulary — the words for a
@@ -742,9 +733,7 @@ def describe_primitive(
 
 def blocked_primitives(*, surface: SubstrateSurface = CURRENT_SUBSTRATE) -> tuple[str, ...]:
     """Every primitive *surface* cannot inject, in id order."""
-    return tuple(
-        sorted(pid for pid, p in PRIMITIVES.items() if not p.substrate_verdict(surface))
-    )
+    return tuple(sorted(pid for pid, p in PRIMITIVES.items() if not p.substrate_verdict(surface)))
 
 
 class ConsistencyProblem(BaseModel):

@@ -714,9 +714,7 @@ class ReversibilityStatement(BaseModel):
                     "there is nothing for it to undo"
                 )
             if not self.reconciliation.strip():
-                raise ValueError(
-                    "an irreversible primitive must state what reconciles it"
-                )
+                raise ValueError("an irreversible primitive must state what reconciles it")
         elif self.compensation_template is None:
             raise ValueError(
                 f"a {self.reversibility.value} primitive must name its compensation template"
@@ -784,6 +782,7 @@ _RETURN_MUTATIONS: Final[frozenset[str]] = frozenset(
 #: from it, so the closed vocabulary has exactly one definition — a second copy
 #: in the grammar would be a second thing to keep in step.
 RETURN_MUTATIONS: Final[frozenset[str]] = _RETURN_MUTATIONS
+
 
 #: What one ``pressure_units`` means per mode. Named because a bare number next
 #: to a JVM primitive is unreadable: 262144 is 256 KiB of allocation and also a
@@ -975,8 +974,7 @@ class LowLevelPrimitive(BaseModel):
         unmapped = sorted(self.probe_caps - set(_AGENT_CAP_BY_CAP_BIT))
         if unmapped:
             raise ValueError(
-                "probe_caps must map to a declared Capability; unmapped: "
-                + ", ".join(unmapped)
+                "probe_caps must map to a declared Capability; unmapped: " + ", ".join(unmapped)
             )
         for cap_bit in sorted(self.probe_caps):
             agent_cap = _AGENT_CAP_BY_CAP_BIT[cap_bit]
@@ -1021,9 +1019,7 @@ class LowLevelPrimitive(BaseModel):
         two ways because only one side wrote it down. Callers building the 07
         collision graph read this, not the field.
         """
-        reverse = {
-            other.id for other in PRIMITIVES.values() if self.id in other.incompatible_with
-        }
+        reverse = {other.id for other in PRIMITIVES.values() if self.id in other.incompatible_with}
         return frozenset(self.incompatible_with | reverse) - {self.id}
 
     def substrate_gaps(self, surface: SubstrateSurface) -> tuple[CapabilityGap, ...]:
@@ -1092,9 +1088,7 @@ class LowLevelPrimitive(BaseModel):
             )
         return tuple(gaps)
 
-    def substrate_verdict(
-        self, surface: SubstrateSurface = CURRENT_SUBSTRATE
-    ) -> SubstrateVerdict:
+    def substrate_verdict(self, surface: SubstrateSurface = CURRENT_SUBSTRATE) -> SubstrateVerdict:
         """Can *surface* inject this primitive, right now?
 
         Pure and total. The answer is ``False`` whenever any declared demand is
@@ -1352,8 +1346,7 @@ class ClockPrimitive(LowLevelPrimitive):
                 raise ValueError("rate mode must declare the ppm it applies")
             if abs(self.rate_ppm) > MAX_SLEW_PPM:
                 raise ValueError(
-                    f"rate_ppm outside the kernel's usable slew range "
-                    f"(+/-{MAX_SLEW_PPM} ppm)"
+                    f"rate_ppm outside the kernel's usable slew range (+/-{MAX_SLEW_PPM} ppm)"
                 )
             if self.offset_ms is not None:
                 raise ValueError("rate mode sets no offset")
@@ -1400,8 +1393,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="detach the kprobe from the matching kprobe_events entry",
                     verification=(
-                        "the traced syscall returns its pre-injection value for a "
-                        "canary call"
+                        "the traced syscall returns its pre-injection value for a canary call"
                     ),
                     compensation_template="kernel.kprobe.detach",
                 ),
@@ -1420,11 +1412,13 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 missing=MissingMechanism(
                     code=MissingCode.MECHANISM_ABSENT,
                     mechanism="ebpf_kprobe_loader",
-                    covers_reasons=frozenset({
-                        GapReason.BIN_NOT_PROBED,
-                        GapReason.CAP_BIT_UNDEFINED,
-                        GapReason.TOOL_NOT_MANIFESTED,
-                    }),
+                    covers_reasons=frozenset(
+                        {
+                            GapReason.BIN_NOT_PROBED,
+                            GapReason.CAP_BIT_UNDEFINED,
+                            GapReason.TOOL_NOT_MANIFESTED,
+                        }
+                    ),
                     needed_by=(
                         "a provider capability under SDK 17 that loads a CO-RE eBPF "
                         "program, plus a bpftool row in _PROBE_BINS and a SYS_ADMIN "
@@ -1470,8 +1464,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="detach the delay program; in-kernel sleeps end with it",
                     verification=(
-                        "a canary call to the hooked syscall completes within its "
-                        "pre-injection p99"
+                        "a canary call to the hooked syscall completes within its pre-injection p99"
                     ),
                     compensation_template="kernel.kprobe.detach",
                 ),
@@ -1488,11 +1481,13 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 missing=MissingMechanism(
                     code=MissingCode.MECHANISM_ABSENT,
                     mechanism="ebpf_kprobe_loader",
-                    covers_reasons=frozenset({
-                        GapReason.BIN_NOT_PROBED,
-                        GapReason.CAP_BIT_UNDEFINED,
-                        GapReason.TOOL_NOT_MANIFESTED,
-                    }),
+                    covers_reasons=frozenset(
+                        {
+                            GapReason.BIN_NOT_PROBED,
+                            GapReason.CAP_BIT_UNDEFINED,
+                            GapReason.TOOL_NOT_MANIFESTED,
+                        }
+                    ),
                     needed_by=(
                         "the same loader as kernel.syscall_errno, with a delay "
                         "verifier-attached program; kprobe sleep helpers are "
@@ -1548,17 +1543,17 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         expectation="the reported value equals the unhooked value",
                     ),
                 ),
-                incompatible_with=frozenset(
-                    {"kernel.syscall_errno", "kernel.syscall_latency"}
-                ),
+                incompatible_with=frozenset({"kernel.syscall_errno", "kernel.syscall_latency"}),
                 missing=MissingMechanism(
                     code=MissingCode.MECHANISM_ABSENT,
                     mechanism="ebpf_return_value_rewrite",
-                    covers_reasons=frozenset({
-                        GapReason.BIN_NOT_PROBED,
-                        GapReason.CAP_BIT_UNDEFINED,
-                        GapReason.TOOL_NOT_MANIFESTED,
-                    }),
+                    covers_reasons=frozenset(
+                        {
+                            GapReason.BIN_NOT_PROBED,
+                            GapReason.CAP_BIT_UNDEFINED,
+                            GapReason.TOOL_NOT_MANIFESTED,
+                        }
+                    ),
                     needed_by=(
                         "CO-RE programs that write the return register of a "
                         "traced syscall, which the kprobe loader alone does not "
@@ -1838,8 +1833,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         facet=ResidueFacet.MOUNT,
                         probe="dmsetup table and findmnt --target <path>",
                         expectation=(
-                            "the original device backs the mount and no error "
-                            "target remains"
+                            "the original device backs the mount and no error target remains"
                         ),
                     ),
                 ),
@@ -1907,11 +1901,13 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                 missing=MissingMechanism(
                     code=MissingCode.MECHANISM_ABSENT,
                     mechanism="permission_preserving_executor",
-                    covers_reasons=frozenset({
-                        GapReason.BIN_NOT_PROBED,
-                        GapReason.CAP_BIT_UNDEFINED,
-                        GapReason.TOOL_NOT_MANIFESTED,
-                    }),
+                    covers_reasons=frozenset(
+                        {
+                            GapReason.BIN_NOT_PROBED,
+                            GapReason.CAP_BIT_UNDEFINED,
+                            GapReason.TOOL_NOT_MANIFESTED,
+                        }
+                    ),
                     needed_by=(
                         "a mechanism that answers with EACCES without changing the "
                         "path's owner or mode, so the undo is a remount rather than "
@@ -1960,9 +1956,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         expectation="no mayhem-created mapping remains and no device is held",
                     ),
                 ),
-                incompatible_with=frozenset(
-                    {"io.read_delay", "io.write_delay", "io.read_error"}
-                ),
+                incompatible_with=frozenset({"io.read_delay", "io.write_delay", "io.read_error"}),
                 missing=MissingMechanism(
                     code=MissingCode.SUBSTRATE_UNPROVISIONED,
                     mechanism="device_mapper_delay_target",
@@ -2065,8 +2059,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                     reversibility=Reversibility.REVERSIBLE,
                     undo="detach the agent and restore the original bytecode",
                     verification=(
-                        "the instrumented method's own latency returns to its "
-                        "pre-injection p99"
+                        "the instrumented method's own latency returns to its pre-injection p99"
                     ),
                     compensation_template="jvm.agent_detach",
                 ),
@@ -2075,8 +2068,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         facet=ResidueFacet.BYTECODE,
                         probe="re-dump the method with the agent's own writer disabled",
                         expectation=(
-                            "the dumped bytecode is byte-identical to the "
-                            "pre-injection dump"
+                            "the dumped bytecode is byte-identical to the pre-injection dump"
                         ),
                     ),
                     ResidueCheck(
@@ -2187,8 +2179,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                     mechanism="jvm_attach_agent",
                     covers_reasons=_COVERS_BIN_AND_TOOL,
                     needed_by=(
-                        "the attach loader, plus a throw site inside the "
-                        "target's own bytecode"
+                        "the attach loader, plus a throw site inside the target's own bytecode"
                     ),
                     why_no_substitute=(
                         "app.response_5xx returns a status from a proxy mayhem owns; "
@@ -2332,8 +2323,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         facet=ResidueFacet.THREAD_POOL,
                         probe="jcmd <pid> Thread.print filtered to the pool's threads",
                         expectation=(
-                            "no mayhem-owned worker remains and pool size is "
-                            "back to baseline"
+                            "no mayhem-owned worker remains and pool size is back to baseline"
                         ),
                     ),
                 ),
@@ -2428,8 +2418,7 @@ PRIMITIVES: Final[Mapping[str, LowLevelPrimitive]] = MappingProxyType(
                         facet=ResidueFacet.PROCESS_STATE,
                         probe="ldd /proc/<pid>/maps of the target",
                         expectation=(
-                            "no interception library is mapped into the "
-                            "target's address space"
+                            "no interception library is mapped into the target's address space"
                         ),
                     ),
                 ),
@@ -3239,9 +3228,7 @@ def registry_problems() -> tuple[ConsistencyProblem, ...]:
                 problems.append(
                     ConsistencyProblem(
                         subject=primitive.id,
-                        detail=(
-                            f"declares incompatibility with unknown primitive {other_id!r}"
-                        ),
+                        detail=(f"declares incompatibility with unknown primitive {other_id!r}"),
                     )
                 )
         problems.extend(_substrate_problems(primitive, CURRENT_SUBSTRATE))

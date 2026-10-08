@@ -244,14 +244,19 @@ def _refused(callable_: object) -> str:
 
 def test_a_finding_must_say_how_wrong_it_is() -> None:
     """A claim that something is broken without a grade is refused at construction."""
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-f-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.FINDING,
-        actor=FACILITATOR,
-        text="something is off",
-        at=T1.isoformat(),
-    )) == "game_day.finding_severity"
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-f-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.FINDING,
+                actor=FACILITATOR,
+                text="something is off",
+                at=T1.isoformat(),
+            )
+        )
+        == "game_day.finding_severity"
+    )
 
 
 def test_a_note_may_not_carry_a_severity() -> None:
@@ -262,41 +267,56 @@ def test_a_note_may_not_carry_a_severity() -> None:
     whose grade nobody ever chose, which is how an ``info`` becomes a ``high`` in a
     summary by accident.
     """
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-n-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.NOTE,
-        actor=FACILITATOR,
-        text="looks fine",
-        at=T1.isoformat(),
-        severity=Severity.CRITICAL,
-    )) == "game_day.artifact_severity_on_note"
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-n-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.NOTE,
+                actor=FACILITATOR,
+                text="looks fine",
+                at=T1.isoformat(),
+                severity=Severity.CRITICAL,
+            )
+        )
+        == "game_day.artifact_severity_on_note"
+    )
 
 
 def test_a_decision_may_not_carry_a_severity_either() -> None:
     """The rule is on the kind, not on ``FINDING`` alone."""
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-d-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.DECISION,
-        actor=FACILITATOR,
-        text="released it",
-        at=T1.isoformat(),
-        run_id="r-1",
-        severity=Severity.LOW,
-    )) == "game_day.artifact_severity_on_note"
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-d-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.DECISION,
+                actor=FACILITATOR,
+                text="released it",
+                at=T1.isoformat(),
+                run_id="r-1",
+                severity=Severity.LOW,
+            )
+        )
+        == "game_day.artifact_severity_on_note"
+    )
 
 
 def test_a_decision_must_name_the_run_it_let_go() -> None:
     """A decision that decided nothing cannot be read back as one that did."""
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-d-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.DECISION,
-        actor=FACILITATOR,
-        text="we decided to continue",
-        at=T1.isoformat(),
-    )) == "game_day.decision_run"
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-d-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.DECISION,
+                actor=FACILITATOR,
+                text="we decided to continue",
+                at=T1.isoformat(),
+            )
+        )
+        == "game_day.decision_run"
+    )
 
 
 def test_every_artifact_must_name_somebody() -> None:
@@ -307,36 +327,51 @@ def test_every_artifact_must_name_somebody() -> None:
     """
     for kind in ArtifactKind:
         severity = Severity.LOW if kind is ArtifactKind.FINDING else None
-        assert _rule(lambda kind=kind, severity=severity: GameDayArtifact(
-            artifact_id="gd-x-1",
-            session_id=SESSION_ID,
-            kind=kind,
-            actor="   ",
-            text="something",
-            at=T1.isoformat(),
-            severity=severity,
-            run_id="r-1",
-        )) == "game_day.artifact_actor_blank", kind
+        assert (
+            _rule(
+                lambda kind=kind, severity=severity: GameDayArtifact(
+                    artifact_id="gd-x-1",
+                    session_id=SESSION_ID,
+                    kind=kind,
+                    actor="   ",
+                    text="something",
+                    at=T1.isoformat(),
+                    severity=severity,
+                    run_id="r-1",
+                )
+            )
+            == "game_day.artifact_actor_blank"
+        ), kind
 
 
 def test_an_artifact_must_carry_text_and_an_instant() -> None:
     """Empty text and a missing instant are both refusals, not defaults."""
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-n-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.NOTE,
-        actor=FACILITATOR,
-        text="  ",
-        at=T1.isoformat(),
-    )) == "game_day.artifact_text_blank"
-    assert _rule(lambda: GameDayArtifact(
-        artifact_id="gd-n-1",
-        session_id=SESSION_ID,
-        kind=ArtifactKind.NOTE,
-        actor=FACILITATOR,
-        text="something",
-        at="",
-    )) == "game_day.artifact_at_blank"
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-n-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.NOTE,
+                actor=FACILITATOR,
+                text="  ",
+                at=T1.isoformat(),
+            )
+        )
+        == "game_day.artifact_text_blank"
+    )
+    assert (
+        _rule(
+            lambda: GameDayArtifact(
+                artifact_id="gd-n-1",
+                session_id=SESSION_ID,
+                kind=ArtifactKind.NOTE,
+                actor=FACILITATOR,
+                text="something",
+                at="",
+            )
+        )
+        == "game_day.artifact_at_blank"
+    )
 
 
 def test_an_artifact_digest_detects_a_hand_edit() -> None:
@@ -381,9 +416,7 @@ def test_a_report_with_a_release_and_no_decision_says_so() -> None:
     report = after_action_report(
         session_id=SESSION_ID,
         artifacts=(_finding(),),
-        steps=(
-            _step(hold_state=HoldState.DISPATCHED, released_by=FACILITATOR),
-        ),
+        steps=(_step(hold_state=HoldState.DISPATCHED, released_by=FACILITATOR),),
         dispatches=(_run_record(),),
         now=T2,
     )
@@ -412,9 +445,7 @@ def test_a_failed_dispatch_is_reported_as_a_failure() -> None:
     report = after_action_report(
         session_id=SESSION_ID,
         artifacts=(_decision(), _finding()),
-        dispatches=(
-            _run_record(state=RunClaimState.FAILED, code="schedule.execution_failed"),
-        ),
+        dispatches=(_run_record(state=RunClaimState.FAILED, code="schedule.execution_failed"),),
         now=T2,
     )
 
@@ -494,9 +525,10 @@ def test_findings_are_ordered_most_severe_first_and_ties_are_stable() -> None:
         "gd-f-low",
     ]
     assert severity_rank(Severity.CRITICAL) > severity_rank(Severity.INFO)
-    assert after_action_report(
-        session_id=SESSION_ID, artifacts=artifacts, now=T2
-    ).findings == report.findings
+    assert (
+        after_action_report(session_id=SESSION_ID, artifacts=artifacts, now=T2).findings
+        == report.findings
+    )
 
 
 def test_the_report_is_a_pure_function_of_its_inputs_and_the_instant() -> None:
@@ -504,12 +536,8 @@ def test_the_report_is_a_pure_function_of_its_inputs_and_the_instant() -> None:
     artifacts = (_decision(), _finding())
     steps = (_step(hold_state=HoldState.DISPATCHED, released_by=FACILITATOR),)
 
-    first = after_action_report(
-        session_id=SESSION_ID, artifacts=artifacts, steps=steps, now=T2
-    )
-    second = after_action_report(
-        session_id=SESSION_ID, artifacts=artifacts, steps=steps, now=T2
-    )
+    first = after_action_report(session_id=SESSION_ID, artifacts=artifacts, steps=steps, now=T2)
+    second = after_action_report(session_id=SESSION_ID, artifacts=artifacts, steps=steps, now=T2)
 
     assert first.to_payload() == second.to_payload()
     assert first.generated_at == T2.isoformat()
@@ -525,9 +553,10 @@ def test_the_report_refuses_a_naive_generation_instant() -> None:
     """
     naive = T2.replace(tzinfo=None)
     assert naive.tzinfo is None
-    assert _rule(lambda: after_action_report(
-        session_id=SESSION_ID, artifacts=(), now=naive
-    )) == "game_day.artifact_at_blank"
+    assert (
+        _rule(lambda: after_action_report(session_id=SESSION_ID, artifacts=(), now=naive))
+        == "game_day.artifact_at_blank"
+    )
 
 
 def test_the_report_renders_every_section_even_when_empty() -> None:
@@ -584,9 +613,9 @@ def test_artifacts_are_scoped_to_their_session() -> None:
     """Two sessions' artifacts do not read back as one session's."""
     store, _repo = _store()
     record_artifact(store, _finding())
-    record_artifact(store, _finding().model_copy(
-        update={"artifact_id": "gd-f-2", "session_id": "gd-2"}
-    ))
+    record_artifact(
+        store, _finding().model_copy(update={"artifact_id": "gd-f-2", "session_id": "gd-2"})
+    )
 
     assert len(artifacts_for_session(store, SESSION_ID)) == 1
     assert len(artifacts_for_session(store, "gd-2")) == 1
@@ -868,22 +897,42 @@ def test_a_release_without_a_facilitator_or_a_reason_is_refused(tmp_path: Path) 
     _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "inject", SESSION_ID, "--step-id", STEP_ID,
-            "--schedule-id", SCHEDULE_ID, "--db", db,
+            "inject",
+            SESSION_ID,
+            "--step-id",
+            STEP_ID,
+            "--schedule-id",
+            SCHEDULE_ID,
+            "--db",
+            db,
         ],
     )
     blank_actor = _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "release", SESSION_ID, STEP_ID,
-            "--facilitator", "   ", "--reason", "why not", "--db", db,
+            "release",
+            SESSION_ID,
+            STEP_ID,
+            "--facilitator",
+            "   ",
+            "--reason",
+            "why not",
+            "--db",
+            db,
         ],
     )
     blank_reason = _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "release", SESSION_ID, STEP_ID,
-            "--facilitator", FACILITATOR, "--reason", "  ", "--db", db,
+            "release",
+            SESSION_ID,
+            STEP_ID,
+            "--facilitator",
+            FACILITATOR,
+            "--reason",
+            "  ",
+            "--db",
+            db,
         ],
     )
 
@@ -901,13 +950,26 @@ def test_releasing_twice_is_refused_and_the_first_release_survives(tmp_path: Pat
     _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "inject", SESSION_ID, "--step-id", STEP_ID,
-            "--schedule-id", SCHEDULE_ID, "--db", db,
+            "inject",
+            SESSION_ID,
+            "--step-id",
+            STEP_ID,
+            "--schedule-id",
+            SCHEDULE_ID,
+            "--db",
+            db,
         ],
     )
     args = [
-        "release", SESSION_ID, STEP_ID,
-        "--facilitator", FACILITATOR, "--reason", "open", "--db", db,
+        "release",
+        SESSION_ID,
+        STEP_ID,
+        "--facilitator",
+        FACILITATOR,
+        "--reason",
+        "open",
+        "--db",
+        db,
     ]
     assert _runner().invoke(game_day_step_cmd.game_day_step, args).exit_code == 0
 
@@ -926,23 +988,47 @@ def test_a_rehold_keeps_the_release_on_the_record(tmp_path: Path) -> None:
     _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "inject", SESSION_ID, "--step-id", STEP_ID,
-            "--schedule-id", SCHEDULE_ID, "--db", db,
+            "inject",
+            SESSION_ID,
+            "--step-id",
+            STEP_ID,
+            "--schedule-id",
+            SCHEDULE_ID,
+            "--db",
+            db,
         ],
     )
     _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "release", SESSION_ID, STEP_ID, "--facilitator", FACILITATOR,
-            "--reason", "open", "--now", T1.isoformat(), "--db", db,
+            "release",
+            SESSION_ID,
+            STEP_ID,
+            "--facilitator",
+            FACILITATOR,
+            "--reason",
+            "open",
+            "--now",
+            T1.isoformat(),
+            "--db",
+            db,
         ],
     )
     result = _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "hold", SESSION_ID, STEP_ID, "--facilitator", FACILITATOR,
-            "--reason", "a participant pushed back", "--now", T2.isoformat(),
-            "--db", db, "--json",
+            "hold",
+            SESSION_ID,
+            STEP_ID,
+            "--facilitator",
+            FACILITATOR,
+            "--reason",
+            "a participant pushed back",
+            "--now",
+            T2.isoformat(),
+            "--db",
+            db,
+            "--json",
         ],
     )
 
@@ -968,8 +1054,15 @@ def test_a_dispatched_step_cannot_be_re_held(tmp_path: Path) -> None:
     result = _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
-            "hold", SESSION_ID, STEP_ID, "--facilitator", FACILITATOR,
-            "--reason", "too late", "--db", db,
+            "hold",
+            SESSION_ID,
+            STEP_ID,
+            "--facilitator",
+            FACILITATOR,
+            "--reason",
+            "too late",
+            "--db",
+            db,
         ],
     )
 
@@ -982,16 +1075,17 @@ def test_the_note_command_records_each_kind_and_refuses_a_misgraded_finding(
     """The three artifact kinds are reachable, and the kind rules still apply."""
     db = _seeded(tmp_path)
     common = ["note", SESSION_ID, "--actor", FACILITATOR, "--now", T1.isoformat(), "--db", db]
-    note = _runner().invoke(
-        game_day_step_cmd.game_day_step, [*common, "--text", "bridge opened"]
-    )
+    note = _runner().invoke(game_day_step_cmd.game_day_step, [*common, "--text", "bridge opened"])
     finding = _runner().invoke(
         game_day_step_cmd.game_day_step,
         [
             *common,
-            "--kind", "finding",
-            "--severity", "high",
-            "--text", "the runbook's rollback step does not exist",
+            "--kind",
+            "finding",
+            "--severity",
+            "high",
+            "--text",
+            "the runbook's rollback step does not exist",
         ],
     )
     ungraded = _runner().invoke(
@@ -1017,13 +1111,21 @@ def test_an_unknown_step_or_session_is_reported_rather_than_creating_one(
     db = _seeded(tmp_path)
     unknown_step = _runner().invoke(
         game_day_step_cmd.game_day_step,
-        ["release", SESSION_ID, "not-a-step", "--facilitator", FACILITATOR,
-         "--reason", "open", "--db", db],
+        [
+            "release",
+            SESSION_ID,
+            "not-a-step",
+            "--facilitator",
+            FACILITATOR,
+            "--reason",
+            "open",
+            "--db",
+            db,
+        ],
     )
     unknown_session = _runner().invoke(
         game_day_step_cmd.game_day_step,
-        ["inject", "gd-nope", "--step-id", STEP_ID, "--schedule-id", SCHEDULE_ID,
-         "--db", db],
+        ["inject", "gd-nope", "--step-id", STEP_ID, "--schedule-id", SCHEDULE_ID, "--db", db],
     )
 
     assert unknown_step.exit_code == 1
@@ -1055,15 +1157,24 @@ def test_add_registers_a_schedule_and_tick_evaluates_it_without_dispatching(
     added = _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1",
-            "--experiment-id", "exp-1",
-            "--team", "sre",
-            "--cron", "0 9 * * *",
-            "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(),
-            "--resource", "db-primary",
-            "--db", db,
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
             "--json",
         ],
     )
@@ -1101,16 +1212,26 @@ def test_a_tick_reports_a_missed_window_with_its_instant_and_its_reason(
     added = _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "poller",
-            "--campaign-id", "camp-1",
-            "--experiment-id", "exp-1",
-            "--team", "sre",
-            "--interval-s", "3600",
-            "--anchor-at", T0.isoformat(),
-            "--max-runs", "50",
-            "--created-at", BEFORE_T0.isoformat(),
-            "--resource", "db-primary",
-            "--db", db,
+            "add",
+            "poller",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--interval-s",
+            "3600",
+            "--anchor-at",
+            T0.isoformat(),
+            "--max-runs",
+            "50",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
             "--json",
         ],
     )
@@ -1139,16 +1260,26 @@ def test_a_tick_reports_lateness_and_jitter_as_two_separate_facts(tmp_path: Path
     _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1",
-            "--experiment-id", "exp-1",
-            "--team", "sre",
-            "--cron", "0 9 * * *",
-            "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(),
-            "--jitter-s", "60",
-            "--resource", "db-primary",
-            "--db", db,
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--jitter-s",
+            "60",
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
             "--json",
         ],
     )
@@ -1168,19 +1299,36 @@ def test_a_tick_reports_lateness_and_jitter_as_two_separate_facts(tmp_path: Path
 
 
 def test_a_disabled_schedule_is_held_rather_than_skipped(tmp_path: Path) -> None:
-    """"It did not run because it is switched off" has to be an answer, not an absence."""
+    """ "It did not run because it is switched off" has to be an answer, not an absence."""
     db = str(tmp_path / "mayhem.db")
     add = [
-        "add", "nightly",
-        "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-        "--cron", "0 9 * * *", "--max-runs", "20",
-        "--created-at", BEFORE_T0.isoformat(), "--resource", "db-primary",
-        "--db", db, "--json",
+        "add",
+        "nightly",
+        "--campaign-id",
+        "camp-1",
+        "--experiment-id",
+        "exp-1",
+        "--team",
+        "sre",
+        "--cron",
+        "0 9 * * *",
+        "--max-runs",
+        "20",
+        "--created-at",
+        BEFORE_T0.isoformat(),
+        "--resource",
+        "db-primary",
+        "--db",
+        db,
+        "--json",
     ]
     assert _runner().invoke(schedule_cmd.schedule, add).exit_code == 0
-    assert _runner().invoke(
-        schedule_cmd.schedule, ["disable", "nightly", "--db", db, "--json"]
-    ).exit_code == 0
+    assert (
+        _runner()
+        .invoke(schedule_cmd.schedule, ["disable", "nightly", "--db", db, "--json"])
+        .exit_code
+        == 0
+    )
 
     ticked = _runner().invoke(
         schedule_cmd.schedule, ["tick", "--now", T0.isoformat(), "--db", db, "--json"]
@@ -1202,11 +1350,25 @@ def test_an_already_fired_slot_is_reported_as_already_dispatched(tmp_path: Path)
     _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--cron", "0 9 * * *", "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(), "--resource", "db-primary",
-            "--db", db, "--json",
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
+            "--json",
         ],
     )
     store = Store.open_migrated(db)
@@ -1260,11 +1422,25 @@ def test_delete_refuses_a_schedule_with_dispatch_evidence(tmp_path: Path) -> Non
     _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--cron", "0 9 * * *", "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(), "--resource", "db-primary",
-            "--db", db, "--json",
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
+            "--json",
         ],
     )
     store = Store.open_migrated(db)
@@ -1290,11 +1466,25 @@ def test_an_undispatched_schedule_can_be_deleted(tmp_path: Path) -> None:
     _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--cron", "0 9 * * *", "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(), "--resource", "db-primary",
-            "--db", db, "--json",
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
+            "--json",
         ],
     )
 
@@ -1312,11 +1502,27 @@ def test_next_reports_the_nominal_and_the_effective_instants_separately(tmp_path
     _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--cron", "0 9 * * *", "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(), "--jitter-s", "30",
-            "--resource", "db-primary", "--db", db, "--json",
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--jitter-s",
+            "30",
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
+            "--json",
         ],
     )
     result = _runner().invoke(
@@ -1338,15 +1544,28 @@ def test_an_add_with_two_recurrence_sources_is_refused(tmp_path: Path) -> None:
     result = _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "nightly",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--cron", "0 9 * * *",
-            "--interval-s", "3600",
-            "--anchor-at", T0.isoformat(),
-            "--max-runs", "20",
-            "--created-at", BEFORE_T0.isoformat(),
-            "--resource", "db-primary",
-            "--db", str(tmp_path / "mayhem.db"),
+            "add",
+            "nightly",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--cron",
+            "0 9 * * *",
+            "--interval-s",
+            "3600",
+            "--anchor-at",
+            T0.isoformat(),
+            "--max-runs",
+            "20",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            str(tmp_path / "mayhem.db"),
         ],
     )
 
@@ -1360,11 +1579,26 @@ def test_a_naive_instant_is_refused_by_every_time_taking_flag(tmp_path: Path) ->
     naive_anchor = _runner().invoke(
         schedule_cmd.schedule,
         [
-            "add", "poller",
-            "--campaign-id", "camp-1", "--experiment-id", "exp-1", "--team", "sre",
-            "--interval-s", "3600", "--anchor-at", "2026-06-01T09:00:00",
-            "--max-runs", "50", "--created-at", BEFORE_T0.isoformat(),
-            "--resource", "db-primary", "--db", db,
+            "add",
+            "poller",
+            "--campaign-id",
+            "camp-1",
+            "--experiment-id",
+            "exp-1",
+            "--team",
+            "sre",
+            "--interval-s",
+            "3600",
+            "--anchor-at",
+            "2026-06-01T09:00:00",
+            "--max-runs",
+            "50",
+            "--created-at",
+            BEFORE_T0.isoformat(),
+            "--resource",
+            "db-primary",
+            "--db",
+            db,
         ],
     )
     naive_now = _runner().invoke(

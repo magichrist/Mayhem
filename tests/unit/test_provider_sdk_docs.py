@@ -94,9 +94,7 @@ CLAIMS_A_CHECK = re.compile(
 #: prose uses verbatim or by direct paraphrase, so a reworded page that keeps
 #: the meaning keeps passing.
 DISCLAIMERS = (
-    re.compile(
-        r"SIGNATURE_VERIFICATION_IMPLEMENTED`?\s*(?:is|remains)?\s*`?\s*`?False", re.I
-    ),
+    re.compile(r"SIGNATURE_VERIFICATION_IMPLEMENTED`?\s*(?:is|remains)?\s*`?\s*`?False", re.I),
     re.compile(r"verif(?:y|ies)\s+no\s+signature", re.I),
     re.compile(r"no\s+signature\s+is\s+(?:checked|verified)", re.I),
     re.compile(r"unverified", re.I),
@@ -153,9 +151,7 @@ def _checklist_items(text: str) -> list[str]:
 
 class TestNoOwnedDocumentOverclaims:
     @pytest.mark.parametrize("path", OWNED_DOCUMENTS, ids=lambda path: path.name)
-    def test_no_block_claims_a_check_without_a_same_breath_disclaimer(
-        self, path: Path
-    ) -> None:
+    def test_no_block_claims_a_check_without_a_same_breath_disclaimer(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8")
         overclaims = _overclaims(text)
         assert not overclaims, (
@@ -381,9 +377,7 @@ class TestTheScanCanFail:
         subject = re.compile(r".", re.DOTALL)
         claims = re.compile(r"(?!x)x")
         overclaims = [
-            block
-            for block in _blocks(index)
-            if subject.search(block) and claims.search(block)
+            block for block in _blocks(index) if subject.search(block) and claims.search(block)
         ]
         assert not overclaims
         assert _overclaims(index) == []

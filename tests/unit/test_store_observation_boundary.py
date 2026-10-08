@@ -250,9 +250,7 @@ class TestObservationBoundary:
     ) -> None:
         """The stateless half: refused whether or not this run resolved anything."""
         with pytest.raises(InvariantViolationError) as excinfo:
-            store.save_observation(
-                "game_day.artifact", data={"resolved_credentials": {"db": "x"}}
-            )
+            store.save_observation("game_day.artifact", data={"resolved_credentials": {"db": "x"}})
         assert excinfo.value.rule == REFUSAL_SECRET_FIELD_PERSISTED
         # A refusal that said only "refused" would be indistinguishable from a
         # schema error, so it must name the path that is not persistable.
@@ -277,9 +275,11 @@ class TestObservationBoundary:
                     store.save_observation(
                         "game_day.artifact",
                         source="session-1",
-                        data={"kind": "note", "actor": "facilitator-ana", "text": (
-                            f"pasted the connection string while annotating: {value}"
-                        )},
+                        data={
+                            "kind": "note",
+                            "actor": "facilitator-ana",
+                            "text": (f"pasted the connection string while annotating: {value}"),
+                        },
                     )
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
         assert SECRET_VALUE not in str(excinfo.value), (
@@ -408,8 +408,9 @@ class TestBothCallersAreCovered:
                 with pytest.raises(InvariantViolationError) as excinfo:
                     record_artifact(store, artifact)
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
-        assert store.query("SELECT * FROM observations WHERE kind = ?",
-                           ("game_day.artifact",)) == []
+        assert (
+            store.query("SELECT * FROM observations WHERE kind = ?", ("game_day.artifact",)) == []
+        )
         store.close()
 
     def test_record_tick_refuses_a_report_carrying_a_resolved_value(
@@ -426,8 +427,7 @@ class TestBothCallersAreCovered:
                 controller_id="controller-1",
             )
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
-        assert store.query("SELECT * FROM observations WHERE kind = ?",
-                           ("schedule.tick",)) == []
+        assert store.query("SELECT * FROM observations WHERE kind = ?", ("schedule.tick",)) == []
         store.close()
 
     def test_both_writers_still_record_ordinary_observations(
@@ -457,9 +457,7 @@ class TestBothCallersAreCovered:
 
 class TestTheObservationWriterIsRegistered:
     def test_the_row_exists_and_names_the_one_gate(self) -> None:
-        assert BOUNDARY_CALL_SITES[OBSERVATION_ROW] == frozenset(
-            {"require_persistable_document"}
-        )
+        assert BOUNDARY_CALL_SITES[OBSERVATION_ROW] == frozenset({"require_persistable_document"})
 
     def test_the_row_describes_the_source_rather_than_copying_it(self) -> None:
         """The table and the code must agree in both directions.

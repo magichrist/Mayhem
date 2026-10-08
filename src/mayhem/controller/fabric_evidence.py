@@ -178,8 +178,10 @@ def run_id_of_chain(chain_id: str) -> str:
     A chain id that is not a fabric chain returns it unchanged, so a caller
     asking the wrong question gets its own value back rather than a silent lie.
     """
-    return chain_id[: -len(FABRIC_CHAIN_SUFFIX)] if chain_id.endswith(FABRIC_CHAIN_SUFFIX) else (
-        chain_id
+    return (
+        chain_id[: -len(FABRIC_CHAIN_SUFFIX)]
+        if chain_id.endswith(FABRIC_CHAIN_SUFFIX)
+        else (chain_id)
     )
 
 
@@ -236,9 +238,7 @@ class SqliteFabricJournal:
         Raises:
             FabricJournalIntegrityError: If any row disagrees with its payload.
         """
-        return tuple(
-            self._entry(row) for row in self._table.rows(run_id, step_id)
-        )
+        return tuple(self._entry(row) for row in self._table.rows(run_id, step_id))
 
     def rows(self, run_id: str, step_id: str | None = None) -> tuple[FabricJournalRow, ...]:
         """The stored rows themselves — the raw record, for an auditor."""
@@ -572,8 +572,7 @@ class FabricEvidenceRecorder:
         """
         if kind not in FABRIC_EVENT_KINDS:
             raise DomainError(
-                f"unknown fabric evidence kind {kind!r}; known kinds are "
-                f"{list(FABRIC_EVENT_KINDS)}"
+                f"unknown fabric evidence kind {kind!r}; known kinds are {list(FABRIC_EVENT_KINDS)}"
             )
         chain_id = fabric_chain_id(run_id)
         repository = AttestationRepository(self.store)
@@ -878,14 +877,13 @@ def timeline_matches_journal(
         if isinstance(entry, DispatchClaim)
     }
     journal_settlements = {
-        entry.command_id for entry in journal.entries(run_id, step_id)
+        entry.command_id
+        for entry in journal.entries(run_id, step_id)
         if isinstance(entry, DispatchSettlement)
     }
     problems: list[str] = []
     for command_id, epoch in journal_claims.items():
-        sealed = next(
-            (d for d in timeline.dispatches if d.command_id == command_id), None
-        )
+        sealed = next((d for d in timeline.dispatches if d.command_id == command_id), None)
         if sealed is None:
             problems.append(f"journal claims '{command_id}' but no sealed dispatch attests it")
         elif sealed.epoch != epoch:
@@ -899,8 +897,7 @@ def timeline_matches_journal(
     for dispatch in timeline.dispatches:
         if dispatch.command_id not in journal_claims:
             problems.append(
-                f"chain attests dispatch '{dispatch.command_id}' which the journal "
-                "does not hold"
+                f"chain attests dispatch '{dispatch.command_id}' which the journal does not hold"
             )
     return tuple(problems)
 

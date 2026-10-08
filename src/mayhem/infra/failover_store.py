@@ -419,9 +419,7 @@ class PromotionRecord(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariants(self) -> PromotionRecord:
-        _require_aware(
-            self.promoted_at, "promotion.time_aware", f"promotion {self.promotion_id}"
-        )
+        _require_aware(self.promoted_at, "promotion.time_aware", f"promotion {self.promotion_id}")
         if self.status not in PROMOTION_STATUSES:
             msg = (
                 f"promotion {self.promotion_id} has status {self.status!r}; only "
@@ -474,9 +472,7 @@ class PromotionRecord(BaseModel):
     def stamped(self) -> PromotionRecord:
         """This record with its digest computed. The only way to make a valid one."""
         body = self.model_dump(mode="json", exclude={"document_digest"})
-        return PromotionRecord.model_validate(
-            {**body, "document_digest": content_digest(body)}
-        )
+        return PromotionRecord.model_validate({**body, "document_digest": content_digest(body)})
 
     def describes_itself(self) -> bool:
         """True when the stored digest matches :meth:`document`.
@@ -492,9 +488,7 @@ class PromotionRecord(BaseModel):
                 f"promotion {self.promotion_id}: {self.standby_id} took scope "
                 f"{self.scope!r} to term {self.new_term} (over "
                 f"{self.deposed_leader_id or '(none)'} at term {self.deposed_term}) by "
-                f"{self.operator}"
-                + (" UNDER --force" if self.forced else "")
-                + f": {self.reason}"
+                f"{self.operator}" + (" UNDER --force" if self.forced else "") + f": {self.reason}"
             )
         names = ", ".join(self.refusals) or "unspecified"
         return (
@@ -639,8 +633,7 @@ class FailoverPromotionStore:
                 return self.promotion(stamped.promotion_id) or stamped
             if stamped.promoted:
                 taken = conn.execute(
-                    f"SELECT promotion_id FROM {PROMOTIONS_TABLE} "
-                    "WHERE scope = ? AND new_term = ?",
+                    f"SELECT promotion_id FROM {PROMOTIONS_TABLE} WHERE scope = ? AND new_term = ?",
                     (stamped.scope, stamped.new_term),
                 ).fetchone()
                 if taken is not None:

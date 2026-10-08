@@ -122,9 +122,7 @@ def test_cron_parses_every_atom_of_the_dialect() -> None:
         ("@annually", "0 0 1 1 *"),
     ],
 )
-def test_cron_shorthand_expands_to_its_documented_expression(
-    shorthand: str, expanded: str
-) -> None:
+def test_cron_shorthand_expands_to_its_documented_expression(shorthand: str, expanded: str) -> None:
     reference = CronSpec.parse(expanded)
     spec = CronSpec.parse(shorthand)
 
@@ -376,15 +374,21 @@ def test_interval_schedule_never_fires_before_its_anchor() -> None:
 
 def test_touching_windows_do_not_overlap() -> None:
     """Half-open windows: a freeze ending at 09:00 and work starting at 09:00."""
-    assert windows_overlap(
-        _utc(2026, 6, 1, 8), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 11)
-    ) is False
+    assert (
+        windows_overlap(
+            _utc(2026, 6, 1, 8), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 11)
+        )
+        is False
+    )
 
 
 def test_windows_overlap_when_they_share_an_instant() -> None:
-    assert windows_overlap(
-        _utc(2026, 6, 1, 8), _utc(2026, 6, 1, 10), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 11)
-    ) is True
+    assert (
+        windows_overlap(
+            _utc(2026, 6, 1, 8), _utc(2026, 6, 1, 10), _utc(2026, 6, 1, 9), _utc(2026, 6, 1, 11)
+        )
+        is True
+    )
 
 
 def test_a_window_contains_only_its_interior() -> None:
@@ -435,15 +439,21 @@ def test_business_hours_must_declare_at_least_one_window() -> None:
 
 
 def test_daily_window_rejects_a_weekday_it_both_includes_and_excludes() -> None:
-    assert _rule(lambda: DailyWindow(days=frozenset({0, 1}), excluded_days=frozenset({1}),
-                                      start_time=time(9), end_time=time(17))) == (
-        "schedule.weekday_excluded"
-    )
+    assert _rule(
+        lambda: DailyWindow(
+            days=frozenset({0, 1}),
+            excluded_days=frozenset({1}),
+            start_time=time(9),
+            end_time=time(17),
+        )
+    ) == ("schedule.weekday_excluded")
 
 
 def test_daily_window_rejects_an_out_of_range_weekday() -> None:
-    assert _rule(lambda: DailyWindow(days=frozenset({9}), start_time=time(9),
-                                      end_time=time(17))) == "schedule.weekday_range"
+    assert (
+        _rule(lambda: DailyWindow(days=frozenset({9}), start_time=time(9), end_time=time(17)))
+        == "schedule.weekday_range"
+    )
 
 
 def test_blackout_matches_a_local_date_not_a_utc_one() -> None:
@@ -461,7 +471,9 @@ def test_blackout_matches_a_local_date_not_a_utc_one() -> None:
 
 def test_maintenance_and_blackout_together_name_every_blocker() -> None:
     window = MaintenanceWindow(
-        window_id="deploy", starts_at=_utc(2026, 6, 1, 8), ends_at=_utc(2026, 6, 1, 10),
+        window_id="deploy",
+        starts_at=_utc(2026, 6, 1, 8),
+        ends_at=_utc(2026, 6, 1, 10),
         reason="release freeze",
     )
     schedule = _cron_schedule(
@@ -627,9 +639,9 @@ def test_a_calendar_window_is_never_reported_as_late_or_jittered() -> None:
 def test_a_refusal_reports_no_lateness_and_no_jitter() -> None:
     """A non-fire is not a late fire. Both fields read zero on a refusal."""
     schedule = _cron_schedule(
-        expression="0 9 * * *", jitter=Jitter(max_offset_s="2m"), blackout_dates=BlackoutDates(
-            dates=frozenset({date(2026, 6, 1)})
-        )
+        expression="0 9 * * *",
+        jitter=Jitter(max_offset_s="2m"),
+        blackout_dates=BlackoutDates(dates=frozenset({date(2026, 6, 1)})),
     )
 
     decision = schedule.evaluate(now=_utc(2026, 6, 1, 9, 0, 30))
@@ -856,9 +868,7 @@ def test_schedule_refuses_a_horizon_that_ends_before_it_is_created() -> None:
 
 
 def test_schedule_refuses_a_naive_created_at() -> None:
-    assert _rule(lambda: _cron_schedule(created_at=_wall(2026, 1, 1))) == (
-        "schedule.created_naive"
-    )
+    assert _rule(lambda: _cron_schedule(created_at=_wall(2026, 1, 1))) == ("schedule.created_naive")
 
 
 def test_schedule_refuses_an_unknown_timezone() -> None:
@@ -870,9 +880,7 @@ def test_schedule_refuses_an_unknown_timezone() -> None:
 def test_evaluation_refuses_a_naive_probe() -> None:
     schedule = _cron_schedule()
 
-    assert _rule(lambda: schedule.evaluate(now=_wall(2026, 6, 1, 9))) == (
-        "schedule.evaluate_naive"
-    )
+    assert _rule(lambda: schedule.evaluate(now=_wall(2026, 6, 1, 9))) == ("schedule.evaluate_naive")
 
 
 def test_schedule_describe_names_its_recurrence_and_horizon() -> None:
@@ -915,7 +923,9 @@ def test_negative_control_a_window_that_closed_after_creation_does_not_fire() ->
 
 def test_negative_control_a_maintenance_window_opened_after_creation_does_not_fire() -> None:
     window = MaintenanceWindow(
-        window_id="emergency-freeze", starts_at=_utc(2026, 6, 1, 8), ends_at=_utc(2026, 6, 1, 10),
+        window_id="emergency-freeze",
+        starts_at=_utc(2026, 6, 1, 8),
+        ends_at=_utc(2026, 6, 1, 10),
         reason="incident bridge",
     )
     schedule = _cron_schedule(expression="0 9 * * *", maintenance_windows=(window,))
@@ -930,25 +940,31 @@ def test_negative_control_a_maintenance_window_opened_after_creation_does_not_fi
 
 def test_negative_control_an_unbounded_cron_is_rejected() -> None:
     """A schedule that can fire forever is a schedule that can outlive its reason."""
-    assert _rule(
-        lambda: Schedule(
-            schedule_id="forever",
-            kind=ScheduleKind.CRON,
-            cron=CronSpec.parse("* * * * *"),
-            created_at=CREATED,
+    assert (
+        _rule(
+            lambda: Schedule(
+                schedule_id="forever",
+                kind=ScheduleKind.CRON,
+                cron=CronSpec.parse("* * * * *"),
+                created_at=CREATED,
+            )
         )
-    ) == "schedule.unbounded_recurrence"
+        == "schedule.unbounded_recurrence"
+    )
 
 
 def test_negative_control_an_unbounded_interval_is_rejected() -> None:
-    assert _rule(
-        lambda: Schedule(
-            schedule_id="forever",
-            kind=ScheduleKind.INTERVAL,
-            interval=IntervalSpec(every_s=60.0, anchor_at=CREATED),
-            created_at=CREATED,
+    assert (
+        _rule(
+            lambda: Schedule(
+                schedule_id="forever",
+                kind=ScheduleKind.INTERVAL,
+                interval=IntervalSpec(every_s=60.0, anchor_at=CREATED),
+                created_at=CREATED,
+            )
         )
-    ) == "schedule.unbounded_recurrence"
+        == "schedule.unbounded_recurrence"
+    )
 
 
 @pytest.mark.parametrize(
@@ -960,8 +976,11 @@ def test_negative_control_an_unbounded_interval_is_rejected() -> None:
 )
 def test_any_declared_horizon_satisfies_the_unbounded_refusal(kwargs: dict[str, object]) -> None:
     schedule = Schedule(
-        schedule_id="bounded", kind=ScheduleKind.CRON, cron=CronSpec.parse("* * * * *"),
-        created_at=CREATED, **kwargs,
+        schedule_id="bounded",
+        kind=ScheduleKind.CRON,
+        cron=CronSpec.parse("* * * * *"),
+        created_at=CREATED,
+        **kwargs,
     )
 
     assert schedule.describe()
@@ -1021,24 +1040,30 @@ def test_negative_control_a_closed_horizon_does_not_fire() -> None:
 
 
 def test_schedule_refuses_two_recurrence_sources() -> None:
-    assert _rule(
-        lambda: Schedule(
-            schedule_id="ambiguous",
-            kind=ScheduleKind.CRON,
-            cron=CronSpec.parse("0 9 * * *"),
-            interval=IntervalSpec(every_s=60.0, anchor_at=CREATED),
-            created_at=CREATED,
-            max_runs=1,
+    assert (
+        _rule(
+            lambda: Schedule(
+                schedule_id="ambiguous",
+                kind=ScheduleKind.CRON,
+                cron=CronSpec.parse("0 9 * * *"),
+                interval=IntervalSpec(every_s=60.0, anchor_at=CREATED),
+                created_at=CREATED,
+                max_runs=1,
+            )
         )
-    ) == "schedule.recurrence_source"
+        == "schedule.recurrence_source"
+    )
 
 
 def test_schedule_refuses_no_recurrence_source() -> None:
-    assert _rule(
-        lambda: Schedule(
-            schedule_id="empty", kind=ScheduleKind.CRON, created_at=CREATED, max_runs=1
+    assert (
+        _rule(
+            lambda: Schedule(
+                schedule_id="empty", kind=ScheduleKind.CRON, created_at=CREATED, max_runs=1
+            )
         )
-    ) == "schedule.recurrence_source"
+        == "schedule.recurrence_source"
+    )
 
 
 # --- fairness -----------------------------------------------------------------
@@ -1147,8 +1172,9 @@ def test_within_the_starving_tier_the_longest_waiting_team_goes_first() -> None:
     and the window-by-window simulation does not reliably expose it, so it is
     pinned here against an explicit history.
     """
-    policy = FairnessPolicy(policy_id="f", shares={"a": 50.0, "b": 1.0, "c": 1.0},
-                            starvation_window=2)
+    policy = FairnessPolicy(
+        policy_id="f", shares={"a": 50.0, "b": 1.0, "c": 1.0}, starvation_window=2
+    )
     history = [
         GrantRecord(window_index=0, team="a"),
         GrantRecord(window_index=1, team="b"),
@@ -1170,8 +1196,9 @@ def test_within_the_starving_tier_the_longest_waiting_team_goes_first() -> None:
 
 
 def test_the_starving_tier_outranks_a_heavier_team_that_is_not_starving() -> None:
-    policy = FairnessPolicy(policy_id="f", shares={"heavy": 100.0, "light": 0.1},
-                            starvation_window=2)
+    policy = FairnessPolicy(
+        policy_id="f", shares={"heavy": 100.0, "light": 0.1}, starvation_window=2
+    )
     history = [
         GrantRecord(window_index=0, team="heavy"),
         GrantRecord(window_index=1, team="heavy"),
@@ -1214,9 +1241,7 @@ def test_fairness_simulation_refuses_to_run_with_nothing_to_simulate() -> None:
     policy = FairnessPolicy(policy_id="f", shares={"a": 1.0})
 
     assert _rule(lambda: policy.simulate_fairness((), windows=5)) == "fairness.no_teams"
-    assert _rule(lambda: policy.simulate_fairness(("a",), windows=0)) == (
-        "fairness.window_count"
-    )
+    assert _rule(lambda: policy.simulate_fairness(("a",), windows=0)) == ("fairness.window_count")
 
 
 def test_longest_skip_runs_counts_the_trailing_gap_not_only_interior_gaps() -> None:
@@ -1275,22 +1300,35 @@ def test_each_pair_of_concurrency_classes_has_a_decided_compatibility(
 
 def test_a_parallel_run_may_not_claim_a_resource() -> None:
     """``PARALLEL`` is the class that takes no locks, so it cannot hold one."""
-    assert _rule(lambda: _request(run_id="r", experiment_id="e",
-                                  concurrency_class=ConcurrencyClass.PARALLEL,
-                                  resources=("db-primary",))) == (
-        "concurrency.parallel_resources"
-    )
+    assert _rule(
+        lambda: _request(
+            run_id="r",
+            experiment_id="e",
+            concurrency_class=ConcurrencyClass.PARALLEL,
+            resources=("db-primary",),
+        )
+    ) == ("concurrency.parallel_resources")
 
 
 def test_a_request_must_expire_after_it_acquires() -> None:
-    assert _rule(lambda: _request(run_id="r", experiment_id="e",
-                                  acquired_at=_utc(2026, 6, 1),
-                                  expires_at=_utc(2026, 6, 1))) == "concurrency.window"
+    assert (
+        _rule(
+            lambda: _request(
+                run_id="r",
+                experiment_id="e",
+                acquired_at=_utc(2026, 6, 1),
+                expires_at=_utc(2026, 6, 1),
+            )
+        )
+        == "concurrency.window"
+    )
 
 
 def test_a_request_may_not_name_a_resource_twice() -> None:
-    assert _rule(lambda: _request(run_id="r", experiment_id="e",
-                                  resources=("db", "db"))) == "concurrency.resource_duplicate"
+    assert (
+        _rule(lambda: _request(run_id="r", experiment_id="e", resources=("db", "db")))
+        == "concurrency.resource_duplicate"
+    )
 
 
 def test_a_parallel_run_overlaps_everything_because_it_names_nothing() -> None:
@@ -1308,12 +1346,19 @@ def test_two_exclusive_experiments_on_one_database_serialize_naming_the_first() 
     names both the run and the experiment holding the resource.
     """
     first = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     second = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1, 0, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1, 0, 1),
         expires_at=_utc(2026, 6, 1, 2),
     )
 
@@ -1368,15 +1413,21 @@ def test_a_queue_of_exclusive_requests_drains_one_at_a_time() -> None:
 def test_only_the_holder_blocks_and_never_a_non_overlapping_request() -> None:
     """Two runs a day apart are two uses of a resource, not two claims on it."""
     holder = _request(
-        run_id="run-0", experiment_id="exp-0", acquired_at=_utc(2026, 6, 1),
+        run_id="run-0",
+        experiment_id="exp-0",
+        acquired_at=_utc(2026, 6, 1),
         expires_at=_utc(2026, 6, 1, 2),
     )
     same_window = _request(
-        run_id="run-1", experiment_id="exp-1", acquired_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-1",
+        acquired_at=_utc(2026, 6, 1, 1),
         expires_at=_utc(2026, 6, 1, 3),
     )
     next_day = _request(
-        run_id="run-2", experiment_id="exp-2", acquired_at=_utc(2026, 6, 2),
+        run_id="run-2",
+        experiment_id="exp-2",
+        acquired_at=_utc(2026, 6, 2),
         expires_at=_utc(2026, 6, 2, 1),
     )
 
@@ -1386,12 +1437,19 @@ def test_only_the_holder_blocks_and_never_a_non_overlapping_request() -> None:
 
 def test_an_expired_holder_stops_fencing_the_resource() -> None:
     holder = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     latecomer = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1, 3),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1, 3),
         expires_at=_utc(2026, 6, 1, 4),
     )
 
@@ -1411,12 +1469,19 @@ def test_an_expired_holder_stops_fencing_the_resource() -> None:
 def test_a_sequential_use_of_one_resource_is_not_a_conflict() -> None:
     """Non-overlapping windows are two uses of a resource, not two claims on it."""
     first = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     later = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1, 1),
         expires_at=_utc(2026, 6, 1, 2),
     )
 
@@ -1426,8 +1491,12 @@ def test_a_sequential_use_of_one_resource_is_not_a_conflict() -> None:
 def test_one_run_may_reacquire_the_resource_it_already_holds() -> None:
     """Re-entrancy: a run taking a second step must not queue behind itself."""
     first = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     second_step = first.model_copy(update={"experiment_id": "exp-a-step-2"})
 
@@ -1436,12 +1505,19 @@ def test_one_run_may_reacquire_the_resource_it_already_holds() -> None:
 
 def test_shared_resource_runs_coexist_on_the_same_resource() -> None:
     reader = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     other_reader = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
         expires_at=_utc(2026, 6, 1, 1),
     )
 
@@ -1450,12 +1526,19 @@ def test_shared_resource_runs_coexist_on_the_same_resource() -> None:
 
 def test_an_exclusive_run_preempts_a_shared_resource_run() -> None:
     reader = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     owner = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
         expires_at=_utc(2026, 6, 1, 1),
     )
 
@@ -1481,12 +1564,20 @@ def test_a_conflicting_run_coexists_with_nothing_it_names_a_resource_with(
     claim one.
     """
     blocking = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.CONFLICTING,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.CONFLICTING,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     contender = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=other,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=other,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
 
     verdict = evaluate_concurrency((blocking,), contender, now=_utc(2026, 6, 1))
@@ -1497,12 +1588,20 @@ def test_a_conflicting_run_coexists_with_nothing_it_names_a_resource_with(
 
 def test_runs_on_different_resources_never_conflict() -> None:
     left = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     right = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.EXCLUSIVE,
-        resources=("cache-flush",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.EXCLUSIVE,
+        resources=("cache-flush",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
 
     assert evaluate_concurrency((left,), right, now=_utc(2026, 6, 1)).runnable is True
@@ -1511,13 +1610,21 @@ def test_runs_on_different_resources_never_conflict() -> None:
 def test_the_policy_lock_layer_refuses_and_names_the_holder() -> None:
     """The 07 lock layer is consulted after the class matrix, and names its owner."""
     holder = _request(
-        run_id="run-1", experiment_id="exp-a", concurrency_class=ConcurrencyClass.PARALLEL,
-        resources=(), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-1",
+        experiment_id="exp-a",
+        concurrency_class=ConcurrencyClass.PARALLEL,
+        resources=(),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
     lock = holder.lock_for("db-primary")
     compatible = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 1),
     )
 
     verdict = evaluate_concurrency((), compatible, [lock], now=_utc(2026, 6, 1))
@@ -1530,11 +1637,16 @@ def test_the_policy_lock_layer_refuses_and_names_the_holder() -> None:
 
 
 def test_an_expired_lock_fences_nothing() -> None:
-    lock = _lock("lock-1", owner="run-1", acquired_at=_utc(2026, 6, 1),
-                 expires_at=_utc(2026, 6, 1, 1))
+    lock = _lock(
+        "lock-1", owner="run-1", acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 1)
+    )
     candidate = _request(
-        run_id="run-2", experiment_id="exp-b", concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
-        resources=("db-primary",), acquired_at=_utc(2026, 6, 1), expires_at=_utc(2026, 6, 1, 2),
+        run_id="run-2",
+        experiment_id="exp-b",
+        concurrency_class=ConcurrencyClass.SHARED_RESOURCE,
+        resources=("db-primary",),
+        acquired_at=_utc(2026, 6, 1),
+        expires_at=_utc(2026, 6, 1, 2),
     )
 
     assert evaluate_concurrency((), candidate, [lock], now=_utc(2026, 6, 1)).runnable is False
@@ -1718,9 +1830,7 @@ def _request(
     )
 
 
-def _lock(
-    lock_id: str, *, owner: str, acquired_at: datetime, expires_at: datetime
-) -> ResourceLock:
+def _lock(lock_id: str, *, owner: str, acquired_at: datetime, expires_at: datetime) -> ResourceLock:
     return ResourceLock(
         lock_id=lock_id,
         resource="db-primary",

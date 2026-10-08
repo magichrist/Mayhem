@@ -268,11 +268,7 @@ class BusinessHours(BaseModel):
     def closed_reason(self, local: datetime) -> str:
         """One line naming the bands that were open and were missed."""
         bands = ", ".join(window.describe() for window in self.windows)
-        stamp = (
-            local.astimezone(UTC).isoformat()
-            if local.tzinfo is not None
-            else local.isoformat()
-        )
+        stamp = local.astimezone(UTC).isoformat() if local.tzinfo is not None else local.isoformat()
         return f"{stamp} is outside business hours ({bands})"
 
     def describe(self) -> str:
@@ -931,8 +927,7 @@ class Schedule(BaseModel):
         for window in self.maintenance_windows:
             if window.window_id in seen:
                 msg = (
-                    f"schedule {self.schedule_id!r} declares two windows named "
-                    f"{window.window_id!r}"
+                    f"schedule {self.schedule_id!r} declares two windows named {window.window_id!r}"
                 )
                 raise InvariantViolationError("schedule.window_duplicate", msg)
             seen.add(window.window_id)

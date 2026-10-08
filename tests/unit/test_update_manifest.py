@@ -170,9 +170,12 @@ class TestUpdateManifest:
         release = manifest()
         assert "signature" not in release.signed_body()
         assert "artifact_digest" in release.signed_body()
-        assert release.signed_payload() == UpdateManifest.model_validate(
-            {**release.model_dump(), "signature": release.signature}
-        ).signed_payload()
+        assert (
+            release.signed_payload()
+            == UpdateManifest.model_validate(
+                {**release.model_dump(), "signature": release.signature}
+            ).signed_payload()
+        )
 
     def test_a_release_without_an_sbom_or_provenance_reference_is_refused(self) -> None:
         for missing in ("sbom_ref", "provenance_ref"):
@@ -266,17 +269,13 @@ class TestVerification:
         assert UpdateRefusal.UNKNOWN_SIGNING_KEY in verdict.refusals
 
     def test_a_wrong_channel_is_refused(self) -> None:
-        verdict = verifier(expected_channel=UpdateChannel.PINNED).verify(
-            manifest(), at=NOW
-        )
+        verdict = verifier(expected_channel=UpdateChannel.PINNED).verify(manifest(), at=NOW)
         assert verdict.refusals == (UpdateRefusal.CHANNEL_MISMATCH,)
         assert verdict.applicable is False
         assert verdict.verified is True
 
     def test_a_manifest_for_another_component_is_refused(self) -> None:
-        verdict = verifier().verify(
-            manifest(), component=UpdateComponent.CONTROLLER, at=NOW
-        )
+        verdict = verifier().verify(manifest(), component=UpdateComponent.CONTROLLER, at=NOW)
         assert UpdateRefusal.WRONG_COMPONENT in verdict.refusals
 
     def test_an_expired_and_a_not_yet_valid_manifest_are_distinguished(self) -> None:
@@ -344,7 +343,8 @@ class TestVerification:
     def test_a_naive_instant_is_refused(self) -> None:
         with pytest.raises(InvariantViolationError) as caught:
             verifier().verify(
-                manifest(), at=datetime(2026, 3, 1, 12, 0)  # noqa: DTZ001 - naive
+                manifest(),
+                at=datetime(2026, 3, 1, 12, 0),  # noqa: DTZ001 - naive
             )
         assert caught.value.rule == "update.time_aware"
 
@@ -463,9 +463,9 @@ class TestApply:
         assert hook.applied == ["m-2.1.0"]
 
     def test_the_applier_offers_the_error_its_port_should_raise(self) -> None:
-        error = UpdateApplier(
-            artifacts=ArtifactStore(), apply_hook=Applier()
-        ).unavailable("the mirror is down")
+        error = UpdateApplier(artifacts=ArtifactStore(), apply_hook=Applier()).unavailable(
+            "the mirror is down"
+        )
         assert isinstance(error, ArtifactUnavailableError)
         assert "the mirror is down" in error.reason
 
@@ -588,9 +588,7 @@ class TestRollback:
 class TestSupplyChainReferences:
     def test_the_references_are_pointers_and_the_module_says_so(self) -> None:
         """This module neither generates nor verifies an SBOM or a provenance attestation."""
-        source = (
-            __import__("mayhem.infra.update_manifest", fromlist=["x"]).__doc__ or ""
-        )
+        source = __import__("mayhem.infra.update_manifest", fromlist=["x"]).__doc__ or ""
         assert "No SLSA provenance and no SBOM generation" in source
         assert "A reference is a pointer, not an attestation" in source
 

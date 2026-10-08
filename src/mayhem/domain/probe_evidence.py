@@ -428,9 +428,7 @@ def assert_citations_verified(
             acceptance criterion: *a verdict whose cited observations cannot be
             found in evidence fails verification*.
     """
-    verification = verify_citations(
-        result, records, require_all_available=require_all_available
-    )
+    verification = verify_citations(result, records, require_all_available=require_all_available)
     if not verification.ok:
         raise InvariantViolationError(
             "probes.verdict_cites_unrecorded_observation",
@@ -487,9 +485,7 @@ class SealedConditionSet(BaseModel):
         return digest(
             {
                 "run_id": self.run_id,
-                "conditions": [
-                    condition.model_dump(mode="json") for condition in self.conditions
-                ],
+                "conditions": [condition.model_dump(mode="json") for condition in self.conditions],
                 "pins": [pin.model_dump(mode="json") for pin in self.pins],
             }
         )

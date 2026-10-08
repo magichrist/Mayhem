@@ -327,8 +327,9 @@ def test_a_failed_block_is_still_timed_rather_than_reported_as_instant() -> None
     """
     meter = RunMeter(run_id="drill-1", clock=FakeClock(step=4.0))
 
-    with pytest.raises(RuntimeError, match="compilation failed"), meter.time_plan_compilation(
-        now=NOW
+    with (
+        pytest.raises(RuntimeError, match="compilation failed"),
+        meter.time_plan_compilation(now=NOW),
     ):
         msg = "compilation failed"
         raise RuntimeError(msg)

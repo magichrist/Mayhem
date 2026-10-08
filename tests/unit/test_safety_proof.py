@@ -382,9 +382,7 @@ def test_clean_scan_discharges_to_pass() -> None:
         (ResiduePredicate.NO_LEASES_HELD, "no_leases_held"),
     ],
 )
-def test_found_residue_voids_the_line(
-    predicate: ResiduePredicate, expected_in_detail: str
-) -> None:
+def test_found_residue_voids_the_line(predicate: ResiduePredicate, expected_in_detail: str) -> None:
     """Found residue voids the corresponding line — it does not merely fail it."""
     discharged = residue_for().discharge(scan_of(dirty=(predicate,)))
 

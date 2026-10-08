@@ -315,9 +315,7 @@ def test_readme_does_not_claim_any_fault_is_live_verified() -> None:
     )
     assert re.search(
         rf"\b0\b\W{{0,4}}\bof\b\W{{0,4}}\b{total}\b|\b{total}\b.{{0,24}}\b0\b", text
-    ), (
-        f"the README does not state a 0-of-{total} live-verified count"
-    )
+    ), f"the README does not state a 0-of-{total} live-verified count"
 
 
 def _unit_verification_underclaims(text: str) -> list[str]:

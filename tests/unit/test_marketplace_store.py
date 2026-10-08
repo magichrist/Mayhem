@@ -650,9 +650,7 @@ def test_the_certification_primary_key_carries_the_artifact_digest() -> None:
     assert market.certifications_for(_artifact(digest=_ARTIFACT_DIGEST))
     assert market.certifications_for(_artifact(digest=_OTHER_DIGEST)) == ()
     assert market.certifications_for(_artifact(digest=_OTHER_DIGEST, version="1.4.2")) == ()
-    keys = {
-        str(row[1]) for row in store.query("PRAGMA table_info(marketplace_certifications)")
-    }
+    keys = {str(row[1]) for row in store.query("PRAGMA table_info(marketplace_certifications)")}
     assert "artifact_digest" in keys
     store.close()
 
@@ -1209,9 +1207,9 @@ def test_a_revocation_whose_deadline_has_not_arrived_does_not_block_an_install()
 
 def test_an_artifact_certified_on_this_cell_is_compatible() -> None:
     registry = _certified_market()
-    verdict = registry.compatibility(registry.resolve(
-        ARTIFACT_ID, version="1.4.2", now=_NOW
-    ).artifact, _cell(), now=_NOW)
+    verdict = registry.compatibility(
+        registry.resolve(ARTIFACT_ID, version="1.4.2", now=_NOW).artifact, _cell(), now=_NOW
+    )
 
     assert isinstance(verdict, CompatibilityVerdict)
     assert verdict.compatible is True
@@ -1236,9 +1234,9 @@ def test_evidence_from_another_cell_does_not_transfer() -> None:
 
 def test_an_uncertified_artifact_is_incompatible_with_every_cell() -> None:
     registry = _catalog()
-    verdict = registry.compatibility(registry.resolve(
-        ARTIFACT_ID, version="1.4.2", now=_NOW
-    ).artifact, _cell(), now=_NOW)
+    verdict = registry.compatibility(
+        registry.resolve(ARTIFACT_ID, version="1.4.2", now=_NOW).artifact, _cell(), now=_NOW
+    )
 
     assert verdict.compatible is False
     assert verdict.refusals[0].startswith("marketplace.no_certification_evidence")
@@ -1250,9 +1248,7 @@ def test_a_record_for_other_bytes_is_not_evidence_for_these() -> None:
     artifact = registry.resolve(ARTIFACT_ID, version="1.4.2", now=_NOW).artifact
 
     assert registry.compatibility(artifact, _cell(), now=_NOW).compatible is False
-    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (
-        ArtifactClass.UNVERIFIED
-    )
+    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (ArtifactClass.UNVERIFIED)
 
 
 def test_a_lapsed_record_stops_being_evidence_without_anything_being_rewritten() -> None:
@@ -1315,9 +1311,7 @@ def test_installing_against_the_certifying_cell_succeeds() -> None:
 
 def test_a_private_registry_federated_with_the_official_one_is_listed() -> None:
     registry = _catalog()
-    registry.adopt_registry(
-        _registry(registry_id="mayhem.official", scope=RegistryScope.OFFICIAL)
-    )
+    registry.adopt_registry(_registry(registry_id="mayhem.official", scope=RegistryScope.OFFICIAL))
     registry.adopt_registry(
         _registry(
             registry_id="acme.private",
@@ -1336,9 +1330,7 @@ def test_a_private_registry_federated_with_the_official_one_is_listed() -> None:
             federates_with=("mayhem.official",),
         ),
     )
-    registry.store.publish_artifact(
-        private_artifact, supply_chain=_supply_chain(private_artifact)
-    )
+    registry.store.publish_artifact(private_artifact, supply_chain=_supply_chain(private_artifact))
 
     assert registry.federates("acme.private") is True
     entries = registry.listing(registry_id="acme.private", now=_NOW)
@@ -1775,9 +1767,7 @@ def test_an_artifact_claiming_verified_with_no_record_is_refused_at_listing() ->
         registry.listing_entry(artifact, claimed=ArtifactClass.VERIFIED_COMMUNITY, now=_NOW)
 
     assert excinfo.value.code == "no_certification_record"
-    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (
-        ArtifactClass.UNVERIFIED
-    )
+    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (ArtifactClass.UNVERIFIED)
 
 
 def test_claiming_verified_with_a_record_for_other_bytes_is_refused() -> None:
@@ -1818,9 +1808,7 @@ def test_claiming_organization_private_from_a_public_registry_is_refused() -> No
 def test_claiming_the_class_the_records_actually_support_is_allowed() -> None:
     registry = _certified_market()
     artifact = registry.resolve(ARTIFACT_ID, version="1.4.2", now=_NOW).artifact
-    entry = registry.listing_entry(
-        artifact, claimed=ArtifactClass.VERIFIED_COMMUNITY, now=_NOW
-    )
+    entry = registry.listing_entry(artifact, claimed=ArtifactClass.VERIFIED_COMMUNITY, now=_NOW)
     assert entry.artifact_class is ArtifactClass.VERIFIED_COMMUNITY
     assert entry.label.certified_fault_ids == (FAULT_ID,)
 
@@ -1857,9 +1845,7 @@ def test_an_official_artifact_needs_both_the_registry_and_the_record() -> None:
     artifact = _artifact(digest=_DEPRECATED_DIGEST, registry=official)
     market.publish_artifact(artifact, supply_chain=_supply_chain(artifact))
 
-    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (
-        ArtifactClass.UNVERIFIED
-    )
+    assert registry.listing_entry(artifact, now=_NOW).artifact_class is (ArtifactClass.UNVERIFIED)
 
     market.link(_cert(digest=_DEPRECATED_DIGEST))
 

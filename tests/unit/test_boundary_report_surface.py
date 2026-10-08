@@ -230,9 +230,7 @@ def _search_body(
     latency_bases = (100.0, 101.0, 160.0)
     loss_bases = [1.0, 1.0, 1.0]
     loss_bases[loss_breach_index] = 2.0
-    latency_counts = [
-        latency_window_count if rung not in starve else 3 for rung in range(3)
-    ]
+    latency_counts = [latency_window_count if rung not in starve else 3 for rung in range(3)]
     loss_counts = [loss_window_count if rung not in starve else 3 for rung in range(3)]
     return {
         "run_id": "r-boundary-0001",
@@ -421,11 +419,7 @@ def test_every_documented_invocation_resolves_on_the_group(argv: tuple[str, ...]
         for token in getattr(param, "opts", []) + getattr(param, "secondary_opts", [])
     }
     options = [token for token in tokens if token.startswith("--")]
-    values = [
-        token
-        for index, token in enumerate(tokens)
-        if index and tokens[index - 1] in options
-    ]
+    values = [token for index, token in enumerate(tokens) if index and tokens[index - 1] in options]
     assert set(options) <= declared, (argv, sorted(declared - set(options)))
     assert not any(value.startswith("--") for value in values), argv
 
@@ -696,9 +690,7 @@ def test_the_minimal_failure_case_is_reduced_by_the_service_not_by_the_renderer(
     expected = minimal_failure_case(
         [
             FailureCase(fault_ids=("fs.disk_fill",), target_ids=("ctr-api",), reproduced=True),
-            FailureCase(
-                fault_ids=("fs.disk_fill",), target_ids=("ctr-api",), reproduced=False
-            ),
+            FailureCase(fault_ids=("fs.disk_fill",), target_ids=("ctr-api",), reproduced=False),
         ]
     )
     assert view.minimal_case is not None
@@ -764,9 +756,7 @@ def test_a_non_finite_boundary_value_is_refused(tmp_path: Path) -> None:
 def test_an_undeclared_signal_is_refused_rather_than_rendered_empty(tmp_path: Path) -> None:
     path = _write(tmp_path, "search.json", _search_body())
     with pytest.raises(BoundaryViewRefused) as caught:
-        boundary_report_view(
-            boundary_report_cmd.search_document(path), only_signal="throughput"
-        )
+        boundary_report_view(boundary_report_cmd.search_document(path), only_signal="throughput")
     assert caught.value.rule == RULE_REPORT_SIGNAL_UNKNOWN
     assert "not a report about that metric with an empty result" in str(caught.value)
 
@@ -984,7 +974,13 @@ def test_a_generated_candidate_is_refused_by_the_same_gate_that_refuses_the_auth
 
 def test_the_same_refusal_surfaces_through_the_cli_and_names_the_gate(tmp_path: Path) -> None:
     """The refusal reaches a reader through the command, not only through the view."""
-    code, output = _review(tmp_path, args=("--deny-fault", FAULT_ID,))
+    code, output = _review(
+        tmp_path,
+        args=(
+            "--deny-fault",
+            FAULT_ID,
+        ),
+    )
     assert code == 0, output
     assert RULE_DENY_FAULTS in output
     assert "gate: refused" in output
@@ -995,7 +991,13 @@ def test_the_config_policy_half_can_only_be_tightened_from_the_command(
 ) -> None:
     """``--deny-fault`` narrows what may be reviewed and never widens it."""
     allowed_code, allowed = _review(tmp_path)
-    denied_code, denied = _review(tmp_path, args=("--deny-fault", FAULT_ID,))
+    denied_code, denied = _review(
+        tmp_path,
+        args=(
+            "--deny-fault",
+            FAULT_ID,
+        ),
+    )
     assert allowed_code == 0, allowed
     assert denied_code == 0, denied
     assert RULE_DENY_FAULTS not in allowed
@@ -1081,9 +1083,7 @@ def test_an_untrusted_draft_never_renders_as_authorized_or_approved() -> None:
     assert "authority: none" in rendered
 
     payload = view.to_dict()
-    assert not [
-        key for key in _keys(payload) if _is_authority_word(key)
-    ], sorted(_keys(payload))
+    assert not [key for key in _keys(payload) if _is_authority_word(key)], sorted(_keys(payload))
     assert not [
         value
         for value in _values(payload)
@@ -1201,9 +1201,7 @@ def test_running_the_review_twice_changes_nothing(tmp_path: Path) -> None:
     second_code, second = _review(tmp_path, args=("--json",))
     assert first_code == 0, first
     assert second_code == 0, second
-    assert _without_plan_digest(json.loads(first)) == _without_plan_digest(
-        json.loads(second)
-    )
+    assert _without_plan_digest(json.loads(first)) == _without_plan_digest(json.loads(second))
     assert json.loads(first)["acceptance"] == json.loads(second)["acceptance"]
     assert json.loads(first)["mutation"] == {
         "safety_decisions_recorded": 0,

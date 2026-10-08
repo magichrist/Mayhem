@@ -159,12 +159,15 @@ class TestLivenessObservation:
 
 class TestTheDeathEvidenceTable:
     def test_only_two_kinds_can_establish_death(self) -> None:
-        assert frozenset(
-            {
-                LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED,
-                LivenessEvidenceKind.PRIMARY_PROCESS_GONE,
-            }
-        ) == DEATH_EVIDENCE
+        assert (
+            frozenset(
+                {
+                    LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED,
+                    LivenessEvidenceKind.PRIMARY_PROCESS_GONE,
+                }
+            )
+            == DEATH_EVIDENCE
+        )
 
     def test_an_unreachable_probe_is_not_liveness_evidence_either(self) -> None:
         """It is an *absence of a signal*, which vetoes a promotion without claiming life."""
@@ -211,11 +214,10 @@ class TestAssessment:
         """The real shape of a split, and the case the module was written for."""
         assessment = assess_primary(
             [
+                observation(LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED, source="lease-store"),
                 observation(
-                    LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED, source="lease-store"
-                ),
-                observation(
-                    LivenessEvidenceKind.PROBE_UNREACHABLE, source="watchdog",
+                    LivenessEvidenceKind.PROBE_UNREACHABLE,
+                    source="watchdog",
                     detail="dial tcp: i/o timeout",
                 ),
             ],
@@ -326,7 +328,9 @@ class TestNegativeControlStaleEvidence:
     def test_a_naive_decision_instant_is_refused(self) -> None:
         with pytest.raises(InvariantViolationError) as caught:
             assess_primary(
-                [], expected_term=TERM, now=datetime(2026, 3, 1, 12, 0)  # noqa: DTZ001
+                [],
+                expected_term=TERM,
+                now=datetime(2026, 3, 1, 12, 0),  # noqa: DTZ001
             )
         assert caught.value.rule == "liveness.time_aware"
 

@@ -299,9 +299,7 @@ class FakeSink:
         now: datetime | None = None,
     ) -> StoredCertification:
         del now
-        sequence = 1 + sum(
-            1 for row in self.rows if row.record.fault_id == record.fault_id
-        )
+        sequence = 1 + sum(1 for row in self.rows if row.record.fault_id == record.fault_id)
         stored = StoredCertification(record=record, sequence=sequence, run_id=run_id)
         self.rows.append(stored)
         return stored
@@ -414,9 +412,7 @@ class FaithfulCapturer:
             for step in plan.steps
             if step.fault is not None and step.fault.fault_id == request.fault_id
         )
-        detail = next(
-            (report.detail for report in run.steps if report.step_id == step_id), ""
-        )
+        detail = next((report.detail for report in run.steps if report.step_id == step_id), "")
         digests = expected_evidence_digests(
             params=params,
             target=target,
@@ -633,8 +629,7 @@ def test_migration_0024_is_contiguous_and_reversible() -> None:
         assert store.schema_version == 23
         assert not list(
             store.query(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='certification_records'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='certification_records'"
             )
         )
 
@@ -785,8 +780,7 @@ def test_expiry_demotes_and_the_gate_stops_counting_the_record() -> None:
         assert any(CERTIFICATION_RECORDED in refusal for refusal in decision.refusals)
         # The stored rows are untouched by a read: ageing is not a mutation.
         assert all(
-            row.record.state is CertificationState.CERTIFIED
-            for row in repository.load(FAULT_ID)
+            row.record.state is CertificationState.CERTIFIED for row in repository.load(FAULT_ID)
         )
     finally:
         store.close()
@@ -804,9 +798,7 @@ def test_expire_all_persists_what_a_read_only_gate_computed() -> None:
         assert all(
             row.record.state is CertificationState.STALE for row in repository.load(FAULT_ID)
         )
-        assert all(
-            "lapsed" in row.record.reason for row in repository.load(FAULT_ID)
-        )
+        assert all("lapsed" in row.record.reason for row in repository.load(FAULT_ID))
     finally:
         store.close()
 
@@ -882,9 +874,7 @@ def test_recovery_verification_is_required_for_a_reversible_fault() -> None:
 
     without = _attempt(cell=FakeCell(recovery=None), bundle=_honest_bundle())
     assert without[0].certified is False
-    assert any(
-        RefusalClass.RECOVERY_UNVERIFIED.value in reason for reason in without[0].refusals
-    )
+    assert any(RefusalClass.RECOVERY_UNVERIFIED.value in reason for reason in without[0].refusals)
 
 
 def test_recovery_that_drifted_past_tolerance_is_refused() -> None:
@@ -959,9 +949,7 @@ def test_a_clean_scan_certifies() -> None:
 def test_recovery_regression_demotes_the_existing_claim_and_records_the_event() -> None:
     """The headline acceptance of plan 01 Phase 4, exercised end to end."""
     store = FakeSink()
-    first = _attempt(
-        bundle=_honest_bundle(recovery=_good_recovery()), sink=store
-    )[0]
+    first = _attempt(bundle=_honest_bundle(recovery=_good_recovery()), sink=store)[0]
     assert first.certified is True
     assert store.rows[0].record.state is CertificationState.CERTIFIED
 
@@ -1056,9 +1044,7 @@ def test_a_bundle_missing_a_required_digest_is_refused() -> None:
         bundle_hash=partial.bundle_hash,
         mayhem_version=partial.mayhem_version,
         digests={
-            name: value
-            for name, value in partial.digests.items()
-            if name != "observed_effect"
+            name: value for name, value in partial.digests.items() if name != "observed_effect"
         },
     )
     attempt, _, _, _ = _attempt(bundle=pruned)
@@ -1304,9 +1290,7 @@ def test_fixture_helpers_agree_with_the_fixtures() -> None:
     spec = DrillSpec(
         kind="drill",
         name="certify",
-        containers={
-            "c": DrillContainer(faults=(DrillFault(fault=FAULT_ID, duration="1.0s"),))
-        },
+        containers={"c": DrillContainer(faults=(DrillFault(fault=FAULT_ID, duration="1.0s"),))},
         execution=(ExecutionStep(sequential=("c",)),),
     )
     assert spec.name == "certify"

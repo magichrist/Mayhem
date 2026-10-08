@@ -85,9 +85,7 @@ def make_envelope(
         "step_reports": ({"step_id": "s1", "status": "completed"},),
         "created_at": "2026-03-01T12:00:00+00:00",
         "redaction_metrics": (
-            {"policy_version": "redaction-v9", "redacted_path_count": 0}
-            if redaction_marker
-            else {}
+            {"policy_version": "redaction-v9", "redacted_path_count": 0} if redaction_marker else {}
         ),
     }
     fields.update(overrides)
@@ -308,7 +306,7 @@ def test_tampered_event_payload_is_rejected_by_the_persisted_verifier(tmp_path: 
     with store.write() as conn:
         conn.execute(
             "UPDATE attestation_events SET event_json ="
-            " replace(event_json, '\"verdict\":\"pass\"', '\"verdict\":\"not-what-ran\"')"
+            ' replace(event_json, \'"verdict":"pass"\', \'"verdict":"not-what-ran"\')'
             " WHERE run_id = 'run-1' AND sequence = 1"
         )
     store.close()
@@ -350,9 +348,7 @@ def test_deleting_an_event_row_is_rejected(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     seal(store)
     with store.write() as conn:
-        conn.execute(
-            "DELETE FROM attestation_events WHERE run_id = 'run-1' AND sequence = 1"
-        )
+        conn.execute("DELETE FROM attestation_events WHERE run_id = 'run-1' AND sequence = 1")
     store.close()
 
     reopened = Store(tmp_path / "mayhem.db")
@@ -473,8 +469,8 @@ def test_verify_stored_manifest_without_events_checks_the_manifest_alone(tmp_pat
     with store.write() as conn:
         conn.execute(
             "UPDATE attestation_manifests SET manifest_json ="
-            " replace(manifest_json, '\"retention_class\":\"hot\"',"
-            " '\"retention_class\":\"ephemeral\"')"
+            ' replace(manifest_json, \'"retention_class":"hot"\','
+            ' \'"retention_class":"ephemeral"\')'
             " WHERE manifest_id = 'run-1:manifest'"
         )
     downgraded = repository.verify_stored_manifest("run-1:manifest", with_events=False)

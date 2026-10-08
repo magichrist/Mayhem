@@ -300,9 +300,7 @@ class TestEnvelopeAndReport:
         guard = SecretLeakGuard()
         run = SecretsBearingRun(secret_tree, guard=guard)
         run.execute()
-        log_line = (
-            f"event=step_completed step=inject-db detail=resolved {SECRET_VALUE}"
-        )
+        log_line = f"event=step_completed step=inject-db detail=resolved {SECRET_VALUE}"
         with pytest.raises(InvariantViolationError) as excinfo:
             guard.require_clean_bytes(log_line, artifact="log")
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT

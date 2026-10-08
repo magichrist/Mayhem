@@ -381,8 +381,13 @@ def test_a_finding_with_no_explanation_is_refused() -> None:
 
 def test_every_gap_state_is_representable() -> None:
     """The refusal is on non-gap states only — the vocabulary is not narrowed away."""
-    for state in (CellState.UNKNOWN, CellState.PLANNED, CellState.BLOCKED,
-                  CellState.SKIPPED, CellState.INCONCLUSIVE):
+    for state in (
+        CellState.UNKNOWN,
+        CellState.PLANNED,
+        CellState.BLOCKED,
+        CellState.SKIPPED,
+        CellState.INCONCLUSIVE,
+    ):
         assert finding(cell_state=state).cell_state is state
 
 
@@ -637,9 +642,10 @@ def test_an_observation_with_no_samples_says_so_instead_of_reading_as_measured()
 
     assert observed.usable is False
     assert observed.to_dict()["samples"] == 0
-    assert ObservedPercentile(
-        label="p99", metric="latency", value=4200.0, unit="ms", samples=1
-    ).usable is True
+    assert (
+        ObservedPercentile(label="p99", metric="latency", value=4200.0, unit="ms", samples=1).usable
+        is True
+    )
 
 
 # -- candidates and recommendations ------------------------------------------------
@@ -790,9 +796,7 @@ def test_a_finding_with_no_readings_is_refused_rather_than_skipped() -> None:
     first, second = finding("F1"), finding("F2", cell=cell(target="payments", fault="dns-failure"))
 
     with pytest.raises(InvariantViolationError) as caught:
-        recommendations_for(
-            (first, second), CRITERIA, {"F2": readings_for()}, propose=propose
-        )
+        recommendations_for((first, second), CRITERIA, {"F2": readings_for()}, propose=propose)
 
     assert caught.value.rule == RULE_FINDING_NOT_READ
     assert "F1" in str(caught.value)
@@ -875,9 +879,7 @@ def test_a_draft_compiles_to_the_same_type_an_authored_recommendation_uses() -> 
 def test_a_draft_has_nowhere_to_put_an_approval_token() -> None:
     """Structural, not conventional: there is no field, and the model is frozen."""
     assert "approval" not in UntrustedRecommendationDraft.model_fields
-    draft = recommendations_for(
-        (finding(),), CRITERIA, {"F1": readings_for()}, propose=propose
-    )[0]
+    draft = recommendations_for((finding(),), CRITERIA, {"F1": readings_for()}, propose=propose)[0]
 
     with pytest.raises(AttributeError):
         _ = draft.approval  # type: ignore[attr-defined]
@@ -901,12 +903,11 @@ def test_a_draft_carrying_an_approval_token_is_rejected() -> None:
 
 
 def test_a_generated_recommendation_cannot_be_constructed_with_an_approval() -> None:
-    draft = recommendations_for(
-        (finding(),), CRITERIA, {"F1": readings_for()}, propose=propose
-    )[0]
-    token = Approval(approved_by="sre-oncall", recommendation_digest=draft.compile(
-        CRITERIA, readings_for()
-    ).recommendation_digest)
+    draft = recommendations_for((finding(),), CRITERIA, {"F1": readings_for()}, propose=propose)[0]
+    token = Approval(
+        approved_by="sre-oncall",
+        recommendation_digest=draft.compile(CRITERIA, readings_for()).recommendation_digest,
+    )
 
     with pytest.raises(InvariantViolationError) as caught:
         Recommendation(

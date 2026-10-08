@@ -145,9 +145,7 @@ def _refusal_code(code: str) -> str:
 
 def _exit_for(code: str) -> ExitCode:
     return (
-        ExitCode.SAFETY_REFUSAL
-        if code.startswith(_REFUSAL_PREFIXES)
-        else ExitCode.GENERAL_FAILURE
+        ExitCode.SAFETY_REFUSAL if code.startswith(_REFUSAL_PREFIXES) else ExitCode.GENERAL_FAILURE
     )
 
 
@@ -317,9 +315,7 @@ def lease_expiry_observation(
     from mayhem.domain.failover import LivenessEvidenceKind, LivenessObservation
 
     kind = (
-        LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED
-        if expired
-        else LivenessEvidenceKind.NO_EVIDENCE
+        LivenessEvidenceKind.PRIMARY_LEASE_EXPIRED if expired else LivenessEvidenceKind.NO_EVIDENCE
     )
     return (
         LivenessObservation(
@@ -328,8 +324,7 @@ def lease_expiry_observation(
             observed_at=at,
             source="lease-store",
             detail=(
-                f"the leadership lease for term {term} is past its expiry in the "
-                "replicated store"
+                f"the leadership lease for term {term} is past its expiry in the replicated store"
                 if expired
                 else f"the leadership lease for term {term} has NOT expired in the "
                 "replicated store, so this is not evidence the primary is gone"
@@ -369,9 +364,7 @@ def _process_gone_claims(
 
 def render_promotion(result: PromoteResult) -> list[str]:
     """The operator-facing account. Every refusal is named."""
-    lines = [
-        f"scope {result.scope!r}: term {result.term_before} → {result.term_after}"
-    ]
+    lines = [f"scope {result.scope!r}: term {result.term_before} → {result.term_after}"]
     if result.claimed:
         lines.append(
             style.ok(
@@ -380,9 +373,7 @@ def render_promotion(result: PromoteResult) -> list[str]:
             )
         )
     elif result.promoted:
-        lines.append(
-            style.ok(f"promoted {result.standby_id} by {result.operator}", err=False)
-        )
+        lines.append(style.ok(f"promoted {result.standby_id} by {result.operator}", err=False))
     else:
         names = ", ".join(result.refusals) or "unspecified"
         lines.append(style.warn(f"REFUSED promotion ({names})"))
@@ -432,9 +423,7 @@ def render_rotation(outcomes: Sequence[RotationOutcome]) -> list[str]:
     rolled = sum(1 for outcome in outcomes if outcome.rotated)
     keyless = sum(1 for outcome in outcomes if outcome.rotated and not outcome.key_provisioned)
     failed = sum(1 for outcome in outcomes if outcome.failed)
-    lines.append(
-        f"rotated {rolled}, failed {failed}, rotated-without-a-key {keyless}"
-    )
+    lines.append(f"rotated {rolled}, failed {failed}, rotated-without-a-key {keyless}")
     if keyless:
         lines.append(
             style.warn(
@@ -658,9 +647,7 @@ def ha(ctx: click.Context) -> None:
     "primary's process absent. Recorded with the operator as its source; mayhem "
     "cannot verify it, and the claim travels into the sealed evidence.",
 )
-@click.option(
-    "--lease-ttl", default=30.0, show_default=True, help="Leadership lease lifetime."
-)
+@click.option("--lease-ttl", default=30.0, show_default=True, help="Leadership lease lifetime.")
 @click.option("--json", "as_json", is_flag=True, default=False)
 @click.pass_context
 def promote_command(
@@ -707,9 +694,7 @@ def promote_command(
         observations: tuple[LivenessObservation, ...] = (
             ()
             if lease is None
-            else lease_expiry_observation(
-                term=lease.term, at=now, expired=lease.is_expired_at(now)
-            )
+            else lease_expiry_observation(term=lease.term, at=now, expired=lease.is_expired_at(now))
         )
         result = run_promote(
             service=service,
@@ -769,9 +754,7 @@ def rotate_command(
             ),
             clock=lambda: now,
         )
-        outcomes = run_rotate(
-            service, agent_id=agent_id, sweep=sweep, limit=limit, at=now
-        )
+        outcomes = run_rotate(service, agent_id=agent_id, sweep=sweep, limit=limit, at=now)
     finally:
         store.close()
 

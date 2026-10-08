@@ -360,17 +360,16 @@ def steps(session_id: str, db_opt: str | None, as_json: bool) -> None:
         store.close()
     from mayhem.cli.output import echo_machine
 
-    if echo_machine({"session_id": session_id, "steps": [_step_payload(r) for r in rows]},
-                    as_json=as_json):
+    if echo_machine(
+        {"session_id": session_id, "steps": [_step_payload(r) for r in rows]}, as_json=as_json
+    ):
         return
     if not rows:
         click.echo(f"no dispatch steps staged for {session_id}")
         return
     for row in rows:
         holder = row.released_by or "-"
-        click.echo(
-            f"  {row.step_id:<20} {row.schedule_id:<20} {row.hold_state.value:<11} {holder}"
-        )
+        click.echo(f"  {row.step_id:<20} {row.schedule_id:<20} {row.hold_state.value:<11} {holder}")
 
 
 @game_day_step.command("release")
@@ -538,9 +537,7 @@ def note(
             artifact = record_artifact(
                 store,
                 GameDayArtifact(
-                    artifact_id=default_artifact_id(
-                        session_id, kind_value, actor, at=instant
-                    ),
+                    artifact_id=default_artifact_id(session_id, kind_value, actor, at=instant),
                     session_id=session_id,
                     kind=kind_value,
                     actor=actor,

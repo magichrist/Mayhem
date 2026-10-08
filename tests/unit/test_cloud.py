@@ -107,9 +107,7 @@ def _by_tag(*tags: str, **kwargs: object) -> CloudSelector:
     )
 
 
-def _target(
-    resource_id: str = "i-0abc123", **kwargs: object
-) -> CloudTarget:
+def _target(resource_id: str = "i-0abc123", **kwargs: object) -> CloudTarget:
     selector = _by_id(resource_id, **kwargs)
     identity = _identity(
         resource_id,
@@ -474,16 +472,11 @@ class TestResourceIdentity:
             _identity("i-0abc*")
 
     def test_canonical_id_names_every_boundary(self) -> None:
-        assert (
-            _identity("i-0abc123").canonical_id
-            == "aws:123456789012:eu-west-1:vm/i-0abc123"
-        )
+        assert _identity("i-0abc123").canonical_id == "aws:123456789012:eu-west-1:vm/i-0abc123"
 
     def test_canonical_id_separates_providers(self) -> None:
         assert _identity("i-0abc123", provider=GCP).canonical_id.startswith("gcp:")
-        assert _identity("i-0abc123", provider=CUSTOM).canonical_id.startswith(
-            "onprem.hypervisor:"
-        )
+        assert _identity("i-0abc123", provider=CUSTOM).canonical_id.startswith("onprem.hypervisor:")
 
     def test_identity_is_immutable(self) -> None:
         identity = _identity()
@@ -633,12 +626,8 @@ class TestResolution:
 
     def test_resolution_is_deterministic_across_inventory_order(self) -> None:
         intent = CloudTargetIntent(provider=AWS, selector=_by_id("i-0abc123"))
-        first = resolve_cloud_target(
-            intent, [_identity("i-other"), _identity("i-0abc123")]
-        )
-        second = resolve_cloud_target(
-            intent, [_identity("i-0abc123"), _identity("i-other")]
-        )
+        first = resolve_cloud_target(intent, [_identity("i-other"), _identity("i-0abc123")])
+        second = resolve_cloud_target(intent, [_identity("i-0abc123"), _identity("i-other")])
         assert first == second
 
 
@@ -693,9 +682,7 @@ class TestCloudTarget:
                 provider=AWS,
                 resource_class=CloudResourceClass.VM,
                 selector=selector,
-                identity=_identity(
-                    "i-0abc123", resource_class=CloudResourceClass.NETWORK
-                ),
+                identity=_identity("i-0abc123", resource_class=CloudResourceClass.NETWORK),
             )
 
     def test_target_refuses_a_disagreeing_provider(self) -> None:
@@ -739,9 +726,7 @@ class TestActionPermissions:
 
     def test_an_action_may_declare_more_than_the_minimum(self) -> None:
         action = _reversible(
-            permissions=frozenset(
-                {ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK}
-            )
+            permissions=frozenset({ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK})
         )
         assert ProviderPermission.NETWORK in action.required_permissions
 
@@ -804,9 +789,7 @@ class TestActionPermissionCodeIsRaisable:
 
     def test_an_action_missing_target_mutate_names_what_would_have_passed(self) -> None:
         with pytest.raises(CloudRefused) as excinfo:
-            ensure_action_declares_permissions(
-                "cloud.aws.stop", [ProviderPermission.TARGET_READ]
-            )
+            ensure_action_declares_permissions("cloud.aws.stop", [ProviderPermission.TARGET_READ])
         assert excinfo.value.code == CLOUD_ACTION_PERMISSION_UNDECLARED
         assert excinfo.value.details["missing"] == ["target:mutate"]
         assert "target:mutate" in excinfo.value.remediation
@@ -822,17 +805,13 @@ class TestActionPermissionCodeIsRaisable:
         with pytest.raises(ValidationError, match=CLOUD_ACTION_PERMISSION_UNDECLARED):
             _reversible(permissions=frozenset({ProviderPermission.TARGET_READ}))
         assert (
-            check_action_declares_permissions(
-                "x", [ProviderPermission.TARGET_READ]
-            ).code
+            check_action_declares_permissions("x", [ProviderPermission.TARGET_READ]).code
             == CLOUD_ACTION_PERMISSION_UNDECLARED
         )
 
     def test_a_constructible_action_is_admitted_by_the_check(self) -> None:
         action = _reversible()
-        decision = check_action_declares_permissions(
-            action.action_id, action.required_permissions
-        )
+        decision = check_action_declares_permissions(action.action_id, action.required_permissions)
         assert decision.allowed is True
 
 
@@ -934,9 +913,7 @@ class TestPermissionCheck:
         assert decision.missing == ()
 
     def test_an_insufficient_role_is_refused_by_name(self) -> None:
-        decision = check_role_can_perform(
-            self._role(ProviderPermission.TARGET_READ), _reversible()
-        )
+        decision = check_role_can_perform(self._role(ProviderPermission.TARGET_READ), _reversible())
         assert decision.allowed is False
         assert decision.code == CLOUD_PERMISSION_DENIED
         assert decision.missing == ("target:mutate",)
@@ -953,13 +930,9 @@ class TestPermissionCheck:
 
     def test_every_missing_permission_is_named(self) -> None:
         action = _reversible(
-            permissions=frozenset(
-                {ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK}
-            )
+            permissions=frozenset({ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK})
         )
-        decision = check_role_can_perform(
-            self._role(ProviderPermission.TARGET_MUTATE), action
-        )
+        decision = check_role_can_perform(self._role(ProviderPermission.TARGET_MUTATE), action)
         assert decision.missing == ("network",)
 
     def test_a_cross_provider_role_is_refused_even_when_permissions_match(self) -> None:
@@ -974,9 +947,7 @@ class TestPermissionCheck:
 
     def test_a_cross_provider_refusal_names_every_required_permission(self) -> None:
         action = _reversible(
-            permissions=frozenset(
-                {ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK}
-            )
+            permissions=frozenset({ProviderPermission.TARGET_MUTATE, ProviderPermission.NETWORK})
         )
         role = CloudRoleRef(
             role_id="mayhem.gcp.ops", provider=GCP, granted=frozenset(action.required_permissions)

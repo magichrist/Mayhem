@@ -614,8 +614,7 @@ class ScenarioTemplate(BaseModel):
         them binding downstream. The advisor suggests; the policy gate decides.
         """
         return tuple(
-            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})"
-            for step in self.timeline
+            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})" for step in self.timeline
         )
 
     def instantiate(
@@ -765,8 +764,7 @@ class ScenarioInstantiation(BaseModel):
 
     def probes(self) -> tuple[str, ...]:
         return tuple(
-            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})"
-            for step in self.timeline
+            f"{step.fault_id}@{step.at_s:g}s (expect: {step.expects})" for step in self.timeline
         )
 
     def propose(self, finding: Finding) -> ExperimentCandidate:
@@ -980,8 +978,7 @@ SCENARIO_TEMPLATES: tuple[ScenarioTemplate, ...] = (
         version="1.0.0",
         title="DNS failure",
         hypothesis=(
-            "name resolution failing looks like a slow application until the pools it feeds "
-            "run dry"
+            "name resolution failing looks like a slow application until the pools it feeds run dry"
         ),
         blast_scope="the resolver and every client that resolves through it",
         timeline=(

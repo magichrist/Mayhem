@@ -331,9 +331,7 @@ class TestNegativeControl:
         }
         store.close()
 
-    def test_the_journal_writes_are_refused_while_the_table_is_absent(
-        self, store: Store
-    ) -> None:
+    def test_the_journal_writes_are_refused_while_the_table_is_absent(self, store: Store) -> None:
         """What an un-migrated deployment actually experiences.
 
         This is the failure the registration removes: not a degraded read, but an
@@ -368,9 +366,7 @@ class TestNegativeControl:
         assert journal.count() == 1
         store.close()
 
-    def test_the_down_path_leaves_the_neighbouring_migration_intact(
-        self, store: Store
-    ) -> None:
+    def test_the_down_path_leaves_the_neighbouring_migration_intact(self, store: Store) -> None:
         """Rolling back 33 must not disturb 32.
 
         ``migrate_down`` reverses every applied version above its target, so a

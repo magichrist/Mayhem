@@ -195,9 +195,7 @@ def _pages() -> tuple[str, ...]:
 )
 @click.option("--api-path", default="", help="The API path this payload came from.")
 @click.option("--html", "want_html", is_flag=True, help="Emit the full page, not the body.")
-def render_ui(
-    page: str, payload_path: Path | None, api_path: str, want_html: bool
-) -> None:
+def render_ui(page: str, payload_path: Path | None, api_path: str, want_html: bool) -> None:
     """Render one UI page from an API payload."""
     from mayhem.controller.api_ui import UiRenderRefusedError, render_page
 

@@ -240,9 +240,7 @@ def mandatory_stages(state: RunState, level: CancellationLevel) -> tuple[StopSta
     bookkeeping.
     """
     owed = _STATE_OWED[RunState(state)]
-    return tuple(
-        stage for stage in _LEVEL_STAGES[CancellationLevel(level)] if stage in owed
-    )
+    return tuple(stage for stage in _LEVEL_STAGES[CancellationLevel(level)] if stage in owed)
 
 
 def next_stage(
@@ -444,8 +442,7 @@ class StopCommand(BaseModel):
                 # "Stop everything except that one run" is not a scope; it is a
                 # bug with a blast radius.
                 msg = (
-                    "environment-wide stop command cannot carry a run_id; "
-                    "narrow the scope instead"
+                    "environment-wide stop command cannot carry a run_id; narrow the scope instead"
                 )
                 raise InvariantViolationError("environment_scope_has_no_run_id", msg)
         return self

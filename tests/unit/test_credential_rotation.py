@@ -133,9 +133,7 @@ def identity(
             not_after=NOW + timedelta(days=1),
         ),
         trust_anchors=(
-            TrustAnchorRef(
-                ca_id="ca-mesh-1", subject="ca-mesh-1", sha256_fingerprint=FINGERPRINT
-            ),
+            TrustAnchorRef(ca_id="ca-mesh-1", subject="ca-mesh-1", sha256_fingerprint=FINGERPRINT),
         ),
     )
 
@@ -271,9 +269,7 @@ class TestTheSurvey:
         self, identities: AgentIdentityRepository, clock: Clock
     ) -> None:
         identities.save(identity())
-        (verdict,) = service(identities, clock).survey(
-            at=clock.advance(TTL_S - LEAD_S + 1)
-        )
+        (verdict,) = service(identities, clock).survey(at=clock.advance(TTL_S - LEAD_S + 1))
         assert verdict.due is True
         assert verdict.overdue is False
 
@@ -341,9 +337,7 @@ class TestRotate:
         self, identities: AgentIdentityRepository, clock: Clock
     ) -> None:
         identities.save(identity())
-        outcome = service(identities, clock).rotate(
-            "ag-1", credential_id="ag-1-spring", at=NOW
-        )
+        outcome = service(identities, clock).rotate("ag-1", credential_id="ag-1-spring", at=NOW)
         assert outcome.to_credential == "ag-1-spring"
 
     def test_a_rotation_without_custody_reports_no_key(
@@ -461,9 +455,7 @@ class TestTheSweep:
         identities.save(identity("ag-1"))
         identities.save(identity("ag-2"))
 
-        outcomes = service(identities, clock).rotate_due(
-            at=clock.advance(TTL_S - LEAD_S + 1)
-        )
+        outcomes = service(identities, clock).rotate_due(at=clock.advance(TTL_S - LEAD_S + 1))
 
         assert [o.agent_id for o in outcomes] == ["ag-1", "ag-2"]
         assert all(o.rotated for o in outcomes)

@@ -285,10 +285,7 @@ class SearchPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _minimize_needs_a_boundary(self) -> SearchPolicy:
-        if (
-            self.minimization is not MinimizationStrategy.NONE
-            and not self.stop_on_breach
-        ):
+        if self.minimization is not MinimizationStrategy.NONE and not self.stop_on_breach:
             raise InvariantViolationError(
                 RULE_MINIMIZE_REQUIRES_STOP_ON_BREACH,
                 "minimization requires stop_on_breach: a search that walks past every "
@@ -535,9 +532,7 @@ def plan_next_step(
     """
     _require_matching_budget(policy, budget)
     phase = _next_phase(policy, history)
-    refusal = _refusal(
-        policy, history, budget=budget, phase=phase, combination=combination
-    )
+    refusal = _refusal(policy, history, budget=budget, phase=phase, combination=combination)
     if refusal is not None or budget is None:
         # `budget is None` is unreachable here — _safety_refusal returns a stop
         # for it — and it is tested rather than asserted so the refusal still
@@ -559,8 +554,7 @@ def plan_next_step(
         return _stop(
             history,
             StopReason.NO_FURTHER_VALUE,
-            "the search cannot derive a further value: the next probe would repeat the "
-            "last one",
+            "the search cannot derive a further value: the next probe would repeat the last one",
             phase,
         )
     step = SearchStep(
@@ -632,9 +626,7 @@ def _refusal(
     search found. Only then does the state of the search itself get a say.
     The boundary found so far rides along on every one of them.
     """
-    spent = _safety_refusal(
-        policy, history, budget=budget, phase=phase, combination=combination
-    )
+    spent = _safety_refusal(policy, history, budget=budget, phase=phase, combination=combination)
     return spent if spent is not None else _progress_refusal(policy, history, phase=phase)
 
 
@@ -718,11 +710,7 @@ def _progress_refusal(
         )
     if history.steps_used >= policy.max_steps:
         exhausted_ladder = phase is SearchPhase.ESCALATION and history.boundary is None
-        reason = (
-            StopReason.LADDER_EXHAUSTED
-            if exhausted_ladder
-            else StopReason.MAX_STEPS
-        )
+        reason = StopReason.LADDER_EXHAUSTED if exhausted_ladder else StopReason.MAX_STEPS
         note = (
             f"{history.steps_used} steps up the ladder without a breach: no boundary was "
             f"reached within the declared ladder starting at {policy.start}"

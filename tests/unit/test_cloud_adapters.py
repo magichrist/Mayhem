@@ -332,9 +332,7 @@ def _aws_instances() -> tuple[RecordedResource, ...]:
             }
         ]
     }
-    return tuple(
-        _aws_instance(inst) for inst in described["Reservations"][0]["Instances"]
-    )
+    return tuple(_aws_instance(inst) for inst in described["Reservations"][0]["Instances"])
 
 
 def _aws_instance(instance: dict[str, Any]) -> RecordedResource:
@@ -370,12 +368,8 @@ AWS_INVENTORY: dict[tuple[str, CloudResourceClass], tuple[RecordedResource, ...]
 }
 
 AWS_OPERATIONS: dict[str, tuple[RecordedOperation, ...]] = {
-    "ec2:StopInstances": (
-        RecordedOperation("aws-req-stop", {"State.Name": "stopped"}),
-    ),
-    "ec2:StartInstances": (
-        RecordedOperation("aws-req-start", {"State.Name": "running"}),
-    ),
+    "ec2:StopInstances": (RecordedOperation("aws-req-stop", {"State.Name": "stopped"}),),
+    "ec2:StartInstances": (RecordedOperation("aws-req-start", {"State.Name": "running"}),),
     "ec2:ModifyInstanceAttribute": (
         RecordedOperation("aws-req-impair", {"SourceDestCheck": "false"}),
         RecordedOperation("aws-req-restore", {"SourceDestCheck": "true"}),
@@ -439,12 +433,8 @@ GCP_INVENTORY: dict[tuple[str, CloudResourceClass], tuple[RecordedResource, ...]
 }
 
 GCP_OPERATIONS: dict[str, tuple[RecordedOperation, ...]] = {
-    "compute.instances.stop": (
-        RecordedOperation("gcp-req-stop", {"status": "TERMINATED"}),
-    ),
-    "compute.instances.start": (
-        RecordedOperation("gcp-req-start", {"status": "RUNNING"}),
-    ),
+    "compute.instances.stop": (RecordedOperation("gcp-req-stop", {"status": "TERMINATED"}),),
+    "compute.instances.start": (RecordedOperation("gcp-req-start", {"status": "RUNNING"}),),
     "sqladmin.instances.failover": (
         # The failoverReplica block appears, then is gone again on the way back —
         # which is why ExpectedState has present/absent shapes.
@@ -518,9 +508,7 @@ AZURE_OPERATIONS: dict[str, tuple[RecordedOperation, ...]] = {
     "virtualMachines/powerOff": (
         RecordedOperation("azure-req-poweroff", {"powerState": "stopped"}),
     ),
-    "virtualMachines/start": (
-        RecordedOperation("azure-req-start", {"powerState": "running"}),
-    ),
+    "virtualMachines/start": (RecordedOperation("azure-req-start", {"powerState": "running"}),),
     "servers/databases/failover": (
         RecordedOperation("azure-req-failover", {"replicationRole": "Secondary"}),
         RecordedOperation("azure-req-failback", {"replicationRole": "Primary"}),
@@ -759,9 +747,7 @@ def test_adapter_declares_its_own_provider_key(case: AdapterCase) -> None:
     assert adapter.provider_key == case.provider.key
 
 
-def test_discover_returns_every_exact_identity(
-    case: AdapterCase, adapter: CloudAdapter
-) -> None:
+def test_discover_returns_every_exact_identity(case: AdapterCase, adapter: CloudAdapter) -> None:
     result = adapter.discover(case.discovery_request())
 
     assert result.outcome is StepOutcome.COMPLETED
@@ -789,14 +775,10 @@ def test_discover_mints_one_exact_intent_per_resource(
 def test_discover_is_deterministic(adapter: CloudAdapter, case: AdapterCase) -> None:
     first = adapter.discover(case.discovery_request())
     second = adapter.discover(case.discovery_request())
-    assert [i.canonical_id for i in first.identities] == [
-        i.canonical_id for i in second.identities
-    ]
+    assert [i.canonical_id for i in first.identities] == [i.canonical_id for i in second.identities]
 
 
-def test_discover_narrows_by_exact_identifier(
-    case: AdapterCase, adapter: CloudAdapter
-) -> None:
+def test_discover_narrows_by_exact_identifier(case: AdapterCase, adapter: CloudAdapter) -> None:
     result = adapter.discover(case.discovery_request(identifiers=(case.unique_id,)))
     assert result.outcome is StepOutcome.COMPLETED
     assert [i.resource_id for i in result.identities] == [case.unique_id]
@@ -925,10 +907,12 @@ IRREVERSIBLE_FIXTURES = (
     pytest.param(
         AZURE_CASE,
         AZURE_CASE.irreversible(
-            kind=CloudActionKind.ISOLATE, resource_class=FUNCTION, resource_id=(
+            kind=CloudActionKind.ISOLATE,
+            resource_class=FUNCTION,
+            resource_id=(
                 "/subscriptions/sub-mayhem/resourceGroups/rg-mayhem/providers/"
                 "Microsoft.Web/sites/func-mayhem-01"
-            )
+            ),
         ),
         id="azure-isolate-function",
     ),
@@ -991,9 +975,7 @@ def test_irreversible_action_cannot_reach_the_compensation_path(
     transport = case.transport()
     adapter = case.adapter(transport)
 
-    result = adapter.compensate(
-        cast("ReversibleCloudAction", action), role=case.role()
-    )
+    result = adapter.compensate(cast("ReversibleCloudAction", action), role=case.role())
 
     assert result.outcome is StepOutcome.FAILED
     assert result.code == CLOUD_COMPENSATION_UNAVAILABLE
@@ -1037,9 +1019,7 @@ def test_compensation_reporting_success_without_evidence_is_unconstructible(
         reason="still running",
     )
     with pytest.raises(ValidationError, match="did not confirm"):
-        CompensationResult(
-            outcome=StepOutcome.COMPLETED, receipt=receipt, verification=unconfirmed
-        )
+        CompensationResult(outcome=StepOutcome.COMPLETED, receipt=receipt, verification=unconfirmed)
 
 
 def test_execution_result_is_bound_to_the_execute_step() -> None:
@@ -1436,9 +1416,7 @@ def test_an_execution_whose_target_vanished_is_not_reported_complete(
 
     def mutate_and_lose(command: MutationCommand) -> MutationReceipt:
         receipt = original_mutate(command)
-        transport.drop(
-            capability.service, command.query.resource_class, command.resource_id
-        )
+        transport.drop(capability.service, command.query.resource_class, command.resource_id)
         return receipt
 
     transport.mutate = mutate_and_lose  # type: ignore[method-assign]
@@ -1573,8 +1551,12 @@ def test_each_provider_declares_a_different_supported_set() -> None:
         case.name: {f"{kind.value}/{cls.value}" for kind, cls in case.adapter_cls.capabilities}
         for case in CASES
     }
-    assert sets["aws"] == {"stop/vm", "impair/vm", "failover/managed_database",
-                           "impair/block_storage"}
+    assert sets["aws"] == {
+        "stop/vm",
+        "impair/vm",
+        "failover/managed_database",
+        "impair/block_storage",
+    }
     assert sets["gcp"] == {"stop/vm", "failover/managed_database", "impair/block_storage"}
     assert sets["azure"] == {"stop/vm", "failover/managed_database", "isolate/function"}
     assert sets["aws"] != sets["gcp"] != sets["azure"]
@@ -1608,8 +1590,7 @@ def test_azure_carries_full_arm_resource_ids_verbatim() -> None:
 
     assert discovered.outcome is StepOutcome.COMPLETED
     assert all(
-        i.resource_id.startswith("/subscriptions/sub-mayhem/")
-        for i in discovered.identities
+        i.resource_id.startswith("/subscriptions/sub-mayhem/") for i in discovered.identities
     )
     intent = AZURE_CASE.intent(AZURE_CASE.identifier_selector(AZURE_CASE.vm_ids[0]))
     resolved = adapter.resolve(intent)
@@ -1653,16 +1634,12 @@ def test_no_cloud_sdk_is_imported_by_the_adapter_package() -> None:
                 roots = [(node.module or "").split(".")[0]]
             else:
                 continue
-            offenders += [
-                f"{path.name}:{root}" for root in roots if root in forbidden_roots
-            ]
+            offenders += [f"{path.name}:{root}" for root in roots if root in forbidden_roots]
     assert offenders == []
 
 
 def test_the_declared_dependency_set_is_unchanged() -> None:
-    manifest = tomllib.loads(
-        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     declared = {
         name.split(">=")[0].split("==")[0].split("[")[0].strip()
         for name in manifest["project"]["dependencies"]

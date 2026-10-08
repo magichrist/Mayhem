@@ -232,9 +232,7 @@ class ProviderAction:
         for field_name in ("provider_id", "fault_id", "run_id", "owner_agent"):
             if not str(getattr(self, field_name)).strip():
                 msg = f"a provider action must name its {field_name}"
-                raise ProviderParticipationError(
-                    RULE_PROVIDER_FAULT_UNDECLARED, msg
-                )
+                raise ProviderParticipationError(RULE_PROVIDER_FAULT_UNDECLARED, msg)
         if not self.node_ids:
             msg = (
                 f"provider action {self.operation_id or self.fault_id!r} targets nothing; "

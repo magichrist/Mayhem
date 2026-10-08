@@ -594,9 +594,6 @@ class BudgetConsumption(BaseModel):
         )
 
 
-
-
-
 # -- metering ------------------------------------------------------------------
 
 
@@ -727,9 +724,7 @@ class ResourceSeries(BaseModel):
         belongs to the next window by the half-open rule, and counting it in
         both would double-charge the boundary.
         """
-        readings = [
-            sample.measured for sample in self.samples if sample.at < window.end
-        ]
+        readings = [sample.measured for sample in self.samples if sample.at < window.end]
         return readings[-1] if readings else 0.0
 
     def consumption(self, window: BudgetWindow) -> BudgetConsumption:
@@ -1173,9 +1168,7 @@ class BenchmarkSpec(BaseModel):
         return self.measured_outputs
 
     # -- publish --------------------------------------------------------------
-    def publish(
-        self, measurements: Iterable[Measurement], *, now: datetime
-    ) -> PublishedBenchmark:
+    def publish(self, measurements: Iterable[Measurement], *, now: datetime) -> PublishedBenchmark:
         """Bind this spec to the outputs a run actually produced.
 
         ``now`` is an argument rather than a default ``utc_now()`` call: the
@@ -1302,9 +1295,8 @@ class PublishedBenchmark(BaseModel):
         return digest(self.model_dump(mode="json"))
 
     def describe(self) -> str:
-        return (
-            f"{self.spec_id} [{self.metric.value}] at {self.scale.describe()}: "
-            + ", ".join(reading.describe() for reading in self.measurements)
+        return f"{self.spec_id} [{self.metric.value}] at {self.scale.describe()}: " + ", ".join(
+            reading.describe() for reading in self.measurements
         )
 
 
@@ -1412,7 +1404,6 @@ class ScaleClaimView(BaseModel):
         return self
 
     def describe(self) -> str:
-        return (
-            f"{self.scale.describe()} [{self.metric.value}, {self.spec_id}]: "
-            + ", ".join(f"{line.name}={line.value:g} {line.unit}" for line in self.lines)
+        return f"{self.scale.describe()} [{self.metric.value}, {self.spec_id}]: " + ", ".join(
+            f"{line.name}={line.value:g} {line.unit}" for line in self.lines
         )

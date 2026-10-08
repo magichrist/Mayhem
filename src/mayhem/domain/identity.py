@@ -588,9 +588,6 @@ def has_role(
     now: datetime,
 ) -> bool:
     """True when ``principal`` holds ``role`` in ``scope`` at ``now``."""
-    return (
-        role
-        in effective_roles(
-            grants, principal=principal, scope=scope, memberships=memberships, now=now
-        )
+    return role in effective_roles(
+        grants, principal=principal, scope=scope, memberships=memberships, now=now
     )

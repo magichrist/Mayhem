@@ -297,9 +297,9 @@ class TestTheDocumentAgreesWithTheCode:
             if not primitive.substrate_verdict(CURRENT_SUBSTRATE)
         )
         assert blocked == 18
-        assert (
-            re.search(r"\b18 of (?:the )?22\b", PLAN) or re.search(r"\b18 blocked\b", PLAN)
-        ), "the document no longer states the blocked count in any form the test reads"
+        assert re.search(r"\b18 of (?:the )?22\b", PLAN) or re.search(r"\b18 blocked\b", PLAN), (
+            "the document no longer states the blocked count in any form the test reads"
+        )
 
     def test_the_verified_live_count_this_plan_reports_is_zero(self) -> None:
         """Phase 5's acceptance clause, restated over the prose that claims it."""
@@ -464,6 +464,3 @@ class TestNegativeControls:
         broken = PLAN.replace("`CAP_BPF`", "`CAP_SYS_NICE`")
         assert "CAP_BPF" not in broken
         assert "CAP_BPF" in PLAN
-
-
-

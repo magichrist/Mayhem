@@ -367,9 +367,7 @@ class TestThePythonFrontEnd:
         assert scale.default == "1"
 
     def test_the_sdk_refuses_a_declaration_with_no_evidence_schema(self) -> None:
-        builder = ProviderBuilder(
-            _PROVIDER_ID, name="ACME", version=_VERSION, description="d"
-        )
+        builder = ProviderBuilder(_PROVIDER_ID, name="ACME", version=_VERSION, description="d")
         builder.capability("acme.injector.observe", summary="s")
         with pytest.raises(SdkBuildError, match="sdk_evidence_schema_required"):
             python_declaration(builder)
@@ -382,9 +380,7 @@ class TestThePythonFrontEnd:
         declaration with the model rather than with a second set of rules that
         happens to agree today.
         """
-        builder = ProviderBuilder(
-            _PROVIDER_ID, name="ACME", version=_VERSION, description="d"
-        )
+        builder = ProviderBuilder(_PROVIDER_ID, name="ACME", version=_VERSION, description="d")
         builder.capability(
             _CAPABILITY, summary="s", required_permissions=_PERMISSIONS, mutates_targets=True
         )
@@ -579,9 +575,7 @@ class TestThePermissionDisplay:
             python_declaration(python_builder()).metadata,
             grant=frozenset({ProviderPermission.TARGET_READ}),
         )
-        approved = approve_permission_display(
-            display, actor="ops:alice", approval_id="ap-1"
-        )
+        approved = approve_permission_display(display, actor="ops:alice", approval_id="ap-1")
         assert approved.approved
         assert [line.permission for line in approved.can_do] == [ProviderPermission.TARGET_READ]
         assert [line.permission for line in approved.cannot_do] == [
@@ -809,9 +803,7 @@ class TestTheOverclaimScan:
 
     @classmethod
     def _offenders(cls, identifiers: Any) -> list[str]:
-        return sorted(
-            identifier for identifier in identifiers if cls._claims_a_check(identifier)
-        )
+        return sorted(identifier for identifier in identifiers if cls._claims_a_check(identifier))
 
     def test_no_public_identifier_claims_a_publisher_check(self) -> None:
         offenders = self._offenders(sdk_identifiers())
@@ -869,9 +861,7 @@ class TestTheOverclaimScan:
         """Both notices deny the check by name, and both cite the flag."""
         assert "SIGNATURE_VERIFICATION_IMPLEMENTED is False" in SDK_UNVERIFIED_NOTICE
         assert "does not attest to the code" in SDK_UNVERIFIED_NOTICE
-        assert "unverified" not in SDK_UNVERIFIED_NOTICE.replace(
-            "verifies no signature", ""
-        )
+        assert "unverified" not in SDK_UNVERIFIED_NOTICE.replace("verifies no signature", "")
 
     def test_the_scan_notices_a_word_it_is_looking_for(self) -> None:
         """The negative control *for the scan*.
@@ -931,9 +921,7 @@ class TestTheLoaderStillRefusesAnSdkBuiltDeclaration:
             running_version=_RUNNING_VERSION,
         )
         with pytest.raises(Exception, match="provider_sandbox_mechanism_unapplied"):
-            loader.load_registration(
-                artifact.registration(), _Runtime(artifact.metadata)
-            )
+            loader.load_registration(artifact.registration(), _Runtime(artifact.metadata))
 
     def test_a_runtime_that_over_claims_is_still_refused_before_the_registry(
         self, artifacts: dict[SdkLanguage, AuthoredArtifact]

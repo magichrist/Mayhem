@@ -370,8 +370,7 @@ CHAIN_EVENT_ANALYTICS_SEALED = "analytics.sealed"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 NO_CITATION_NOTE = (
-    "this hop cites nothing, so the chain stops here rather than asserting a link it "
-    "cannot show"
+    "this hop cites nothing, so the chain stops here rather than asserting a link it cannot show"
 )
 UNRESOLVED_BOUNDARY_NOTE = (
     "the bracket is wider than the declared resolution: the boundary is reported as a "
@@ -550,8 +549,7 @@ class CausalChain:
             missing = [hop.value for hop in CausalHop if hop not in present]
             raise InvariantViolationError(
                 RULE_HOP_UNSUPPORTED,
-                f"a causal chain carries every hop in order or none at all; missing "
-                f"{missing}",
+                f"a causal chain carries every hop in order or none at all; missing {missing}",
             )
 
     @property
@@ -1058,9 +1056,7 @@ class BoundaryReport:
             "highest_tried": self.highest_tried,
             "insufficient_trials": list(self.insufficient_trials),
             "boundary_comparison": (
-                None
-                if self.boundary_comparison is None
-                else self.boundary_comparison.to_dict()
+                None if self.boundary_comparison is None else self.boundary_comparison.to_dict()
             ),
             "tolerance_statement": self.tolerance_statement,
             "confidence_statement": self.confidence_statement,
@@ -1200,10 +1196,7 @@ class RecoveryCurve:
         if self.baseline is None:
             return f"{self.name}: no baseline captured, so recovery was not measured"
         if not self.points:
-            return (
-                f"{self.name}: no post-fault samples recorded, so recovery was not "
-                "observed"
-            )
+            return f"{self.name}: no post-fault samples recorded, so recovery was not observed"
         if not self.graded:
             return f"{self.name}: {self.note}"
         status = "RECOVERED" if self.recovered else "NOT RECOVERED"
@@ -1237,9 +1230,7 @@ class RecoveryCurve:
         }
 
 
-def _samples_digest(
-    baseline_values: Sequence[float], cooldown_values: Sequence[float]
-) -> str:
+def _samples_digest(baseline_values: Sequence[float], cooldown_values: Sequence[float]) -> str:
     """The digest of one signal's raw capture, or ``""`` when there is nothing.
 
     Empty is the honest answer for a curve with no post-fault samples: there is no
@@ -1524,9 +1515,7 @@ def minimal_failure_case(cases: Sequence[FailureCase]) -> MinimalFailureCase:
         size=winner.size,
         minimal=True,
         considered=len(usable),
-        note=(
-            "every fault-bearing proper subset was tried and did not reproduce"
-        ),
+        note=("every fault-bearing proper subset was tried and did not reproduce"),
         case_digests=digests,
     )
 
@@ -1535,9 +1524,7 @@ def _proper_subsets(components: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
     """Every non-empty proper subset, in a deterministic order."""
     found: list[tuple[str, ...]] = []
     for mask in range(1, (1 << len(components)) - 1):
-        subset = tuple(
-            component for index, component in enumerate(components) if mask >> index & 1
-        )
+        subset = tuple(component for index, component in enumerate(components) if mask >> index & 1)
         found.append(subset)
     return tuple(found)
 
@@ -1685,9 +1672,7 @@ class AnalyticsEvidence:
         return tuple(claim.claim_digest for claim in self.claims)
 
     def claim_for(self, claim_digest: str) -> AnalyticsClaim | None:
-        return next(
-            (claim for claim in self.claims if claim.claim_digest == claim_digest), None
-        )
+        return next((claim for claim in self.claims if claim.claim_digest == claim_digest), None)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1760,9 +1745,7 @@ def _recovery_claim(curve: RecoveryCurve) -> AnalyticsClaim | WithheldEvidence:
             kind=ClaimKind.RECOVERY,
             subject=curve.name,
             rule_id=RULE_EVIDENCE_UNSUPPORTED,
-            reason=(
-                f"no post-fault sample was recorded for {curve.name!r}: {NO_SUPPORT_NOTE}"
-            ),
+            reason=(f"no post-fault sample was recorded for {curve.name!r}: {NO_SUPPORT_NOTE}"),
         )
     return AnalyticsClaim(
         kind=ClaimKind.RECOVERY,
@@ -2194,9 +2177,7 @@ class AnalyticsEvidenceVerdict:
         """
         if not (self.present and self.verified):
             return None
-        claim = next(
-            (claim for claim in self.claims if claim.claim_digest == claim_digest), None
-        )
+        claim = next((claim for claim in self.claims if claim.claim_digest == claim_digest), None)
         return None if claim is None else claim.claim_digest
 
     def describe(self) -> str:
@@ -2586,13 +2567,9 @@ def _compile_step(raw: Mapping[str, object], policy: SearchPolicy) -> SearchStep
             value=_exact_float(raw["value"], "value"),
             phase=SearchPhase(_exact_str(raw["phase"], "phase")),
             combination=_exact_str(raw["combination"], "combination"),
-            budget_remaining=_exact_float(
-                raw.get("budget_remaining", 0.0), "budget_remaining"
-            ),
+            budget_remaining=_exact_float(raw.get("budget_remaining", 0.0), "budget_remaining"),
             budget_ref=reference,
-            expected_cost=_exact_float(
-                raw.get("expected_cost", policy.step_cost), "expected_cost"
-            ),
+            expected_cost=_exact_float(raw.get("expected_cost", policy.step_cost), "expected_cost"),
         )
     except (TypeError, ValueError) as exc:
         raise InvariantViolationError(
@@ -2983,9 +2960,7 @@ def _walk(
     admissions = walked.admissions
     guard = policy.max_steps * 4 + 8
     for _ in range(guard):
-        planned_against = (
-            walked.remaining if planner_budget is None else planner_budget
-        )
+        planned_against = walked.remaining if planner_budget is None else planner_budget
         decision: SearchDecision = plan_next_step(
             policy, walked.history, budget=planned_against, combination=combination
         )
@@ -3162,9 +3137,7 @@ def _refused(
     )
 
 
-def _unaffordable_note(
-    step: SearchStep, divergence: BudgetDivergence | None
-) -> str:
+def _unaffordable_note(step: SearchStep, divergence: BudgetDivergence | None) -> str:
     """The stop note for a step the runner could not pay for.
 
     Names the two budgets when they disagreed, because "the remaining budget no
@@ -3172,10 +3145,7 @@ def _unaffordable_note(
     left and the runner had 0.5" and an operator needs to know which one happened.
     """
     if divergence is None:
-        return (
-            "the remaining budget no longer covers a step; search halts with the "
-            "findings so far"
-        )
+        return "the remaining budget no longer covers a step; search halts with the findings so far"
     return (
         f"the remaining budget no longer covers a step; the planner was working from "
         f"{divergence.planner_remaining} of {step.budget_ref.kind.value} and the runner "
@@ -3448,9 +3418,7 @@ def search_record_of(
                 by_index[trial.step.index].approved_by if trial.step.index in by_index else ""
             ),
             planned_against=trial.step.budget_remaining,
-            admitted=bool(
-                trial.step.index in by_index and by_index[trial.step.index].admitted
-            ),
+            admitted=bool(trial.step.index in by_index and by_index[trial.step.index].admitted),
             rule_id=by_index[trial.step.index].rule_id if trial.step.index in by_index else "",
         )
         for trial in history.trials
@@ -3791,9 +3759,7 @@ def _narrow_plan(experiment: ExecutionPlan, targets: Sequence[str]) -> Execution
         if not narrowed:
             continue
         steps.append(
-            step.model_copy(
-                update={"fault": step.fault.model_copy(update={"targets": narrowed})}
-            )
+            step.model_copy(update={"fault": step.fault.model_copy(update={"targets": narrowed})})
         )
     return experiment.model_copy(update={"steps": tuple(steps)})
 
@@ -3940,9 +3906,7 @@ def promote_to(stages: Sequence[Stage], outcome: StageOutcome) -> Promotion:
     if not outcome.healthy:
         breaches = outcome.breaches
         named = (
-            ", ".join(
-                f"{breach.criterion_id} ({breach.reason or 'failed'})" for breach in breaches
-            )
+            ", ".join(f"{breach.criterion_id} ({breach.reason or 'failed'})" for breach in breaches)
             or "no criterion was evaluated"
         )
         return Promotion(
@@ -3951,8 +3915,7 @@ def promote_to(stages: Sequence[Stage], outcome: StageOutcome) -> Promotion:
             stopped=True,
             next_stage=None,
             reason=(
-                f"stage {outcome.stage.name!r} is not healthy, so the ladder stops here: "
-                f"{named}"
+                f"stage {outcome.stage.name!r} is not healthy, so the ladder stops here: {named}"
             ),
         )
     if following is None:

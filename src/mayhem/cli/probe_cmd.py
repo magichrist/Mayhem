@@ -644,9 +644,7 @@ def tolerances_command() -> None:
 @click.option(
     "--cooldown", default=0.0, show_default=True, type=float, help="Cooldown budget, seconds."
 )
-@click.option(
-    "--description", default="", help="Prose. Excluded from the pin fingerprint."
-)
+@click.option("--description", default="", help="Prose. Excluded from the pin fingerprint.")
 def build_command(
     probe_id: str,
     family: str,
@@ -685,9 +683,7 @@ def build_command(
     click.echo("")
     click.echo(style.cyan("pin: ") + payload["pin_summary"])
     click.echo(
-        style.info(
-            "A plan that does not carry this pin is refused with probes.unpinned_probe."
-        )
+        style.info("A plan that does not carry this pin is refused with probes.unpinned_probe.")
     )
 
 
@@ -715,7 +711,10 @@ def build_command(
 @click.option("--max-duration", "max_duration", default=None, type=float)
 @click.option("--hysteresis", default=None, type=float, help="Fraction of the bound, in (0, 1).")
 @click.option(
-    "--hysteresis-absolute", "hysteresis_absolute", default=None, type=float,
+    "--hysteresis-absolute",
+    "hysteresis_absolute",
+    default=None,
+    type=float,
     help="Absolute dead band, in the probe's unit.",
 )
 def condition_command(
@@ -751,8 +750,7 @@ def condition_command(
     click.echo(style.info(f"condition {payload['summary']}"))
     click.echo(
         style.info(
-            "Every firing cites the samples that produced it; a stop without citations "
-            "is refused."
+            "Every firing cites the samples that produced it; a stop without citations is refused."
         )
     )
     click.echo(
@@ -825,8 +823,7 @@ def _stages_from(text: str) -> tuple[LifecycleStage, ...]:
         raise MayhemCliError(
             code="usage_error",
             message=(
-                f"unknown lifecycle stage(s) {', '.join(unknown)}; "
-                f"choose from {', '.join(known)}"
+                f"unknown lifecycle stage(s) {', '.join(unknown)}; choose from {', '.join(known)}"
             ),
         )
     return tuple(known[name] for name in names)

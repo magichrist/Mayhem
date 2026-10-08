@@ -121,9 +121,7 @@ def primitives_payload(
         "declared_not_applied": sum(
             1 for e in explanations if e.mechanism_state.value == "declared_not_applied"
         ),
-        "unachievable": sum(
-            1 for e in explanations if e.mechanism_state.value == "unachievable"
-        ),
+        "unachievable": sum(1 for e in explanations if e.mechanism_state.value == "unachievable"),
     }
     by_disposition: dict[str, int] = {}
     for explanation in explanations:
@@ -185,9 +183,7 @@ def render_primitive_lines(explanation: PrimitiveExplanation) -> list[str]:
     from mayhem.domain.lowlevel_report import describe_explanation
 
     lines = describe_explanation(explanation).split("\n")
-    verdict_index = next(
-        (i for i, line in enumerate(lines) if line.startswith("  verdict:")), None
-    )
+    verdict_index = next((i for i, line in enumerate(lines) if line.startswith("  verdict:")), None)
     if verdict_index is None:  # pragma: no cover - defensive: the renderer owns the shape
         return lines
     lines[verdict_index] = style.orange(lines[verdict_index])
@@ -280,9 +276,7 @@ def primitives(
         for explanation in explain_primitives(surface=surface)
         if (family is None or explanation.family == family)
         and (only_injectable is None or explanation.injectable is only_injectable)
-        and (
-            disposition_opt is None or explanation.disposition.value == disposition_opt
-        )
+        and (disposition_opt is None or explanation.disposition.value == disposition_opt)
     ]
     if as_json:
         click.echo(json.dumps(primitives_payload(selected), indent=2, sort_keys=True))

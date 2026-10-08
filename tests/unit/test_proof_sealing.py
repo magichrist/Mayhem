@@ -175,9 +175,7 @@ def _plan(
                 raw_action=InjectFault(fault=fault_id, selectors=(selector,), duration=duration),
                 fault=PlannedFault(
                     fault_id=fault_id,
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-a"})),),
                     duration=duration,
                     undo_ops=(UndoOp(op="tc.del_qdisc"),),
                     verify_probes=(VerifyProbe(probe="tc.qdisc_absent"),),
@@ -514,7 +512,10 @@ def test_a_proof_with_no_verdict_assertion_is_still_sealable(tmp_path: Path) -> 
     it compiled to, and the verdict travels in the payload.
     """
     store = _store(tmp_path)
-    plan = _plan(fault_ids=(), durations=(), )
+    plan = _plan(
+        fault_ids=(),
+        durations=(),
+    )
     void_proof = compile_safety_proof(
         plan,
         _graph(),
@@ -842,9 +843,7 @@ def _bound_proof(proof: SafetyProof) -> SafetyProof:
     """
     discharged = ps.discharge_residue(
         proof,
-        {
-            fault_id: _clean() for fault_id in (o.fault_id for o in proof.residue_obligations)
-        },
+        {fault_id: _clean() for fault_id in (o.fault_id for o in proof.residue_obligations)},
     )
     assert discharged.closes_clean is True
     return discharged.proof
@@ -1262,7 +1261,7 @@ def test_the_retention_class_is_the_callers_and_defaults_to_hot(tmp_path: Path) 
 
 
 def test_reloading_an_unsealed_run_reports_why_rather_than_raising(tmp_path: Path) -> None:
-    """"No seal stored" is a finding for a reader, not an exception.
+    """ "No seal stored" is a finding for a reader, not an exception.
 
     An auditor asking "was this run's proof sealed?" needs an answer either way,
     and the absent answer must be legible.

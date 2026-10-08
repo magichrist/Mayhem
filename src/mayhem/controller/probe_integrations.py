@@ -526,10 +526,6 @@ class ConnectorContractError(InvariantViolationError):
     """
 
 
-
-
-
-
 @dataclass(frozen=True, slots=True)
 class ConnectorPayload:
     """What a bound client hands back: a body and the number it read.
@@ -655,8 +651,7 @@ class ConnectorProbePort:
             unit=payload.unit,
             provenance=self.connector.connector_id.value,
             evidence_ref=(
-                f"connector/{self.connector.connector_id.value}/"
-                f"{definition.id}/{self.client.name}"
+                f"connector/{self.connector.connector_id.value}/{definition.id}/{self.client.name}"
             ),
             detail=detail,
         )

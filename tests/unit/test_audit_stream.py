@@ -299,22 +299,25 @@ def _archived_engine(tmp_path: Path, retention_class: RetentionClass = Retention
 def test_migration_is_additive_and_reversible(tmp_path: Path) -> None:
     store = Store.open_migrated(tmp_path / "mayhem.db", migrations=BEFORE)
     assert store.schema_version == PRIOR_HEAD
-    before = {str(row["name"]) for row in store.query(
-        "SELECT name FROM sqlite_master WHERE type = 'table'"
-    )}
+    before = {
+        str(row["name"])
+        for row in store.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     assert set(AUDIT_TABLES).isdisjoint(before)
 
     applied = store.migrate()
 
     assert "0029_audit_stream" in applied
     assert store.schema_version == ALL_MIGRATIONS[-1].version
-    after = {str(row["name"]) for row in store.query(
-        "SELECT name FROM sqlite_master WHERE type = 'table'"
-    )}
+    after = {
+        str(row["name"])
+        for row in store.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     assert set(AUDIT_TABLES) <= after
-    triggers = {str(row["name"]) for row in store.query(
-        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-    )}
+    triggers = {
+        str(row["name"])
+        for row in store.query("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    }
     assert {
         "audit_entries_no_update",
         "audit_entries_no_delete",
@@ -326,9 +329,12 @@ def test_migration_is_additive_and_reversible(tmp_path: Path) -> None:
     reversed_store = open_store(tmp_path)
     reversed_ids = reversed_store.migrate_down(PRIOR_HEAD)
     assert "0029_audit_stream" in reversed_ids
-    final = {str(row["name"]) for row in reversed_store.query(
-        "SELECT name FROM sqlite_master WHERE type IN ('table','trigger')"
-    )}
+    final = {
+        str(row["name"])
+        for row in reversed_store.query(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','trigger')"
+        )
+    }
     assert set(AUDIT_TABLES).isdisjoint(final)
     assert "audit_entries_no_delete" not in final
     assert reversed_store.schema_version == PRIOR_HEAD
@@ -343,9 +349,7 @@ def test_migration_has_down_statements() -> None:
 def test_the_migration_carries_no_signature_column(tmp_path: Path) -> None:
     """No per-row signature state: the stream is unsigned, and says so once."""
     store = open_store(tmp_path)
-    columns = {
-        str(row[1]) for row in store.query("PRAGMA table_info(audit_entries)")
-    }
+    columns = {str(row[1]) for row in store.query("PRAGMA table_info(audit_entries)")}
     assert "signature_state" not in columns
     assert "signer_identity" not in columns
     store.close()
@@ -715,9 +719,7 @@ def test_the_stream_records_principal_action_target_and_decision_digests(
     assert payload["policy_digest"] == POLICY_DIGEST
     assert payload["approval_digest"] == PROOF_DIGEST
     # And the denormalised columns an auditor's SQL needs, from the sealed payload.
-    row = dict(store.query(
-        "SELECT * FROM audit_entries WHERE event_id = ?", (event.event_id,)
-    )[0])
+    row = dict(store.query("SELECT * FROM audit_entries WHERE event_id = ?", (event.event_id,))[0])
     assert row["principal"] == "ana"
     assert row["action"] == "audit.action"
     assert row["target"] == "run-1:manifest"
@@ -796,9 +798,7 @@ def test_a_mutated_audit_entry_fails_verification(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     log = seeded(store, 3)
     target = log.load()[1]
-    forged = target.model_copy(
-        update={"payload": {**target.payload, "principal": "mallory"}}
-    )
+    forged = target.model_copy(update={"payload": {**target.payload, "principal": "mallory"}})
     drop_append_only_guards(store)
     with store.write() as conn:
         conn.execute(
@@ -1093,9 +1093,7 @@ def test_every_retention_state_change_is_audited(tmp_path: Path) -> None:
     engine = RetentionEngine(store, backend=InMemoryRetentionBackend())
     engine.register(sealed.manifest, now=T0)
     engine.place_legal_hold("run-1:manifest", reason="pending litigation", now=T0)
-    engine.release_legal_hold(
-        "run-1:manifest", actor="ana", reason="litigation closed", now=T0
-    )
+    engine.release_legal_hold("run-1:manifest", actor="ana", reason="litigation closed", now=T0)
     engine.cool("run-1:manifest", now=T0)
     engine.archive("run-1:manifest", now=T0)
     log = engine.audit
@@ -1124,9 +1122,7 @@ def test_a_refused_deletion_leaves_no_deletion_audit_entry(tmp_path: Path) -> No
         engine.expire("run-1:manifest", requester="ana", approver="bo", now=T0)
 
     assert len(engine.audit.load()) == before
-    assert not any(
-        e.event_kind == KIND_EVIDENCE_DELETED for e in engine.audit.load()
-    )
+    assert not any(e.event_kind == KIND_EVIDENCE_DELETED for e in engine.audit.load())
     store.close()
 
 
@@ -1139,9 +1135,7 @@ def test_dual_control_is_still_enforced_with_the_audit_stream_attached(
     with pytest.raises(RetentionRefusedError, match="self-approval is refused"):
         engine.expire("run-1:manifest", requester="ana", approver="ana", now=expired)
 
-    assert not any(
-        e.event_kind == KIND_EVIDENCE_DELETED for e in engine.audit.load()
-    )
+    assert not any(e.event_kind == KIND_EVIDENCE_DELETED for e in engine.audit.load())
     assert engine.get("run-1:manifest").state is RetentionState.ARCHIVE
     store.close()
 

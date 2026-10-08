@@ -637,7 +637,8 @@ def test_an_armed_empty_gate_never_reports_above_verified_unit() -> None:
         capped = catalog_report.maturity_decision(definition, records={})
         assert capped.maturity in allowed, definition.id
         # Capping can only ever lower a level, never raise one.
-        assert allowed.index(capped.maturity) <= allowed.index(
-            uncapped.maturity
-        ) or uncapped.maturity in allowed, definition.id
+        assert (
+            allowed.index(capped.maturity) <= allowed.index(uncapped.maturity)
+            or uncapped.maturity in allowed
+        ), definition.id
         assert capped.live_verified is False, definition.id

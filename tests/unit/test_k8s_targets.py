@@ -143,9 +143,7 @@ class TestSelectorDimensions:
 
     def test_annotations_dimension_matches_and_misses(self) -> None:
         selector = K8sSelector(annotations={"mayhem.dev/owner": "sre"})
-        assert selector.matches(
-            _candidate("checkout-00", annotations={"mayhem.dev/owner": "sre"})
-        )
+        assert selector.matches(_candidate("checkout-00", annotations={"mayhem.dev/owner": "sre"}))
         assert not selector.matches(
             _candidate("checkout-00", annotations={"mayhem.dev/owner": "platform"})
         )
@@ -203,9 +201,7 @@ class TestSelectorOrdering:
             _candidate("checkout-02"),
             _candidate("checkout-01"),
         )
-        selection = K8sSelector(selection=SelectionSpec(mode=SelectionMode.ALL)).select(
-            candidates
-        )
+        selection = K8sSelector(selection=SelectionSpec(mode=SelectionMode.ALL)).select(candidates)
         assert selection.authority_keys == (
             "shop/checkout-01",
             "shop/checkout-02",
@@ -455,9 +451,7 @@ class TestAntiAffinity:
         assert verdict.observed == 3
 
     def test_preferred_anti_affinity_is_soft(self) -> None:
-        facts = _facts(
-            replicas=10, preferred_anti_affinity=True, anti_affinity_domains=3
-        )
+        facts = _facts(replicas=10, preferred_anti_affinity=True, anti_affinity_domains=3)
         verdict = check_anti_affinity(facts, kill_count=4)
         assert verdict.admitted
         assert "soft" in verdict.reason
@@ -471,9 +465,7 @@ class TestTopologySpread:
         facts = _facts(
             replicas=6,
             topology_spread=(
-                TopologySpreadConstraint(
-                    topology_key="topology.kubernetes.io/zone", max_skew=1
-                ),
+                TopologySpreadConstraint(topology_key="topology.kubernetes.io/zone", max_skew=1),
             ),
             topology_spread_domains=3,
         )
@@ -568,9 +560,7 @@ class TestAggregateAdmission:
             pdb_min_available=8,
             required_anti_affinity=True,
             anti_affinity_domains=3,
-            topology_spread=(
-                TopologySpreadConstraint(topology_key="zone", do_not_schedule=True),
-            ),
+            topology_spread=(TopologySpreadConstraint(topology_key="zone", do_not_schedule=True),),
             topology_spread_domains=3,
             cluster_nodes_ready=1,
             cluster_nodes_total=3,
@@ -720,9 +710,7 @@ class TestNegativeControls:
             SelectionSpec(mode=SelectionMode.COUNT, count=4),
             SelectionSpec(mode=SelectionMode.PERCENTAGE, percentage=80),
         ):
-            selection = selector.model_copy(update={"selection": spec}).select(
-                candidates, seed=1
-            )
+            selection = selector.model_copy(update={"selection": spec}).select(candidates, seed=1)
             assert selection.targets == ()
             assert selection.reason == EMPTY_SELECTION_REASON
 

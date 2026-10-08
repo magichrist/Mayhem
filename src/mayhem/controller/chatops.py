@@ -228,9 +228,8 @@ def parse_command(text: str) -> ParsedChat:
     try:
         command = ChatOpsCommand(verb.strip().lower())
     except ValueError:
-        msg = (
-            f"{verb.strip()!r} is not a mayhem chat command; the commands are "
-            + ", ".join(sorted(command.value for command in ChatOpsCommand))
+        msg = f"{verb.strip()!r} is not a mayhem chat command; the commands are " + ", ".join(
+            sorted(command.value for command in ChatOpsCommand)
         )
         raise InvariantViolationError(RULE_CHATOPS_UNKNOWN_COMMAND, msg) from None
     if not argument:
@@ -368,9 +367,7 @@ class ChatOpsBot:
                 message, bindings=self.bindings, author=author, plan=plan
             )
         except InvariantViolationError as exc:
-            if exc.rule == RULE_CHATOPS_UNKNOWN_COMMAND and not _looks_like_command(
-                message.text
-            ):
+            if exc.rule == RULE_CHATOPS_UNKNOWN_COMMAND and not _looks_like_command(message.text):
                 return ChatOutcome.NOT_A_COMMAND, ""
             return ChatOutcome.REFUSED, str(exc)
         request = _to_request(command, parts, run_id=parts.target)

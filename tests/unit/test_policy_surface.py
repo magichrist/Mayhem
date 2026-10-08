@@ -444,13 +444,13 @@ class TestTheDocumentedExampleIsTheEngines:
 
     @staticmethod
     def _engine_block() -> list[str]:
+        from mayhem.domain.common import utc_now
         from mayhem.domain.policy_authoring import (
             bundle_from_mapping,
             explain_decision,
             with_pending_approvals,
         )
         from mayhem.domain.policy_gate import PolicyGateInputs, simulate_gate
-        from mayhem.domain.common import utc_now
 
         bundle = bundle_from_mapping(yaml.safe_load(BUNDLE_YAML))
         inputs = with_pending_approvals(PolicyGateInputs(bundle=bundle, now=utc_now()))

@@ -595,16 +595,16 @@ class _Line:
         """Downgrade to ``FAIL`` and name ``reasons`` — used by :func:`_blame`."""
         if not reasons:
             return self
-        merged = f"{self.detail}; refused: {'; '.join(reasons)}" if self.detail else (
-            f"refused: {'; '.join(reasons)}"
+        merged = (
+            f"{self.detail}; refused: {'; '.join(reasons)}"
+            if self.detail
+            else (f"refused: {'; '.join(reasons)}")
         )
         return dataclass_replace(
             self,
             output={**self.output, "refusals": list(reasons)},
             status=(
-                ObligationStatus.FAIL
-                if self.status is not ObligationStatus.FAIL
-                else self.status
+                ObligationStatus.FAIL if self.status is not ObligationStatus.FAIL else self.status
             ),
             detail=merged,
         )
@@ -663,7 +663,7 @@ class _BlastProbe:
     #: pass it did not earn.
     ceilings: dict[str, Any] | None = None
     #: Per-step ``ceiling_*`` stats as :func:`mayhem.controller.safety
-    #.check_blast_radius` returned them. These are the gate's own measurements,
+    # .check_blast_radius` returned them. These are the gate's own measurements,
     #: not a second computation: the ceilings are enforced *inside* that call, so
     #: a step either carries them or raised instead.
     ceiling_observations: tuple[dict[str, Any], ...] = ()
@@ -1018,11 +1018,7 @@ def _ceiling_observation(step: dict[str, Any]) -> dict[str, Any]:
     return {
         "step": step["step"],
         "fault_id": step["fault_id"],
-        **{
-            key: value
-            for key, value in step.items()
-            if key.startswith(_CEILING_STAT_PREFIX)
-        },
+        **{key: value for key, value in step.items() if key.startswith(_CEILING_STAT_PREFIX)},
     }
 
 
@@ -1239,8 +1235,7 @@ def _ceiling_pairing(name: str, limit: Any, observed: float | None) -> str:
         return f"{name} {_ceiling_number(observed)} hit(s) against {len(limit)} configured"
     if observed is None:
         return (
-            f"{name} configured at {_ceiling_number(limit)} but unmeasured on every "
-            "admitted step"
+            f"{name} configured at {_ceiling_number(limit)} but unmeasured on every admitted step"
         )
     return f"{name} {_ceiling_number(observed)} <= {_ceiling_number(limit)}"
 
@@ -1300,9 +1295,7 @@ def _cap_line(
             name=name,
             gates=("controller.safety.check_blast_radius",),
             output=output,
-            status=(
-                ObligationStatus.FAIL if probe.rule_ids else ObligationStatus.VOID
-            ),
+            status=(ObligationStatus.FAIL if probe.rule_ids else ObligationStatus.VOID),
             detail=(
                 f"no fault step produced blast stats, so the {cap} limit was never "
                 f"evaluated: "
@@ -1346,8 +1339,7 @@ def _line_damage_budget(
             },
             status=ObligationStatus.FAIL if probe.rule_ids else ObligationStatus.VOID,
             detail=(
-                "no fault step reached the damage ledger: the cumulative budget "
-                "was never evaluated"
+                "no fault step reached the damage ledger: the cumulative budget was never evaluated"
             ),
         )
     return _Line(
@@ -1450,9 +1442,7 @@ def _line_target_policy(
                 "the same check_blast_radius call that refused on them"
             ),
         },
-        "forbidden_fault_pairs": sorted(
-            sorted(pair) for pair in ctx.budget.forbidden_fault_pairs
-        ),
+        "forbidden_fault_pairs": sorted(sorted(pair) for pair in ctx.budget.forbidden_fault_pairs),
         "policy_decision": (
             policy_decision.model_dump(mode="json") if policy_decision is not None else None
         ),
@@ -1507,8 +1497,7 @@ def _line_target_policy(
             output=output,
             status=ObligationStatus.FAIL,
             detail=(
-                f"the plan-07 policy gate refused on "
-                f"{', '.join(sorted(policy.rule_ids))}{note}"
+                f"the plan-07 policy gate refused on {', '.join(sorted(policy.rule_ids))}{note}"
             ),
         )
     ceilings_note = _ceilings_note(blast)
@@ -1894,8 +1883,7 @@ def _approval_line(
             output=output,
             status=ObligationStatus.FAIL,
             detail=(
-                f"the approval gate refused on "
-                f"{', '.join(sorted(approval.rule_ids))}: {wanted}"
+                f"the approval gate refused on {', '.join(sorted(approval.rule_ids))}: {wanted}"
             ),
         )
     state = approval.steps[0] if approval.steps else {}
@@ -2028,9 +2016,7 @@ def compile_safety_evidence(
                 "prediction is stale against this graph/plan, so its findings were not blamed"
             )
         else:
-            never_permissive = is_never_permissive(
-                prediction, [rule for rule, _ in authoritative]
-            )
+            never_permissive = is_never_permissive(prediction, [rule for rule, _ in authoritative])
             unusable = approval_refusal_reason(prediction, graph=graph, plan=plan)
             if unusable:
                 prediction_notes.append(

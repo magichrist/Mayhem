@@ -462,9 +462,7 @@ def test_a_real_zero_is_reported_once_the_seam_has_actually_run() -> None:
 def test_a_reading_in_the_wrong_unit_is_refused_rather_than_conflated() -> None:
     """Targets counted in bytes is a confident nonsense budget."""
     meter = RunMeter(run_id=RUN, clock=_FakeClock())
-    meter.readings.append(
-        MeterReading(seam="targets", kind="cumulative", value=3.0, unit="bytes")
-    )
+    meter.readings.append(MeterReading(seam="targets", kind="cumulative", value=3.0, unit="bytes"))
     guard = _guard((_budget(ResourceDimension.TARGET_COUNT, 5.0),), meter=meter)
     with pytest.raises(InvariantViolationError) as caught:
         guard.read(ResourceDimension.TARGET_COUNT)
@@ -498,7 +496,7 @@ def test_admission_within_budget_admits_and_says_what_it_compared() -> None:
 
 
 def test_admission_with_no_estimates_is_vacuous_and_says_so() -> None:
-    """"Admitted because nothing breached" is not "admitted because nothing was checked"."""
+    """ "Admitted because nothing breached" is not "admitted because nothing was checked"."""
     guard = _guard((_budget(ResourceDimension.STORAGE, 10_000.0),))
     decision = guard.admit(now=NOW)
     assert decision.allowed
@@ -819,9 +817,7 @@ def _graph(pid: int) -> TopologyGraph:
                 id="ctr-a",
                 name="a",
                 engine="podman",
-                runtime_identity=RuntimeIdentity(
-                    runtime="podman", host_id="h", runtime_id="a"
-                ),
+                runtime_identity=RuntimeIdentity(runtime="podman", host_id="h", runtime_id="a"),
                 container_name="c-a",
                 state="running",
             ),
@@ -863,9 +859,7 @@ def sleeper() -> Iterator[subprocess.Popen[bytes]]:
 
 
 @pytest.fixture
-def resolved(
-    sleeper: subprocess.Popen[bytes], monkeypatch: pytest.MonkeyPatch
-) -> TopologyGraph:
+def resolved(sleeper: subprocess.Popen[bytes], monkeypatch: pytest.MonkeyPatch) -> TopologyGraph:
     """A graph whose container resolves to a live process, with injection bypassed.
 
     Bypassed rather than executed so the golden is a fast, deterministic run: the
@@ -940,8 +934,7 @@ GOLDEN_NO_GUARD = "\n".join(
         "step wait-0001|True|ok|waited 2.0s",
         "event run.started|{}",
         'event step.started|{"step": "c-a-0000"}',
-        "event step.skipped|"
-        '{"step": "c-a-0000", "detail": "bypass due to c-a: phase-3 fixture"}',
+        'event step.skipped|{"step": "c-a-0000", "detail": "bypass due to c-a: phase-3 fixture"}',
         'event step.started|{"step": "wait-0001"}',
         'event step.finished|{"step": "wait-0001", "detail": "waited 2.0s"}',
         "event run.completed|{}",
@@ -979,8 +972,7 @@ GOLDEN_NO_GUARD = "\n".join(
         "summary|  - dirty leases: 0",
         "summary|  - targets alive after run: 1/2",
         "summary|## next",
-        "summary|- inspect with `mayhem inspect run <id>`; next recommended:"
-        " `mayhem inspect next`",
+        "summary|- inspect with `mayhem inspect run <id>`; next recommended: `mayhem inspect next`",
     )
 )
 

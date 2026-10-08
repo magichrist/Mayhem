@@ -81,9 +81,7 @@ AZURE_SERVICES: Final[dict[CloudResourceClass, str]] = {
 """Resource class -> Azure ARM resource provider. ``compute`` for VMs, ``sql``
 for Azure SQL databases, ``web`` for App Service / Function Apps."""
 
-AZURE_CAPABILITIES: Final[
-    dict[tuple[CloudActionKind, CloudResourceClass], CloudCapability]
-] = {
+AZURE_CAPABILITIES: Final[dict[tuple[CloudActionKind, CloudResourceClass], CloudCapability]] = {
     (CloudActionKind.STOP, CloudResourceClass.VM): ReversibleCapability(
         kind=CloudActionKind.STOP,
         resource_class=CloudResourceClass.VM,
@@ -146,6 +144,6 @@ class AzureCloudAdapter(CloudAdapter):
 
     provider_key: ClassVar[str] = AZURE_PROVIDER.key
     services: ClassVar[Mapping[CloudResourceClass, str]] = AZURE_SERVICES
-    capabilities: ClassVar[
-        Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]
-    ] = AZURE_CAPABILITIES
+    capabilities: ClassVar[Mapping[tuple[CloudActionKind, CloudResourceClass], CloudCapability]] = (
+        AZURE_CAPABILITIES
+    )

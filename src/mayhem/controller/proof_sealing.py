@@ -627,18 +627,14 @@ def seal_proof(
             f"unsigned and the reason is stored: {UNSIGNED_REASON_NO_SIGNING}"
         )
     scope = proof_scope(run_id)
-    events = seal_events(
-        [proof_seal_event(proof, run_id=run_id, recorded_at=recorded_at)]
-    )
+    events = seal_events([proof_seal_event(proof, run_id=run_id, recorded_at=recorded_at)])
     manifest = build_manifest(
         events,
         manifest_id=manifest_id or f"{run_id}:proof:manifest",
         run_id=scope,
         signer_identity="",
         trust_root_ref="",
-        retention_class=(
-            retention_class if retention_class is not None else RetentionClass.HOT
-        ),
+        retention_class=(retention_class if retention_class is not None else RetentionClass.HOT),
         created_at=recorded_at,
         previous_manifest_digest=previous_manifest_digest,
     )
@@ -767,9 +763,7 @@ def _proof_from_payload(payload: dict[str, object]) -> SafetyProof:
         }
         if line.startswith("residue:"):
             obligations.append(
-                ResidueObligation.model_validate(
-                    {"fault_id": line.split(":", 1)[1], **fields}
-                )
+                ResidueObligation.model_validate({"fault_id": line.split(":", 1)[1], **fields})
             )
             continue
         obligations.append(Obligation.model_validate({"name": line, **fields}))

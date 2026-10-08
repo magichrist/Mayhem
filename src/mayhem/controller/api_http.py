@@ -379,7 +379,7 @@ def _internal_request(api_path: str, token: str, environment: str) -> ApiRequest
 
 def _ui_refusal(reason: str, rule: str) -> bytes:
     return (
-        "<!doctype html><html lang=\"en\"><body>"
+        '<!doctype html><html lang="en"><body>'
         "<h1>this page is not rendered</h1>"
         f"<p>{html.escape(reason)}</p>"
         f"<p>rule: <code>{html.escape(rule)}</code></p>"
@@ -438,7 +438,7 @@ def html_error_page(response: ApiResponse, path: str) -> str:
         for target, label in _SITE_LINKS
     )
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f"<title>mayhem: {response.status}</title></head><body>"
         f"<h1>{response.status} — mayhem refused this request</h1>"
         f"<p>path: <code>{html.escape(path)}</code></p>"
@@ -480,7 +480,7 @@ def _ui_index(pages: Sequence[Mapping[str, str]]) -> bytes:
         for entry in pages
     )
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         "<title>mayhem — control plane</title></head><body>"
         "<h1>mayhem control plane</h1>"
         f"<ul>{rows}</ul>"

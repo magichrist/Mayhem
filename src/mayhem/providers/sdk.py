@@ -634,9 +634,7 @@ class ProviderBuilder:
         }
         if compat:
             document["compatibility"] = {
-                key: value
-                for key, value in compat.items()
-                if value is not None
+                key: value for key, value in compat.items() if value is not None
             }
         try:
             return ProviderMetadata.model_validate(document)
@@ -790,7 +788,6 @@ GO_FIELD_TAGS: Final[Mapping[str, str]] = MappingProxyType(
         "Engines": "engines",
     }
 )
-
 
 
 def _rename(
@@ -1039,9 +1036,7 @@ class ConformanceReport:
             "identical_canonical_form": self.identical,
             "shipped_languages": [language.value for language in self.shipped_languages],
             "unshipped_languages": [
-                entry.language.value
-                for entry in self.languages
-                if not entry.shipped
+                entry.language.value for entry in self.languages if not entry.shipped
             ],
             "notice": self.notice,
         }
@@ -1118,9 +1113,7 @@ def conformance_report(
     return ConformanceReport(
         languages=ordered,
         identical=identical,
-        shipped_languages=tuple(
-            language for language in SDK_LANGUAGES if _SHIPPED[language]
-        ),
+        shipped_languages=tuple(language for language in SDK_LANGUAGES if _SHIPPED[language]),
     )
 
 
@@ -1182,9 +1175,7 @@ class PermissionLine:
 #: of the display is that they do not have to open the schema first.
 PERMISSION_CONSEQUENCE: Final[Mapping[ProviderPermission, str]] = MappingProxyType(
     {
-        ProviderPermission.TARGET_READ: (
-            "reads the mayhem target through mayhem's own API"
-        ),
+        ProviderPermission.TARGET_READ: ("reads the mayhem target through mayhem's own API"),
         ProviderPermission.TARGET_MUTATE: (
             "changes the target — which is why a compensating fault must exist"
         ),

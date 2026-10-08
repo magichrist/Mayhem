@@ -239,9 +239,7 @@ def test_a_store_less_report_reads_exactly_as_it_did_before_certification() -> N
     assert catalog_report.certification_gate_state(None) == "not-consulted"
     assert catalog_report.build_capability_report()["certification_gate"] == "not-consulted"
     assert catalog_report.build_coverage()["certification_gate"] == "not-consulted"
-    assert catalog_report.explain_catalog_fault(FAULT_ID)["certification_gate"] == (
-        "not-consulted"
-    )
+    assert catalog_report.explain_catalog_fault(FAULT_ID)["certification_gate"] == ("not-consulted")
 
     rows = _rows_by_fault(catalog_report.build_capability_report())
     assert rows[FAULT_ID]["maturity"] == uncapped.maturity.value
@@ -269,9 +267,7 @@ def test_a_store_less_path_does_not_fabricate_an_empty_gate() -> None:
     assert catalog_report.certification_gate_state({FAULT_ID: ()}) == "armed"
     assert catalog_report.certification_gate_state(_records(ENGINE)) == "armed"
 
-    named = catalog_report.maturity_decision(
-        definition_for(FAULT_ID), records={FAULT_ID: ()}
-    )
+    named = catalog_report.maturity_decision(definition_for(FAULT_ID), records={FAULT_ID: ()})
     unnamed = catalog_report.maturity_decision(definition_for(FAULT_ID), records={})
     assert named.maturity is unnamed.maturity, "the two must cap identically"
 
@@ -339,8 +335,7 @@ def test_a_planted_record_raises_the_level_so_the_cap_is_a_gate_not_a_constant()
     ungated = catalog_report.maturity_decision(definition, evidence=evidence)
     assert ungated.live_verified is True
     assert _rung_rank(ungated.maturity) > _rung_rank(capped.maturity), (
-        "the ungated fixture must actually reach a live rung, or the cap above is "
-        "proving nothing"
+        "the ungated fixture must actually reach a live rung, or the cap above is proving nothing"
     )
 
     # One engine is not every engine: the gate is conjunctive across the required
@@ -370,8 +365,7 @@ def test_a_lapsed_record_cannot_be_kept_alive_by_the_gate() -> None:
     lapsed_at = NOW + TTL + timedelta(seconds=1)
     lapsed = {
         FAULT_ID: tuple(
-            expire_by_time(_certified(engine), now=lapsed_at)
-            for engine in REQUIRED_LIVE_ENGINES
+            expire_by_time(_certified(engine), now=lapsed_at) for engine in REQUIRED_LIVE_ENGINES
         )
     }
     assert all(not record.grants_live_verification for record in lapsed[FAULT_ID])
@@ -406,9 +400,10 @@ def test_the_dashboard_the_coverage_summary_and_explain_all_report_one_gate() ->
         catalog_report.explain_catalog_fault(FAULT_ID, records={}),
     ):
         assert payload["certification_gate"] == "asserted-empty"
-    assert catalog_report.build_capability_report(records=_records(ENGINE))[
-        "certification_gate"
-    ] == "armed"
+    assert (
+        catalog_report.build_capability_report(records=_records(ENGINE))["certification_gate"]
+        == "armed"
+    )
 
 
 def test_a_capability_row_never_rises_when_the_gate_is_armed_empty() -> None:

@@ -595,8 +595,7 @@ def build_coverage(
     # fault whose declared badge its facts no longer earn is counted at the rung
     # it actually holds.
     decisions = [
-        maturity_decision(definition, evidence=evidence, records=records)
-        for definition in selected
+        maturity_decision(definition, evidence=evidence, records=records) for definition in selected
     ]
     by_maturity = Counter(decision.maturity.value for decision in decisions)
     live_verified = sorted(decision.fault_id for decision in decisions if decision.live_verified)
@@ -609,7 +608,7 @@ def build_coverage(
         "by_maturity": dict(sorted(by_maturity.items())),
         "verified_live": len(live_verified),
         "verified_live_faults": live_verified,
-"live_evidence_records": len(evidence) if evidence is not None else 0,
+        "live_evidence_records": len(evidence) if evidence is not None else 0,
         "maturity_disclaimer": Maturity_DISCLAIMER,
         # Stated for the same reason as in build_capability_report: a maturity
         # tally is only as meaningful as the gate that produced it.

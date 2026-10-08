@@ -130,8 +130,7 @@ def _preview_view(*, usable: bool = True) -> RiskPreviewView:
             PolicyClaim(
                 rule_id="damage_budget.max_total",
                 stance=PolicyStance.OUTSIDE_POLICY,
-                reason="observed p99 +310ms over a 200ms budget "
-                "[damage_budget.max_total]",
+                reason="observed p99 +310ms over a 200ms budget [damage_budget.max_total]",
                 step_id="step-1",
                 step_index=0,
                 observed=310.0,
@@ -481,9 +480,7 @@ class TestTheBoundaryPageRendersPlan15sOwnViewModel:
             priority=Priority(
                 criteria_name=criteria.name,
                 readings=(
-                    CriterionReading(
-                        criterion=declared, value=1.0, evidence="topology/edge"
-                    ),
+                    CriterionReading(criterion=declared, value=1.0, evidence="topology/edge"),
                 ),
             ),
             rationale="customer_facing: checkout is on the customer path",
@@ -540,9 +537,7 @@ def _untraceable_recommendation(criteria: Any) -> Any:
         finding=finding,
         priority=Priority(
             criteria_name=criteria.name,
-            readings=(
-                CriterionReading(criterion=declared, value=1.0, evidence="topology/edge"),
-            ),
+            readings=(CriterionReading(criterion=declared, value=1.0, evidence="topology/edge"),),
         ),
         rationale="trust me",
         origin=RecommendationOrigin.AUTHORED,
@@ -683,9 +678,7 @@ class TestTheDashboardRefusesAnUntraceableNumber:
         assert "coverage" in page.body_html
         assert "coverage 0" not in page.body_html
 
-    def test_an_unlinked_run_is_named_beside_the_numbers(
-        self, payload: dict[str, Any]
-    ) -> None:
+    def test_an_unlinked_run_is_named_beside_the_numbers(self, payload: dict[str, Any]) -> None:
         page = render_dashboard(payload, api_path="/api/v1/dashboard")
         assert "r-9" in page.body_html
         assert "no sealed envelope" in page.body_html

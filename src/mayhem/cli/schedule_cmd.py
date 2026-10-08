@@ -147,9 +147,7 @@ MONITORED_INVOCATIONS: tuple[tuple[str, ...], ...] = (
     ("schedule", "delete", "--help"),
 )
 
-schedule = make_group(
-    "schedule", "Register, inspect, and evaluate scheduled campaign runs."
-)
+schedule = make_group("schedule", "Register, inspect, and evaluate scheduled campaign runs.")
 
 
 # =============================================================================
@@ -213,9 +211,7 @@ def _weekday_number(text: str, names: tuple[str, ...]) -> int:
         return names.index(key)
     if key.isdigit() and 0 <= int(key) <= 6:
         return int(key)
-    raise click.UsageError(
-        f"{text!r} is not a weekday; use Mon..Sun or 0..6 with 0 = Monday"
-    )
+    raise click.UsageError(f"{text!r} is not a weekday; use Mon..Sun or 0..6 with 0 = Monday")
 
 
 def _parse_clock(text: str, whole: str) -> time:
@@ -237,9 +233,7 @@ def parse_maintenance_window(text: str) -> MaintenanceWindow:
     """
     window_id, sep, span = text.partition("=")
     if not sep:
-        raise click.UsageError(
-            f"maintenance-window {text!r} is not '<id>=<start>..<end>'"
-        )
+        raise click.UsageError(f"maintenance-window {text!r} is not '<id>=<start>..<end>'")
     start_text, sep, end_text = span.partition("..")
     if not sep:
         raise click.UsageError(
@@ -269,9 +263,7 @@ def parse_calendar_window(text: str) -> CalendarWindow:
         name, span = head.strip(), tail
     start_text, sep, end_text = span.partition("..")
     if not sep:
-        raise click.UsageError(
-            f"calendar-window {text!r} is not '[name=]<start>..<end>'"
-        )
+        raise click.UsageError(f"calendar-window {text!r} is not '[name=]<start>..<end>'")
     return CalendarWindow(
         name=name, starts_at=parse_instant(start_text), ends_at=parse_instant(end_text)
     )
@@ -619,9 +611,7 @@ def add(
 @click.option("--enabled-only", is_flag=True, help="Only enabled schedules.")
 @click.option("--db", "db_opt", default=None, help="SQLite database path.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def list_schedules(
-    team: str | None, enabled_only: bool, db_opt: str | None, as_json: bool
-) -> None:
+def list_schedules(team: str | None, enabled_only: bool, db_opt: str | None, as_json: bool) -> None:
     """List registered schedules."""
     now = datetime.now(UTC)
     store = _open_store(db_opt)
@@ -1029,9 +1019,7 @@ def build_tick_payload(
     for entry in entries:
         fire = entry.schedule.evaluate(now=now, run_count=entry.run_count)
         slot = fire.slot_start
-        held = tuple(
-            step.key for step in repo.steps_for_schedule(entry.schedule_id) if step.held
-        )
+        held = tuple(step.key for step in repo.steps_for_schedule(entry.schedule_id) if step.held)
         already = ""
         if fire.fired and slot is not None:
             key = slot_idempotency_key(

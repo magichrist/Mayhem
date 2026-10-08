@@ -833,9 +833,7 @@ class SandboxProvisioner:
         wrong, so raising here would replace a useful failure message with an
         exception about the cleanup.
         """
-        outcome = self._invoke(
-            "down", environment.compose_path, "--volumes", "--remove-orphans"
-        )
+        outcome = self._invoke("down", environment.compose_path, "--volumes", "--remove-orphans")
         if outcome.ok:
             return SandboxTeardown(name=environment.name, removed=True, outcome=outcome)
         return SandboxTeardown(
@@ -1081,8 +1079,7 @@ class DemoRunEvidence:
             lines.append(self.admission.describe())
         if self.flags.refusals:
             lines.append(
-                "flag refusals: "
-                + "; ".join(f"{r.key} [{r.rule}]" for r in self.flags.refusals)
+                "flag refusals: " + "; ".join(f"{r.key} [{r.rule}]" for r in self.flags.refusals)
             )
         presentation = production_presentation_refusal(self.claim)
         if presentation:
@@ -1128,10 +1125,7 @@ def verify_demo_run(evidence: DemoRunEvidence) -> RunVerification:
         # mode it names. Requiring the banner and the `mutates` flag to be the
         # ones the mode itself derives is what closes that, and it is checked
         # before anything reads the marker as authoritative.
-        if (
-            claim.marker.marker != claim.mode.marker
-            or claim.marker.mutates != claim.mode.mutates
-        ):
+        if claim.marker.marker != claim.mode.marker or claim.marker.mutates != claim.mode.mutates:
             refusals.append(
                 f"{RULE_DEMO_MARKER_FORGED}: run {claim.run_id!r} carries a marker saying "
                 f"{claim.marker.marker!r}/mutates={claim.marker.mutates} for mode "

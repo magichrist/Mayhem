@@ -329,9 +329,7 @@ class WorkflowSpec:
 
     def bound_inputs(self) -> tuple[tuple[str, str], ...]:
         """``(MAYHEM_…-name, expression)`` pairs, in declaration order."""
-        return tuple(
-            (self.env_name(key), expression) for key, expression in self.untrusted_inputs
-        )
+        return tuple((self.env_name(key), expression) for key, expression in self.untrusted_inputs)
 
     def check_names(self) -> tuple[str, ...]:
         """The check scopes this workflow runs, in the engine's own order.
@@ -409,7 +407,7 @@ _HEADER: Final[str] = (
     "# Every action is pinned to a commit and the base image to a digest, because a\n"
     "# gate whose definition can move between two runs of the same workflow is not\n"
     "# the same gate. Untrusted inputs arrive through `env:` and are read inside the\n"
-    "# script as quoted `\"$MAYHEM_…\"` expansions; no untrusted value is ever\n"
+    '# script as quoted `"$MAYHEM_…"` expansions; no untrusted value is ever\n'
     "# interpolated into the script itself.\n"
 )
 
@@ -552,7 +550,7 @@ def render_gitlab_component(spec: WorkflowSpec) -> str:
         # supplies it, and a default that shipped a real value would make the
         # component's inputs look configured when they are not.
         lines.append(f"    {key}:")
-        lines.append("      default: \"\"")
+        lines.append('      default: ""')
     lines.extend(
         [
             "---",
@@ -741,8 +739,7 @@ def render_check_summary(
         lines.extend(f"- {reason}" for reason in reasons)
     else:
         lines.append(
-            "may this open a release: **yes** — every check passed and the change "
-            "link is pinned"
+            "may this open a release: **yes** — every check passed and the change link is pinned"
         )
     if any(check.outcome is CheckOutcome.UNKNOWN for check in verdict.checks):
         lines.extend(
@@ -758,6 +755,7 @@ def render_check_summary(
 # =============================================================================
 # Commit statuses — the GitHub App seam
 # =============================================================================
+
 
 @dataclass(frozen=True, slots=True)
 class CommitStatus:

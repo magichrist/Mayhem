@@ -95,9 +95,9 @@ class Fixture:
 #: userinfo URL — the three forms :func:`mayhem.domain.redaction.redact_text` is
 #: built to catch.
 CREDENTIAL_BODY = (
-    'query=up&api_key=sk-live-9f2c7d41b0aa4e6f'
-    '\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig'
-    '\nendpoint=https://admin:hunter2@prometheus.internal/api/v1/query'
+    "query=up&api_key=sk-live-9f2c7d41b0aa4e6f"
+    "\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
+    "\nendpoint=https://admin:hunter2@prometheus.internal/api/v1/query"
 )
 
 #: One fixture per shipped connector. Sixteen connectors without a fixture fails
@@ -201,9 +201,7 @@ def _definition(family: ProbeFamily, probe_id: str, unit: str = "count") -> Prob
 
 
 def _service(families: list[ProbeFamily], ports: ProbePorts) -> ProbeService:
-    definitions = tuple(
-        _definition(family, f"{family.value}.probe") for family in families
-    )
+    definitions = tuple(_definition(family, f"{family.value}.probe") for family in families)
     return ProbeService(
         catalogue=ProbeCatalog(definitions=definitions),
         plan=ProbePlan(pins=tuple(ProbePin.of(definition) for definition in definitions)),
@@ -420,9 +418,7 @@ class TestAnUnboundConnectorIsUnavailableNotAbsent:
     def test_a_family_no_connector_serves_stays_unbound(self) -> None:
         ports = _ports_for(ConnectorId.PROMETHEUS)
 
-        assert ports.unbound((ProbeFamily.PROMETHEUS, ProbeFamily.REDIS)) == (
-            ProbeFamily.REDIS,
-        )
+        assert ports.unbound((ProbeFamily.PROMETHEUS, ProbeFamily.REDIS)) == (ProbeFamily.REDIS,)
 
     def test_a_declared_but_unbound_connector_is_still_not_a_way_to_ask(self) -> None:
         """Grafana declares the metrics family and this run did not bind it."""
@@ -441,9 +437,7 @@ class TestAnUnboundConnectorIsUnavailableNotAbsent:
         )
 
         readings = [
-            service.collect(
-                definition, stage=LifecycleStage.DURING_FAULT, at_epoch_s=1.0
-            )
+            service.collect(definition, stage=LifecycleStage.DURING_FAULT, at_epoch_s=1.0)
             for definition in service.definitions
         ]
         coverage = ProbeCoverage.of(readings)
@@ -451,9 +445,7 @@ class TestAnUnboundConnectorIsUnavailableNotAbsent:
         assert coverage.blind
         assert coverage.verdict_bearing is False
         assert coverage.observed == ()
-        assert {reading.availability for reading in readings} == {
-            ProbeAvailability.UNAVAILABLE
-        }
+        assert {reading.availability for reading in readings} == {ProbeAvailability.UNAVAILABLE}
         assert ProbeService.samples(readings) == ()
 
     def test_an_unavailable_familys_reading_carries_no_observation(self) -> None:
@@ -621,7 +613,8 @@ class TestTheClientRefusalsAreRealGates:
         connector = default_connectors().get(ConnectorId.PROMETHEUS)
         assert connector is not None
         return ConnectorProbePort(
-            connector, FixtureClient(name="broken", **client_kwargs)  # type: ignore[arg-type]
+            connector,
+            FixtureClient(name="broken", **client_kwargs),  # type: ignore[arg-type]
         )
 
     def test_a_client_answering_in_the_wrong_shape_is_refused(self) -> None:
@@ -642,9 +635,9 @@ class TestTheClientRefusalsAreRealGates:
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_a_non_finite_value_is_refused_rather_than_graded(self, value: float) -> None:
         with pytest.raises(ConnectorContractError) as caught:
-            self._port(
-                payload=ConnectorPayload(body="{}", value=value, unit="ratio")
-            ).observe(_definition(ProbeFamily.PROMETHEUS, "probe.one"))
+            self._port(payload=ConnectorPayload(body="{}", value=value, unit="ratio")).observe(
+                _definition(ProbeFamily.PROMETHEUS, "probe.one")
+            )
 
         assert caught.value.rule == "probes.connector_non_finite_value"
         assert "measured nothing" in str(caught.value)

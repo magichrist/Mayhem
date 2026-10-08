@@ -188,9 +188,7 @@ class PolicyResolution:
         return f"{self.rule_id}: {self.reason}"
 
 
-def resolve_policy(
-    policy: NetworkPolicy, *, model: object | None = None
-) -> PolicyResolution:
+def resolve_policy(policy: NetworkPolicy, *, model: object | None = None) -> PolicyResolution:
     """Decide whether ``policy`` may be enforced. Pure: no file, socket, or clock.
 
     Two refusals, both carried by name. Phase 1's own validation problems (an

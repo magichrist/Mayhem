@@ -159,9 +159,7 @@ def _readings():
 def _fired(condition: Condition | None = None):
     """A fired result over two recorded readings, plus those readings."""
     definition, readings = _readings()
-    result = ProbeService.evaluate(
-        condition or _breach(), readings, now_epoch_s=3.0
-    )
+    result = ProbeService.evaluate(condition or _breach(), readings, now_epoch_s=3.0)
     return definition, readings, result
 
 
@@ -288,9 +286,7 @@ class TestAVerdictWhoseCitationsCannotBeFoundFailsVerification:
 
     def test_a_firing_citing_recorded_observations_verifies(self) -> None:
         _definition, readings, result = _fired()
-        records = tuple(
-            ProbeEvidenceRecord.of(reading_view(reading)) for reading in readings
-        )
+        records = tuple(ProbeEvidenceRecord.of(reading_view(reading)) for reading in readings)
 
         verification = assert_citations_verified(result, records)
 
@@ -572,9 +568,7 @@ class TestTheSealIsDurableAndVerified:
         assert rechecked.ok
         table.assert_citations_in_evidence(RUN_ID)
 
-    def test_a_stored_observation_that_moved_fails_the_read(
-        self, conn: sqlite3.Connection
-    ) -> None:
+    def test_a_stored_observation_that_moved_fails_the_read(self, conn: sqlite3.Connection) -> None:
         """The negative control for the read path's digest check.
 
         **The control:** without the digest check on read, this test's own edit
@@ -625,9 +619,7 @@ class TestTheSealIsDurableAndVerified:
         assert caught.value.rule == "probes.seal_cites_unrecorded_observation"
         assert "f" * 64 in str(caught.value)
 
-    def test_sealing_with_an_unsealed_set_is_refused(
-        self, conn: sqlite3.Connection
-    ) -> None:
+    def test_sealing_with_an_unsealed_set_is_refused(self, conn: sqlite3.Connection) -> None:
         _definition, readings, _result = _fired()
         table = ProbeSealTable(conn)
 
@@ -799,9 +791,7 @@ class TestSyntheticTransactionsJudgeBusinessCorrectness:
 
     def test_a_blank_step_name_is_refused(self) -> None:
         with pytest.raises(InvariantViolationError) as caught:
-            SyntheticStepResult(
-                step="  ", assertion=BusinessAssertion.STATUS_OK, ok=True
-            )
+            SyntheticStepResult(step="  ", assertion=BusinessAssertion.STATUS_OK, ok=True)
 
         assert caught.value.rule == "probes.synthetic_step_unnamed"
 

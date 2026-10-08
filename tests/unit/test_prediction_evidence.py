@@ -55,7 +55,6 @@ import pytest
 from test_prediction_service import FP, STEP_S, _ctx, _graph, _plan, _service
 
 from mayhem.controller import safety as safety_mod
-from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import (
     ADMISSION_WIRING_NOTE,
     ENFORCED_CEILING_RULE_IDS,
@@ -77,6 +76,7 @@ from mayhem.controller.safety import SafetyContext, SafetyRefusedError, validate
 from mayhem.domain.attestation import GENESIS_DIGEST, AttestedTimestamp
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.prediction import (
     RULE_MAX_AFFECTED_NODES,
     RULE_MAX_AFFECTED_PCT,
@@ -143,11 +143,9 @@ CEILING_CASES: tuple[tuple[str, BlastCeilings, str], ...] = (
 GOLDEN_NO_CEILINGS = "\n".join(
     (
         "policy.allow|allow|net.latency: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|net.latency: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|net.latency: blast radius within budget||['fault_id', 'stats']",
         "policy.allow|allow|net.latency: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|net.latency: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|net.latency: blast radius within budget||['fault_id', 'stats']",
     )
 )
 
@@ -211,9 +209,7 @@ def test_the_gates_ceiling_rule_ids_are_the_preview_s_vocabulary():
     pairs = {
         safety_mod.RULE_CEILING_PROTECTED_NODE: RULE_PROTECTED_NODE,
         safety_mod.RULE_CEILING_MAX_DEPENDENCY_DEPTH: RULE_MAX_DEPENDENCY_DEPTH,
-        safety_mod.RULE_CEILING_MAX_CUSTOMER_FACING_SERVICES: (
-            RULE_MAX_CUSTOMER_FACING_SERVICES
-        ),
+        safety_mod.RULE_CEILING_MAX_CUSTOMER_FACING_SERVICES: (RULE_MAX_CUSTOMER_FACING_SERVICES),
         safety_mod.RULE_CEILING_MAX_AFFECTED_PCT: RULE_MAX_AFFECTED_PCT,
         safety_mod.RULE_CEILING_MAX_AFFECTED_NODES: RULE_MAX_AFFECTED_NODES,
     }
@@ -395,9 +391,7 @@ def test_a_percentage_ceiling_on_an_empty_graph_is_unchecked_not_zero():
     plan = _plan(("net.latency", "n-db", STEP_S))
     measured_only = BlastCeilings(max_affected_pct=0.0)
     validate_plan(plan, empty, _ceiling_ctx(measured_only))
-    report = _service(empty).simulate_plan(
-        plan, replace(_ctx(), blast_ceilings=measured_only)
-    )
+    report = _service(empty).simulate_plan(plan, replace(_ctx(), blast_ceilings=measured_only))
     verdict = report.dimension(_name_of(RULE_MAX_AFFECTED_PCT))
     assert verdict.configured is True
     assert verdict.observed is None
@@ -600,9 +594,7 @@ def test_a_prediction_that_missed_a_modelled_rule_still_raises_and_stays_strict(
 
     # The state the comparison would have reached, asserted directly so the raise
     # is not mistaken for the mechanism.
-    landed = prediction_service._agreement(
-        too_calm, frozenset({"blast_radius.max_services_pct"})
-    )
+    landed = prediction_service._agreement(too_calm, frozenset({"blast_radius.max_services_pct"}))
     assert landed.state is AgreementState.DISAGREES
     assert landed.usable_for_approval is False
     assert "never be calmer" in landed.reason

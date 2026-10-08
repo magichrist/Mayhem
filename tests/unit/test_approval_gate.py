@@ -51,7 +51,6 @@ from mayhem.controller.approval_gate import (
     verify_approvals,
 )
 from mayhem.controller.plan_diff import diff_plans
-from mayhem.domain.policy_gate import PolicyGateInputs, evaluate_gate
 from mayhem.controller.safety import (
     SafetyContext,
     SafetyRefusedError,
@@ -91,6 +90,7 @@ from mayhem.domain.policy import (
     PolicyPredicate,
     PolicyRule,
 )
+from mayhem.domain.policy_gate import PolicyGateInputs, evaluate_gate
 from mayhem.domain.safety_proof import (
     Obligation,
     ObligationName,
@@ -263,9 +263,7 @@ def _ledger(
     grants: tuple[RoleGrant, ...] = STANDING_GRANTS,
     memberships: tuple[TeamMembership, ...] = (),
 ) -> ApprovalLedger:
-    return ApprovalLedger(
-        approvals=tuple(approvals), grants=grants, memberships=memberships
-    )
+    return ApprovalLedger(approvals=tuple(approvals), grants=grants, memberships=memberships)
 
 
 def _mint(
@@ -364,9 +362,7 @@ def test_gate_inputs_refuse_a_naive_clock() -> None:
         ("policy_digest", ""),
     ],
 )
-def test_gate_inputs_refuse_a_policy_digest_that_is_not_a_digest(
-    field: str, value: str
-) -> None:
+def test_gate_inputs_refuse_a_policy_digest_that_is_not_a_digest(field: str, value: str) -> None:
     with pytest.raises(InvariantViolationError) as excinfo:
         replace(_gate(), **{field: value})
     assert excinfo.value.rule == "approval.gate_digest_malformed"
@@ -397,6 +393,7 @@ def test_the_gate_is_pure_across_repeated_evaluation() -> None:
 # =============================================================================
 # 1. The refusal matrix — one row per invalidation trigger
 # =============================================================================
+
 
 #: A gate whose happy path is a single valid approval from Alice, in production,
 #: against this plan, this proof, and this policy. Every row below perturbs
@@ -610,9 +607,7 @@ def test_a_team_grant_confers_the_role_through_membership() -> None:
             until=T0 - timedelta(seconds=1),
         ),
     )
-    result = _verify(
-        inputs=_gate(approvals=(approval,), grants=grants, memberships=lapsed)
-    )
+    result = _verify(inputs=_gate(approvals=(approval,), grants=grants, memberships=lapsed))
     assert result.denied
     assert result.refusal is not None
     assert result.refusal.rule_id == RULE_APPROVAL_EXECUTOR_UNAUTHORIZED
@@ -883,14 +878,17 @@ def test_gate_inputs_takes_the_authorizations_from_the_ledger_not_the_caller() -
     assert inputs.approvals == ledger.approvals
     assert _verify(inputs=inputs).allowed
     # ...and overrides are still available, for the caller's own policy choice.
-    assert ledger.gate_inputs(
-        now=T0,
-        environment=PROD,
-        executor=MALLORY,
-        proof=PROOF,
-        policy_digest=POLICY_DIGEST,
-        separation_of_duties=True,
-    ).separation_of_duties is True
+    assert (
+        ledger.gate_inputs(
+            now=T0,
+            environment=PROD,
+            executor=MALLORY,
+            proof=PROOF,
+            policy_digest=POLICY_DIGEST,
+            separation_of_duties=True,
+        ).separation_of_duties
+        is True
+    )
 
 
 # =============================================================================
@@ -953,9 +951,7 @@ def test_an_override_is_distinguishable_from_an_ordinary_approval_downstream() -
     assert len([d for d in override_ctx.decisions if d.rule_id == RULE_APPROVAL_ALLOW]) == 1
     # And the sealed digests differ, so an ordinary run's record cannot be
     # mistaken for an overridden one downstream.
-    override_allow = next(
-        d for d in override_ctx.decisions if d.rule_id == RULE_APPROVAL_ALLOW
-    )
+    override_allow = next(d for d in override_ctx.decisions if d.rule_id == RULE_APPROVAL_ALLOW)
     assert ordinary[0].inputs["sealed_digest"] != override_allow.inputs["sealed_digest"]
     assert override_allow.inputs["overrides"][0]["principal"] == "u-alice"
 
@@ -965,9 +961,7 @@ def test_an_override_without_a_reason_never_executes() -> None:
     result = _verify(inputs=_gate(approvals=(forged,)))
     assert result.denied
     assert result.refusal is not None
-    assert result.refusal.triggers == _expected_triggers(
-        InvalidationReason.OVERRIDE_WITHOUT_REASON
-    )
+    assert result.refusal.triggers == _expected_triggers(InvalidationReason.OVERRIDE_WITHOUT_REASON)
 
 
 def test_an_override_still_needs_an_authorised_approver() -> None:
@@ -995,11 +989,9 @@ def test_an_override_still_needs_an_authorised_approver() -> None:
 GOLDEN_NO_APPROVALS = "\n".join(
     (
         "policy.allow|allow|proc.pause: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|proc.pause: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|proc.pause: blast radius within budget||['fault_id', 'stats']",
         "policy.allow|allow|net.latency: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|net.latency: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|net.latency: blast radius within budget||['fault_id', 'stats']",
     )
 )
 
@@ -1261,9 +1253,7 @@ def test_a_proof_that_never_passed_is_refused_even_with_a_matching_approval() ->
 
 def test_the_same_person_approving_twice_is_one_signature() -> None:
     """Quorum counts distinct principals; a second signature is not a second person."""
-    result = _verify(
-        inputs=_gate(approvals=(_mint("a-1"), _mint("a-2")), required_approvals=2)
-    )
+    result = _verify(inputs=_gate(approvals=(_mint("a-1"), _mint("a-2")), required_approvals=2))
     assert result.denied
     assert result.refusal is not None
     assert result.refusal.triggers == _expected_triggers(InvalidationReason.QUORUM_NOT_MET)

@@ -362,9 +362,7 @@ def test_run_switch_mid_chain_is_reported() -> None:
 
 
 def test_genesis_that_claims_a_predecessor_is_reported() -> None:
-    event = make_event(event_id="e-0", sequence=0).model_copy(
-        update={"previous_digest": "2" * 64}
-    )
+    event = make_event(event_id="e-0", sequence=0).model_copy(update={"previous_digest": "2" * 64})
 
     verdict = verify_chain([event.seal()])
 
@@ -673,9 +671,7 @@ def test_unsigned_manifest_verifies_integrity_but_warns_about_authorship() -> No
     assert verdict.valid is True
     assert verdict.signed is False
     assert verdict.events_checked == 2
-    assert verdict.warnings == (
-        "manifest is unsigned: integrity is verified, authorship is not",
-    )
+    assert verdict.warnings == ("manifest is unsigned: integrity is verified, authorship is not",)
 
 
 def test_signer_without_a_trust_root_fails_review() -> None:

@@ -53,7 +53,18 @@ from mayhem.domain.steady_state import sample_baseline
 # run-to-run spread of the system under test.
 BASE_LATENCY = [480.0, 512.0, 495.0, 530.0, 470.0, 505.0, 488.0, 521.0, 499.0, 543.0, 476.0, 510.0]
 WINDOW_LATENCY = [
-    481.0, 511.0, 496.0, 529.0, 471.0, 504.0, 489.0, 520.0, 498.0, 571.2, 475.0, 511.0
+    481.0,
+    511.0,
+    496.0,
+    529.0,
+    471.0,
+    504.0,
+    489.0,
+    520.0,
+    498.0,
+    571.2,
+    475.0,
+    511.0,
 ]
 
 # A shift big enough to clear the noise on the same fixture.
@@ -251,9 +262,7 @@ def test_plan_15_example_phrase_is_produced_exactly() -> None:
     """*"p99 moved 5.2% with overlapping 95% CI — NO MATERIAL EFFECT"*."""
     result = compare(BASE_LATENCY, WINDOW_LATENCY, name="checkout-latency")
 
-    assert result.verdict_phrase == (
-        "p99 moved 5.2% with overlapping 95% CI — NO MATERIAL EFFECT"
-    )
+    assert result.verdict_phrase == ("p99 moved 5.2% with overlapping 95% CI — NO MATERIAL EFFECT")
     assert result.outcome is EffectOutcome.NO_MATERIAL_EFFECT
     assert result.intervals_overlap is True
     assert result.difference_ci is not None
@@ -315,9 +324,7 @@ def test_overlapping_intervals_with_a_real_difference_are_still_material() -> No
 
 
 def test_a_move_below_the_materiality_floor_is_not_material() -> None:
-    result = compare(
-        BASE_LATENCY, SHIFTED_LATENCY, name="checkout-latency", materiality_pct=95.0
-    )
+    result = compare(BASE_LATENCY, SHIFTED_LATENCY, name="checkout-latency", materiality_pct=95.0)
 
     assert result.outcome is EffectOutcome.NO_MATERIAL_EFFECT
     assert "95.0%" in result.note

@@ -586,9 +586,7 @@ def test_a_maintenance_window_opened_after_registration_refuses_at_fire_time() -
 def test_a_blackout_date_refuses_at_fire_time() -> None:
     store, repo = _store()
     scheduler = _scheduler(repo)
-    scheduler.register(
-        _interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()})))
-    )
+    scheduler.register(_interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()}))))
 
     decision = scheduler.tick(_inputs()).for_schedule("poller")
 
@@ -705,9 +703,7 @@ def test_every_non_fire_carries_a_code_and_a_reason() -> None:
     """No silent skips: a held decision always names why."""
     store, repo = _store()
     scheduler = _scheduler(repo)
-    scheduler.register(
-        _interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()})))
-    )
+    scheduler.register(_interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()}))))
     scheduler.register(_interval_entry(schedule_id="switched-off", enabled=False))
 
     report = scheduler.tick(_inputs())
@@ -723,15 +719,11 @@ def test_every_non_fire_carries_a_code_and_a_reason() -> None:
 def test_a_non_fire_is_recorded_in_the_durable_tick_observation() -> None:
     store, repo = _store()
     scheduler = _scheduler(repo, controller_id="ctl-observer")
-    scheduler.register(
-        _interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()})))
-    )
+    scheduler.register(_interval_entry(blackout_dates=BlackoutDates(dates=frozenset({T0.date()}))))
 
     scheduler.tick(_inputs())
 
-    rows = store.query(
-        "SELECT data_json, source FROM observations WHERE kind = 'schedule.tick'"
-    )
+    rows = store.query("SELECT data_json, source FROM observations WHERE kind = 'schedule.tick'")
     assert len(rows) == 1
     assert str(dict(rows[0])["source"]) == "ctl-observer"
     payload = str(dict(rows[0])["data_json"])
@@ -871,8 +863,7 @@ def test_removing_the_starvation_tier_breaks_the_bound() -> None:
 
     assert real_skips["light"] <= bound
     assert mutant_skips["light"] > bound, (
-        "removing the starvation tier did not break the bound, so the bound was "
-        "never resting on it"
+        "removing the starvation tier did not break the bound, so the bound was never resting on it"
     )
     # And the heavy team is served strictly more, which is what the tier costs.
     assert len(mutant_served["heavy"]) > len(real_served["heavy"])
@@ -1045,9 +1036,7 @@ def test_the_default_policy_is_an_equal_share_policy_not_the_absence_of_one() ->
 
 def test_order_by_fairness_takes_each_teams_earliest_slot_first() -> None:
     early, late = T0, T0 + timedelta(minutes=30)
-    policy = FairnessPolicy(
-        policy_id="fifo", shares={"t": 1.0}, max_grants_per_window=3
-    )
+    policy = FairnessPolicy(policy_id="fifo", shares={"t": 1.0}, max_grants_per_window=3)
 
     order = order_by_fairness(
         (_due("job-late", "t", slot=late), _due("job-early", "t", slot=early)),
@@ -1169,9 +1158,9 @@ def test_a_live_policy_lock_blocks_the_scheduled_run_and_names_its_holder() -> N
         expires_at=T0 + timedelta(hours=5),
     )
 
-    decision = scheduler.tick(
-        _inputs(active_locks=(holder.lock_for("db-primary"),))
-    ).for_schedule("poller")
+    decision = scheduler.tick(_inputs(active_locks=(holder.lock_for("db-primary"),))).for_schedule(
+        "poller"
+    )
 
     assert decision is not None
     assert decision.code is DispatchCode.CONCURRENCY_QUEUED
@@ -1840,9 +1829,7 @@ def test_a_facilitator_hold_refuses_the_dispatch_until_it_is_released() -> None:
     assert f"{session_id}:inject-1" in held.reason
     assert recorder.calls == [], "a held step is refused before the pipeline is entered"
 
-    repo.save_step(
-        release_hold(repo.steps_for_schedule("poller")[0], _ack(), at=T0.isoformat())
-    )
+    repo.save_step(release_hold(repo.steps_for_schedule("poller")[0], _ack(), at=T0.isoformat()))
     released = scheduler.tick(_inputs(now=T0 + timedelta(seconds=1))).for_schedule("poller")
 
     assert released is not None

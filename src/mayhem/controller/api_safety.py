@@ -211,8 +211,7 @@ def authorize_mutation(
     except ExecutionIntentRefused as exc:
         raise InvariantViolationError(
             RULE_API_EXECUTION_INTENT_REQUIRED,
-            f"{exc} [{RULE_API_EXECUTION_INTENT_REQUIRED}]; the domain's own code is "
-            f"{exc.code}",
+            f"{exc} [{RULE_API_EXECUTION_INTENT_REQUIRED}]; the domain's own code is {exc.code}",
         ) from exc
     policy_allowed = True
     if policy is not None:
@@ -291,8 +290,7 @@ def _verify_approvals(
     if result.refusal is not None:
         raise InvariantViolationError(
             RULE_API_APPROVAL_UNVERIFIED,
-            f"{result.refusal.rule_id}: {result.refusal.reason} "
-            f"[{RULE_API_APPROVAL_UNVERIFIED}]",
+            f"{result.refusal.rule_id}: {result.refusal.reason} [{RULE_API_APPROVAL_UNVERIFIED}]",
         )
     return True
 
@@ -367,9 +365,7 @@ def check_dashboard_payload(payload: dict[str, Any]) -> tuple[str, ...]:
         )
         raise InvariantViolationError(RULE_API_DASHBOARD_UNLINKED, msg)
     return tuple(
-        str(ref)
-        for number in payload.get("numbers", ())
-        for ref in number.get("evidence", ())
+        str(ref) for number in payload.get("numbers", ()) for ref in number.get("evidence", ())
     )
 
 
@@ -424,6 +420,7 @@ class PlannerMutationPort:
         self._grants = grants
         self._memberships = memberships
         self._proof = proof
+
     def submit(self, request: MutationRequest) -> ApiEnvelope:
         method = getattr(self, f"submit_{request.route}", None)
         if method is None:

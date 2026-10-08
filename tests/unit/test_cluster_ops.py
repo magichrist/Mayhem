@@ -343,9 +343,7 @@ class TestAgentProjection:
     def test_an_expired_credential_reads_as_expired(
         self, store: Store, backups: BackupEngine, clock: Clock
     ) -> None:
-        AgentIdentityRepository(store).save(
-            identity(expires_at=NOW + timedelta(seconds=60))
-        )
+        AgentIdentityRepository(store).save(identity(expires_at=NOW + timedelta(seconds=60)))
         view = operations(
             store, backups, clock, keys=StaticKeyMaterial({"cr-ag-1": b"k" * 32})
         ).members(at=clock.advance(120))

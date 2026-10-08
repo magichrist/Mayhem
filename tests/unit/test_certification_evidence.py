@@ -558,9 +558,7 @@ def test_the_demote_first_path_withdraws_the_claim_and_then_deletes(
     assert _decision(repository, store) != "verified-live"
 
 
-def test_a_lapsed_claim_does_not_hold_its_evidence_hostage(
-    store: Store, tmp_path: Path
-) -> None:
+def test_a_lapsed_claim_does_not_hold_its_evidence_hostage(store: Store, tmp_path: Path) -> None:
     """An expired claim protects nothing, so the ladder may still reclaim.
 
     Without this the guard would be unusable: a fault that had *ever* been
@@ -1033,7 +1031,6 @@ def _attempt(
     )
 
 
-
 def test_the_runner_certifies_when_the_sealer_verifies(store: Store) -> None:
     """The whole loop: run, residue-scan, cross-check, seal, certify, re-verify."""
     repository = CertificationRepository(store)
@@ -1049,9 +1046,11 @@ def test_the_runner_certifies_when_the_sealer_verifies(store: Store) -> None:
     # receipt the sealer handed back.
     bundle = sealer.calls[0]["bundle"]
     assert isinstance(bundle, EvidenceBundleRef)
-    assert AttestationRepository(sealer.store).verify_stored_manifest(
-        certification_manifest_id(bundle.bundle_hash)
-    ).valid
+    assert (
+        AttestationRepository(sealer.store)
+        .verify_stored_manifest(certification_manifest_id(bundle.bundle_hash))
+        .valid
+    )
     assert verify_record_evidence(store, attempt.record).grants_runtime_verification
     assert _gate_engines(repository, store) == frozenset({EngineLane.DOCKER})
 
@@ -1094,9 +1093,7 @@ def test_omitting_the_sealer_certifies_but_leaves_no_chain_behind(store: Store) 
     attempt = _attempt(repository=repository)
 
     assert attempt.record.state is CertificationState.CERTIFIED
-    events = store.query(
-        "SELECT * FROM attestation_events WHERE event_kind LIKE 'certification%'"
-    )
+    events = store.query("SELECT * FROM attestation_events WHERE event_kind LIKE 'certification%'")
     assert events == []
     assert _gate_engines(repository, store) == frozenset()
     assert _decision(repository, store) != "verified-live"
@@ -1185,8 +1182,8 @@ def test_this_module_never_calls_the_bundle_producer() -> None:
     """
     from pathlib import Path as _Path
 
-    source = _Path(__file__).parents[2] / "src" / "mayhem" / "controller" / (
-        "certification_evidence.py"
+    source = (
+        _Path(__file__).parents[2] / "src" / "mayhem" / "controller" / ("certification_evidence.py")
     )
     assert "build_bundle(" not in source.read_text(encoding="utf-8")
 
@@ -1206,4 +1203,3 @@ def test_a_second_sealer_is_not_smuggled_in(store: Store) -> None:
     assert attestations.load_manifest(sealed.manifest_id) == sealed.manifest
     assert sealed.chain_verification.valid and sealed.manifest_verification.valid
     assert "verified" in sealed.describe()
-

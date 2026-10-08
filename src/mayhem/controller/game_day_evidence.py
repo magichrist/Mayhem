@@ -467,8 +467,7 @@ def artifacts_for_session(store: Store, session_id: str) -> tuple[GameDayArtifac
     caught here rather than believed.
     """
     rows = store.query(
-        "SELECT data_json, timestamp FROM observations WHERE kind = ? AND source = ? "
-        "ORDER BY id",
+        "SELECT data_json, timestamp FROM observations WHERE kind = ? AND source = ? ORDER BY id",
         (ARTIFACT_OBSERVATION_KIND, session_id),
     )
     found: list[GameDayArtifact] = []
@@ -545,9 +544,7 @@ def after_action_report(
     else:
         stamp = ""
     if released and decided_runs:
-        notes.append(
-            f"{len(released)} released step(s), {len(decided_runs)} decision artifact(s)"
-        )
+        notes.append(f"{len(released)} released step(s), {len(decided_runs)} decision artifact(s)")
     return AfterActionReport(
         session_id=session_id,
         artifacts=artifacts,

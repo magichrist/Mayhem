@@ -573,9 +573,7 @@ class RunEngine:
                     plan,
                     safety_ctx,
                     lambda: make_k8s_resolver(self._k8s_resolver, self._k8s_context),
-                    seal=lambda outcomes: seal_k8s_admission(
-                        self._store, plan.run_id, outcomes
-                    ),
+                    seal=lambda outcomes: seal_k8s_admission(self._store, plan.run_id, outcomes),
                 ) as k8s_phase:
                     # ``phase.safety`` is this context, or a copy of it carrying
                     # the resolved requests; the ``or`` is the inert path, where the

@@ -215,9 +215,7 @@ def _step(step_id: str = STEP_ID) -> StepSpec:
     return StepSpec(step_id=step_id, semantic=StepSemantics.SERIAL, issued_at=NOW)
 
 
-def _request(
-    command: FabricCommand | None = None, **overrides: object
-) -> DispatchRequest:
+def _request(command: FabricCommand | None = None, **overrides: object) -> DispatchRequest:
     envelope = command if command is not None else _command()
     fields: dict[str, object] = {
         "step": _step(envelope.step_id),
@@ -460,9 +458,7 @@ class TestIdempotentRetries:
         engine = _engine(session, journal, sink)
 
         first = engine.dispatch(_request())
-        retry = engine.dispatch(
-            _request(_command(nonce=2, key="idem-1", command_id="fc-retry"))
-        )
+        retry = engine.dispatch(_request(_command(nonce=2, key="idem-1", command_id="fc-retry")))
 
         assert retry.retried is True
         assert retry.outcome is first.outcome is StepOutcome.COMPLETED
@@ -637,8 +633,7 @@ class TestErrorNormalisation:
         ("result", "outcome", "reason"),
         _NORMALISATION_MATRIX,
         ids=[
-            f"{r.ok}-{r.error_code or r.target_ref or 'bare'}"
-            for r, _, _ in _NORMALISATION_MATRIX
+            f"{r.ok}-{r.error_code or r.target_ref or 'bare'}" for r, _, _ in _NORMALISATION_MATRIX
         ],
     )
     def test_matrix(
@@ -783,9 +778,7 @@ class TestReservations:
             engine.dispatch(
                 _request(
                     reservations=(_reservation(epoch=1, step_id=STEP_ID),),
-                    held_by_others=(
-                        _reservation(epoch=1, step_id="s-9", holder="agent-9"),
-                    ),
+                    held_by_others=(_reservation(epoch=1, step_id="s-9", holder="agent-9"),),
                 )
             )
         assert excinfo.value.code == FABRIC_RESOURCE_CONFLICT
@@ -927,9 +920,7 @@ class TestOutcomeCoherence:
     def test_a_claim_must_carry_the_whole_envelope(self) -> None:
         # The journal stores the command, not a projection of it, so it cannot
         # disagree with the envelope it is a record of.
-        claim = DispatchClaim(
-            command=_command(), controller_id="ctl-a", claimed_at=NOW
-        )
+        claim = DispatchClaim(command=_command(), controller_id="ctl-a", claimed_at=NOW)
         assert claim.command.nonce == _nonce(1)
         assert claim.phase.value == "claimed"
 

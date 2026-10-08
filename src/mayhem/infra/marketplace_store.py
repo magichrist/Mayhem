@@ -824,8 +824,7 @@ class MarketplaceEvidence:
         if not chain.valid:
             raise MarketplaceError(
                 "marketplace.activity_chain_invalid",
-                f"refusing to seal marketplace activity {kind!r}: "
-                f"{'; '.join(chain.errors)}",
+                f"refusing to seal marketplace activity {kind!r}: {'; '.join(chain.errors)}",
             )
         manifest = build_manifest(
             (sealed,),
@@ -882,8 +881,7 @@ class MarketplaceEvidence:
     def activities(self) -> tuple[str, ...]:
         """Every sealed activity id, in the order it was written."""
         rows = self._store.query(
-            "SELECT manifest_id FROM attestation_manifests WHERE manifest_id GLOB ? "
-            "ORDER BY rowid",
+            "SELECT manifest_id FROM attestation_manifests WHERE manifest_id GLOB ? ORDER BY rowid",
             (f"{self._prefix}*",),
         )
         return tuple(str(row[0]).removesuffix(":manifest") for row in rows)
@@ -1358,9 +1356,7 @@ class MarketplaceStore:
         moment = _moment(now)
         artifact = self._artifact_for_digest(certification.artifact_digest)
         label = (
-            trust_label(artifact, (certification,), now=moment)
-            if artifact is not None
-            else None
+            trust_label(artifact, (certification,), now=moment) if artifact is not None else None
         )
         payload: dict[str, object] = {
             "activity_kind": ACTIVITY_TRUST_PUBLISHER,
@@ -2370,8 +2366,7 @@ class MarketplaceRegistry:
         """Every live pin, resolved, so a caller sees the class and the bytes together."""
         moment = _moment(None)
         return tuple(
-            self._pin(artifact, now=moment)
-            for artifact in self._artifacts_for_pins(artifact_id)
+            self._pin(artifact, now=moment) for artifact in self._artifacts_for_pins(artifact_id)
         )
 
     def _artifacts_for_pins(self, artifact_id: str) -> tuple[Artifact, ...]:

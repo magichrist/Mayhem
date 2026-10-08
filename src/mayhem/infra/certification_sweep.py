@@ -69,9 +69,9 @@ if TYPE_CHECKING:
 __all__ = [
     "REGRESSION_RULE",
     "CertificationSweep",
-    "RegressionReport",
-    "RegressedClaim",
     "ReRunVerdict",
+    "RegressedClaim",
+    "RegressionReport",
     "apply_regressions",
     "regression_report",
     "sweep_certifications",
@@ -181,9 +181,7 @@ class RegressionReport:
         """
         if not self.regressed:
             return ""
-        return "; ".join(
-            f"{claim.stored.record.label}: {claim.reason}" for claim in self.regressed
-        )
+        return "; ".join(f"{claim.stored.record.label}: {claim.reason}" for claim in self.regressed)
 
     def to_dict(self) -> dict[str, object]:
         return {

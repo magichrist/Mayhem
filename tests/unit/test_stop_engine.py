@@ -126,9 +126,7 @@ class BrokenRecovery:
     """A recovery pass that cannot run — the controller died mid-compensation."""
 
     def plan(self, *args: Any, **kwargs: Any) -> RecoveryPlan:
-        return RecoveryPlan(
-            run_ids=(RUN_ID,), target_profiles=(), state=RecoveryState.NOT_NEEDED
-        )
+        return RecoveryPlan(run_ids=(RUN_ID,), target_profiles=(), state=RecoveryState.NOT_NEEDED)
 
     def execute(self, *args: Any, **kwargs: Any) -> RecoveryExecutionResult:
         msg = "controller process gone; no recovery pass can run"
@@ -403,7 +401,7 @@ class TestStageSkippingRefused:
 
     @pytest.mark.asyncio
     async def test_resuming_at_seal_alone_is_refused(self) -> None:
-        """"Already sealed" is the most tempting lie, so it is named explicitly."""
+        """ "Already sealed" is the most tempting lie, so it is named explicitly."""
         sink = InMemoryLeaseSink()
         sink.save(make_lease())
         engine, _, _ = build_engine(sink)
@@ -584,9 +582,7 @@ class TestStalledStops:
             completed_stages=(StopStage.FREEZE,),
             stalled_at=StopStage.CANCEL_PENDING,
             stall_reason="cancel_pending: RuntimeError: sink write failed",
-            receipts=(
-                StageReceipt(stage=StopStage.FREEZE, evidence_ref="dispatch/run-1/epoch-7"),
-            ),
+            receipts=(StageReceipt(stage=StopStage.FREEZE, evidence_ref="dispatch/run-1/epoch-7"),),
         )
         report = postflight_report(
             run_id=RUN_ID, stop=stalled.command.trigger, leases=(), findings=(), now=MOMENT
@@ -634,9 +630,7 @@ class TestControllerKillDrill:
         ledger = MemoryLedger()
 
         # Controller A: freezes, then dies trying to compensate.
-        controller_a, _, _ = build_engine(
-            sink, ledger=ledger, recovery=BrokenRecovery()
-        )
+        controller_a, _, _ = build_engine(sink, ledger=ledger, recovery=BrokenRecovery())
         first = await controller_a.execute(operator_command(), now=MOMENT)
         assert first.stalled_at is StopStage.COMPENSATE_ACTIVE
         del controller_a
@@ -694,9 +688,7 @@ class TestWatchdogFallback:
         sink.save(make_lease("l-1"))
         executor = UndoTrackingExecutor()
         watchdog: WatchdogLike = AgentWatchdog()
-        compensator: AgentCompensator = WatchdogCompensator(
-            watchdog=watchdog, executor=executor
-        )
+        compensator: AgentCompensator = WatchdogCompensator(watchdog=watchdog, executor=executor)
         engine, _, _ = build_engine(sink, compensator=compensator)
 
         result = await engine.execute_for_lost_controller(
@@ -747,9 +739,7 @@ class TestWatchdogFallback:
         """Reading "unknown" as compensated would claim an undo nobody performed."""
 
         class ForgetfulCompensator:
-            async def compensate(
-                self, leases: tuple[FaultLease, ...]
-            ) -> tuple[Compensated, ...]:
+            async def compensate(self, leases: tuple[FaultLease, ...]) -> tuple[Compensated, ...]:
                 return ()
 
         sink = InMemoryLeaseSink()
@@ -895,9 +885,7 @@ def recovery_result(
     *, recovered: tuple[str, ...], dirty: tuple[str, ...] = ()
 ) -> RecoveryExecutionResult:
     state = RecoveryState.DIRTY if dirty else RecoveryState.RECOVERED
-    return RecoveryExecutionResult(
-        state=state, run_ids=(RUN_ID,), recovered=recovered, dirty=dirty
-    )
+    return RecoveryExecutionResult(state=state, run_ids=(RUN_ID,), recovered=recovered, dirty=dirty)
 
 
 class TestPostflightIsComputed:
@@ -1214,9 +1202,7 @@ class TestNegativeControls:
                 finished_at=MOMENT,
                 completed_stages=(StopStage.FREEZE,),
                 stall_reason="something went wrong somewhere",
-                receipts=(
-                    StageReceipt(stage=StopStage.FREEZE, evidence_ref="dispatch/run-1/e"),
-                ),
+                receipts=(StageReceipt(stage=StopStage.FREEZE, evidence_ref="dispatch/run-1/e"),),
             )
         assert refusal.value.rule == "stop_record_stall_reason_unexpected"
 
@@ -1296,9 +1282,7 @@ class TestEngineReporting:
 
         result = await engine.execute(operator_command(), now=MOMENT)
 
-        assert result.describe() == (
-            f"run {RUN_ID} stop sc-1 reason=human verdict=clean sealed"
-        )
+        assert result.describe() == (f"run {RUN_ID} stop sc-1 reason=human verdict=clean sealed")
 
     @pytest.mark.asyncio
     async def test_a_stalled_stop_describes_where_it_stopped(self) -> None:
@@ -1320,13 +1304,16 @@ class TestEngineReporting:
             findings=(),
             now=MOMENT,
         )
-        assert report.report_digest == postflight_report(
-            run_id=RUN_ID,
-            stop=operator_command().trigger,
-            leases=(released_lease(),),
-            findings=(),
-            now=MOMENT,
-        ).report_digest
+        assert (
+            report.report_digest
+            == postflight_report(
+                run_id=RUN_ID,
+                stop=operator_command().trigger,
+                leases=(released_lease(),),
+                findings=(),
+                now=MOMENT,
+            ).report_digest
+        )
         assert report.verdict(MOMENT) is PostflightVerdict.CLEAN
         assert report.verdict(MOMENT + timedelta(hours=1)) is PostflightVerdict.UNKNOWN
         assert ObservedValue(name="x", value="1").describe() == "x=1"

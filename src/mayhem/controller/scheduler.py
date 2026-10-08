@@ -916,8 +916,13 @@ class Scheduler:
             )
         incident = self._incident_refusal(inputs)
         if incident is not None:
-            return self._refusal(entry, inputs, code=DispatchCode.INCIDENT_ACTIVE, reason=incident,
-                                 request=request_pair)
+            return self._refusal(
+                entry,
+                inputs,
+                code=DispatchCode.INCIDENT_ACTIVE,
+                reason=incident,
+                request=request_pair,
+            )
         held = [step for step in self._store.steps_for_schedule(entry.schedule_id) if step.held]
         if held:
             names = ", ".join(step.key for step in held)
@@ -931,9 +936,7 @@ class Scheduler:
                 ),
                 request=request_pair,
             )
-        verdict = evaluate_concurrency(
-            live, request, inputs.active_locks, now=now
-        )
+        verdict = evaluate_concurrency(live, request, inputs.active_locks, now=now)
         if not verdict.runnable:
             return self._refusal(
                 entry,
@@ -1140,8 +1143,7 @@ class Scheduler:
         override = inputs.commander_override
         if override is None:
             return (
-                f"{incident.describe()}; firing during an incident needs a named "
-                "commander override"
+                f"{incident.describe()}; firing during an incident needs a named commander override"
             )
         if not override.covers(incident.incident_id):
             return (

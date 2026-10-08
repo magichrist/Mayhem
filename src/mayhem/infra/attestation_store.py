@@ -620,9 +620,11 @@ def chain_completeness(
         recorded = evidence_event.payload.get("mutating") if evidence_event else None
         mutating = True if recorded is None else bool(recorded)
 
-    present = tuple(kind for kind in REQUIRED_AUTHORIZATION_KINDS if any(
-        event.event_kind == kind for event in events
-    ))
+    present = tuple(
+        kind
+        for kind in REQUIRED_AUTHORIZATION_KINDS
+        if any(event.event_kind == kind for event in events)
+    )
     plan_digest = str(events[0].payload.get("plan_digest", "")) if events else ""
     for event in events:
         if event.event_kind in REQUIRED_AUTHORIZATION_KINDS:
@@ -649,9 +651,7 @@ def chain_completeness(
             "event, so it cannot say why it was allowed"
         )
     if not missing:
-        errors.append(
-            f"run {run_id!r} carries its authorization artifacts; the chain is complete"
-        )
+        errors.append(f"run {run_id!r} carries its authorization artifacts; the chain is complete")
     return ChainCompleteness(
         run_id=run_id,
         mutating=True,

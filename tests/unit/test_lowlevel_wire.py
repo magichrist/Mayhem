@@ -394,6 +394,7 @@ class TestResidueAutoScan:
         observations would call that three clean passes; the scan compares the
         observed facets against the declared ones and refuses.
         """
+
         def observer(probe: ResidueProbe) -> object:
             return ResidueObservation(
                 facet="capability",

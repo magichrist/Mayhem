@@ -537,9 +537,7 @@ def step_semantics_violations(
         if name in _POSITIVE_INT_FIELDS and (
             isinstance(value, bool) or not isinstance(value, int) or value < 1
         ):
-            violations.append(
-                f"{semantic.value}.{name} must be a positive integer, got {value!r}"
-            )
+            violations.append(f"{semantic.value}.{name} must be a positive integer, got {value!r}")
         if name in _POSITIVE_NUMBER_FIELDS:
             number = _as_positive_number(value)
             if number is None or number <= 0.0:

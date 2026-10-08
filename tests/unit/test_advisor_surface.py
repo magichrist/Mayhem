@@ -74,7 +74,6 @@ from mayhem.controller.advisor_service import (
     RULE_SUBMISSION_SPEC_NOT_BOUND,
     SubmissionAuthorization,
 )
-from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.advisor import (
     Approval,
     CustomerCriterion,
@@ -85,6 +84,7 @@ from mayhem.domain.advisor import (
 from mayhem.domain.coverage import CoverageCell
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.scenarios import scenario_library
 from mayhem.domain.topology import (
     ContainerNode,
@@ -440,7 +440,7 @@ def _documented_invocations(text: str) -> list[list[str]]:
         for token in tail.split():
             if token.startswith(("<", "`", '"', "'")):
                 break
-            tokens.append(token.strip('`"\''))
+            tokens.append(token.strip("`\"'"))
         argv = ["advisor", *tokens]
         argv = [token for token in argv if token not in {"--help"}]
         if len(argv) > 1:
@@ -749,9 +749,7 @@ def test_changing_the_declared_weighting_changes_the_rendered_priority(tmp_path:
     heavier_document["criteria"]["criteria"][1]["question"] = "how untested is this area?"
     heavier = load(write_inputs(tmp_path, heavier_document, name="heavy.json"))
 
-    first = advisor_cmd.advisor_dashboard(
-        analysis_for(lighter), lighter.criteria, lighter.readings
-    )
+    first = advisor_cmd.advisor_dashboard(analysis_for(lighter), lighter.criteria, lighter.readings)
     second = advisor_cmd.advisor_dashboard(
         analysis_for(heavier), heavier.criteria, heavier.readings
     )
@@ -818,12 +816,8 @@ def test_limit_truncates_the_rendering_and_not_the_arithmetic(tmp_path: Path) ->
     assert "  2. " not in limited.output
     # And the truncation happened in the renderer: the JSON payload for --limit 1
     # is the same shape, one row shorter, with the untruncated total still computed.
-    payload = json.loads(
-        run(["dashboard", "--inputs", str(path), "--limit", "1", "--json"]).output
-    )
-    full_payload = json.loads(
-        run(["dashboard", "--inputs", str(path), "--json"]).output
-    )
+    payload = json.loads(run(["dashboard", "--inputs", str(path), "--limit", "1", "--json"]).output)
+    full_payload = json.loads(run(["dashboard", "--inputs", str(path), "--json"]).output)
     assert len(payload["ranked"]) == 1
     # The truncated row is the same row, with the same derived score, at the same
     # position: the limit hid rows, it did not re-rank anything.
@@ -845,9 +839,7 @@ def _ranked_recommendation(**overrides: Any) -> Any:
     """One real recommendation from a real analysis, to be damaged deliberately."""
     inputs = advisor_cmd.AdvisorInputs.from_document(inputs_document())
     analysis = analysis_for(inputs)
-    return analysis.rank(
-        inputs.criteria, {GAP_CELL.key: {}} if False else _declared(inputs)
-    )[0]
+    return analysis.rank(inputs.criteria, {GAP_CELL.key: {}} if False else _declared(inputs))[0]
 
 
 def _declared(inputs: advisor_cmd.AdvisorInputs) -> dict[str, Any]:
@@ -937,9 +929,7 @@ def test_the_render_refusal_survives_a_renderer_that_never_asks_the_callback() -
     Click tree nowhere in sight. If a future UI bypassed the callback, or the
     callback were deleted, this test would still pass — which is the property.
     """
-    untraceable = replace(
-        _ranked_recommendation(), rationale="no criteria mentioned here at all"
-    )
+    untraceable = replace(_ranked_recommendation(), rationale="no criteria mentioned here at all")
     with pytest.raises(advisor_cmd.AdvisorViewRefused):
         advisor_cmd.ranked_views((untraceable,), declared_criteria())
     assert untraceable.render_refusal_reason()
@@ -1030,8 +1020,9 @@ def _every_view(inputs_file: Path) -> list[Any]:
         *dashboard_for(inputs).ranked,
         *dashboard_for(inputs).drafts,
         replay_for(inputs),
-        advisor_cmd.scenario_view(scenario_library().latest("dns-failure") or
-                                  scenario_library().templates[0]),
+        advisor_cmd.scenario_view(
+            scenario_library().latest("dns-failure") or scenario_library().templates[0]
+        ),
     ]
     views.extend(advisor_cmd.scenario_views(scenario_library().templates))
     template = scenario_library().latest("pod-churn")
@@ -1189,9 +1180,7 @@ def test_authorization_in_its_unknown_and_refused_states_never_renders_as_a_gran
         assert "not granted here" in rendered
         assert "surface grants authorization: false" in rendered
         # The gate's own state name is quoted; nothing else in the line claims it.
-        state_line = next(
-            row for row in rendered.splitlines() if "authorization state:" in row
-        )
+        state_line = next(row for row in rendered.splitlines() if "authorization state:" in row)
         assert not _FORBIDDEN_RE.search(state_line), state_line
         assert not offending_words(json.dumps(payload, sort_keys=True))
 
@@ -1853,9 +1842,7 @@ def test_the_five_scenario_templates_whose_cells_this_document_declares_compile(
     finding = advisor_cmd._finding_for_cell(
         analysis, instantiation.cell.key, what=instantiation.ref
     )
-    recommendation = advisor_cmd._recommendation_for(
-        inputs, finding, propose=instantiation.propose
-    )
+    recommendation = advisor_cmd._recommendation_for(inputs, finding, propose=instantiation.propose)
     view = advisor_cmd.scenario_submission(
         engine,
         instantiation,

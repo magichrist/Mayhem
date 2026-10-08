@@ -151,9 +151,7 @@ class TestIssuedCertificate:
     def test_a_tampered_fingerprint_breaks_the_signature_not_just_the_pin(self) -> None:
         ca = authority()
         certificate = issue(ca)
-        forged = raw_certificate(
-            **{**certificate.model_dump(), "sha256_fingerprint": "0" * 64}
-        )
+        forged = raw_certificate(**{**certificate.model_dump(), "sha256_fingerprint": "0" * 64})
         verdict = service_for(ca.anchor(certificate)).authorize(
             forged, required_role=MtlsRole.AGENT, at=NOW
         )
@@ -228,9 +226,7 @@ class TestIssuing:
     def test_an_anchor_cannot_be_minted_for_a_tampered_certificate(self) -> None:
         ca = authority()
         certificate = issue(ca)
-        broken = raw_certificate(
-            **{**certificate.model_dump(), "sha256_fingerprint": "1" * 64}
-        )
+        broken = raw_certificate(**{**certificate.model_dump(), "sha256_fingerprint": "1" * 64})
         with pytest.raises(InvariantViolationError) as caught:
             ca.anchor(broken)
         assert caught.value.rule == "certificate.fingerprint_disagrees"
@@ -330,9 +326,10 @@ class TestTheTrustDecision:
         assert verdict.reason is TrustReason.SIGNATURE_INVALID
         assert "could not be checked at all" in verdict.detail
         # The same certificate is trusted by a service that still holds the key.
-        assert service_for(anchor).authorize(
-            certificate, required_role=MtlsRole.AGENT, at=NOW
-        ).trusted is True
+        assert (
+            service_for(anchor).authorize(certificate, required_role=MtlsRole.AGENT, at=NOW).trusted
+            is True
+        )
 
     def test_a_widened_window_is_refused_as_a_forgery(self) -> None:
         ca = authority()
@@ -480,24 +477,18 @@ class TestMtlsTrustService:
         assert pinned.algorithm == CA_ALGORITHM_FIXTURE
 
     def test_the_controller_check_accepts_both_controller_roles(self) -> None:
-        assert frozenset(
-            {MtlsRole.CONTROLLER, MtlsRole.STANDBY_CONTROLLER}
-        ) == CONTROLLER_ROLES
+        assert frozenset({MtlsRole.CONTROLLER, MtlsRole.STANDBY_CONTROLLER}) == CONTROLLER_ROLES
         ca = authority()
         for role in (MtlsRole.CONTROLLER, MtlsRole.STANDBY_CONTROLLER):
             certificate = issue(ca, serial=f"c-{role.value}", roles=(role,))
-            verdict = service_for(ca.anchor(certificate)).controller_capable(
-                certificate, at=NOW
-            )
+            verdict = service_for(ca.anchor(certificate)).controller_capable(certificate, at=NOW)
             assert verdict.trusted is True
 
     def test_an_agent_certificate_cannot_present_as_the_controller(self) -> None:
         ca = authority()
         certificate = issue(ca, roles=(MtlsRole.AGENT,))
 
-        verdict = service_for(ca.anchor(certificate)).controller_capable(
-            certificate, at=NOW
-        )
+        verdict = service_for(ca.anchor(certificate)).controller_capable(certificate, at=NOW)
 
         assert verdict.trusted is False
         assert verdict.refusal_code == MTLS_WRONG_ROLE
@@ -527,16 +518,20 @@ class TestMtlsTrustService:
         service = service_for(ca.anchor(certificate))
         with pytest.raises(MtlsTrustRefusedError):
             service.authorize_or_raise(certificate, required_role=MtlsRole.CONTROLLER, at=NOW)
-        assert service.authorize_or_raise(
-            certificate, required_role=MtlsRole.AGENT, at=NOW
-        ).trusted is True
+        assert (
+            service.authorize_or_raise(certificate, required_role=MtlsRole.AGENT, at=NOW).trusted
+            is True
+        )
 
     def test_the_revocation_source_defaults_to_an_empty_set(self) -> None:
         ca = authority()
         certificate = issue(ca)
-        assert MtlsTrustService(ca, anchors=[ca.anchor(certificate)]).authorize(
-            certificate, required_role=MtlsRole.AGENT, at=NOW
-        ).trusted is True
+        assert (
+            MtlsTrustService(ca, anchors=[ca.anchor(certificate)])
+            .authorize(certificate, required_role=MtlsRole.AGENT, at=NOW)
+            .trusted
+            is True
+        )
 
 
 # --------------------------------------------------------------------------- #

@@ -125,9 +125,7 @@ class AgentIdentityRepository:
 
     def list_agents(self) -> tuple[AgentIdentity, ...]:
         """Every enrolled identity, ordered by agent id."""
-        rows = self._store.query(
-            "SELECT identity_json FROM agent_identities ORDER BY agent_id"
-        )
+        rows = self._store.query("SELECT identity_json FROM agent_identities ORDER BY agent_id")
         return tuple(
             AgentIdentity.model_validate_json(str(dict(row)["identity_json"])) for row in rows
         )
@@ -141,8 +139,7 @@ class AgentIdentityRepository:
         has to be cheap enough not to matter.
         """
         rows = self._store.query(
-            "SELECT identity_json FROM agent_identities WHERE controller_id = ? "
-            "ORDER BY agent_id",
+            "SELECT identity_json FROM agent_identities WHERE controller_id = ? ORDER BY agent_id",
             (controller_id,),
         )
         return tuple(
@@ -166,9 +163,7 @@ class AgentIdentityRepository:
             AgentIdentity.model_validate_json(str(dict(row)["identity_json"])) for row in rows
         )
 
-    def revocations(
-        self, agent_id: str, *, scope: str | None = None
-    ) -> tuple[Revocation, ...]:
+    def revocations(self, agent_id: str, *, scope: str | None = None) -> tuple[Revocation, ...]:
         """Recorded revocations for ``agent_id``, oldest first.
 
         Args:
@@ -275,9 +270,7 @@ class AgentIdentityRepository:
         target = credential_id or identity.credential.credential_id
         revoked = identity.with_credential(identity.credential.revoke(revocation))
         with self._store.write() as conn:
-            _insert_revocation(
-                conn, agent_id, target, revocation, REVOCATION_SCOPE_CREDENTIAL
-            )
+            _insert_revocation(conn, agent_id, target, revocation, REVOCATION_SCOPE_CREDENTIAL)
             _upsert_identity(
                 conn,
                 revoked,
@@ -560,9 +553,7 @@ class BackupRepository:
             for row in rows
         )
 
-    def snapshots_covering(
-        self, *, datastore: str, at: datetime
-    ) -> tuple[SnapshotDescriptor, ...]:
+    def snapshots_covering(self, *, datastore: str, at: datetime) -> tuple[SnapshotDescriptor, ...]:
         """Descriptors whose ``covers_through`` reaches ``at``, newest first.
 
         The read a restore planner needs. It asks the descriptor's own
@@ -621,9 +612,7 @@ class BackupRepository:
         )
         if not rows:
             return None
-        return RestoreVerification.model_validate_json(
-            str(dict(rows[0])["verification_json"])
-        )
+        return RestoreVerification.model_validate_json(str(dict(rows[0])["verification_json"]))
 
     def list_restores(
         self, *, snapshot_id: str | None = None, outcome: RestoreOutcome | None = None
@@ -698,8 +687,7 @@ class BackupRepository:
             "SELECT objective_json FROM recovery_objectives ORDER BY datastore, stated_at DESC"
         )
         return tuple(
-            RecoveryObjective.model_validate_json(str(dict(row)["objective_json"]))
-            for row in rows
+            RecoveryObjective.model_validate_json(str(dict(row)["objective_json"])) for row in rows
         )
 
     # -- reporting ------------------------------------------------------------

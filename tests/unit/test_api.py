@@ -612,9 +612,7 @@ def test_outcome_resource_round_trips_and_agrees_only_with_its_own_run() -> None
     assert restored.to_outcome() == outcome
 
     assert resource.agrees_with(RunResource.of(_record()))
-    assert not resource.agrees_with(
-        RunResource.of(_record(OTHER_RUN_ID, plan=_plan(OTHER_RUN_ID)))
-    )
+    assert not resource.agrees_with(RunResource.of(_record(OTHER_RUN_ID, plan=_plan(OTHER_RUN_ID))))
 
 
 def test_outcome_resource_is_refused_when_its_observation_body_is_unhashed() -> None:
@@ -989,9 +987,7 @@ def test_every_resource_refuses_an_unknown_schema_version() -> None:
 
 def test_every_resource_forbids_a_field_the_contract_does_not_declare() -> None:
     with pytest.raises(ValidationError):
-        PlanResource.model_validate(
-            {**PlanResource.of(_plan()).to_payload(), "published": True}
-        )
+        PlanResource.model_validate({**PlanResource.of(_plan()).to_payload(), "published": True})
 
 
 # ── the timeline is derived from stored events, never stored beside them ───────
@@ -1061,9 +1057,7 @@ def test_timeline_orders_by_time_then_by_storage_order_and_is_deterministic() ->
     ]
     assert (
         RunTimeline.of(distinct, run_id=RUN_ID, plan_digest=DIGEST_A).to_dict()
-        == RunTimeline.of(
-            list(reversed(distinct)), run_id=RUN_ID, plan_digest=DIGEST_A
-        ).to_dict()
+        == RunTimeline.of(list(reversed(distinct)), run_id=RUN_ID, plan_digest=DIGEST_A).to_dict()
     )
 
 
@@ -1753,12 +1747,8 @@ def test_a_coverage_figure_that_cannot_be_a_percentage_is_refused() -> None:
 
 
 def test_a_summary_reporting_one_metric_twice_is_refused() -> None:
-    number = ExecutiveNumber(
-        metric=ExecutiveMetric.RUNS_PASSED, value=1.0, evidence=(_ref(),)
-    )
-    other = ExecutiveNumber(
-        metric=ExecutiveMetric.RUNS_PASSED, value=2.0, evidence=(_ref(),)
-    )
+    number = ExecutiveNumber(metric=ExecutiveMetric.RUNS_PASSED, value=1.0, evidence=(_ref(),))
+    other = ExecutiveNumber(metric=ExecutiveMetric.RUNS_PASSED, value=2.0, evidence=(_ref(),))
     with pytest.raises(InvariantViolationError) as excinfo:
         ExecutiveSummary(numbers=(number, other))
     assert excinfo.value.rule == "api.duplicate_executive_metric"

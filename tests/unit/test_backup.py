@@ -81,9 +81,7 @@ def snapshot(
         kind=kind,
         datastore=datastore,
         taken_at=taken_at,
-        covers_through=(
-            NOW - timedelta(seconds=30) if covers_through is None else covers_through
-        ),
+        covers_through=(NOW - timedelta(seconds=30) if covers_through is None else covers_through),
         content_digest=content_digest,
         storage_locator=storage_locator,
         replica_locators=replica_locators,
@@ -819,11 +817,7 @@ def test_report_is_none_when_no_objective_was_stated(store: Store) -> None:
 
 def test_objective_history_is_versioned_by_statement_time(store: Store) -> None:
     repo = BackupRepository(store)
-    repo.save_objective(
-        objective(rpo_seconds=300.0, stated_at=NOW - timedelta(days=30))
-    )
+    repo.save_objective(objective(rpo_seconds=300.0, stated_at=NOW - timedelta(days=30)))
     repo.save_objective(objective(rpo_seconds=60.0, stated_at=NOW - timedelta(days=1)))
     assert len(repo.list_objectives()) == 2
-    assert repo.load_objective(DATASTORE).rpo_seconds == 60.0, (
-        "the most recent statement wins"
-    )
+    assert repo.load_objective(DATASTORE).rpo_seconds == 60.0, "the most recent statement wins"

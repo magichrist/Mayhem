@@ -174,9 +174,10 @@ def _message(text: str, *, author_id: str = "U-OPS", channel_id: str = "C-OPS") 
 
 class TestAuthorizationMatrix:
     def test_the_matrix_is_read_from_the_engine_not_restated(self) -> None:
-        assert tuple(
-            (command.value, role.value) for command, role in CHATOPS_REQUIRED_ROLE.items()
-        ) == AUTHORIZATION_MATRIX
+        assert (
+            tuple((command.value, role.value) for command, role in CHATOPS_REQUIRED_ROLE.items())
+            == AUTHORIZATION_MATRIX
+        )
 
     def test_every_command_has_exactly_one_role(self) -> None:
         assert len(AUTHORIZATION_MATRIX) == len(ChatOpsCommand)
@@ -242,8 +243,18 @@ class TestParsing:
             "",
         ],
         ids=[
-            "subshell", "backtick", "semicolon", "newline", "pipe", "and", "single", "double",
-            "expansion", "traversal", "leading-dash", "blank",
+            "subshell",
+            "backtick",
+            "semicolon",
+            "newline",
+            "pipe",
+            "and",
+            "single",
+            "double",
+            "expansion",
+            "traversal",
+            "leading-dash",
+            "blank",
         ],
     )
     def test_an_argument_that_is_not_an_identifier_is_refused(self, argument: str) -> None:
@@ -275,9 +286,7 @@ class TestParsing:
             "mayhem run run-ci-0001,production",
         ):
             with pytest.raises(InvariantViolationError) as excinfo:
-                resolve_chatops_request(
-                    _message(text), bindings=_bot().bindings, author=OPERATOR
-                )
+                resolve_chatops_request(_message(text), bindings=_bot().bindings, author=OPERATOR)
             assert excinfo.value.rule == "chatops.argument_not_an_identifier", text
 
 
@@ -447,7 +456,10 @@ class TestBotDispatch:
         bot = _bot(_grant(OPERATOR, Role.EXECUTE))
         transport, validator = _SpyTransport(), _SpyValidator()
         outcome, _ = receive_message(
-            bot, _message("mayhem run run-ci-0001"), transport=transport, validate=validator,
+            bot,
+            _message("mayhem run run-ci-0001"),
+            transport=transport,
+            validate=validator,
             now=NOW,
         )
         assert outcome is ChatOutcome.DISPATCHED

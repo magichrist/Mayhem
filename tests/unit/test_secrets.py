@@ -156,9 +156,7 @@ class TestProviderVocabulary:
         "provider",
         [SecretProvider.VAULT, SecretProvider.OIDC, SecretProvider.KUBERNETES],
     )
-    def test_real_providers_are_not_development_only(
-        self, provider: SecretProvider
-    ) -> None:
+    def test_real_providers_are_not_development_only(self, provider: SecretProvider) -> None:
         assert not is_development_only(provider)
 
     def test_reference_reports_its_own_development_marker(self) -> None:
@@ -317,9 +315,7 @@ class TestReferenceValidation:
     def test_validation_returns_empty_when_authorized(self) -> None:
         ref = _ref()
         grant = _grant()
-        assert (
-            validate_reference(ref, [grant], principal=ALICE, environment="prod", now=NOW) == ()
-        )
+        assert validate_reference(ref, [grant], principal=ALICE, environment="prod", now=NOW) == ()
 
     def test_validation_reports_the_closest_grants_reason(self) -> None:
         # Right secret, right principal, wrong environment: the refusal must
@@ -335,9 +331,7 @@ class TestReferenceValidation:
 
     def test_require_reference_returns_the_authorizing_grant(self) -> None:
         grant = _grant()
-        found = require_reference(
-            _ref(), [grant], principal=ALICE, environment="prod", now=NOW
-        )
+        found = require_reference(_ref(), [grant], principal=ALICE, environment="prod", now=NOW)
         assert found is grant
 
     def test_require_reference_names_the_offending_field(self) -> None:

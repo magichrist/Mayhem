@@ -435,19 +435,13 @@ def test_a_verdict_names_the_first_unmet_demand() -> None:
 
 def test_an_unachievable_primitive_is_distinguished_from_an_unbuilt_one() -> None:
     """``NOT_STEPPABLE`` means no mechanism would do, not "not yet"."""
-    unachievable = {
-        p.id for p in ALL_PRIMITIVES if p.missing and p.missing.unachievable_substrate
-    }
+    unachievable = {p.id for p in ALL_PRIMITIVES if p.missing and p.missing.unachievable_substrate}
     assert unachievable == {"clock.monotonic_offset", "clock.monotonic_freeze"}
     for primitive_id in unachievable:
         missing = descriptor_for(primitive_id).missing
         assert missing is not None
         assert missing.code is MissingCode.NOT_STEPPABLE
-    unbuilt = {
-        p.id
-        for p in ALL_PRIMITIVES
-        if p.missing and not p.missing.unachievable_substrate
-    }
+    unbuilt = {p.id for p in ALL_PRIMITIVES if p.missing and not p.missing.unachievable_substrate}
     assert unbuilt, "the plan's families are all unbuilt, and that must stay visible"
 
 
@@ -793,9 +787,7 @@ def test_latency_mode_may_not_name_an_errno() -> None:
 
 def test_return_mutation_mode_must_name_a_known_mutation() -> None:
     with pytest.raises(ValidationError) as refusal:
-        KernelPrimitive(
-            **_minimal_kernel(mode="return_mutation", return_mutation="set_it_to_nine")
-        )
+        KernelPrimitive(**_minimal_kernel(mode="return_mutation", return_mutation="set_it_to_nine"))
     assert "return_mutation must be one of" in str(refusal.value)
 
 

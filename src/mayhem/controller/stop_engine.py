@@ -475,8 +475,7 @@ class SealedStop(BaseModel):
         digest = self.report.report_digest
         if digest != self.report_digest:
             msg = (
-                f"sealed stop digest {self.report_digest!r} does not match its report "
-                f"({digest!r})"
+                f"sealed stop digest {self.report_digest!r} does not match its report ({digest!r})"
             )
             raise InvariantViolationError("stop_seal_digest_mismatch", msg)
         return self
@@ -1087,9 +1086,7 @@ class StopEngine:
             sealed_at=moment,
         )
         self._ledger.record_seal(sealed)
-        return StopExecution(
-            record=record, sealed=sealed, freeze_latency_s=walk.freeze_latency_s
-        )
+        return StopExecution(record=record, sealed=sealed, freeze_latency_s=walk.freeze_latency_s)
 
     async def execute_for_lost_controller(
         self,
@@ -1549,8 +1546,7 @@ class StopEngine:
                 stage=StopStage.SEAL,
                 evidence_ref=postflight_ref(walk.run_id, report.report_digest),
                 detail=(
-                    f"verdict={report.verdict(walk.now).value}; "
-                    f"reason={walk.command.reason.value}"
+                    f"verdict={report.verdict(walk.now).value}; reason={walk.command.reason.value}"
                 ),
                 observed_at=walk.now,
             )
@@ -1698,9 +1694,7 @@ def stop_evidence_payload(execution: StopExecution) -> dict[str, Any]:
         # Per-action compensation outcomes: one entry per lease the recovery pass
         # had an opinion about, cited by the same reference the postflight cites.
         "compensated_leases": (
-            []
-            if recovery_check is None
-            else sorted(recovery_check.evidence_refs)
+            [] if recovery_check is None else sorted(recovery_check.evidence_refs)
         ),
         "compensation_detail": "" if recovery_check is None else recovery_check.detail,
         "residue_checks": residue_checks,

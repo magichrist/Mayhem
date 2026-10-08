@@ -1062,9 +1062,7 @@ def _refused_attempt(
     the CLI both read.
     """
     pending = _pending_record(definition, cell, request, at=now)
-    record = pending.model_copy(
-        update={"outcome": RefusalClass.REFUSED.value, "reason": refusal}
-    )
+    record = pending.model_copy(update={"outcome": RefusalClass.REFUSED.value, "reason": refusal})
     return CertificationAttempt(
         fault_id=definition.id,
         cell=cell,
@@ -1109,9 +1107,7 @@ def _plan_facts(plan: ExecutionPlan, fault_id: str) -> tuple[str, str, dict[str,
             continue
         target = planned_target_identity(fault.target) if fault.target is not None else ""
         if not target and fault.targets:
-            target = ",".join(
-                sorted(",".join(sorted(entry.node_ids)) for entry in fault.targets)
-            )
+            target = ",".join(sorted(",".join(sorted(entry.node_ids)) for entry in fault.targets))
         return step.id, target, dict(fault.params)
     return "", "", {}
 
@@ -1386,9 +1382,7 @@ def _mint(
     impossible record at construction are re-checked here.
     """
     del residue, recovery
-    pending = _pending_record(
-        definition, cell, request, at=now, injector_version=injector_version
-    )
+    pending = _pending_record(definition, cell, request, at=now, injector_version=injector_version)
     if refusals or bundle is None:
         reason = "; ".join(refusals) or f"{RefusalClass.NO_EVIDENCE}: no evidence bundle"
         changes: dict[str, object] = {

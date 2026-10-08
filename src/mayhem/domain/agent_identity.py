@@ -1143,9 +1143,7 @@ class AgentIdentityRegistry(BaseModel):
             version=self.version + 1,
         )
 
-    def revoke_credential(
-        self, agent_id: str, revocation: Revocation
-    ) -> AgentIdentityRegistry:
+    def revoke_credential(self, agent_id: str, revocation: Revocation) -> AgentIdentityRegistry:
         """Revoke one credential and return the advanced registry.
 
         Raises:

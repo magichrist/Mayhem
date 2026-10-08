@@ -99,9 +99,7 @@ RULE_TF_WRITE_UNCONFIRMED = "terraform.write_unconfirmed"
 RULE_TF_TOKEN_IN_CONFIG = "terraform.credential_in_config"
 
 _IMPORT_PREFIX: Final[str] = f"{TF_RESOURCE_TYPE}/"
-_LABEL_CHARS: Final[frozenset[str]] = frozenset(
-    "abcdefghijklmnopqrstuvwxyz0123456789_-"
-)
+_LABEL_CHARS: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
 #: An HCL identifier starts with a letter or an underscore. Enforced here rather
 #: than left to terraform, which rejects it deep inside a parse with a message
 #: that says nothing about mayhem.
@@ -286,7 +284,7 @@ def render_hcl(config: ExperimentConfig) -> str:
         "# plaintext, so a token in a provider block is a token in a bucket.",
         "terraform {",
         "  required_providers {",
-        f'    {TF_PROVIDER_NAME} = {{',
+        f"    {TF_PROVIDER_NAME} = {{",
         '      source  = "mayhemlabs/mayhem"',
         '      version = "~> 2.4"',
         "    }",

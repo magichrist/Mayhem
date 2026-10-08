@@ -156,9 +156,7 @@ def identity(
 
 
 def fence(*, epoch: int = 1, holder: str = CONTROLLER) -> FencingToken:
-    return FencingToken(
-        run_id=RUN_ID, step_id=STEP_ID, holder=holder, epoch=epoch, issued_at=NOW
-    )
+    return FencingToken(run_id=RUN_ID, step_id=STEP_ID, holder=holder, epoch=epoch, issued_at=NOW)
 
 
 def command_fields(
@@ -239,9 +237,7 @@ def keys_for(*ids: str) -> StaticKeyMaterial:
     return material
 
 
-def verifier(
-    store: Store, keys: StaticKeyMaterial, **kwargs: object
-) -> AgentCommandVerifier:
+def verifier(store: Store, keys: StaticKeyMaterial, **kwargs: object) -> AgentCommandVerifier:
     """A verifier over the real store, the real nonce table, and a chosen port."""
     options: dict[str, object] = {
         "identities": AgentIdentityRepository(store),
@@ -273,9 +269,7 @@ def test_signed_payload_agrees_with_the_domains_signing_payload() -> None:
 
 def test_signed_payload_is_the_excluded_canonical_dump() -> None:
     command = signed(keys_for(CREDENTIAL))
-    expected = canonical_event_bytes(
-        command.model_dump(mode="json", exclude={"signature"})
-    )
+    expected = canonical_event_bytes(command.model_dump(mode="json", exclude={"signature"}))
     assert signed_payload(command) == expected
 
 
@@ -445,9 +439,7 @@ def test_verifier_over_the_x509_seam_refuses_and_names_the_check(store: Store) -
         engine.verify(signed(keys), expected_plan_digest=PLAN, now=NOW)
 
     assert VerificationCheck.SIGNATURE in refused.value.failed
-    outcome = next(
-        o for o in refused.value.outcomes if o.check is VerificationCheck.SIGNATURE
-    )
+    outcome = next(o for o in refused.value.outcomes if o.check is VerificationCheck.SIGNATURE)
     assert outcome.algorithm == ALGORITHM_X509
     assert "not checked" in outcome.detail
 
@@ -570,9 +562,7 @@ def test_revoked_agent_is_refused_even_with_a_valid_signature(store: Store) -> N
     engine = verifier(store, keys)
     AgentIdentityRepository(store).revoke_agent(
         AGENT,
-        Revocation(
-            reason=RevocationReason.COMPROMISED, revoked_at=NOW, revoked_by=CONTROLLER
-        ),
+        Revocation(reason=RevocationReason.COMPROMISED, revoked_at=NOW, revoked_by=CONTROLLER),
     )
 
     with pytest.raises(CommandRefusedError) as refused:
@@ -597,9 +587,7 @@ def test_revocation_row_alone_refuses_when_the_identity_row_predates_it(store: S
     repository.record_revocation(
         AGENT,
         CREDENTIAL,
-        Revocation(
-            reason=RevocationReason.DECOMMISSIONED, revoked_at=NOW, revoked_by=CONTROLLER
-        ),
+        Revocation(reason=RevocationReason.DECOMMISSIONED, revoked_at=NOW, revoked_by=CONTROLLER),
         scope=REVOCATION_SCOPE_IDENTITY,
     )
     assert repository.load(AGENT).revoked is False  # the identity row was not updated
@@ -904,9 +892,7 @@ def test_command_from_a_deposed_owner_is_refused(store: Store) -> None:
         engine.verify(stale, expected_plan_digest=PLAN, served_fence=served, now=NOW)
 
     assert VerificationCheck.FENCE in refused.value.failed
-    detail = next(
-        o.detail for o in refused.value.outcomes if o.check is VerificationCheck.FENCE
-    )
+    detail = next(o.detail for o in refused.value.outcomes if o.check is VerificationCheck.FENCE)
     assert "fabric_stale_fence" in detail
 
 
@@ -968,5 +954,7 @@ def test_naive_verification_instant_is_refused(store: Store) -> None:
     keys = keys_for(CREDENTIAL)
     with pytest.raises(Exception, match="timezone-aware"):
         verifier(store, keys).verify(
-            signed(keys), expected_plan_digest=PLAN, now=datetime(2026, 3, 1, 12, 0)  # noqa: DTZ001
+            signed(keys),
+            expected_plan_digest=PLAN,
+            now=datetime(2026, 3, 1, 12, 0),  # noqa: DTZ001
         )

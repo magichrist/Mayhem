@@ -174,9 +174,7 @@ def experiment(target_ids: tuple[str, ...] = ("n-postgres",)) -> ExecutionPlan:
             PlannedStep(
                 id="s0",
                 seq=0,
-                raw_action=InjectFault(
-                    fault="db.slow_query", selectors=(selector,), duration=30.0
-                ),
+                raw_action=InjectFault(fault="db.slow_query", selectors=(selector,), duration=30.0),
                 fault=PlannedFault(
                     fault_id="db.slow_query",
                     targets=(ResolvedTarget(selector=selector, node_ids=frozenset(target_ids)),),
@@ -387,9 +385,7 @@ def full_analysis(
     causal_connected: bool = True,
 ) -> ResilienceAnalysis:
     """One walked search's report, with every section present by default."""
-    boundary_index = next(
-        (trial.step.index for trial in run.history.trials if trial.breached), 0
-    )
+    boundary_index = next((trial.step.index for trial in run.history.trials if trial.breached), 0)
     return analyze_run(
         policy(),
         run.history,
@@ -744,9 +740,7 @@ def test_a_minimal_case_with_no_measurable_trial_is_withheld() -> None:
     )
 
     withheld = [
-        claim
-        for claim in evidence.withheld
-        if claim.kind is ClaimKind.MINIMAL_FAILURE_CASE
+        claim for claim in evidence.withheld if claim.kind is ClaimKind.MINIMAL_FAILURE_CASE
     ]
     assert len(withheld) == 1
     assert withheld[0].rule_id == RULE_EVIDENCE_UNSUPPORTED
@@ -1099,9 +1093,7 @@ def test_a_chain_is_sealed_with_its_edges_named_in_full(tmp_path: Path) -> None:
         "depends_on:n-checkout->n-postgres",
     ]
     assert (edges[0].src, edges[0].dst) == ("n-checkout", "n-postgres")
-    assert all(
-        isinstance(citation, ObservationCitation) for citation in chain.observations
-    )
+    assert all(isinstance(citation, ObservationCitation) for citation in chain.observations)
     store.close()
 
 
@@ -1161,7 +1153,8 @@ def test_an_approval_that_does_not_bind_still_refuses_the_step() -> None:
     recorder = _Recorder()
 
     run = run_search(
-        policy(), approve=lambda plan: Approval(approved_by="sre-oncall", plan_digest="0" * 64),
+        policy(),
+        approve=lambda plan: Approval(approved_by="sre-oncall", plan_digest="0" * 64),
         recorder=recorder,
     )
 
@@ -1205,7 +1198,7 @@ def test_the_recorder_reads_authority_from_the_admission_not_from_a_flag() -> No
     audit stream is a read-back of a real check, not a label a caller set."""
     run = run_search(policy())
 
-    approver, = run.record.approved_by
+    (approver,) = run.record.approved_by
 
     assert approver == "sre-oncall"
     assert {admission.approved_by for admission in run.admissions} == {"sre-oncall"}

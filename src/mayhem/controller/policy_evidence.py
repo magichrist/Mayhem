@@ -388,9 +388,7 @@ def policy_evidence(result: PolicyGateResult) -> dict[str, Any]:
             }
             for verdict in result.lock_verdicts
         ],
-        "config_defect": (
-            "" if result.config_defect is None else result.config_defect.describe()
-        ),
+        "config_defect": ("" if result.config_defect is None else result.config_defect.describe()),
         "refusal": None
         if result.refusal is None
         else {

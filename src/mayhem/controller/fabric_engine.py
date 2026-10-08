@@ -1075,9 +1075,7 @@ class FabricEngine:
             ) from exc
         return VerifiedDispatch.of(verified)
 
-    def _record_claim(
-        self, claim: DispatchClaim, verification: VerifiedDispatch | None
-    ) -> None:
+    def _record_claim(self, claim: DispatchClaim, verification: VerifiedDispatch | None) -> None:
         """Seal a landed claim. Never raises into the dispatch path silently."""
         if self._evidence is not None:
             self._evidence.dispatch_recorded(claim, verification=verification)

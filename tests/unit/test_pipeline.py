@@ -86,6 +86,7 @@ def naive_moment(hour: int = 12) -> datetime:
     """A deliberately naive datetime — the input every tz-discipline check refuses."""
     return datetime(2026, 9, 30, hour, 0)  # noqa: DTZ001
 
+
 #: Two digests standing in for "the plan that was checked" and "the plan that
 #: actually merged". Never equal unless a test says so.
 CHECKED_DIGEST = "a" * 64
@@ -95,11 +96,15 @@ MERGED_DIGEST = "b" * 64
 RUN_DIGEST = "0" * 64
 
 CHECKOUT_POSTGRES = CoverageCell(
-    target="checkout", fault_kind="postgres_failure", execution_context="container",
+    target="checkout",
+    fault_kind="postgres_failure",
+    execution_context="container",
     parameter_band="default",
 )
 PAYMENT_TIMEOUT = CoverageCell(
-    target="payment", fault_kind="http_timeout", execution_context="kubernetes",
+    target="payment",
+    fault_kind="http_timeout",
+    execution_context="kubernetes",
     parameter_band="default",
 )
 
@@ -831,8 +836,15 @@ def test_the_same_experiment_on_a_new_release_is_comparable() -> None:
 
 @pytest.mark.parametrize(
     "axis",
-    ["experiment", "environment", "plan_version", "policy_version", "catalog_version",
-     "agent_version", "runtime_version"],
+    [
+        "experiment",
+        "environment",
+        "plan_version",
+        "policy_version",
+        "catalog_version",
+        "agent_version",
+        "runtime_version",
+    ],
 )
 def test_two_runs_differing_on_any_other_axis_are_not_comparable(axis: str) -> None:
     baseline = _pin(run_id="run-v24-0001", release="v2.4")

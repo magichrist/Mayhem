@@ -68,7 +68,6 @@ from mayhem.controller.advisor_service import (
 )
 from mayhem.controller.analytics_service import AUTHORITY_FIELDS as PLAN15_AUTHORITY_FIELDS
 from mayhem.controller.analytics_service import compile_candidate
-from mayhem.domain.policy_gate import MutationSink, PolicyGateInputs
 from mayhem.controller.safety import SafetyContext
 from mayhem.domain.advisor import (
     AdvisorAuthority,
@@ -92,6 +91,7 @@ from mayhem.domain.execution_intent import (
 from mayhem.domain.experiments import BlastRadiusBudget
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
 from mayhem.domain.policy import PolicyBundle, PolicyEffect
+from mayhem.domain.policy_gate import MutationSink, PolicyGateInputs
 from mayhem.domain.search import BudgetKind, BudgetReference, SearchPolicy
 from mayhem.domain.topology import (
     ContainerNode,
@@ -259,10 +259,14 @@ class DeployedReleases:
     """A deployment port: what is running now, per component."""
 
     def __init__(self, releases: Mapping[str, str] | None = None) -> None:
-        self._releases = releases if releases is not None else {
-            "mayhem": "1.1.0",
-            "kubernetes": "1.29.4",
-        }
+        self._releases = (
+            releases
+            if releases is not None
+            else {
+                "mayhem": "1.1.0",
+                "kubernetes": "1.29.4",
+            }
+        )
 
     def releases(self) -> Mapping[str, str]:
         return self._releases
@@ -335,9 +339,7 @@ def replay_request(
         if bindings is not None
         else (
             ParameterBinding("seconds", ParameterSource.DURATION),
-            ParameterBinding(
-                "jitter_ms", ParameterSource.PERCENTILE, label="p99", unit="ms"
-            ),
+            ParameterBinding("jitter_ms", ParameterSource.PERCENTILE, label="p99", unit="ms"),
         ),
     )
 
@@ -435,9 +437,7 @@ def test_the_analysis_emits_drafts_and_nothing_with_authority() -> None:
 
     assert all(isinstance(draft, UntrustedRecommendationDraft) for draft in report.drafts)
     assert all("approval" not in UntrustedRecommendationDraft.model_fields for _ in report.drafts)
-    ranked = report.rank(
-        CRITERIA, {f.finding_id: dict(weight(f)) for f in report.findings}
-    )
+    ranked = report.rank(CRITERIA, {f.finding_id: dict(weight(f)) for f in report.findings})
     assert [r.origin for r in ranked] == [RecommendationOrigin.GENERATED]
     assert [r.authority for r in ranked] == [AdvisorAuthority.NONE]
 
@@ -731,9 +731,7 @@ def test_an_untraceable_parameter_is_refused_not_defaulted() -> None:
     engine = service()
     request = replay_request(
         bindings=(
-            ParameterBinding(
-                "jitter_ms", ParameterSource.PERCENTILE, label="p999", unit="ms"
-            ),
+            ParameterBinding("jitter_ms", ParameterSource.PERCENTILE, label="p999", unit="ms"),
         )
     )
     with pytest.raises(InvariantViolationError) as caught:
@@ -781,9 +779,7 @@ def test_a_replay_with_no_usable_observation_is_refused() -> None:
     engine = service()
     with pytest.raises(InvariantViolationError) as caught:
         engine.replay(
-            replay_request(
-                bindings=(ParameterBinding("seconds", ParameterSource.DURATION),)
-            ),
+            replay_request(bindings=(ParameterBinding("seconds", ParameterSource.DURATION),)),
             captured,
             engine.landscape(),
         )
@@ -795,9 +791,7 @@ def test_a_unit_mismatch_is_refused_rather_than_translated() -> None:
     """A latency in milliseconds cannot quietly become a count in seconds."""
     engine = service()
     request = replay_request(
-        bindings=(
-            ParameterBinding("seconds", ParameterSource.PERCENTILE, label="p99", unit="s"),
-        )
+        bindings=(ParameterBinding("seconds", ParameterSource.PERCENTILE, label="p99", unit="s"),)
     )
     with pytest.raises(InvariantViolationError) as caught:
         engine.replay(request, INCIDENT, engine.landscape())
@@ -919,9 +913,7 @@ def test_the_advisor_context_holds_no_mutation_backend_and_no_lease_sink() -> No
     and no executor, so "analysis code never acquires execution authority" is a
     property of the signature.
     """
-    field_types = {
-        f.name: f.type for f in dataclass_fields(AdvisorService)
-    }
+    field_types = {f.name: f.type for f in dataclass_fields(AdvisorService)}
 
     assert set(field_types) == {
         "topology",
@@ -978,9 +970,7 @@ def test_the_analysis_mutates_nothing_and_the_report_is_a_measurement() -> None:
     A hard-coded ``calls = 0`` would pass a naive version of this test and fail
     here, which is the whole point of reading the length off a real object.
     """
-    loaded = MutationSink().record("lease", "acquire run lease").record(
-        "k8s", "inject net.latency"
-    )
+    loaded = MutationSink().record("lease", "acquire run lease").record("k8s", "inject net.latency")
     assert len(loaded) == 2
 
     report = service(sink=loaded).analyse(propose, CRITERIA, weight)
@@ -1153,12 +1143,8 @@ def test_a_candidate_that_will_not_compile_never_reaches_the_proof_or_the_policy
 
         return _spy
 
-    monkeypatch.setattr(
-        "mayhem.controller.advisor_service.compile_safety_evidence", spy("proof")
-    )
-    monkeypatch.setattr(
-        "mayhem.controller.advisor_service.simulate_plan_policy", spy("policy")
-    )
+    monkeypatch.setattr("mayhem.controller.advisor_service.compile_safety_evidence", spy("proof"))
+    monkeypatch.setattr("mayhem.controller.advisor_service.simulate_plan_policy", spy("policy"))
 
     engine = service()
     report = engine.analyse(propose, CRITERIA, weight)
@@ -1313,9 +1299,11 @@ def test_the_advisor_context_cannot_mint_execution_intent() -> None:
     ):
         for name in ("intent", "execution_intent", "approval", "approved_by"):
             assert not hasattr(artifact, name), (type(artifact).__name__, name)
-        assert not any("intent" in str(f.name) for f in dataclass_fields(type(artifact))) if (
-            hasattr(type(artifact), "__dataclass_fields__")
-        ) else True
+        assert (
+            not any("intent" in str(f.name) for f in dataclass_fields(type(artifact)))
+            if (hasattr(type(artifact), "__dataclass_fields__"))
+            else True
+        )
 
     with pytest.raises(ExecutionIntentRefused) as caught:
         require_execution_intent(
@@ -1378,9 +1366,7 @@ def test_the_authority_scan_is_plan15s_and_not_a_second_copy() -> None:
     assert sorted(PLAN15_AUTHORITY_FIELDS) == sorted(
         {"approval", "approved_by", "authority", "plan_digest", "authorization", "token"}
     )
-    assert sorted(analytics_service._authority_keys(payload)) == sorted(
-        _scanned(payload)
-    )
+    assert sorted(analytics_service._authority_keys(payload)) == sorted(_scanned(payload))
     # And the very same payload is refused by plan 15's own compiler.
     with pytest.raises(InvariantViolationError) as caught:
         compile_candidate(payload, _search_policy())
@@ -1494,9 +1480,7 @@ def test_a_recommendation_without_a_traceable_rationale_cannot_render() -> None:
     """Prose the draft owns is not checkable by itself, so the view layer refuses."""
     report = service().analyse(propose, CRITERIA, weight)
     ranked = report.rank(CRITERIA, {f.finding_id: dict(weight(f)) for f in report.findings})
-    untraceable = replace(
-        ranked[0], rationale="checkout cache loss is worth fixing"
-    )
+    untraceable = replace(ranked[0], rationale="checkout cache loss is worth fixing")
 
     assert untraceable.priority.criteria_names  # the weighting it omits
     assert untraceable.render_refusal_reason() != ""
@@ -1509,9 +1493,9 @@ def test_a_recommendation_without_a_traceable_rationale_cannot_render() -> None:
 
 def test_a_traceable_rationale_renders_with_its_citations_and_no_authority() -> None:
     report = service().analyse(propose, CRITERIA, weight)
-    rendered = report.rank(
-        CRITERIA, {f.finding_id: dict(weight(f)) for f in report.findings}
-    )[0].render()
+    rendered = report.rank(CRITERIA, {f.finding_id: dict(weight(f)) for f in report.findings})[
+        0
+    ].render()
 
     assert "authority: none" in rendered
     assert "origin: generated" in rendered

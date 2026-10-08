@@ -169,9 +169,7 @@ class ArtifactUnavailableError(DomainError):
         self.code = UpdateRefusal.ARTIFACT_UNAVAILABLE.value
         self.locator = locator
         self.reason = reason
-        super().__init__(
-            f"{self.code}: could not fetch artifact {locator!r}: {reason}"
-        )
+        super().__init__(f"{self.code}: could not fetch artifact {locator!r}: {reason}")
 
 
 class UpdateRefusedError(DomainError):
@@ -249,9 +247,7 @@ class UpdateManifest(BaseModel):
                 f"before it was issued ({self.issued_at.isoformat()})"
             )
             raise InvariantViolationError("update.window", msg)
-        _require_hex(
-            self.artifact_digest, "update.artifact_digest", f"manifest {self.manifest_id}"
-        )
+        _require_hex(self.artifact_digest, "update.artifact_digest", f"manifest {self.manifest_id}")
         if self.rollback_supported:
             if not self.rollback_target_version:
                 msg = (
@@ -260,10 +256,7 @@ class UpdateManifest(BaseModel):
                 )
                 raise InvariantViolationError("update.rollback_target_required", msg)
             if self.rollback_target_version == self.component_version:
-                msg = (
-                    f"manifest {self.manifest_id} names its own version as the rollback "
-                    "target"
-                )
+                msg = f"manifest {self.manifest_id} names its own version as the rollback target"
                 raise InvariantViolationError("update.rollback_target_identical", msg)
         return self
 

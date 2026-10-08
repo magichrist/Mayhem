@@ -382,58 +382,72 @@ def network_policy_problems(policy: NetworkPolicy) -> tuple[tuple[str, str], ...
     """
     problems: list[tuple[str, str]] = []
     if policy.air_gapped and policy.outbound_allowlist:
-        problems.append((
-            "network_policy.air_gapped_with_allowlist",
-            f"air_gapped=True declares that there is no egress, but outbound_allowlist names "
-            f"{len(policy.outbound_allowlist)} reachable host(s) "
-            f"{sorted(policy.outbound_allowlist)}; an air-gapped install either has egress or "
-            "has an allowlist, and which one it is must be declared",
-        ))
+        problems.append(
+            (
+                "network_policy.air_gapped_with_allowlist",
+                f"air_gapped=True declares that there is no egress, but outbound_allowlist names "
+                f"{len(policy.outbound_allowlist)} reachable host(s) "
+                f"{sorted(policy.outbound_allowlist)}; an air-gapped install either has egress or "
+                "has an allowlist, and which one it is must be declared",
+            )
+        )
     for entry in sorted(policy.outbound_allowlist):
         if _is_wildcard_entry(entry):
-            problems.append((
-                "network_policy.wildcard_allowlist",
-                f"allowlist entry {entry!r} permits every host, which is an absent policy "
-                "rather than a policy; name the hosts, or set allowlist_enforced with an "
-                "empty allowlist to permit none",
-            ))
+            problems.append(
+                (
+                    "network_policy.wildcard_allowlist",
+                    f"allowlist entry {entry!r} permits every host, which is an absent policy "
+                    "rather than a policy; name the hosts, or set allowlist_enforced with an "
+                    "empty allowlist to permit none",
+                )
+            )
             continue
         if _entry_is_malformed(entry):
-            problems.append((
-                "network_policy.malformed_allowlist_entry",
-                f"allowlist entry {entry!r} is not a host, a host:port, or a leftmost-label "
-                "wildcard such as '*.corp.example'",
-            ))
+            problems.append(
+                (
+                    "network_policy.malformed_allowlist_entry",
+                    f"allowlist entry {entry!r} is not a host, a host:port, or a leftmost-label "
+                    "wildcard such as '*.corp.example'",
+                )
+            )
     for name, value in (("http_proxy", policy.http_proxy), ("https_proxy", policy.https_proxy)):
         if value and not value.startswith(ALLOWED_PROXY_SCHEMES):
             schemes = " or ".join(ALLOWED_PROXY_SCHEMES)
-            problems.append((
-                "network_policy.proxy_scheme",
-                f"{name}={value!r} must start with {schemes}; a proxy that cannot be addressed "
-                "is not a proxy, and a request sent without it would be a direct egress the "
-                "operator did not sanction",
-            ))
+            problems.append(
+                (
+                    "network_policy.proxy_scheme",
+                    f"{name}={value!r} must start with {schemes}; a proxy that cannot be addressed "
+                    "is not a proxy, and a request sent without it would be a direct egress the "
+                    "operator did not sanction",
+                )
+            )
     if policy.private_registry and not _registry_is_wellformed(policy.private_registry):
         schemes = " or ".join(ALLOWED_REGISTRY_SCHEMES)
-        problems.append((
-            "network_policy.registry_scheme",
-            f"private_registry={policy.private_registry!r} must be a {schemes} URL or a bare "
-            "host[:port]",
-        ))
+        problems.append(
+            (
+                "network_policy.registry_scheme",
+                f"private_registry={policy.private_registry!r} must be a {schemes} URL or a bare "
+                "host[:port]",
+            )
+        )
     if policy.private_git and not _repository_is_wellformed(policy.private_git):
         schemes = " or ".join(ALLOWED_REPOSITORY_SCHEMES)
-        problems.append((
-            "network_policy.repository_scheme",
-            f"private_git={policy.private_git!r} must start with {schemes} (git@host:path is "
-            "accepted for scp-style remotes)",
-        ))
+        problems.append(
+            (
+                "network_policy.repository_scheme",
+                f"private_git={policy.private_git!r} must start with {schemes} (git@host:path is "
+                "accepted for scp-style remotes)",
+            )
+        )
     if policy.custom_ca_bundle and not policy.custom_ca_bundle.strip():
-        problems.append((
-            "network_policy.ca_bundle",
-            "custom_ca_bundle is present but blank; a blank CA reference would leave TLS "
-            "verification exactly as it was, so the declaration has to be removed rather "
-            "than left empty",
-        ))
+        problems.append(
+            (
+                "network_policy.ca_bundle",
+                "custom_ca_bundle is present but blank; a blank CA reference would leave TLS "
+                "verification exactly as it was, so the declaration has to be removed rather "
+                "than left empty",
+            )
+        )
     return tuple(problems)
 
 

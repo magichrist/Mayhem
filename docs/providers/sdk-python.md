@@ -41,9 +41,15 @@ builder.fault(
     mutation="mutating",
     reversible=True,
     parameter_grammar=[
-        builder.parameter("scale", kind="integer", required=False, default="1",
-                          minimum=1, maximum=10,
-                          summary="multiplier on the added latency"),
+        builder.parameter(
+            "scale",
+            kind="integer",
+            required=False,
+            default="1",
+            minimum=1,
+            maximum=10,
+            summary="multiplier on the added latency",
+        ),
     ],
 )
 
@@ -52,8 +58,8 @@ builder.evidence_mapping("acme.slow")
 builder.compatibility(mayhem_min="1.0.0", engines=["podman"])
 
 artifact = python_declaration(builder)
-print(artifact.canonical)          # byte-stable; safe to hash
-print(artifact.authenticity)      # declared_unverified
+print(artifact.canonical)  # byte-stable; safe to hash
+print(artifact.authenticity)  # declared_unverified
 ```
 
 `artifact.canonical` is produced by `canonical_json`, the one canonicaliser in
@@ -122,10 +128,13 @@ Before an install, an operator has to be shown what an extension **can** and
 **cannot** do:
 
 ```python
-from mayhem.providers.sdk import approve_permission_display, describe_permission_display, permission_display
+from mayhem.providers.sdk import (
+    approve_permission_display,
+    describe_permission_display,
+    permission_display,
+)
 
-display = permission_display(artifact.metadata,
-                             grant=frozenset({ProviderPermission.TARGET_READ}))
+display = permission_display(artifact.metadata, grant=frozenset({ProviderPermission.TARGET_READ}))
 print(describe_permission_display(display))
 ```
 

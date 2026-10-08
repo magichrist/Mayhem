@@ -537,8 +537,7 @@ class TestTheFailureExplanationCitesObservations:
         from mayhem.domain.api import ExplanationSection
 
         assert addressed == set(ExplanationSection), (
-            "a section that is neither explained nor withheld reads as though nothing "
-            "went wrong"
+            "a section that is neither explained nor withheld reads as though nothing went wrong"
         )
 
     def test_an_ungraded_run_withholds_its_root_cause(self, api: ApiStore) -> None:
@@ -576,9 +575,7 @@ class TestARefusedMutationWritesNothing:
         )
         with pytest.raises(InvariantViolationError):
             port.submit(request)
-        rows = api.store.query(
-            f"SELECT plan_digest FROM {MUTATION_RECEIPT_TABLE}"
-        )
+        rows = api.store.query(f"SELECT plan_digest FROM {MUTATION_RECEIPT_TABLE}")
         assert rows == [], "a refused mutation recorded a receipt"
         assert api.plan_for_run(RUN_ID) is None, (
             "the port persisted a plan for a mutation it refused — a refusal that had "
@@ -895,9 +892,7 @@ def _graded_reference() -> Any:
                         "check_id": "p99-under-load",
                         "verb": "degraded",
                         "verdict": "DEGRADED",
-                        "signals": [
-                            {"name": "p99", "unit": "ms", "value": 40.0, "limit": 50.0}
-                        ],
+                        "signals": [{"name": "p99", "unit": "ms", "value": 40.0, "limit": 50.0}],
                     }
                 ],
             },

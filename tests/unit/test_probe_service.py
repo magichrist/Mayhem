@@ -420,9 +420,7 @@ class TestCoverageAnswersDidAnythingGetObserved:
         service = _service(_http(), ports=_bound((ProbeFamily.HTTP, bad)))
 
         first = service.collect(_http(), stage=LifecycleStage.DURING_FAULT, at_epoch_s=1.0)
-        service_with_good = _service(
-            _http(), ports=_bound((ProbeFamily.HTTP, good))
-        )
+        service_with_good = _service(_http(), ports=_bound((ProbeFamily.HTTP, good)))
         second = service_with_good.collect(
             _http(), stage=LifecycleStage.DURING_FAULT, at_epoch_s=2.0
         )
@@ -532,9 +530,7 @@ class TestLifecycleAndNoiseBudgetsSurviveTheCrossing:
 
     def test_a_warm_up_reading_is_recorded_but_may_not_support_a_verdict(self) -> None:
         warming = _http("http.warm", stages=(LifecycleStage.WARM_UP,), warmup=10.0)
-        service = _service(
-            warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=900.0)))
-        )
+        service = _service(warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=900.0))))
 
         reading = service.collect(warming, stage=LifecycleStage.WARM_UP, at_epoch_s=1.0)
 
@@ -544,9 +540,7 @@ class TestLifecycleAndNoiseBudgetsSurviveTheCrossing:
 
     def test_a_probe_whose_only_readings_were_settling_counts_as_unobserved(self) -> None:
         warming = _http("http.warm", stages=(LifecycleStage.WARM_UP,), warmup=10.0)
-        service = _service(
-            warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=900.0)))
-        )
+        service = _service(warming, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=900.0))))
 
         readings = service.collect_stage(LifecycleStage.WARM_UP, at_epoch_s=1.0)
         coverage = ProbeCoverage.of(readings)
@@ -566,13 +560,9 @@ class TestLifecycleAndNoiseBudgetsSurviveTheCrossing:
             cadence=5.0,
             cooldown=15.0,
         )
-        service = _service(
-            cooling, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=5.0)))
-        )
+        service = _service(cooling, ports=_bound((ProbeFamily.HTTP, FakePort("api", value=5.0))))
 
-        reading = service.collect(
-            cooling, stage=LifecycleStage.AFTER_RECOVERY, at_epoch_s=1.0
-        )
+        reading = service.collect(cooling, stage=LifecycleStage.AFTER_RECOVERY, at_epoch_s=1.0)
 
         assert reading.in_settling_stage
         assert not reading.supports_verdict
@@ -704,9 +694,7 @@ class TestStopConditionsFireOnEvidenceOnly:
             for at in (1.0, 2.0, 3.0)
         ]
 
-        result = ProbeService.evaluate(
-            _breach_condition(), readings, now_epoch_s=3.0
-        )
+        result = ProbeService.evaluate(_breach_condition(), readings, now_epoch_s=3.0)
 
         assert result.status is ConditionStatus.FIRED
         # Three consecutive breaching readings, and ``for_samples=2`` is a floor

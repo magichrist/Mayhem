@@ -124,8 +124,7 @@ SAFETY_MIGRATION_SQL: tuple[str, ...] = (
         recorded_at TEXT NOT NULL
     )
     """,
-    f"CREATE INDEX idx_api_mutation_receipts_route "
-    f"ON {MUTATION_RECEIPT_TABLE}(route)",
+    f"CREATE INDEX idx_api_mutation_receipts_route ON {MUTATION_RECEIPT_TABLE}(route)",
 )
 
 SAFETY_DOWN_SQL: tuple[str, ...] = (

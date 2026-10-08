@@ -62,6 +62,7 @@ MOMENT = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 LATER = MOMENT + timedelta(seconds=30)
 MUCH_LATER = MOMENT + timedelta(hours=2)
 
+
 def naive_moment() -> datetime:
     """A deliberately naive datetime — the input every tz-discipline check refuses."""
     return datetime(2026, 9, 30, 12, 0)  # noqa: DTZ001
@@ -232,9 +233,7 @@ class TestReasonCoverage:
         assert trigger.describe() == "controller_lost"
 
     def test_condition_trigger_carries_id_and_observed_values(self) -> None:
-        trigger = condition_stop(
-            observed=(ObservedValue(name="error_rate", value="0.97"),)
-        )
+        trigger = condition_stop(observed=(ObservedValue(name="error_rate", value="0.97"),))
         assert trigger.condition_id == "slo.error_rate"
         assert trigger.observed_values[0].describe() == "error_rate=0.97"
         assert trigger.describe() == "condition_fired:slo.error_rate (error_rate=0.97)"

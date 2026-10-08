@@ -24,30 +24,6 @@ from typing import Any
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.domain.policy_gate import (
-    RULE_APPROVAL_REQUIRED,
-    RULE_BUDGET_EXHAUSTED,
-    RULE_BUNDLE_ALLOW,
-    RULE_BUNDLE_DENY,
-    RULE_BUNDLE_EXPIRED,
-    RULE_COMPAT_CONFLICT,
-    RULE_LOCK_CONTENDED,
-    RULE_POLICY_CONFIG,
-    BudgetAuthority,
-    ConfigDefect,
-    HierarchyBudgetView,
-    MutationSink,
-    PolicyGateInputs,
-    QuotaBudgetView,
-    _risk_of,
-    derive_facts,
-    detect_config_defect,
-    evaluate_gate,
-    probe_budget,
-    probe_quota,
-    reconcile_budgets,
-    simulate_gate,
-)
 from mayhem.controller.safety import (
     SafetyContext,
     SafetyRefusedError,
@@ -78,6 +54,30 @@ from mayhem.domain.policy import (
     PolicyPredicate,
     PolicyRule,
     ResourceLock,
+)
+from mayhem.domain.policy_gate import (
+    RULE_APPROVAL_REQUIRED,
+    RULE_BUDGET_EXHAUSTED,
+    RULE_BUNDLE_ALLOW,
+    RULE_BUNDLE_DENY,
+    RULE_BUNDLE_EXPIRED,
+    RULE_COMPAT_CONFLICT,
+    RULE_LOCK_CONTENDED,
+    RULE_POLICY_CONFIG,
+    BudgetAuthority,
+    ConfigDefect,
+    HierarchyBudgetView,
+    MutationSink,
+    PolicyGateInputs,
+    QuotaBudgetView,
+    _risk_of,
+    derive_facts,
+    detect_config_defect,
+    evaluate_gate,
+    probe_budget,
+    probe_quota,
+    reconcile_budgets,
+    simulate_gate,
 )
 from mayhem.domain.quota import DamageQuota
 from mayhem.domain.risks import RiskLevel
@@ -388,11 +388,9 @@ def test_approval_requirement_is_named_inside_a_refusal():
 GOLDEN_NO_BUNDLE = "\n".join(
     (
         "policy.allow|allow|proc.pause: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|proc.pause: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|proc.pause: blast radius within budget||['fault_id', 'stats']",
         "policy.allow|allow|net.latency: admitted||['fault_id', 'risk']",
-        "blast_radius.allow|allow|net.latency: blast radius within budget||"
-        "['fault_id', 'stats']",
+        "blast_radius.allow|allow|net.latency: blast radius within budget||['fault_id', 'stats']",
     )
 )
 
@@ -706,9 +704,7 @@ def test_replay_reproduces_the_decision_digest():
     gate = _inputs(
         _bundle(
             _prod_deny(),
-            _rule(
-                "risky", PolicyDimension.RISK, PolicyOperator.IN, ("high", "critical")
-            ),
+            _rule("risky", PolicyDimension.RISK, PolicyOperator.IN, ("high", "critical")),
         ),
         locks=(_lock(),),
         lock_resources=("db-primary",),
@@ -801,9 +797,7 @@ def test_native_default_deny_refuses_a_facts_set_no_rule_permits():
     assert result.refusal.rule_id == RULE_BUNDLE_DENY
     # One notch tighter: the same bundle's ALLOW effect lets the same plan in.
     permissive = _bundle(_prod_deny(), default=PolicyEffect.ALLOW)
-    assert evaluate_gate(
-        _plan("proc.pause"), _inputs(permissive), environment="staging"
-    ).allowed
+    assert evaluate_gate(_plan("proc.pause"), _inputs(permissive), environment="staging").allowed
 
 
 def test_naive_clock_is_refused_at_construction():
@@ -1019,9 +1013,12 @@ def test_reconciliation_is_a_pure_function_of_two_views():
         BudgetAuthority.HIERARCHY_PERMITS
     )
     assert reconcile_budgets(permitting, QuotaBudgetView(configured=False)).within_budget
-    assert reconcile_budgets(
-        HierarchyBudgetView(configured=False), QuotaBudgetView(configured=False)
-    ).authority is BudgetAuthority.NONE
+    assert (
+        reconcile_budgets(
+            HierarchyBudgetView(configured=False), QuotaBudgetView(configured=False)
+        ).authority
+        is BudgetAuthority.NONE
+    )
     assert reconcile_budgets(breaching, QuotaBudgetView(configured=True)).authority is (
         BudgetAuthority.HIERARCHY
     )

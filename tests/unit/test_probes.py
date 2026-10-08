@@ -154,6 +154,7 @@ def _expected_locator(family: ProbeFamily, field: str) -> str:
     value = _LOCATORS[family][field]
     return " ".join(value) if isinstance(value, tuple) else str(value)
 
+
 #: A carrier per carried family, agreeing with that family's locators.
 _CARRIERS: dict[ProbeFamily, Any] = {
     ProbeFamily.HTTP: lambda: HttpProbe(url="https://api.internal/healthz"),
@@ -202,10 +203,7 @@ def _http(**overrides: Any) -> ProbeDefinition:
 
 def _blank_locators() -> dict[str, Any]:
     """Every locator emptied — the state no family may be constructed from."""
-    return {
-        field: () if field in ("command", "steps") else "   "
-        for field in LOCATOR_FIELDS
-    }
+    return {field: () if field in ("command", "steps") else "   " for field in LOCATOR_FIELDS}
 
 
 def _reading(
@@ -779,8 +777,7 @@ class TestCatalogueEndToEnd:
         assert [definition.family for definition in bound] == list(ALL_FAMILIES)
         assert len(catalogue.select(phase=Phase.PRE)) == len(ALL_FAMILIES)
         assert (
-            catalogue.select(family=ProbeFamily.SYNTHETIC, stage=LifecycleStage.DURING_FAULT)
-            == ()
+            catalogue.select(family=ProbeFamily.SYNTHETIC, stage=LifecycleStage.DURING_FAULT) == ()
         )
 
     def test_a_catalogue_of_the_whole_lifecycle_round_trips(self) -> None:
@@ -821,7 +818,10 @@ class TestCatalogueEndToEnd:
         assert payload["version"] == "1.0"
         assert payload["cadence"] == "5s"
         assert payload["carrier"]["type"] == "http"
-        assert ProbeDefinition.model_validate(payload).fingerprint == _http(
-            carrier=HttpProbe(url="https://api.internal/healthz"),
-            stages=(LifecycleStage.PRE_BASELINE,),
-        ).fingerprint
+        assert (
+            ProbeDefinition.model_validate(payload).fingerprint
+            == _http(
+                carrier=HttpProbe(url="https://api.internal/healthz"),
+                stages=(LifecycleStage.PRE_BASELINE,),
+            ).fingerprint
+        )

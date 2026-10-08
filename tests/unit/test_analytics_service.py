@@ -222,9 +222,7 @@ def graph() -> TopologyGraph:
             ServiceNode(id="n-postgres", name="postgres"),
             ServiceNode(id="n-search", name="search"),
         ),
-        edges=(
-            Edge(src="n-checkout", dst="n-postgres", kind=EdgeKind.DEPENDS_ON),
-        ),
+        edges=(Edge(src="n-checkout", dst="n-postgres", kind=EdgeKind.DEPENDS_ON),),
     )
 
 
@@ -361,16 +359,10 @@ def experiment(
             PlannedStep(
                 id="s0",
                 seq=0,
-                raw_action=InjectFault(
-                    fault="db.slow_query", selectors=(selector,), duration=30.0
-                ),
+                raw_action=InjectFault(fault="db.slow_query", selectors=(selector,), duration=30.0),
                 fault=PlannedFault(
                     fault_id="db.slow_query",
-                    targets=(
-                        ResolvedTarget(
-                            selector=selector, node_ids=frozenset(target_ids)
-                        ),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset(target_ids)),),
                     duration=30.0,
                 ),
             ),
@@ -615,9 +607,7 @@ def test_every_citation_is_the_digest_of_the_record_it_names() -> None:
     assert digest(trial().to_dict()) in cited
     assert digest(material_comparison().to_dict()) in cited
     # Every edge citation is a real edge in the graph it was computed over.
-    real = {
-        f"{edge.kind.value}:{edge.src}->{edge.dst}" for edge in graph().edges
-    }
+    real = {f"{edge.kind.value}:{edge.src}->{edge.dst}" for edge in graph().edges}
     assert all(edge.key() in real for edge in chain.edges)
 
 
@@ -644,9 +634,7 @@ def test_the_dependency_hop_needs_a_real_edge() -> None:
             hop=CausalHop.TARGET_TO_DEPENDENCY,
             src="n-checkout",
             dst="n-postgres",
-            observations=(
-                ObservationCitation(kind=CitationKind.METRIC, ref=digest({"x": 1})),
-            ),
+            observations=(ObservationCitation(kind=CitationKind.METRIC, ref=digest({"x": 1})),),
         )
 
     assert caught.value.rule == RULE_HOP_WITHOUT_EDGE
@@ -690,11 +678,7 @@ def test_a_chain_over_an_ungraded_metric_change_is_withheld() -> None:
     The chain may not assert a movement the comparison refuses to grade."""
     analysis = causal_chains(
         graph(),
-        request(
-            changes=(
-                MetricChange(node_id="n-postgres", comparison=quiet_comparison()),
-            )
-        ),
+        request(changes=(MetricChange(node_id="n-postgres", comparison=quiet_comparison()),)),
     )
 
     assert analysis.claims == ()
@@ -734,9 +718,14 @@ def test_an_impact_on_a_node_that_is_not_customer_facing_is_withheld_as_such() -
 
 def test_a_passing_slo_is_not_a_customer_impact() -> None:
     analysis = causal_chains(
-        graph(), request(impacts=(CustomerImpactCheck(
-            node_id="n-checkout", criterion=slo(), observation=observation(120.0)
-        ),))
+        graph(),
+        request(
+            impacts=(
+                CustomerImpactCheck(
+                    node_id="n-checkout", criterion=slo(), observation=observation(120.0)
+                ),
+            )
+        ),
     )
 
     assert analysis.claims == ()
@@ -836,9 +825,7 @@ def test_an_unmeasurable_trial_is_neither_a_reproduction_nor_a_clearance() -> No
 
 
 def test_no_reproduction_is_reported_as_the_finding_not_as_a_pass() -> None:
-    cases = (
-        FailureCase(fault_ids=("db.slow_query",), target_ids=(), reproduced=False),
-    )
+    cases = (FailureCase(fault_ids=("db.slow_query",), target_ids=(), reproduced=False),)
 
     minimal = minimal_failure_case(cases)
 
@@ -863,9 +850,10 @@ def test_minimization_is_deterministic_on_ties() -> None:
         FailureCase(fault_ids=("a.fault",), target_ids=(), reproduced=True),
     )
 
-    assert minimal_failure_case(cases).to_dict() == minimal_failure_case(
-        tuple(reversed(cases))
-    ).to_dict()
+    assert (
+        minimal_failure_case(cases).to_dict()
+        == minimal_failure_case(tuple(reversed(cases))).to_dict()
+    )
 
 
 # =======================================================================================
@@ -1166,8 +1154,7 @@ def test_every_step_is_approved_compiled_admitted_then_executed_in_that_order() 
     run, recorder = _run(search, remaining=remaining)
 
     per_step = [
-        tuple(recorder.calls[index : index + 4])
-        for index in range(0, len(recorder.calls), 4)
+        tuple(recorder.calls[index : index + 4]) for index in range(0, len(recorder.calls), 4)
     ]
     assert per_step
     assert all(labels == ("approve", "compile", "admit", "execute") for labels in per_step)
@@ -1416,9 +1403,7 @@ def test_every_run_carries_a_search_record_naming_what_it_perturbed() -> None:
     # The ladder is the values the system was actually asked to absorb, in order, and
     # it is the same set the history recorded.
     assert list(record.perturbations) == [trial.step.value for trial in run.history.trials]
-    assert [trace.index for trace in record.ladder] == list(
-        range(run.history.steps_used)
-    )
+    assert [trace.index for trace in record.ladder] == list(range(run.history.steps_used))
     # And it grants nothing: no field here is an authority field.
     assert {entry.name for entry in dataclass_fields(record)}.isdisjoint(AUTHORITY_FIELDS)
 
@@ -1450,9 +1435,30 @@ def test_a_ladder_that_narrows_is_refused() -> None:
 
 
 def test_one_experiment_compiles_to_the_whole_ladder() -> None:
-    plan = experiment(("n-a", "n-b", "n-c", "n-d", "n-e", "n-f", "n-g", "n-h",
-                       "n-i", "n-j", "n-k", "n-l", "n-m", "n-n", "n-o", "n-p",
-                       "n-q", "n-r", "n-s", "n-t"))
+    plan = experiment(
+        (
+            "n-a",
+            "n-b",
+            "n-c",
+            "n-d",
+            "n-e",
+            "n-f",
+            "n-g",
+            "n-h",
+            "n-i",
+            "n-j",
+            "n-k",
+            "n-l",
+            "n-m",
+            "n-n",
+            "n-o",
+            "n-p",
+            "n-q",
+            "n-r",
+            "n-s",
+            "n-t",
+        )
+    )
 
     stages = compile_stages(plan, (slo(),))
 
@@ -1515,9 +1521,7 @@ def test_an_experiment_with_no_targets_has_no_ladder() -> None:
     plan = ExecutionPlan(
         run_id="r-empty",
         kind=ExperimentKind.DRILL,
-        steps=(
-            PlannedStep(id="w0", seq=0, raw_action=Wait(duration=5.0)),
-        ),
+        steps=(PlannedStep(id="w0", seq=0, raw_action=Wait(duration=5.0)),),
         config_snapshot_id="c",
         topology_snapshot_id="t",
         environment_fingerprint=FP,
@@ -1574,7 +1578,7 @@ def test_an_unhealthy_slo_refuses_promotion_and_stops_the_ladder() -> None:
 
 
 def test_a_stage_with_no_observation_is_not_healthy() -> None:
-    """"Could not see it" is not "nothing is wrong", and only one of them may
+    """ "Could not see it" is not "nothing is wrong", and only one of them may
     promote a canary."""
     stages = compile_stages(experiment(("n-a", "n-b")), (slo(),))
 
@@ -1590,8 +1594,16 @@ def test_a_stage_with_no_observation_is_not_healthy() -> None:
 def test_one_failing_criterion_out_of_several_stops_the_stage() -> None:
     stages = compile_stages(
         experiment(("n-a", "n-b")),
-        (slo(), SloCriterion(kind=CriterionKind.ERROR_BUDGET, metric="errors",
-                             operator=CriterionOperator.LT, threshold=0.01, unit="ratio")),
+        (
+            slo(),
+            SloCriterion(
+                kind=CriterionKind.ERROR_BUDGET,
+                metric="errors",
+                operator=CriterionOperator.LT,
+                threshold=0.01,
+                unit="ratio",
+            ),
+        ),
     )
 
     healthy = evaluate_stage(
@@ -1634,9 +1646,7 @@ def test_a_stop_that_names_a_next_stage_cannot_be_constructed() -> None:
     outcome = evaluate_stage(stages[0], {"checkout-p99": observation(910.0)})
 
     with pytest.raises(InvariantViolationError) as caught:
-        Promotion(
-            outcome=outcome, promoted=False, stopped=True, next_stage=stages[1]
-        )
+        Promotion(outcome=outcome, promoted=False, stopped=True, next_stage=stages[1])
 
     assert caught.value.rule == RULE_STAGE_NOT_HEALTHY
     assert "continued after a breach" in str(caught.value)

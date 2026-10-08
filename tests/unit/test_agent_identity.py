@@ -178,9 +178,7 @@ def chain(*epochs: int) -> tuple[FencingToken, ...]:
     current = FencingToken.issue(run_id="r-1", step_id="s-1", holder=CONTROLLER, now=NOW)
     tokens.append(current)
     for index, epoch in enumerate(epochs):
-        current = current.next_fence(
-            holder=f"ctl-{index}", now=NOW + timedelta(seconds=epoch)
-        )
+        current = current.next_fence(holder=f"ctl-{index}", now=NOW + timedelta(seconds=epoch))
         tokens.append(current)
     return tuple(tokens)
 
@@ -201,9 +199,7 @@ def test_expired_credential_is_refused() -> None:
     past = live.rotation_window().expires_at
 
     assert live.refusals_at(past) == (CredentialRefusal.EXPIRED,)
-    assert CredentialRefusal.EXPIRED not in live.refusals_at(
-        past - timedelta(microseconds=1)
-    )
+    assert CredentialRefusal.EXPIRED not in live.refusals_at(past - timedelta(microseconds=1))
     with pytest.raises(CredentialRefusedError) as excinfo:
         authorize_credential(identity(cert=live), now=past)
     assert excinfo.value.reasons == (CredentialRefusal.EXPIRED,)
@@ -298,9 +294,9 @@ def test_rotation_mints_a_strictly_newer_credential() -> None:
 
 
 def test_rotation_keeps_the_predecessor_as_superseded_evidence() -> None:
-    advanced = identity().with_credential(credential().successor(
-        credential_id="cr-2", ttl_s=900.0, now=NOW
-    ))
+    advanced = identity().with_credential(
+        credential().successor(credential_id="cr-2", ttl_s=900.0, now=NOW)
+    )
     assert advanced.version == identity().version + 1
     retired = advanced.credential_history[0]
     assert retired.credential_id == CREDENTIAL
@@ -491,9 +487,7 @@ def test_grant_refuses_an_identity_it_does_not_match() -> None:
 def test_identity_digest_covers_the_window() -> None:
     """A re-stamped lifetime must not keep the digest an audit trail recorded."""
     live = identity()
-    longer = identity(
-        cert=credential(expires_at=live.credential.expires_at + timedelta(hours=1))
-    )
+    longer = identity(cert=credential(expires_at=live.credential.expires_at + timedelta(hours=1)))
     assert live.identity_digest() != longer.identity_digest()
 
 
@@ -872,12 +866,18 @@ def test_store_rotation_persists_the_superseded_history(store: Store) -> None:
 
 def test_store_expiry_sweep_is_index_backed(store: Store) -> None:
     repo = AgentIdentityRepository(store)
-    repo.save(identity(agent_id="ag-soon", cert=credential(
-        agent_id="ag-soon", expires_at=NOW + timedelta(seconds=60)
-    )))
-    repo.save(identity(agent_id="ag-later", cert=credential(
-        agent_id="ag-later", expires_at=NOW + timedelta(seconds=9000)
-    )))
+    repo.save(
+        identity(
+            agent_id="ag-soon",
+            cert=credential(agent_id="ag-soon", expires_at=NOW + timedelta(seconds=60)),
+        )
+    )
+    repo.save(
+        identity(
+            agent_id="ag-later",
+            cert=credential(agent_id="ag-later", expires_at=NOW + timedelta(seconds=9000)),
+        )
+    )
     soon = repo.expiring_before(NOW + timedelta(minutes=5))
     assert [found.agent_id for found in soon] == ["ag-soon"]
 

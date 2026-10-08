@@ -440,9 +440,7 @@ class TestPipelineRunAuthorization:
             "now": NOW,
         }
         fields.update(overrides)
-        return pipeline_run_authorization(
-            CIActor(principal=SERVICE_ACCOUNT), verdict, **fields
-        )
+        return pipeline_run_authorization(CIActor(principal=SERVICE_ACCOUNT), verdict, **fields)
 
     def test_a_fully_grounded_pipeline_run_is_authorized(self) -> None:
         authorization = self._authorize()
@@ -517,9 +515,7 @@ class TestPipelineRunAuthorization:
         """
         envelope = _envelope()
         checked_seal = seal_ticket(_link(), sealed_by="sa-ci-bot", sealed_at=NOW)
-        moved = _verdict(
-            cited_run=_pinned_run(envelope), change=_link(change_ticket="CH-9999")
-        )
+        moved = _verdict(cited_run=_pinned_run(envelope), change=_link(change_ticket="CH-9999"))
         with pytest.raises(InvariantViolationError) as excinfo:
             pipeline_run_authorization(
                 CIActor(principal=SERVICE_ACCOUNT),

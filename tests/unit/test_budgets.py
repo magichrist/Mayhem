@@ -137,9 +137,7 @@ def test_units_are_distinct_per_dimension(dimension: ResourceDimension) -> None:
         (ResourceDimension.CONCURRENT_EXPERIMENTS, "runs"),
     ],
 )
-def test_measurement_arithmetic_is_per_dimension(
-    dimension: ResourceDimension, unit: str
-) -> None:
+def test_measurement_arithmetic_is_per_dimension(dimension: ResourceDimension, unit: str) -> None:
     """The same arithmetic runs for every dimension, in that dimension's unit."""
     counted = is_counted_dimension(dimension)
     budget = _budget(dimension, limit=200.0)
@@ -231,9 +229,7 @@ def test_counted_dimensions_accept_whole_limits(limit: float) -> None:
         (ResourceScope.EXPERIMENT, ResourceScope.ORGANISATION),
     ],
 )
-def test_scope_containment_is_asymmetric(
-    outer: ResourceScope, inner: ResourceScope
-) -> None:
+def test_scope_containment_is_asymmetric(outer: ResourceScope, inner: ResourceScope) -> None:
     """A narrower scope never governs a wider one; only the reverse holds."""
     if outer is inner:
         assert scope_contains(outer, inner)
@@ -256,9 +252,7 @@ def test_window_is_half_open_at_both_ends() -> None:
 
 
 def test_window_for_floors_onto_the_grid() -> None:
-    just_after = budget_window_for(
-        at=ANCHOR + timedelta(seconds=1), window_s=HOUR, anchor=ANCHOR
-    )
+    just_after = budget_window_for(at=ANCHOR + timedelta(seconds=1), window_s=HOUR, anchor=ANCHOR)
 
     assert just_after.start == ANCHOR
     assert just_after.end == ANCHOR + timedelta(hours=1)
@@ -267,9 +261,7 @@ def test_window_for_floors_onto_the_grid() -> None:
 
 def test_window_for_before_the_anchor_lands_in_the_previous_window() -> None:
     """Floor, not truncation: one second before the anchor is the window before."""
-    window = budget_window_for(
-        at=ANCHOR - timedelta(seconds=1), window_s=HOUR, anchor=ANCHOR
-    )
+    window = budget_window_for(at=ANCHOR - timedelta(seconds=1), window_s=HOUR, anchor=ANCHOR)
 
     assert window.end == ANCHOR
     assert not window.contains(ANCHOR)
@@ -620,11 +612,7 @@ def test_a_reading_for_another_dimension_cannot_be_posted() -> None:
     series = ResourceSeries.for_budget(_budget(ResourceDimension.CPU))
 
     with pytest.raises(InvariantViolationError) as caught:
-        series.post(
-            ConsumptionSample(
-                dimension=ResourceDimension.MEMORY, measured=1.0, at=ANCHOR
-            )
-        )
+        series.post(ConsumptionSample(dimension=ResourceDimension.MEMORY, measured=1.0, at=ANCHOR))
 
     assert caught.value.rule == RULE_SUBJECT_MISMATCH
 

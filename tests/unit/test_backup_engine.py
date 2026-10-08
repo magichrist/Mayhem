@@ -281,9 +281,7 @@ def test_evidence_replication_is_a_first_class_snapshot(
     store: Store, object_store: InMemoryObjectStore, clock: Clock
 ) -> None:
     """Plan 12's evidence replication arrives as a snapshot kind, not as a database tag."""
-    backup = engine(
-        store, Path("unused.db"), object_store, clock
-    ).replicate_evidence(
+    backup = engine(store, Path("unused.db"), object_store, clock).replicate_evidence(
         snapshot_id="snap-ev-1", payload=b'{"attested":true}', covers_through=NOW
     )
 
@@ -311,9 +309,7 @@ def test_a_schedule_with_no_prior_capture_is_due(
 def test_a_schedule_is_not_due_before_its_interval_elapses(
     store: Store, source_path: Path, object_store: InMemoryObjectStore, clock: Clock
 ) -> None:
-    schedule = SnapshotSchedule(
-        schedule_id="sched-1", datastore=DATASTORE, interval_s=3600.0
-    )
+    schedule = SnapshotSchedule(schedule_id="sched-1", datastore=DATASTORE, interval_s=3600.0)
     backup = engine(store, source_path, object_store, clock)
 
     assert len(backup.run_schedules((schedule,))) == 1
@@ -630,9 +626,7 @@ def test_a_drill_for_an_unknown_snapshot_is_refused(
     backup_engine = engine(store, source_path, object_store, clock)
     plan = backup_engine.default_restore_plan(
         restore_id="restore-1",
-        snapshot=type(
-            "Fake", (), {"snapshot_id": "snap-nope"}
-        )(),  # only .snapshot_id is read
+        snapshot=type("Fake", (), {"snapshot_id": "snap-nope"})(),  # only .snapshot_id is read
         target_cell="cell-drill-1",
         max_acceptable_data_loss_seconds=LOSS_BUDGET_S,
         expected_rto_seconds=RTO_TARGET_S,

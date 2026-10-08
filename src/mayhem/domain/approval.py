@@ -426,8 +426,10 @@ def approval_reasons(
         now=now,
     ):
         reasons.append(InvalidationReason.APPROVER_ROLE)
-    if separation_of_duties and plan_author is not None and (
-        approval.approver.principal_id == plan_author
+    if (
+        separation_of_duties
+        and plan_author is not None
+        and (approval.approver.principal_id == plan_author)
     ):
         reasons.append(InvalidationReason.SELF_APPROVED)
     return order_reasons(reasons)

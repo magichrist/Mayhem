@@ -501,9 +501,7 @@ class TestMigration:
         store = Store.open_migrated(db_path, migrations=MIGRATIONS)
         journal = SqliteFabricJournal(store)
         journal.append(
-            DispatchClaim(
-                command=sign(keys()), controller_id=CONTROLLER, claimed_at=NOW
-            )
+            DispatchClaim(command=sign(keys()), controller_id=CONTROLLER, claimed_at=NOW)
         )
         assert journal.count() == 1
 
@@ -519,9 +517,7 @@ class TestMigration:
         # them" — not as a list pinned to today's head, which would fail the day
         # 34 is registered while the journal's down path stayed perfectly fine.
         reapplied = store.migrate(migrations=MIGRATIONS)
-        assert set(reapplied) == {
-            m.migration_id for m in MIGRATIONS if m.version > PRIOR_HEAD
-        }
+        assert set(reapplied) == {m.migration_id for m in MIGRATIONS if m.version > PRIOR_HEAD}
         assert FABRIC_JOURNAL_MIGRATION.migration_id in reapplied
         assert store.schema_version == MIGRATIONS[-1].version
         assert FabricJournalTable(store).table_exists() is True
@@ -534,9 +530,7 @@ class TestMigration:
                     f"INSERT INTO {FABRIC_JOURNAL_TABLE}"
                     " (run_id, step_id, phase, command_id, epoch, controller_id,"
                     " recorded_at, payload_digest, entry_json)"
-                    " VALUES ('r','s','imagined','fc-1',1,'ctl','t','"
-                    + ("f" * 64)
-                    + "','{}')"
+                    " VALUES ('r','s','imagined','fc-1',1,'ctl','t','" + ("f" * 64) + "','{}')"
                 )
 
     def test_the_schema_pins_the_digest_column_to_hex(self, store: Store) -> None:
@@ -576,9 +570,7 @@ class TestDurableJournal:
         assert entries[0].command.nonce == command.nonce  # type: ignore[union-attr]
         assert entries[1].lease_id == "l-1"  # type: ignore[union-attr]
 
-    def test_the_stored_row_keeps_the_whole_envelope_and_its_epoch(
-        self, store: Store
-    ) -> None:
+    def test_the_stored_row_keeps_the_whole_envelope_and_its_epoch(self, store: Store) -> None:
         command = sign(keys(), epoch=4)
         SqliteFabricJournal(store).append(
             DispatchClaim(command=command, controller_id=CONTROLLER, claimed_at=NOW)
@@ -679,9 +671,7 @@ class TestJournalIntegrity:
         assert excinfo.value.rule == FabricJournalIntegrityError.RULE_DIGEST
         assert "edited behind the model" in str(excinfo.value)
 
-    def test_an_index_column_that_disagrees_with_the_payload_is_refused(
-        self, store: Store
-    ) -> None:
+    def test_an_index_column_that_disagrees_with_the_payload_is_refused(self, store: Store) -> None:
         journal = SqliteFabricJournal(store)
         journal.append(
             DispatchClaim(command=sign(keys()), controller_id=CONTROLLER, claimed_at=NOW)
@@ -746,9 +736,7 @@ class TestJournalIntegrity:
 
         assert excinfo.value.rule == FabricJournalIntegrityError.RULE_PAYLOAD_SHAPE
 
-    def test_a_row_whose_payload_names_nothing_is_refused_at_write_time(
-        self, store: Store
-    ) -> None:
+    def test_a_row_whose_payload_names_nothing_is_refused_at_write_time(self, store: Store) -> None:
         with pytest.raises(FabricJournalIntegrityError) as excinfo:
             FabricJournalRow.of(
                 run_id=RUN_ID,
@@ -826,9 +814,7 @@ class TestDurableCrashResume:
 
     def test_the_deposed_owner_is_refused_after_a_durable_resume(self, store: Store) -> None:
         _engine(store, ScriptedSession(_applied(lease=_lease("l-1")))).dispatch(_request())
-        successor = _engine(
-            store, ScriptedSession(_applied()), controller_id="ctl-b"
-        )
+        successor = _engine(store, ScriptedSession(_applied()), controller_id="ctl-b")
         successor.dispatch(
             _request(sign(keys(), nonce=2, epoch=2, command_id="fc-2", idempotency_key="idem-2"))
         )
@@ -898,9 +884,7 @@ class TestDurableCrashResume:
     def test_the_settled_outcome_survives_a_store_reopen(self, db_path: Path) -> None:
         store = Store.open_migrated(db_path, migrations=MIGRATIONS)
         command = sign(keys(), idempotency_key="idem-persist")
-        _engine(store, ScriptedSession(_applied(lease=_lease("l-1")))).dispatch(
-            _request(command)
-        )
+        _engine(store, ScriptedSession(_applied(lease=_lease("l-1")))).dispatch(_request(command))
         store.close()
 
         reopened = Store.open_migrated(db_path, migrations=MIGRATIONS)
@@ -917,9 +901,7 @@ class TestDurableCrashResume:
         assert retry_session.calls == [], "a retry across a restart must not re-run the provider"
         reopened.close()
 
-    def test_a_second_effect_at_one_epoch_is_still_refused_durably(
-        self, store: Store
-    ) -> None:
+    def test_a_second_effect_at_one_epoch_is_still_refused_durably(self, store: Store) -> None:
         _engine(store, ScriptedSession(_applied())).dispatch(_request())
         session = ScriptedSession(_applied())
 
@@ -971,9 +953,7 @@ class TestVerificationWiring:
         assert dispatch.verified is True
         assert dispatch.algorithm == ALGORITHM_HMAC_SHA256
 
-    def test_the_sealed_digest_is_over_the_bytes_the_verifier_checked(
-        self, store: Store
-    ) -> None:
+    def test_the_sealed_digest_is_over_the_bytes_the_verifier_checked(self, store: Store) -> None:
         command = sign(keys())
         _seal_dispatch(store, result=_applied(), command=command)
 
@@ -984,9 +964,7 @@ class TestVerificationWiring:
         # "what was signed" and "what is recorded" cannot mean two things.
         assert dispatch.envelope_digest == sha256_hex(signed_payload(command).decode("utf-8"))
 
-    def test_an_unsigned_command_is_refused_with_fabric_undersigned(
-        self, store: Store
-    ) -> None:
+    def test_an_unsigned_command_is_refused_with_fabric_undersigned(self, store: Store) -> None:
         session = ScriptedSession(_applied())
         engine = _engine(store, session, verifier=_verifier(store))
         forged = forge(sign(keys()), signature="A" * 43)
@@ -999,9 +977,7 @@ class TestVerificationWiring:
         assert session.calls == []
         assert SqliteFabricJournal(store).count(RUN_ID) == 0
 
-    def test_a_tampered_envelope_is_refused_with_fabric_undersigned(
-        self, store: Store
-    ) -> None:
+    def test_a_tampered_envelope_is_refused_with_fabric_undersigned(self, store: Store) -> None:
         session = ScriptedSession(_applied())
         engine = _engine(store, session, verifier=_verifier(store))
         tampered = forge(sign(keys()), idempotency_key="idem-tampered")
@@ -1082,9 +1058,7 @@ class TestVerificationWiring:
         assert excinfo.value.code == FABRIC_REPLAYED_NONCE
         assert session.calls == []
 
-    def test_a_replay_caught_by_plan_19s_own_ledger_is_refused_by_name(
-        self, store: Store
-    ) -> None:
+    def test_a_replay_caught_by_plan_19s_own_ledger_is_refused_by_name(self, store: Store) -> None:
         # The controller's journal and the agent-side nonce ledger are two
         # different records of the same single-use property. This spends the
         # nonce in plan 19's table only, so the refusal can only come from there.
@@ -1147,9 +1121,7 @@ class TestVerificationWiring:
     def test_a_signature_port_that_cannot_verify_fails_closed(self, store: Store) -> None:
         AgentIdentityRepository(store).save(_identity())
         session = ScriptedSession(_applied())
-        engine = _engine(
-            store, session, verifier=_x509_verifier(store)
-        )
+        engine = _engine(store, session, verifier=_x509_verifier(store))
 
         with pytest.raises(FabricCommandRefused) as excinfo:
             engine.dispatch(_request())
@@ -1168,9 +1140,7 @@ class TestVerificationWiring:
         # The backstop: a verifier that propagates its own unavailability instead
         # of folding it into a check outcome still must not produce a dispatch.
         session = ScriptedSession(_applied())
-        engine = _engine(
-            store, session, verifier=_accepts_port(_UnavailableVerifier())
-        )
+        engine = _engine(store, session, verifier=_accepts_port(_UnavailableVerifier()))
 
         with pytest.raises(FabricCommandRefused) as excinfo:
             engine.dispatch(_request())
@@ -1195,9 +1165,7 @@ class TestVerificationWiring:
 
         assert session.calls == []
 
-    def test_a_refused_command_spends_no_nonce_in_the_agents_ledger(
-        self, store: Store
-    ) -> None:
+    def test_a_refused_command_spends_no_nonce_in_the_agents_ledger(self, store: Store) -> None:
         # The placement of verification in the preflight is a decision, and this
         # is its consequence: a refusal leaves the agent-side nonce unspent, so a
         # legitimate retry of the same intent can still be minted.
@@ -1372,9 +1340,7 @@ class TestSealing:
         assert timeline.settlements[0].outcome == StepOutcome.COMPLETED.value
         assert timeline.settlements[0].lease_id == "l-1"
 
-    def test_the_sealed_chain_reloads_and_verifies_from_stored_bytes(
-        self, store: Store
-    ) -> None:
+    def test_the_sealed_chain_reloads_and_verifies_from_stored_bytes(self, store: Store) -> None:
         _seal_dispatch(store, result=_applied())
 
         events = load_fabric_chain(store, RUN_ID)
@@ -1405,9 +1371,7 @@ class TestSealing:
             ScriptedSession(),
             evidence=FabricEvidenceRecorder(store),
         )
-        retry = engine.dispatch(
-            _request(sign(keys(), nonce=2, command_id="fc-retry"))
-        )
+        retry = engine.dispatch(_request(sign(keys(), nonce=2, command_id="fc-retry")))
         assert retry.retried is True
 
         # A retry is still a *dispatch*: the retry's own claim is sealed too, and
@@ -1561,9 +1525,7 @@ class TestSealing:
         assert timeline.verified is False
         assert timeline.chain_verification.errors
 
-    def test_settlement_outcomes_read_back_as_the_engine_spells_them(
-        self, store: Store
-    ) -> None:
+    def test_settlement_outcomes_read_back_as_the_engine_spells_them(self, store: Store) -> None:
         _seal_dispatch(store, result=_drifted())
         settlement = fabric_timeline(store, RUN_ID).settlements[0]
 

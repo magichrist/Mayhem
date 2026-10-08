@@ -215,9 +215,7 @@ class _Adapter(RuntimeAdapter):
     def netns(self, container_id: str) -> str | None:
         return None
 
-    def filter_by_compose(
-        self, project: str, services: tuple[str, ...] | None = None
-    ) -> None:
+    def filter_by_compose(self, project: str, services: tuple[str, ...] | None = None) -> None:
         return None
 
     def filter_by_names(self, names: list[str]) -> None:
@@ -345,9 +343,7 @@ def _environment(
     )
 
 
-def _request(
-    *, run_id: str = "r-campaign-1", spec: DrillSpec | None = None
-) -> CampaignRunRequest:
+def _request(*, run_id: str = "r-campaign-1", spec: DrillSpec | None = None) -> CampaignRunRequest:
     return CampaignRunRequest(
         run_id=run_id,
         campaign_id="camp-1",
@@ -434,7 +430,8 @@ def test_the_shared_core_has_no_origin_branch_anywhere_in_the_module() -> None:
                 offenders.append(f"line {node.lineno}: {ast.unparse(node.test)} {hit}")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id == "getattr" and any(
-                isinstance(arg, ast.Constant) and arg.value == word for arg in node.args
+                isinstance(arg, ast.Constant) and arg.value == word
+                for arg in node.args
                 for word in ORIGIN_WORDS
             ):
                 offenders.append(f"line {node.lineno}: getattr({node.args[1]!r})")
@@ -483,16 +480,10 @@ def test_the_shared_core_reads_no_clock_and_no_environment() -> None:
     # Scanned as *code*: the docstring is allowed to say "reads no clock", and
     # ``environment`` is a parameter name that contains "environ". Only a real
     # call or a real name lookup is a read.
-    calls = [
-        f"{ast.unparse(node.func)}"
-        for node in ast.walk(core)
-        if isinstance(node, ast.Call)
-    ]
+    calls = [f"{ast.unparse(node.func)}" for node in ast.walk(core) if isinstance(node, ast.Call)]
     forbidden_calls = ("datetime.now", "utc_now", "monotonic", "getenv", "time.time")
     for needle in forbidden_calls:
-        assert not any(needle in call for call in calls), (
-            f"compile_campaign_run calls {needle}"
-        )
+        assert not any(needle in call for call in calls), f"compile_campaign_run calls {needle}"
     assert "os.environ" not in body
     assert "import os" not in body
 
@@ -687,9 +678,7 @@ def test_the_real_admission_gate_still_speaks_for_the_shared_dispatch() -> None:
     assert dispatch.plan.environment_fingerprint == FINGERPRINT
     assert environment.ctx.fingerprint == "some-other-environment"
     with pytest.raises(SafetyRefusedError) as excinfo:
-        validate_plan(
-            dispatch.plan, environment.graph, environment.ctx, environment.adapter
-        )
+        validate_plan(dispatch.plan, environment.graph, environment.ctx, environment.adapter)
     assert "environment.fingerprint_mismatch" in str(excinfo.value)
 
 
@@ -809,9 +798,7 @@ def _budget(*, team_limit: float | None = 1_000.0) -> BudgetNode:
     the probe has to cope with: the leaf charge resolves at the experiment level
     rather than at a per-fault node that was never filled in.
     """
-    experiment = BudgetNode(
-        scope=BudgetScope.EXPERIMENT, key="exp-1", limit_s=1_000.0
-    )
+    experiment = BudgetNode(scope=BudgetScope.EXPERIMENT, key="exp-1", limit_s=1_000.0)
     service = BudgetNode(
         scope=BudgetScope.SERVICE, key="api-svc", limit_s=1_000.0, children=(experiment,)
     )
@@ -891,9 +878,7 @@ def test_an_exhausted_ancestor_refuses_even_with_leaf_headroom() -> None:
     assert verdict.rule_id == CAMPAIGN_BUDGET_LIMIT
     assert "team/sre" in verdict.reason
     assert "limit" in verdict.reason
-    assert CampaignBudgetVerdict(allowed=False).describe().startswith(
-        "campaign budget refuses"
-    )
+    assert CampaignBudgetVerdict(allowed=False).describe().startswith("campaign budget refuses")
 
 
 def test_a_budget_with_headroom_admits_and_returns_the_committed_tree() -> None:
@@ -975,4 +960,3 @@ def test_the_budget_probe_does_not_read_a_clock() -> None:
 
     assert list(signature.parameters) == ["budget", "path", "plan"]
     assert "now" not in signature.parameters
-

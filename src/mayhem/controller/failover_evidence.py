@@ -370,9 +370,7 @@ class FailoverEvidenceRecorder:
             ),
         )
         if not verify_chain(events).valid:
-            raise AttestationError(
-                f"refusing to persist an invalid HA chain for {chain_id!r}"
-            )
+            raise AttestationError(f"refusing to persist an invalid HA chain for {chain_id!r}")
         if not verify_manifest(manifest, events).valid:
             raise AttestationError(f"refusing to persist an invalid HA manifest {manifest_id!r}")
         repository.save_chain(chain_id, events, sealed_at=reading.wall_clock)
@@ -497,9 +495,7 @@ class RotationTimeline:
 def failover_timeline(store: Store, scope: str) -> FailoverTimeline:
     """Rebuild ``scope``'s leadership history from stored, re-verified bytes."""
     events = load_failover_chain(store, scope)
-    return FailoverTimeline(
-        scope=scope, events=events, verified=verify_chain(events).valid
-    )
+    return FailoverTimeline(scope=scope, events=events, verified=verify_chain(events).valid)
 
 
 def rotation_timeline(store: Store, controller_id: str) -> RotationTimeline:

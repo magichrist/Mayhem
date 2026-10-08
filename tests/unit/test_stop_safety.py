@@ -694,8 +694,7 @@ def test_an_open_dispatch_claim_keeps_the_run_dirty(tmp_path: Path) -> None:
         names = {check.name for check in execution.report.checks}
         assert "residue:claim_unsettled:cmd-open-1" in names
         assert any(
-            receipt.evidence_ref == claim_ref("cmd-open-1")
-            for receipt in execution.record.receipts
+            receipt.evidence_ref == claim_ref("cmd-open-1") for receipt in execution.record.receipts
         )
         payload = stop_evidence_payload(execution)
         assert payload["verdict"] == PostflightVerdict.DIRTY.value
@@ -770,8 +769,13 @@ def test_neither_the_run_path_nor_the_stop_has_a_bypass() -> None:
     assert not engine_params & forbidden, engine_params & forbidden
     assert not gate_params & forbidden, gate_params & forbidden
     assert not [n for n in dir(execution_module) if "force" in n or "skip" in n]
-    assert not [n for n in dir(RunEngine) if "preflight" in n.lower() and not n.startswith("_") and
-                n not in {"preflight_gate", "preflight_report", "with_preflight_gate"}], (
+    assert not [
+        n
+        for n in dir(RunEngine)
+        if "preflight" in n.lower()
+        and not n.startswith("_")
+        and n not in {"preflight_gate", "preflight_report", "with_preflight_gate"}
+    ], (
         "RunEngine grew a public preflight entry point other than the attach point and the "
         "report property; a third one would be somewhere to bypass it"
     )
@@ -935,6 +939,7 @@ def test_the_catalogue_lists_every_check_the_gate_can_run() -> None:
         assert f"`{name}`" in text, f"the catalogue omits {name}"
     assert len(REAL_CHECKS) + len(PORT_CHECKS) == len(ALL_CHECKS)
 
+
 # ==============================================================================
 # Phase 5 — the matrix, and the three refusals the plan names by hand
 # ==============================================================================
@@ -963,9 +968,7 @@ def _trigger(signal: str) -> StopTrigger:
 
 
 @pytest.mark.parametrize("fault_id", FAULT_FAMILIES)
-@pytest.mark.parametrize(
-    "signal", ["operator_request", "condition_tripped", "controller_lost"]
-)
+@pytest.mark.parametrize("signal", ["operator_request", "condition_tripped", "controller_lost"])
 def test_every_trigger_stops_every_fault_family_the_same_way(
     tmp_path: Path, fault_id: str, signal: str
 ) -> None:
@@ -1023,8 +1026,10 @@ def test_a_fault_family_whose_compensation_fails_is_never_closed_clean(tmp_path:
         for fault_id in FAULT_FAMILIES:
             run_id = f"r-{fault_id.replace('.', '-')}"
             _seed_run(store, run_id)
-            _seed_lease(store, _lease(wedged=True).model_copy(update={"fault_id": fault_id,
-                                                                     "run_id": run_id}))
+            _seed_lease(
+                store,
+                _lease(wedged=True).model_copy(update={"fault_id": fault_id, "run_id": run_id}),
+            )
             outcome = stop_cmd.run_stop(
                 store=store,
                 principal=Principal(principal_id="u-ana"),

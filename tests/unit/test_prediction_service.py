@@ -32,12 +32,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from mayhem.config import PolicyCfg
-from mayhem.domain.policy_gate import (
-    MutationSink,
-    PolicyGateInputs,
-    capability_requirements_for,
-    derive_facts,
-)
 from mayhem.controller.prediction_service import (
     ADMISSION_WIRING_NOTE,
     ENFORCED_CEILING_RULE_IDS,
@@ -77,6 +71,12 @@ from mayhem.domain.policy import (
     PolicyOperator,
     PolicyPredicate,
     PolicyRule,
+)
+from mayhem.domain.policy_gate import (
+    MutationSink,
+    PolicyGateInputs,
+    capability_requirements_for,
+    derive_facts,
 )
 from mayhem.domain.prediction import (
     RULE_FORBIDDEN_FAULT_PAIRS,
@@ -701,9 +701,7 @@ def test_a_calmer_prediction_would_have_landed_in_the_disagrees_state():
     # through a budget nothing trips. No context is needed, because the assertion
     # is about the *state* the comparison lands in rather than about a report.
     too_calm = predict_impact(graph, plan, budget=_permissive())
-    monkey = prediction_service._agreement(
-        too_calm, frozenset({RULE_MAX_SERVICES_PCT})
-    )
+    monkey = prediction_service._agreement(too_calm, frozenset({RULE_MAX_SERVICES_PCT}))
     assert monkey.state is AgreementState.DISAGREES
     assert monkey.usable_for_approval is False
     # And even a state that is not a disagreement keeps its approval answer, so
@@ -977,9 +975,7 @@ def test_an_unmeasurable_percentage_is_none_and_never_a_passing_zero():
 
 
 def test_breached_dimensions_lists_only_the_ceilings_that_fired():
-    report = _ceiling_report(
-        BlastCeilings(max_dependency_depth=1, max_customer_facing_services=99)
-    )
+    report = _ceiling_report(BlastCeilings(max_dependency_depth=1, max_customer_facing_services=99))
     breached = report.breached_dimensions()
     assert [d.dimension for d in breached] == [CeilingName.MAX_DEPENDENCY_DEPTH]
     assert all(d.breached for d in breached)

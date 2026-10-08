@@ -326,9 +326,7 @@ class CredentialRotationService:
         moment = self._clock() if at is None else at
         return tuple(
             self.verdict_for(identity, at=moment)
-            for identity in sorted(
-                self._identities.list_agents(), key=lambda i: i.agent_id
-            )
+            for identity in sorted(self._identities.list_agents(), key=lambda i: i.agent_id)
         )
 
     def due_agents(self, *, at: datetime | None = None) -> tuple[str, ...]:
@@ -353,10 +351,7 @@ class CredentialRotationService:
         moment = self._clock() if at is None else at
         identity = self._identities.load(agent_id)
         if identity is None:
-            msg = (
-                f"cannot rotate a credential for unenrolled agent {agent_id!r}; "
-                "enrol it first"
-            )
+            msg = f"cannot rotate a credential for unenrolled agent {agent_id!r}; enrol it first"
             raise DomainError(msg)
         successor_id = credential_id or f"{agent_id}-c{identity.credential.generation + 1}"
         rotated = self._identities.rotate_credential(

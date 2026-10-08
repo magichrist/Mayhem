@@ -616,9 +616,7 @@ class CommandRefusedError(DomainError):
         self.outcomes = tuple(outcomes)
         self.remediation = remediation
         names = ", ".join(check.value for check in self.failed) or "no check recorded"
-        super().__init__(
-            f"{code}: command '{command_id}' refused; failed check(s): {names}"
-        )
+        super().__init__(f"{code}: command '{command_id}' refused; failed check(s): {names}")
 
     def describe(self) -> str:
         lines = [str(self)]
@@ -833,11 +831,7 @@ class AgentCommandVerifier:
             for credential in identity.superseded_credentials
             if credential.credential_id == command.signing_key_id
         ]
-        hint = (
-            " (that credential is superseded; rotation retires its key)"
-            if retired
-            else ""
-        )
+        hint = " (that credential is superseded; rotation retires its key)" if retired else ""
         return CheckOutcome(
             check=VerificationCheck.KEY_BINDING,
             passed=False,
@@ -895,9 +889,7 @@ class AgentCommandVerifier:
         )
         return grant
 
-    def _check_certificate(
-        self, identity: AgentIdentity | None, moment: datetime
-    ) -> CheckOutcome:
+    def _check_certificate(self, identity: AgentIdentity | None, moment: datetime) -> CheckOutcome:
         """Recorded certificate window and pinning. **Not chain validation.**
 
         ``CertificateRef.chain_verified`` is ``False`` by construction in Phase 1

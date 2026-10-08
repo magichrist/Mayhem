@@ -212,7 +212,7 @@ class TestWorkflowGeneration:
         assert f"default: {IMAGE}" in rendered
         assert "merge_request_event" in rendered
         assert "MAYHEM_PLAN_REF: $[[ inputs.plan_ref ]]" in rendered
-        assert '${{' not in rendered
+        assert "${{" not in rendered
 
     def test_a_github_expression_in_a_gitlab_component_is_refused(self) -> None:
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -238,9 +238,7 @@ class TestWorkflowGeneration:
         ],
         ids=["subshell", "backtick", "semicolon", "newline", "expansion", "single", "double"],
     )
-    def test_an_untrusted_value_carrying_shell_syntax_is_refused(
-        self, expression: str
-    ) -> None:
+    def test_an_untrusted_value_carrying_shell_syntax_is_refused(self, expression: str) -> None:
         with pytest.raises(InvariantViolationError) as excinfo:
             _spec(untrusted_inputs=(("plan_ref", expression),))
         assert excinfo.value.rule == "ci_surface.untrusted_value_in_script"
@@ -344,11 +342,15 @@ may this open a release: **no**
 
 def _coverage() -> tuple[CoverageSurface, ...]:
     postgres = CoverageCell(
-        target="checkout", fault_kind="postgres_failure", execution_context="container",
+        target="checkout",
+        fault_kind="postgres_failure",
+        execution_context="container",
         parameter_band="default",
     )
     latency = CoverageCell(
-        target="checkout", fault_kind="http_timeout", execution_context="container",
+        target="checkout",
+        fault_kind="http_timeout",
+        execution_context="container",
         parameter_band="default",
     )
     surface = CoverageSurface(
@@ -523,9 +525,7 @@ class TestCommitStatus:
         [None, _RaisingPort(), _NonePort(), _WrongShapePort()],
         ids=["unbound", "raised", "answered-none", "wrong-shape"],
     )
-    def test_four_ways_to_have_no_answer_all_report_unavailable(
-        self, port: object
-    ) -> None:
+    def test_four_ways_to_have_no_answer_all_report_unavailable(self, port: object) -> None:
         publication = publish_commit_status(
             port, git_sha=GIT_SHA, status=status_for(self._verdict((_pass_check(),)))
         )

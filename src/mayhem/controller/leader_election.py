@@ -290,9 +290,7 @@ class LeadershipStore(Protocol):
 
     def record_mint(self, run_id: str, step_id: str, fence: FencingToken) -> DispatchedStep: ...
 
-    def record_dispatch(
-        self, command: FabricCommand, *, at: datetime
-    ) -> DispatchedStep: ...
+    def record_dispatch(self, command: FabricCommand, *, at: datetime) -> DispatchedStep: ...
 
 
 class SqliteLeadershipStore:
@@ -307,9 +305,7 @@ class SqliteLeadershipStore:
         self._store = store
 
     def load_lease(self, scope: str) -> LeaderLease | None:
-        rows = self._store.query(
-            "SELECT * FROM control_plane_leaders WHERE scope = ?", (scope,)
-        )
+        rows = self._store.query("SELECT * FROM control_plane_leaders WHERE scope = ?", (scope,))
         return LeaderLease.from_row(rows[0]) if rows else None
 
     def claim(self, lease: LeaderLease, *, force: bool = False) -> LeaderLease:
@@ -660,9 +656,7 @@ class LeaderElection:
         fence = (
             recorded.fence.next_fence(holder=holder, now=moment)
             if recorded is not None
-            else FencingToken.issue(
-                run_id=run_id, step_id=step_id, holder=holder, now=moment
-            )
+            else FencingToken.issue(run_id=run_id, step_id=step_id, holder=holder, now=moment)
         )
         self._store.record_mint(run_id, step_id, fence)
         return fence

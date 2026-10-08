@@ -148,6 +148,7 @@ if TYPE_CHECKING:
 
         def record_checklist(self, run_id: str, report: PreflightReport) -> None: ...
 
+
 __all__ = [
     "DEFAULT_PRINCIPAL",
     "EMERGENCY_STOP_CHECKLIST_KIND",
@@ -973,9 +974,7 @@ def run_state_for(
     if not rows:
         raise MayhemCliError(
             code="validation_error",
-            message=(
-                f"no such run {run_id!r}: mayhem has no record of it, so it cannot stop it"
-            ),
+            message=(f"no such run {run_id!r}: mayhem has no record of it, so it cannot stop it"),
             details={"run_id": run_id},
             remediation="run mayhem inspect runs to list the runs mayhem recorded",
         )
@@ -1191,9 +1190,7 @@ def run_stop(
             )
         engine = _stop_engine(store, the_ledger, holder=f"stop:{command.principal}", claims=claims)
         executions.append(
-            asyncio.run(
-                engine.execute(run_command, state=state, level=effective_level, now=now)
-            )
+            asyncio.run(engine.execute(run_command, state=state, level=effective_level, now=now))
         )
 
     # Phase 4: the same four facts the ledger recorded, hashed into the attested
@@ -1270,8 +1267,7 @@ def _principal_for(principal_id: str) -> Principal:
             ["--reason", "reason"],
             required=True,
             metavar="TEXT",
-            help="Why the run is being stopped. Required: a stop with no reason cannot "
-            "be sealed.",
+            help="Why the run is being stopped. Required: a stop with no reason cannot be sealed.",
         ),
         click.Option(
             ["--level", "level"],
@@ -1447,8 +1443,7 @@ def _echo_text(outcome: StopOutcome) -> None:
             + (
                 "dry-run previewed the stop without walking the ladder"
                 if outcome.dry_run
-                else "this environment holds no unsettled lease, so there was nothing "
-                "to escalate"
+                else "this environment holds no unsettled lease, so there was nothing to escalate"
             )
         )
         return

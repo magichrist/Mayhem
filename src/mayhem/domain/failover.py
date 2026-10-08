@@ -749,9 +749,7 @@ class PromotionRefusedError(DomainError):
         *,
         remediation: str = _REMEDIATION_INDETERMINATE,
     ) -> None:
-        self.code = (
-            PRIMARY_INDETERMINATE if decision.indeterminate else PROMOTION_REFUSED
-        )
+        self.code = PRIMARY_INDETERMINATE if decision.indeterminate else PROMOTION_REFUSED
         self.decision = decision
         self.refusals = decision.refusals
         self.remediation = remediation
@@ -776,12 +774,7 @@ def require_promotable(request: PromotionRequest) -> None:
                 request=request,
                 outcome=PromotionOutcome.REFUSED,
                 refusals=refusals,
-                detail=(
-                    "no promotion: "
-                    + "; ".join(
-                        reason.value for reason in refusals
-                    )
-                ),
+                detail=("no promotion: " + "; ".join(reason.value for reason in refusals)),
             )
         )
 

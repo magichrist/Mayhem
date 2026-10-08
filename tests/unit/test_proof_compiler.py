@@ -233,14 +233,10 @@ def _plan(
                 raw_action=InjectFault(fault=fault_id, selectors=(selector,), duration=duration),
                 fault=PlannedFault(
                     fault_id=fault_id,
-                    targets=(
-                        ResolvedTarget(selector=selector, node_ids=frozenset({node_id})),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({node_id})),),
                     duration=duration,
                     undo_ops=(UndoOp(op="tc.del_qdisc"),) if compensated else (),
-                    verify_probes=(
-                        (VerifyProbe(probe="tc.qdisc_absent"),) if probes else ()
-                    ),
+                    verify_probes=((VerifyProbe(probe="tc.qdisc_absent"),) if probes else ()),
                 ),
             )
         )
@@ -275,9 +271,7 @@ class _Adapter(RuntimeAdapter):
         )
 
     def evaluate(self, reqs: CapabilityRequirements) -> VerdictResult:
-        verdict = (
-            CapabilityVerdict.UNSUPPORTED if self.blocking else CapabilityVerdict.SUPPORTED
-        )
+        verdict = CapabilityVerdict.UNSUPPORTED if self.blocking else CapabilityVerdict.SUPPORTED
         return VerdictResult(
             engine=self.id,
             requirements=reqs,
@@ -606,9 +600,7 @@ def test_required_approvals_fails_on_an_intent_bound_to_another_plan():
 
 def test_required_approvals_passes_on_an_intent_bound_to_this_plan():
     plan = _plan()
-    intent = ExecutionIntent(
-        plan_hash=canonical_plan_digest(plan), engine="podman", actor="ops"
-    )
+    intent = ExecutionIntent(plan_hash=canonical_plan_digest(plan), engine="podman", actor="ops")
     proof = compile_safety_proof(
         plan, _graph(), _ctx(), adapter=_Adapter(), intent=intent, engine="podman"
     )
@@ -699,9 +691,7 @@ _GATE_CASES: tuple[tuple[str, ExecutionPlan, SafetyContext, TopologyGraph], ...]
         _ctx(
             budget=_permissive().model_copy(
                 update={
-                    "forbidden_fault_pairs": frozenset(
-                        {frozenset({"proc.pause", "net.latency"})}
-                    )
+                    "forbidden_fault_pairs": frozenset({frozenset({"proc.pause", "net.latency"})})
                 }
             )
         ),
@@ -971,7 +961,7 @@ def test_the_completeness_check_fails_on_a_newly_added_unmapped_rule():
     "every rule has an owning line" could pass because the extractor found
     nothing at all — and the next lane would repeat the gap this phase closed.
     """
-    synthetic = '''
+    synthetic = """
 def _new_gate_check(ctx):
     _deny_decision(
         "policy.deny_faults",
@@ -980,7 +970,7 @@ def _new_gate_check(ctx):
         "",
     )
     raise SafetyRefusedError("brand.new.unmapped.rule", "a gate grew a new refusal")
-'''
+"""
 
     found = blameable_rule_ids(synthetic)
 
@@ -1044,9 +1034,7 @@ def test_a_configured_approval_gate_that_allows_reports_its_decision_on_the_line
     plan = _plan()
     gate = _refusing_gate(plan)
     approval, approve_grant = _mint_approval(gate.proof, gate)
-    allowed = dataclass_replace(
-        gate, approvals=(approval,), grants=(*gate.grants, approve_grant)
-    )
+    allowed = dataclass_replace(gate, approvals=(approval,), grants=(*gate.grants, approve_grant))
 
     proof = compile_safety_proof(
         plan,
@@ -1117,16 +1105,10 @@ def _ceiling_plan() -> ExecutionPlan:
             PlannedStep(
                 id="s0",
                 seq=0,
-                raw_action=InjectFault(
-                    fault="net.latency", selectors=(selector,), duration=10.0
-                ),
+                raw_action=InjectFault(fault="net.latency", selectors=(selector,), duration=10.0),
                 fault=PlannedFault(
                     fault_id="net.latency",
-                    targets=(
-                        ResolvedTarget(
-                            selector=selector, node_ids=frozenset({"n-core"})
-                        ),
-                    ),
+                    targets=(ResolvedTarget(selector=selector, node_ids=frozenset({"n-core"})),),
                     duration=10.0,
                     undo_ops=(UndoOp(op="tc.del_qdisc"),),
                     verify_probes=(VerifyProbe(probe="tc.qdisc_absent"),),
@@ -1616,9 +1598,10 @@ def test_the_approval_line_re_reads_the_plan_because_it_binds_to_it():
         compile_safety_proof(_plan(durations=(10.0, 11.0)), graph, ctx, adapter=_Adapter())
     )
 
-    assert before[ObligationName.REQUIRED_APPROVALS.value] != after[
-        ObligationName.REQUIRED_APPROVALS.value
-    ]
+    assert (
+        before[ObligationName.REQUIRED_APPROVALS.value]
+        != after[ObligationName.REQUIRED_APPROVALS.value]
+    )
 
 
 def test_a_different_policy_changes_the_line_that_reads_the_policy():
@@ -1633,9 +1616,7 @@ def test_a_different_policy_changes_the_line_that_reads_the_policy():
         )
     )
 
-    assert before[ObligationName.TARGET_POLICY.value] != after[
-        ObligationName.TARGET_POLICY.value
-    ]
+    assert before[ObligationName.TARGET_POLICY.value] != after[ObligationName.TARGET_POLICY.value]
 
 
 def test_two_different_plans_do_not_share_a_citation():
@@ -1864,7 +1845,7 @@ def test_a_proof_for_a_superseded_plan_digest_is_void_never_pass():
 
 
 def test_a_missing_required_obligation_voids_rather_than_fails():
-    """"Not checked" is not "checked and negative"."""
+    """ "Not checked" is not "checked and negative"."""
     graph, ctx = _graph(), _ctx()
     proof = compile_safety_proof(_plan(), graph, ctx, adapter=_Adapter())
     assert proof.verdict is ProofVerdict.PASS

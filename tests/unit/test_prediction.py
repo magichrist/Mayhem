@@ -387,7 +387,8 @@ def test_a_pod_group_is_keyed_by_namespace_and_owner():
 
 def test_both_pods_lost_moves_expected_capacity_to_minus_one_hundred():
     prediction = predict_impact(
-        _graph(), _plan(("net.latency", "api-1", 30.0), ("net.latency", "api-2", 30.0)),
+        _graph(),
+        _plan(("net.latency", "api-1", 30.0), ("net.latency", "api-2", 30.0)),
         budget=_permissive(),
     )
     assert prediction.capacity_known is True

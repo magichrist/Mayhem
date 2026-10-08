@@ -48,17 +48,6 @@ from mayhem.controller.policy_evidence import (
     seal_policy_decision,
     verify_decision_binding,
 )
-from mayhem.domain.policy_gate import (
-    RULE_BUDGET_EXHAUSTED,
-    RULE_POLICY_CONFIG,
-    BudgetAuthority,
-    ConfigDefect,
-    HierarchyBudgetView,
-    PolicyGateInputs,
-    QuotaBudgetView,
-    evaluate_gate,
-    reconcile_budgets,
-)
 from mayhem.controller.safety import SafetyContext, SafetyRefusedError, validate_plan
 from mayhem.domain.approval import ApprovalState
 from mayhem.domain.attestation import AttestedTimestamp
@@ -85,6 +74,17 @@ from mayhem.domain.policy import (
     PolicyPredicate,
     PolicyRule,
     evaluate_bundle,
+)
+from mayhem.domain.policy_gate import (
+    RULE_BUDGET_EXHAUSTED,
+    RULE_POLICY_CONFIG,
+    BudgetAuthority,
+    ConfigDefect,
+    HierarchyBudgetView,
+    PolicyGateInputs,
+    QuotaBudgetView,
+    evaluate_gate,
+    reconcile_budgets,
 )
 from mayhem.domain.quota import (
     RULE_BUDGET as QUOTA_RULE_BUDGET,
@@ -672,9 +672,7 @@ def _allowing_result(**kwargs: Any) -> Any:
             effect=PolicyEffect.ALLOW,
         )
     )
-    return evaluate_gate(
-        _plan("proc.pause"), _inputs(bundle, **kwargs), environment="production"
-    )
+    return evaluate_gate(_plan("proc.pause"), _inputs(bundle, **kwargs), environment="production")
 
 
 PLAN_DIGEST = sha256_hex(canonical_json({"plan": "run-1"}))
@@ -913,9 +911,7 @@ def test_control_an_expired_bundle_cannot_authorize_a_sealed_decision() -> None:
     assert valid.allowed
     assert valid.bundle is not None
     sealing_instant = T0 + timedelta(minutes=1)
-    refusal = verify_decision_binding(
-        valid.decision, valid.bundle, now=sealing_instant
-    )
+    refusal = verify_decision_binding(valid.decision, valid.bundle, now=sealing_instant)
     assert refusal is not None
     assert refusal.rule_id == RULE_BUNDLE_CANNOT_AUTHORIZE
     # The sealer's own clock is the result's clock, so a caller cannot hand it an
@@ -970,9 +966,7 @@ def test_control_a_denied_decision_cannot_be_sealed_as_an_authorization(tmp_path
     try:
         denied = evaluate_gate(
             _plan("proc.pause"),
-            _inputs(
-                _bundle(_rule("prod.forbids", *_env_production()))
-            ),
+            _inputs(_bundle(_rule("prod.forbids", *_env_production()))),
             environment="production",
         )
         assert denied.denied
@@ -1058,9 +1052,7 @@ def test_control_a_decision_replayed_from_recorded_inputs_reproduces_bit_for_bit
     assert replayed.decision_digest() == first["decision_digest"]
 
     # (b) The whole gate verdict, replayed from the same inputs.
-    second = policy_evidence(
-        evaluate_gate(plan, gate.with_now(T0), environment="production")
-    )
+    second = policy_evidence(evaluate_gate(plan, gate.with_now(T0), environment="production"))
     assert second["facts"] == first["facts"]
     assert second["facts_digest"] == first["facts_digest"]
     assert second["decision"] == first["decision"]
@@ -1094,9 +1086,7 @@ def test_control_a_replay_after_the_bundle_changes_does_not_reproduce() -> None:
         _rule("prod.allowed", *_env_production(), effect=PolicyEffect.ALLOW),
         version=2,
     )
-    after = policy_evidence(
-        evaluate_gate(plan, _inputs(after_policy), environment="production")
-    )
+    after = policy_evidence(evaluate_gate(plan, _inputs(after_policy), environment="production"))
     assert before["sealed_digest"] != after["sealed_digest"]
     assert before["decision"]["outcome"] == after["decision"]["outcome"] == "allow"
 

@@ -206,17 +206,13 @@ def _catalog(
 def _kinds(evidence: MarketplaceEvidence) -> list[str]:
     """The ``event_kind`` of every sealed activity, in write order."""
     return [
-        event.event_kind
-        for activity in evidence.activities()
-        for event in evidence.load(activity)
+        event.event_kind for activity in evidence.activities() for event in evidence.load(activity)
     ]
 
 
 def _payloads(evidence: MarketplaceEvidence) -> list[dict[str, object]]:
     return [
-        event.payload
-        for activity in evidence.activities()
-        for event in evidence.load(activity)
+        event.payload for activity in evidence.activities() for event in evidence.load(activity)
     ]
 
 
@@ -787,9 +783,7 @@ def test_guarded_factory_follows_the_real_clock_and_takes_no_now(
         observed_digest=_ARTIFACT_DIGEST,
         now=_NOW,
     )
-    guarded = registry.guarded_factory(
-        ARTIFACT_ID, version="1.4.2", factory=lambda: "runtime"
-    )
+    guarded = registry.guarded_factory(ARTIFACT_ID, version="1.4.2", factory=lambda: "runtime")
 
     monkeypatch.setattr(engine, "utc_now", lambda: _NOW)
     assert guarded() == "runtime"
@@ -1103,9 +1097,7 @@ def test_an_edited_sealed_event_is_detected_by_the_offline_verifier() -> None:
     activity_id = market.evidence.activities()[0]
     assert market.evidence.verify(activity_id).valid
 
-    rows = store.query(
-        "SELECT event_json FROM attestation_events WHERE run_id = ?", (activity_id,)
-    )
+    rows = store.query("SELECT event_json FROM attestation_events WHERE run_id = ?", (activity_id,))
     tampered = json.loads(str(rows[0][0]))
     tampered["payload"]["artifact_digest"] = _TAMPERED_DIGEST
     with store.write() as conn:

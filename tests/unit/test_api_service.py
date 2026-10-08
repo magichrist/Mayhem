@@ -652,9 +652,7 @@ class TestRoutingAndPagination:
 
     def test_an_unknown_path_names_the_routes_that_exist(self, wired: tuple[Any, str]) -> None:
         gateway, token = wired
-        response = gateway.dispatch(
-            _request("GET", f"{API_PREFIX}/nope", token=token)
-        )
+        response = gateway.dispatch(_request("GET", f"{API_PREFIX}/nope", token=token))
         assert response.status == 404
         assert _rule_of(response) == "api.route_unknown"
         assert response.envelope.meta["routes"], "the refusal must name what does exist"
@@ -705,13 +703,9 @@ class TestRoutingAndPagination:
         assert response.status == 400
         assert "not an integer" in str(response.envelope.errors[0])
 
-    def test_an_unknown_run_is_404_not_an_empty_page(
-        self, wired: tuple[Any, str]
-    ) -> None:
+    def test_an_unknown_run_is_404_not_an_empty_page(self, wired: tuple[Any, str]) -> None:
         gateway, token = wired
-        response = gateway.dispatch(
-            _request("GET", f"{API_PREFIX}/runs/run-9999", token=token)
-        )
+        response = gateway.dispatch(_request("GET", f"{API_PREFIX}/runs/run-9999", token=token))
         assert response.status == 404
         assert _rule_of(response) == "api.resource_not_found"
 
@@ -725,9 +719,7 @@ class TestRoutingAndPagination:
         assert rule
         assert rule in str(response.envelope.errors[0])
 
-    def test_the_default_page_size_is_the_documented_one(
-        self, wired: tuple[Any, str]
-    ) -> None:
+    def test_the_default_page_size_is_the_documented_one(self, wired: tuple[Any, str]) -> None:
         gateway, token = wired
         response = gateway.dispatch(_request("GET", f"{API_PREFIX}/runs", token=token))
         assert response.envelope.data["limit"] == DEFAULT_PAGE_SIZE

@@ -495,9 +495,7 @@ class TestPromotionMatrix:
         expected: ArtifactClass,
     ) -> None:
         artifact = _artifact(
-            registry=_registry(
-                registry_id=registry_id, scope=scope, organization=organization
-            ),
+            registry=_registry(registry_id=registry_id, scope=scope, organization=organization),
             publisher=_publisher(organization=organization),
         )
         assert classify_artifact(artifact, [], now=_NOW) is expected
@@ -570,7 +568,8 @@ class TestPromotionMatrix:
     def test_organization_private_is_not_promoted_by_certification(self) -> None:
         private = _artifact(
             registry=_registry(
-                registry_id="acme.private", scope=RegistryScope.ORGANIZATION_PRIVATE,
+                registry_id="acme.private",
+                scope=RegistryScope.ORGANIZATION_PRIVATE,
                 organization="Acme",
             ),
             publisher=_publisher(organization="Acme"),
@@ -615,9 +614,7 @@ class TestRequireTrustLabel:
 
     def test_verified_with_no_record_is_refused(self) -> None:
         with pytest.raises(TrustLabelError) as excinfo:
-            require_trust_label(
-                _artifact(), [], claimed=ArtifactClass.VERIFIED_COMMUNITY, now=_NOW
-            )
+            require_trust_label(_artifact(), [], claimed=ArtifactClass.VERIFIED_COMMUNITY, now=_NOW)
         assert excinfo.value.code == "no_certification_record"
         assert "no certification record was supplied" in str(excinfo.value)
 
@@ -694,7 +691,10 @@ class TestRequireTrustLabel:
     def test_a_word_outside_the_vocabulary_is_refused(self) -> None:
         with pytest.raises(TrustLabelError) as excinfo:
             require_trust_label(
-                _artifact(), [], claimed="trusted", now=_NOW  # type: ignore[arg-type]
+                _artifact(),
+                [],
+                claimed="trusted",
+                now=_NOW,  # type: ignore[arg-type]
             )
         assert excinfo.value.code == "artifact_class_not_supported"
 
@@ -967,7 +967,8 @@ class TestRevocation:
         assert revocation.applies_to(_artifact()) is True
         other = _artifact(
             registry=_registry(
-                registry_id="acme.private", scope=RegistryScope.ORGANIZATION_PRIVATE,
+                registry_id="acme.private",
+                scope=RegistryScope.ORGANIZATION_PRIVATE,
                 organization="Acme",
             ),
             publisher=_publisher(organization="Acme"),
@@ -1033,20 +1034,26 @@ class TestRevocation:
 
     def test_every_revocation_names_its_target(self) -> None:
         assert "acme.packs.net@1.4.2" in _revocation().names
-        assert "publisher acme.labs" in _revocation(
-            scope=RevocationScope.PUBLISHER,
-            artifact_id=None,
-            version=None,
-            digest=None,
-            publisher_id="acme.labs",
-        ).names
-        assert "registry community.registry" in _revocation(
-            scope=RevocationScope.REGISTRY,
-            artifact_id=None,
-            version=None,
-            digest=None,
-            registry_id="community.registry",
-        ).names
+        assert (
+            "publisher acme.labs"
+            in _revocation(
+                scope=RevocationScope.PUBLISHER,
+                artifact_id=None,
+                version=None,
+                digest=None,
+                publisher_id="acme.labs",
+            ).names
+        )
+        assert (
+            "registry community.registry"
+            in _revocation(
+                scope=RevocationScope.REGISTRY,
+                artifact_id=None,
+                version=None,
+                digest=None,
+                registry_id="community.registry",
+            ).names
+        )
 
 
 # ── approvals ───────────────────────────────────────────────────────────────
@@ -1131,18 +1138,14 @@ class TestFederation:
             organization="Acme",
             federates_with=(OFFICIAL_REGISTRY_ID,),
         )
-        artifact = _artifact(
-            registry=federated, publisher=_publisher(organization="Acme")
-        )
+        artifact = _artifact(registry=federated, publisher=_publisher(organization="Acme"))
         assert artifact.registry.is_official is False
         assert classify_artifact(artifact, [], now=_NOW) is ArtifactClass.ORGANIZATION_PRIVATE
         assert classify_artifact(artifact, [_cert(record=_certified())], now=_NOW) is (
             ArtifactClass.ORGANIZATION_PRIVATE
         )
         with pytest.raises(TrustLabelError) as excinfo:
-            require_trust_label(
-                artifact, [], claimed=ArtifactClass.OFFICIAL, now=_NOW
-            )
+            require_trust_label(artifact, [], claimed=ArtifactClass.OFFICIAL, now=_NOW)
         assert excinfo.value.code == "not_official_registry"
         assert "federation with it grants nothing" in str(excinfo.value)
 
@@ -1237,7 +1240,8 @@ class TestFederation:
         with pytest.raises(ArtifactDeclarationError) as excinfo:
             _artifact(
                 registry=_registry(
-                    registry_id="acme.private", scope=RegistryScope.ORGANIZATION_PRIVATE,
+                    registry_id="acme.private",
+                    scope=RegistryScope.ORGANIZATION_PRIVATE,
                     organization="Acme",
                 ),
                 publisher=_publisher(organization="Othercorp"),

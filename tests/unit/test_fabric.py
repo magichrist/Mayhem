@@ -714,9 +714,7 @@ class TestReservations:
         assert excinfo.value.code == FABRIC_RESOURCE_CONFLICT
 
     def test_free_resource_is_granted(self) -> None:
-        assert_reservation_available(
-            self._reservation(step_id="s-2", holder="agent-2"), now=NOW
-        )
+        assert_reservation_available(self._reservation(step_id="s-2", holder="agent-2"), now=NOW)
 
     def test_renewal_extends_the_ttl(self) -> None:
         renewed = self._reservation(ttl_seconds=60.0).renew(

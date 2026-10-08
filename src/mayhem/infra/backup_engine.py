@@ -117,8 +117,6 @@ if TYPE_CHECKING:
     from mayhem.domain.backup import ObjectiveReport
 
 
-
-
 class BackupError(DomainError):
     """A backup or restore operation refused. Nothing was reported as successful."""
 
@@ -187,9 +185,7 @@ class InMemoryObjectStore:
     def fetch(self, locator: str) -> bytes:
         key = self._key_of(locator)
         if key not in self.objects:
-            raise BackupUnavailableError(
-                f"object-store({self.name})", f"no object at key {key!r}"
-            )
+            raise BackupUnavailableError(f"object-store({self.name})", f"no object at key {key!r}")
         return self.objects[key]
 
     def contains(self, locator: str) -> bool:
@@ -615,8 +611,7 @@ class BackupEngine:
         store: Store,
         object_store: ObjectStorePort,
         source: SnapshotSourcePort,
-        health_probes: Mapping[str, HealthProbePort | SqliteEvidenceChainReader]
-        | None = None,
+        health_probes: Mapping[str, HealthProbePort | SqliteEvidenceChainReader] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._store = store
@@ -964,8 +959,10 @@ class BackupEngine:
         empty payload would produce a digest mismatch that reads like tampering
         rather than like a missing replica.
         """
-        key = snapshot.replica_locators[0] if snapshot.replica_locators else (
-            snapshot.storage_locator
+        key = (
+            snapshot.replica_locators[0]
+            if snapshot.replica_locators
+            else (snapshot.storage_locator)
         )
         try:
             payload = self._object_store.fetch(key)
@@ -1036,7 +1033,10 @@ class BackupEngine:
                 RestoreCheckKind.MTLS_HANDSHAKE: self._observe_mtls_handshake,
             }[spec.kind]
             observations[spec.kind] = handler(
-                spec.check_id, evidence=evidence, snapshot=snapshot, cell=cell,
+                spec.check_id,
+                evidence=evidence,
+                snapshot=snapshot,
+                cell=cell,
                 target=target_path,
             )
         return tuple(observations[spec.kind] for spec in plan.required_checks)
@@ -1312,8 +1312,7 @@ _EXPECTATIONS: Mapping[RestoreCheckKind, str] = {
         "the restored run's attestation chain re-verifies with zero errors"
     ),
     RestoreCheckKind.SERVICE_HEALTHY: (
-        "a probe reports the restored cell is serving. Fails closed with no probe "
-        "bound"
+        "a probe reports the restored cell is serving. Fails closed with no probe bound"
     ),
     RestoreCheckKind.MTLS_HANDSHAKE: (
         "a probe reports a mutually authenticated handshake against the restored "
