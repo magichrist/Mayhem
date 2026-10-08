@@ -845,14 +845,14 @@ COMPLIANCE_TEMPLATES: Final[tuple[ComplianceControl, ...]] = (
             {FailureMode.AVAILABILITY, FailureMode.DURABILITY, FailureMode.CAPACITY}
         ),
         required_evidence=(
-            "sealed evidence bundle digest for each run"
-            "the failure-mode taxonomy entry each run exercised"
+            "sealed evidence bundle digest for each run",
+            "the failure-mode taxonomy entry each run exercised",
             "the execution-mode marker for each run",
         ),
         customer_obligations=(
-            "decide which of their services are in scope for this control"
+            "decide which of their services are in scope for this control",
             "run the evidence collection themselves; mayhem produces the evidence, it does "
-            "not assess the control"
+            "not assess the control",
             "assess the evidence against their own criteria and accept or reject it",
         ),
     ),
@@ -864,13 +864,13 @@ COMPLIANCE_TEMPLATES: Final[tuple[ComplianceControl, ...]] = (
             {FailureMode.DEPENDENCY, FailureMode.PARTITION, FailureMode.LATENCY}
         ),
         required_evidence=(
-            "sealed evidence bundle digest for each dependency run"
-            "the dependency and failure mode each run exercised"
+            "sealed evidence bundle digest for each dependency run",
+            "the dependency and failure mode each run exercised",
             "the verification probe that confirmed recovery",
         ),
         customer_obligations=(
-            "confirm with each provider which failure behaviours they permit mayhem to inject"
-            "decide the recovery objective each dependency must meet"
+            "confirm with each provider which failure behaviours they permit mayhem to inject",
+            "decide the recovery objective each dependency must meet",
             "accept or reject the evidence against their own criteria",
         ),
     ),
