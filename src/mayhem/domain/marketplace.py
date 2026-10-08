@@ -90,8 +90,9 @@ message so a refusal is traceable to the record that caused it.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -116,6 +117,7 @@ __all__ = [
     "ArtifactDependency",
     "DeprecationNotice",
     "DigestCheckState",
+    "ExperimentTemplate",
     "PublisherDeclaration",
     "RegistryFederation",
     "RegistryRef",
@@ -128,6 +130,8 @@ __all__ = [
     "SourceChainEntry",
     "SourceStage",
     "SupplyChainRecord",
+    "TemplateInstantiationError",
+    "TemplateParameter",
     "TrustLabel",
     "TrustLabelError",
     "applicable_revocations",
@@ -139,11 +143,15 @@ __all__ = [
     "dispatch_refusal",
     "dispatches",
     "federated_registries",
+    "instantiate_spec",
     "is_current_record",
     "matching_certifications",
     "pending_revocations",
+    "render_template",
     "require_trust_label",
+    "template_parameters",
     "trust_label",
+    "unfilled_placeholders",
 ]
 
 
@@ -934,9 +942,7 @@ def require_trust_label(
                 "about this artifact",
             )
         if not matching:
-            states = ", ".join(
-                sorted({cert.record.state.value for cert in same_digest})
-            )
+            states = ", ".join(sorted({cert.record.state.value for cert in same_digest}))
             raise TrustLabelError(
                 "certification_not_current",
                 f"{artifact.ref} has {len(same_digest)} certification record(s) for its digest "
@@ -1108,9 +1114,7 @@ def blocking_revocations(
 ) -> tuple[Revocation, ...]:
     """Revocations naming ``artifact`` whose deadline has arrived."""
     return tuple(
-        rev
-        for rev in applicable_revocations(artifact, revocations)
-        if rev.is_in_force_at(now=now)
+        rev for rev in applicable_revocations(artifact, revocations) if rev.is_in_force_at(now=now)
     )
 
 
@@ -1469,3 +1473,355 @@ def check_digest(
         else DigestCheckState.DIGEST_MISMATCHED
     )
     return SupplyChainRecord.model_validate({**record.model_dump(), "verification_state": state})
+
+
+# ── experiment templates (plan 18 Phase 3's gap-33 content, consumed by Phase 4)
+#
+# Phase 4's second clause — "template-instantiated experiments compile through
+# the standard planner; a template is authoring convenience, never a gate
+# bypass" — was unreachable while no template artifact type existed. This is
+# that type. The commitment it makes is structural rather than documented:
+#
+#   An :class:`ExperimentTemplate` **renders a document**. It has no ``run``,
+#   ``execute``, ``plan``, or ``dispatch`` method, and nothing in this module
+#   reaches a provider, a store, or a clock. The only way out of a template is
+#   :func:`instantiate_spec`, which returns a :class:`DrillSpec` — the *same*
+#   type ``parse_drill`` returns for an authored YAML file — and from there the
+#   only way to run is ``plan_drill``, the single planner. A template
+#   instantiated run is therefore indistinguishable downstream from an authored
+#   one *because there is no second path to compare against*, not because a
+#   test asserts two code paths agree.
+#
+# The honesty rules of this module bind templates too: a template carries a
+# publisher **declaration** and a content digest, never a trust field, and
+# :data:`SIGNATURE_TRUST_NOTICE` applies verbatim. Rendering a template proves
+# nothing about who wrote it.
+
+
+class TemplateInstantiationError(DomainError):
+    """A template could not be rendered into a drill document.
+
+    Kept distinct from :class:`ArtifactDeclarationError` because the two need
+    opposite reactions: a malformed *declaration* is a publisher-side bug found
+    before publication, whereas a failed *instantiation* is a caller's input
+    found at run time, and it must fail closed rather than render a partially
+    substituted drill that would compile into a real plan.
+    """
+
+    def __init__(self, rule: str, message: str) -> None:
+        self.rule = rule
+        super().__init__(f"[{rule}] {message}")
+
+
+class TemplateParameter(BaseModel):
+    """One declared slot in a template.
+
+    ``required`` and ``default`` are kept as independent facts: a slot may be
+    required *and* carry a default (the caller must be explicit about relying on
+    it), and a slot with a default is optional to supply. ``choices`` is a closed
+    set a value must be a member of; an empty tuple means "no vocabulary", not
+    "any value accepted silently with no record".
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    description: str = Field(min_length=1, max_length=500)
+    required: bool = True
+    default: Any | None = None
+    choices: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _choices_are_real(self) -> TemplateParameter:
+        if len(set(self.choices)) != len(self.choices):
+            raise ValueError(f"template parameter {self.name!r} repeats a choice")
+        return self
+
+
+class ExperimentTemplate(BaseModel):
+    """A versioned, distributable experiment template.
+
+    Structurally the same discipline as :class:`Artifact` and for the same
+    reason: there is **no** ``class``, ``verified``, ``trusted``, or
+    ``trust_label`` field, and ``extra="forbid"`` means a publisher cannot mark
+    their own template. What this type adds to :class:`Artifact` is
+    :attr:`drill_template` — a drill document with ``{{ name }}`` placeholders —
+    and the declared slots that fill them.
+
+    ``drill_template`` is validated as a **JSON-compatible document only**. It is
+    deliberately not parsed into a :class:`DrillSpec` here, because an
+    uninstantiated template is not a drill: required slots are still ``{{ }}``.
+    Validation is deferred to :func:`instantiate_spec`, which is the one place
+    that knows substitution is finished.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    template_id: str
+    version: str
+    digest: str
+    publisher: PublisherDeclaration
+    registry: RegistryRef
+    parameters: tuple[TemplateParameter, ...] = ()
+    drill_template: dict[str, Any]
+    license_id: str = Field(min_length=1, max_length=64)
+    changelog_ref: str = Field(min_length=1, max_length=500)
+    deprecation: DeprecationNotice | None = None
+
+    @field_validator("template_id")
+    @classmethod
+    def _plausible_template_id(cls, value: str) -> str:
+        if re.fullmatch(r"[a-z][a-z0-9_.-]{1,63}", value) is None:
+            raise ValueError("template_id must be a lowercase dotted identifier")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _plausible_version(cls, value: str) -> str:
+        if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}", value) is None:
+            raise ValueError("template version must be a readable version string")
+        return value
+
+    @field_validator("digest")
+    @classmethod
+    def _digest_is_sha256(cls, value: str) -> str:
+        if ARTIFACT_DIGEST_RE.match(value) is None:
+            raise ValueError("template digest must be 64 lowercase hex characters (sha256)")
+        return value
+
+    @field_validator("drill_template")
+    @classmethod
+    def _body_is_a_document(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("drill_template must not be empty")
+        if "execution" not in value:
+            raise ValueError(
+                "drill_template must carry an `execution:` block; a template with no "
+                "execution steps cannot become a DrillSpec, and DrillSpec requires one"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _declared_shape_is_coherent(self) -> ExperimentTemplate:
+        names = [param.name for param in self.parameters]
+        if len(set(names)) != len(names):
+            duplicates = ", ".join(sorted({n for n in names if names.count(n) > 1}))
+            raise ArtifactDeclarationError(
+                "template.duplicate_parameter",
+                f"template {self.ref} declares the same parameter twice: {duplicates}",
+            )
+        declared = set(names)
+        used = set(unfilled_placeholders(self.drill_template))
+        undeclared = sorted(used - declared)
+        if undeclared:
+            raise ArtifactDeclarationError(
+                "template.undeclared_placeholder",
+                f"template {self.ref} uses placeholder(s) {', '.join(undeclared)} that it "
+                f"does not declare as parameters; declared are "
+                f"{', '.join(sorted(declared)) or '(none)'}",
+            )
+        if self.registry.scope is RegistryScope.ORGANIZATION_PRIVATE and (
+            self.publisher.organization != self.registry.organization
+        ):
+            raise ArtifactDeclarationError(
+                "template.organization_mismatch",
+                f"template {self.ref} is published to organization-private registry "
+                f"{self.registry.registry_id!r} ({self.registry.organization!r}) but its "
+                f"publisher declaration names {self.publisher.organization!r}",
+            )
+        return self
+
+    @property
+    def ref(self) -> str:
+        """``id@version`` — the identity a refusal or a listing should quote."""
+        return f"{self.template_id}@{self.version}"
+
+    @property
+    def label(self) -> str:
+        """``id@version#digest12`` — identity plus enough bytes to be unambiguous."""
+        return f"{self.ref}#{self.digest[:12]}"
+
+    @property
+    def is_deprecated(self) -> bool:
+        """True when this exact version has been withdrawn from new use."""
+        return self.deprecation is not None
+
+
+#: ``{{ name }}`` with flexible interior whitespace. Deliberately narrow: the
+#: surrounding braces are required, so an authored string that merely contains
+#: braces (``"{{"``, or a JSON body inlined into a fault parameter) is not
+#: mistaken for a placeholder.
+_PLACEHOLDER_RE: Final[re.Pattern[str]] = re.compile(r"\{\{\s*([a-z][a-z0-9_]{0,63})\s*\}\}")
+
+
+def unfilled_placeholders(document: object) -> tuple[str, ...]:
+    """Every placeholder name appearing anywhere in ``document``, in order.
+
+    Walks mappings, sequences, and strings, so a placeholder buried in a nested
+    fault parameter is found exactly as one in a top-level name is. Returns
+    names de-duplicated and first-seen ordered. Pure; reads no clock and no
+    store.
+    """
+    found: list[str] = []
+    if isinstance(document, str):
+        for match in _PLACEHOLDER_RE.finditer(document):
+            if match.group(1) not in found:
+                found.append(match.group(1))
+    elif isinstance(document, Mapping):
+        for key, value in document.items():
+            found.extend(name for name in unfilled_placeholders(key) if name not in found)
+            found.extend(name for name in unfilled_placeholders(value) if name not in found)
+    elif isinstance(document, (list, tuple)):
+        for item in document:
+            found.extend(name for name in unfilled_placeholders(item) if name not in found)
+    return tuple(found)
+
+
+def template_parameters(template: ExperimentTemplate) -> tuple[str, ...]:
+    """Every slot ``template`` declares, in declaration order."""
+    return tuple(param.name for param in template.parameters)
+
+
+def _substitute(node: object, values: Mapping[str, Any], where: str) -> object:
+    """Recursively replace placeholders inside one node of the document.
+
+    Two substitution rules, and the difference matters:
+
+    * A string that is **exactly** one placeholder (``"{{ name }}"``) is
+      replaced by the caller's value with its own type intact — so an integer
+      slot stays an integer and a mapping slot stays a mapping.
+    * Any **other** string is textually interpolated, which is the only sensible
+      reading of ``"cpu_latency_{{ magnitude }}ms"``.
+
+    Both run before any typing happens; a leftover placeholder after
+    substitution is refused by the caller rather than silently blanked.
+    """
+    if isinstance(node, str):
+        whole = _PLACEHOLDER_RE.fullmatch(node)
+        if whole is not None:
+            name = whole.group(1)
+            if name not in values:
+                return node
+            return values[name]
+        if "{{" not in node and "}}" not in node:
+            return node
+        for name in unfilled_placeholders(node):
+            if name in values:
+                node = node.replace("{{ " + name + " }}", str(values[name]))
+                node = node.replace("{{" + name + "}}", str(values[name]))
+        return node
+    if isinstance(node, Mapping):
+        return {
+            _substitute(key, values, where): _substitute(value, values, where)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_substitute(item, values, where) for item in node]
+    if isinstance(node, tuple):
+        return tuple(_substitute(item, values, where) for item in node)
+    return node
+
+
+def render_template(template: ExperimentTemplate, values: Mapping[str, Any]) -> dict[str, Any]:
+    """Substitute ``values`` into ``template`` and return the drill **document**.
+
+    Fails closed on every way an instantiation could be wrong, and names the
+    rule in each case:
+
+    1. ``template.unknown_parameter`` — a value supplied for a slot the
+       template does not declare. Refused rather than ignored, because a
+       silently dropped value is a template whose output does not match what
+       the caller asked for.
+    2. ``template.missing_parameter`` — a required slot with no value.
+    3. ``template.choice_not_allowed`` — a value outside the declared
+       ``choices`` vocabulary.
+    4. ``template.unfilled_placeholder`` — a ``{{ name }}`` surviving
+       substitution. This is the control that stops a partially-rendered drill
+       from compiling into a real plan with an empty string where a target
+       belonged.
+
+    Pure: no IO, no clock, no registry. The result is an untyped ``dict`` on
+    purpose — it is not yet a drill, and :func:`instantiate_spec` is the door
+    that decides whether it is one.
+    """
+    declared = {param.name: param for param in template.parameters}
+    unknown = sorted(set(values) - set(declared))
+    if unknown:
+        raise TemplateInstantiationError(
+            "template.unknown_parameter",
+            f"template {template.ref} was given value(s) for undeclared parameter(s) "
+            f"{', '.join(unknown)}; declared are "
+            f"{', '.join(sorted(declared)) or '(none)'}. A value nobody declared is a "
+            f"caller typo, and ignoring it would render a drill the caller did not ask for.",
+        )
+
+    effective: dict[str, Any] = {}
+    for param in template.parameters:
+        if param.name in values:
+            value = values[param.name]
+        elif param.default is not None:
+            value = param.default
+        elif param.required:
+            raise TemplateInstantiationError(
+                "template.missing_parameter",
+                f"template {template.ref} requires parameter {param.name!r} "
+                f"({param.description}) and no value was supplied",
+            )
+        else:
+            continue
+        if param.choices and str(value) not in param.choices:
+            raise TemplateInstantiationError(
+                "template.choice_not_allowed",
+                f"template {template.ref} parameter {param.name!r} accepts only "
+                f"{', '.join(param.choices)}; got {value!r}",
+            )
+        effective[param.name] = value
+
+    rendered = _substitute(template.drill_template, effective, template.ref)
+    if not isinstance(rendered, dict):  # pragma: no cover - the field type forbids it
+        raise TemplateInstantiationError(
+            "template.not_a_document",
+            f"template {template.ref} did not render to a document",
+        )
+    leftover = unfilled_placeholders(rendered)
+    if leftover:
+        raise TemplateInstantiationError(
+            "template.unfilled_placeholder",
+            f"template {template.ref} still holds unfilled placeholder(s) "
+            f"{', '.join(leftover)} after substitution. Refusing rather than rendering a "
+            f"partially-substituted drill, because every route out of a template ends at "
+            f"the standard planner and a half-rendered document would compile into a real "
+            f"plan with a missing target.",
+        )
+    return rendered
+
+
+def instantiate_spec(template: ExperimentTemplate, values: Mapping[str, Any]) -> Any:
+    """Render ``template`` and validate it into a :class:`DrillSpec`.
+
+    The single door out of a template, and the whole of plan 18 Phase 4's
+    claim: the returned object is the *same* type
+    :func:`mayhem.spec.parse_drill` returns for an authored file, so everything
+    downstream — ``plan_drill``, admission, evidence — cannot tell which one
+    produced it, because nothing downstream is told.
+
+    Plan 29's gate is applied here too, and that is not optional. ``parse_drill``
+    runs :func:`mayhem.domain.secrets.require_no_literal_credentials` on every
+    authored document before validating it; validating the rendered document
+    directly would have been a **second door into the domain that skipped the
+    credential scan**, so a template carrying a literal secret value would have
+    instantiated into a `DrillSpec` that the authored path refuses. The scan is
+    called here with the template's own identity in the message, because the
+    publisher of the template — not the operator who instantiated it — is the
+    party who put the value in the artefact.
+
+    Returned as ``Any`` rather than annotated ``DrillSpec`` to keep this module
+    importable without pulling the whole experiments vocabulary in at module
+    scope; the runtime value is a ``DrillSpec``, and a test asserts the type.
+    """
+    from mayhem.domain.experiments import DrillSpec
+    from mayhem.domain.secrets import require_no_literal_credentials
+
+    rendered = render_template(template, values)
+    require_no_literal_credentials(rendered, path=f"template[{template.ref}]")
+    return DrillSpec.model_validate(rendered)
