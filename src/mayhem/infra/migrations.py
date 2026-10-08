@@ -798,8 +798,7 @@ M0023_ATTESTATION_RETENTION = Migration(
             manifest_json TEXT NOT NULL
         )
         """,
-        "CREATE INDEX idx_attestation_manifests_run"
-        " ON attestation_manifests(run_id, created_at)",
+        "CREATE INDEX idx_attestation_manifests_run ON attestation_manifests(run_id, created_at)",
         """
         CREATE TABLE evidence_retention (
             manifest_id TEXT PRIMARY KEY,
@@ -1202,8 +1201,7 @@ M0026_SCHEDULES = Migration(
             PRIMARY KEY (session_id, step_id)
         )
         """,
-        "CREATE INDEX idx_game_day_steps_session "
-        "ON game_day_dispatch_steps(session_id, step_seq)",
+        "CREATE INDEX idx_game_day_steps_session ON game_day_dispatch_steps(session_id, step_seq)",
         "CREATE INDEX idx_game_day_steps_schedule ON game_day_dispatch_steps(schedule_id)",
     ),
     down_statements=(
@@ -1278,8 +1276,7 @@ M0027_COVERAGE_FINDINGS = Migration(
             CHECK (instr(version, char(31)) = 0)
         )
         """,
-        "CREATE INDEX idx_coverage_dimension_cells_cell_key "
-        "ON coverage_dimension_cells(cell_key)",
+        "CREATE INDEX idx_coverage_dimension_cells_cell_key ON coverage_dimension_cells(cell_key)",
         "CREATE INDEX idx_coverage_dimension_cells_certification "
         "ON coverage_dimension_cells(certification_state)",
         """
@@ -1335,8 +1332,7 @@ M0027_COVERAGE_FINDINGS = Migration(
             CHECK (run_id <> '')
         )
         """,
-        "CREATE INDEX idx_comparison_runs_equivalence "
-        "ON comparison_runs(equivalence_key, release)",
+        "CREATE INDEX idx_comparison_runs_equivalence ON comparison_runs(equivalence_key, release)",
         "CREATE INDEX idx_comparison_runs_experiment ON comparison_runs(experiment, release)",
         """
         CREATE TABLE regression_findings (
@@ -1509,10 +1505,8 @@ M0028_MARKETPLACE = Migration(
         # label a reader is looking at.
         "CREATE UNIQUE INDEX idx_marketplace_artifacts_digest "
         "ON marketplace_artifacts(artifact_id, digest)",
-        "CREATE INDEX idx_marketplace_artifacts_registry "
-        "ON marketplace_artifacts(registry_id)",
-        "CREATE INDEX idx_marketplace_artifacts_publisher "
-        "ON marketplace_artifacts(publisher_id)",
+        "CREATE INDEX idx_marketplace_artifacts_registry ON marketplace_artifacts(registry_id)",
+        "CREATE INDEX idx_marketplace_artifacts_publisher ON marketplace_artifacts(publisher_id)",
         """
         CREATE TABLE marketplace_certifications (
             artifact_digest TEXT NOT NULL,
@@ -1567,8 +1561,7 @@ M0028_MARKETPLACE = Migration(
             CHECK (release_head_digest = digest)
         )
         """,
-        "CREATE INDEX idx_marketplace_supply_chain_digest "
-        "ON marketplace_supply_chain(digest)",
+        "CREATE INDEX idx_marketplace_supply_chain_digest ON marketplace_supply_chain(digest)",
         """
         CREATE TABLE marketplace_revocations (
             revocation_id TEXT NOT NULL,
@@ -1749,14 +1742,10 @@ M0029_AUDIT_STREAM = Migration(
             )
         )
         """,
-        "CREATE UNIQUE INDEX idx_audit_entries_identity "
-        "ON audit_entries(stream_id, event_id)",
-        "CREATE INDEX idx_audit_entries_principal "
-        "ON audit_entries(stream_id, principal, sequence)",
-        "CREATE INDEX idx_audit_entries_target "
-        "ON audit_entries(stream_id, target, sequence)",
-        "CREATE INDEX idx_audit_entries_subject_run "
-        "ON audit_entries(subject_run_id, sequence)",
+        "CREATE UNIQUE INDEX idx_audit_entries_identity ON audit_entries(stream_id, event_id)",
+        "CREATE INDEX idx_audit_entries_principal ON audit_entries(stream_id, principal, sequence)",
+        "CREATE INDEX idx_audit_entries_target ON audit_entries(stream_id, target, sequence)",
+        "CREATE INDEX idx_audit_entries_subject_run ON audit_entries(subject_run_id, sequence)",
         "CREATE TRIGGER audit_entries_no_update BEFORE UPDATE ON audit_entries "
         "BEGIN SELECT RAISE(ABORT, 'audit_entries is append-only: UPDATE is refused'); END",
         "CREATE TRIGGER audit_entries_no_delete BEFORE DELETE ON audit_entries "
@@ -2587,6 +2576,43 @@ M0030_API_RESOURCES = Migration(
 # * **No verdict column.** A table that stored "this policy allowed X" would be a
 #   second place for a decision to live, and the decision is re-derived by the
 #   gate from the digest-named bundle on every run.
+#: Version reserved for ``attestation_signatures``; see
+#: ``infra/evidence_signing.py::SignatureRepository``. Declared before the
+#: migration so the reservation and the table cannot drift apart.
+EVIDENCE_SIGNATURES_VERSION = 39
+
+M0039_EVIDENCE_SIGNATURES = Migration(
+    version=EVIDENCE_SIGNATURES_VERSION,
+    name="evidence_signatures",
+    statements=(
+        """
+        CREATE TABLE attestation_signatures (
+            manifest_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            algorithm TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            key_fingerprint TEXT NOT NULL,
+            trust_root_id TEXT NOT NULL DEFAULT '',
+            signed_digest TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            signed_at TEXT NOT NULL,
+            signature_json TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_attestation_signatures_run ON attestation_signatures(run_id)",
+        # Trust-root lookups are the offline verification path: an auditor
+        # holding only the key fingerprint and root id must find every signature
+        # made under that root without scanning.
+        "CREATE INDEX idx_attestation_signatures_trust ON attestation_signatures"
+        "(trust_root_id, key_fingerprint)",
+    ),
+    down_statements=(
+        "DROP INDEX IF EXISTS idx_attestation_signatures_trust",
+        "DROP INDEX IF EXISTS idx_attestation_signatures_run",
+        "DROP TABLE IF EXISTS attestation_signatures",
+    ),
+)
+
 M0038_POLICY_BUNDLES = Migration(
     version=38,
     name="policy_bundles",
@@ -2737,4 +2763,15 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     # took the next free id; see the migration's own comment for what it
     # deliberately does not hold.
     M0038_POLICY_BUNDLES,
+    # ``attestation_signatures`` (version 39) is plan 12 Phase 3's storage for
+    # signature records: one row per signed manifest, holding the algorithm,
+    # key id and fingerprint, trust root, content commitment and the signature
+    # bytes. It is a *new* table rather than extra columns on
+    # ``attestation_manifests`` because Phase 2's sealing lane is DONE and
+    # pinned — a signing lane that altered its table would put an unsealed
+    # change inside a proven lane. The ``signature_state``/
+    # ``signature_reason`` columns already exist on ``attestation_manifests``
+    # and are written by this lane; the two agree through a single transaction
+    # in ``infra/evidence_signing.py::SignatureRepository``.
+    M0039_EVIDENCE_SIGNATURES,
 )
