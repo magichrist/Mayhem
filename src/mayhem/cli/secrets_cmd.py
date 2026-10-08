@@ -46,6 +46,7 @@ What this surface does not do
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -56,7 +57,10 @@ from mayhem.cli.exit_codes import ExitCode
 from mayhem.cli.resolver import make_group
 
 if TYPE_CHECKING:
-    from mayhem.domain.secrets import SecretGrant
+    from collections.abc import Sequence
+    from datetime import datetime
+
+    from mayhem.domain.secrets import CredentialRef, SecretGrant
     from mayhem.infra.secret_resolver import SecretGrantRepository
 
 secrets_cmd = make_group(
@@ -280,6 +284,112 @@ def list_cmd(ctx: click.Context, principal: str, db_opt: str | None, as_json: bo
         click.echo(f"  {_describe(grant)}")
 
 
+# --- The grant explanation view-model -----------------------------------------
+#
+# Plan 29 Phase 3's acceptance criterion — "grants render with
+# effective-permission explanations" — as data. The CLI's ``explain`` verb and
+# :func:`mayhem.controller.api_service.secret_grant_explain_payload` are two
+# projections off this one view-model, so "rendered identically in CLI and UI"
+# is a property of the code rather than an agreement two renderers happen to
+# have reached. The view-model stays owned by this module; the API projection
+# imports it function-locally (the ``cli.api_cmd`` cycle is why
+# ``risk_preview_payload`` does the same).
+
+
+@dataclass(frozen=True, slots=True)
+class GrantExplanation:
+    """One grant question answered: who asked, what was considered, what won.
+
+    ``considered`` carries one entry per grant consulted, each with the five
+    clauses the grant is made of (principal, pattern, environment, scope,
+    unexpired) and whether all of them held. ``answered_by`` names the winning
+    grant's pattern, or ``""`` when none answers. The principal throughout is a
+    declared string — nothing here authenticates it, and the payload says so.
+    """
+
+    principal: str
+    canonical_key: str
+    environment: str
+    scope_token: str
+    grants_considered: int
+    answered_by: str
+    permitted: bool
+    considered: tuple[dict[str, Any], ...]
+
+
+_EXPLAIN_NOTE = (
+    "the resolver is the only thing that decides; this evaluates the grants' own "
+    "clauses and reports which one answers"
+)
+
+
+def build_grant_explanation(
+    grants: Sequence[SecretGrant],
+    reference: CredentialRef,
+    *,
+    principal: str,
+    environment: str,
+    now: datetime,
+) -> GrantExplanation:
+    """Answer a grant question against live grants, purely.
+
+    ``grants`` are the grants issued to ``principal`` (or all of them — grants
+    for another principal simply fail the principal clause rather than being
+    skipped, which is what makes "consulted nothing" for a stranger exact).
+    ``reference`` is the concrete question phrased as a reference; ``now`` is
+    the clock the expiry clause reads, passed in so two projections of the same
+    question cannot disagree by a tick.
+    """
+    considered: list[dict[str, Any]] = []
+    for grant in grants:
+        clauses = {
+            "principal": grant.covers_principal(principal),
+            "pattern": grant.covers_reference(reference),
+            "environment": grant.covers_environment(environment),
+            "scope": grant.covers_scope(reference.scope_token),
+            "unexpired": not grant.is_expired(now),
+        }
+        considered.append(
+            {
+                "pattern": grant.credential_pattern,
+                "environments": list(grant.environments),
+                "scopes": list(grant.scopes),
+                "expires_at": grant.expires_at.isoformat(),
+                "clauses": clauses,
+                "covers": all(clauses.values()),
+            }
+        )
+
+    answered = [entry for entry in considered if entry["covers"]]
+    return GrantExplanation(
+        principal=principal,
+        canonical_key=reference.canonical_key,
+        environment=environment,
+        scope_token=reference.scope_token,
+        grants_considered=len(considered),
+        answered_by=answered[0]["pattern"] if answered else "",
+        permitted=bool(answered),
+        considered=tuple(considered),
+    )
+
+
+def explain_payload(explanation: GrantExplanation) -> dict[str, Any]:
+    """The machine-readable answer both surfaces emit, byte for byte."""
+    return {
+        "question": {
+            "principal": explanation.principal,
+            "canonical_key": explanation.canonical_key,
+            "environment": explanation.environment,
+            "scope_token": explanation.scope_token,
+        },
+        "grants_considered": explanation.grants_considered,
+        "answered_by": explanation.answered_by,
+        "permitted": explanation.permitted,
+        "considered": [dict(entry) for entry in explanation.considered],
+        "note": _EXPLAIN_NOTE,
+    }
+
+
 @secrets_cmd.command("explain")
 @click.option("--principal", required=True, help="Principal to ask about, as declared.")
 @click.option(
@@ -344,43 +454,15 @@ def explain_cmd(
         ctx.exit(int(ExitCode.VALIDATION_ERROR))
 
     moment = utc_now()
-    considered: list[dict[str, Any]] = []
-    for grant in grants:
-        clauses = {
-            "principal": grant.covers_principal(principal),
-            "pattern": grant.covers_reference(reference),
-            "environment": grant.covers_environment(environment),
-            "scope": grant.covers_scope(reference.scope_token),
-            "unexpired": not grant.is_expired(moment),
-        }
-        considered.append(
-            {
-                "pattern": grant.credential_pattern,
-                "environments": list(grant.environments),
-                "scopes": list(grant.scopes),
-                "expires_at": grant.expires_at.isoformat(),
-                "clauses": clauses,
-                "covers": all(clauses.values()),
-            }
-        )
-
-    answered = [entry for entry in considered if entry["covers"]]
-    payload = {
-        "question": {
-            "principal": principal,
-            "canonical_key": reference.canonical_key,
-            "environment": environment,
-            "scope_token": reference.scope_token,
-        },
-        "grants_considered": len(considered),
-        "answered_by": answered[0]["pattern"] if answered else "",
-        "permitted": bool(answered),
-        "considered": considered,
-        "note": (
-            "the resolver is the only thing that decides; this evaluates the grants' own "
-            "clauses and reports which one answers"
-        ),
-    }
+    explanation = build_grant_explanation(
+        grants,
+        reference,
+        principal=principal,
+        environment=environment,
+        now=moment,
+    )
+    payload = explain_payload(explanation)
+    answered = [entry for entry in explanation.considered if entry["covers"]]
     from mayhem.cli.output import echo_machine
 
     if not echo_machine(payload, as_json=as_json):
@@ -393,7 +475,7 @@ def explain_cmd(
                 f"DENIED: no outstanding grant for {principal} covers {reference.canonical_key} "
                 f"in {environment} at {reference.scope_token}"
             )
-            for entry in considered:
+            for entry in explanation.considered:
                 failed = [name for name, ok in entry["clauses"].items() if not ok]
                 click.echo(f"  {entry['pattern']} did not match: {', '.join(failed)}")
     ctx.exit(int(ExitCode.SUCCESS) if answered else int(ExitCode.SAFETY_REFUSAL))
