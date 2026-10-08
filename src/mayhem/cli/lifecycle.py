@@ -849,6 +849,7 @@ def _write_evidence_after_run(
     baseline_from: str = "",
     steady_spec: SteadyStateSpec | None = None,
     steady_config: object | None = None,
+    secret_development_marker: Mapping[str, Any] | None = None,
 ) -> EvidenceEnvelope | None:
 
     try:
@@ -1072,6 +1073,45 @@ def _write_evidence_after_run(
                     }
                 }
             )
+        # Plan 29 Phase 3: seal the run's development-only credential marker, if
+        # the caller ran with one. ``secret_development_marker`` is
+        # ``SecretResolver.development_marker()`` — metadata only, never a
+        # value — and the seal goes through the existing attested-chain path
+        # under its own chain key, so the envelope row and the marker chain
+        # verify independently. The envelope carries only a remediation note
+        # naming the outcome, which is the read-only render: no value, no
+        # mutation of the marker, nothing to redact. ``None`` (no resolver
+        # involved — the case for every run today, since no executor resolves
+        # ``credential_refs`` yet) seals nothing and renders nothing, so a run
+        # that never touched a credential is byte-identical with and without
+        # this parameter. A seal failure degrades to a note, never a raise:
+        # this function reports evidence about the fault, and losing the whole
+        # envelope because a sidecar seal failed would be the wrong trade.
+        if secret_development_marker is not None:
+            try:
+                from mayhem.controller.secret_evidence import seal_secret_development_marker
+
+                _sealed_marker = seal_secret_development_marker(
+                    store, run_id, secret_development_marker
+                )
+                if _sealed_marker is not None:
+                    envelope = envelope.model_copy(
+                        update={
+                            "remediation": (
+                                *envelope.remediation,
+                                "development-only credential marker sealed into the attested chain",
+                            ),
+                        }
+                    )
+            except Exception as exc:
+                envelope = envelope.model_copy(
+                    update={
+                        "remediation": (
+                            *envelope.remediation,
+                            f"development marker seal failed: {type(exc).__name__}",
+                        ),
+                    }
+                )
         try:
             write_evidence(store, envelope)
         except Exception as exc:
@@ -1612,11 +1652,7 @@ def run(
                 rows = store.query("SELECT plan_json FROM runs WHERE id = ?", (plan_id,))
                 if not rows:
                     raise click.UsageError(f"no such plan: {plan_id}", ctx=ctx)
-                raw = (
-                    rows[0]["plan_json"]
-                    if isinstance(rows[0], dict) or hasattr(rows[0], "__getitem__")
-                    else rows[0][0]
-                )
+                raw = rows[0]["plan_json"]
                 loaded = _json.loads(raw) if isinstance(raw, str) else {}
                 try:
                     from mayhem.domain.experiments import ExecutionPlan
