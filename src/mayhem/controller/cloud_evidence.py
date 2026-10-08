@@ -101,6 +101,7 @@ from mayhem.infra.attestation_store import (
     AttestationRepository,
     _recorded_at,
 )
+from mayhem.providers.cloud.port import CLOUD_COST_UNPRICED
 from mayhem.providers.participation import (
     BlastCharge,
     ProviderAction,
@@ -440,11 +441,29 @@ def admit_cloud_action(
             projected_spend=0.0,
         )
     estimate = preview.estimate
-    projected = (
-        float(projected_spend)
-        if projected_spend is not None
-        else (estimate.expected_high if estimate else 0.0)
-    )
+    if estimate is None:
+        # A preview that completed without an estimate cannot be certified
+        # against a ceiling — fail closed rather than crash on the None the
+        # CostPreview type permits. Unknown is not free.
+        return CloudAdmissionOutcome(
+            action=action,
+            run_id=run_id,
+            owner_agent=owner_agent,
+            stage=CloudGateStage.COST,
+            admitted=False,
+            rule_id=CLOUD_COST_UNPRICED,
+            reason=(
+                f"cost preview for {action.action_id!r} completed without an "
+                "estimate, so no ceiling can be certified against it"
+            ),
+            remediation=(
+                "supply a rate card covering this provider/class/region so the "
+                "preview carries a priced estimate"
+            ),
+            projected_spend=0.0,
+            preview=preview,
+        )
+    projected = float(projected_spend) if projected_spend is not None else estimate.expected_high
     try:
         ensure_cost_ceiling(estimate, projected)
     except CloudRefused as refusal:

@@ -28,7 +28,8 @@ from mayhem.domain.prediction import (
     customer_facing_node_ids,
     dependency_fan_out,
 )
-from mayhem.domain.quota import DamageLedger, DamageQuota, QuotaCharge
+from mayhem.domain.provider import ProviderError, ProviderRegistration
+from mayhem.domain.quota import DamageLedger, DamageQuota, QuotaCharge, is_catalog_fault
 from mayhem.domain.risks import RiskLevel
 from mayhem.domain.runtime_adapter import (
     CapabilityRequirements,
@@ -46,6 +47,13 @@ if TYPE_CHECKING:
     from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.prediction import BlastCeilings
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
+
+from mayhem.providers.participation import (
+    ProviderAction,
+    ProviderParticipationError,
+    charge_provider_blast,
+)
+from mayhem.providers.sandbox import SandboxEnforcer, select_profile
 
 
 class SafetyRefusedError(InvariantViolationError):
@@ -250,6 +258,120 @@ def _affected_node_ids(graph: TopologyGraph, targets: Iterable[str]) -> frozense
     return frozenset(affected)
 
 
+@dataclass(frozen=True)
+class ProviderRunScope:
+    """Admission proof a run carries for provider steps (plan 17 Phase 4 wiring).
+
+    A non-catalog fault id is a provider fault id, and the safety gate cannot
+    admit one on its own: it has no loader, no grant and no sandbox profile.
+    The scope supplies what the gate would otherwise have to invent — the
+    registrations the loader admitted (the single enforcement point for
+    loading, unchanged) — so the run path can charge the step through the
+    participation API and refuse what the loader never admitted.
+
+    ``None`` (the default on every gate below) means the run carries no
+    provider admissions, and admission is byte-for-byte what it was before this
+    field existed. Fail-closed applies the moment a scope *is* supplied: a
+    provider step with no declaring registration, no sandbox admission, or no
+    chargeable action is refused, never defaulted.
+    """
+
+    registrations: tuple[ProviderRegistration, ...] = ()
+    owner_agent: str = "mayhem.run"
+
+
+def _provider_registration_for_fault(
+    scope: ProviderRunScope, fault_id: str
+) -> ProviderRegistration | None:
+    """The loaded registration declaring *fault_id*, or ``None``.
+
+    Read off the loader's own ``declared_fault_ids`` — the gate does not
+    re-derive declarations, re-check digests, or re-evaluate grants. The loader
+    stays the single enforcement point; this is a membership read, not a
+    second gate.
+    """
+    for registration in scope.registrations:
+        if fault_id in registration.metadata.declared_fault_ids:
+            return registration
+    return None
+
+
+def _charge_provider_step(
+    *,
+    ledger: DamageLedger,
+    fault_id: str,
+    node_ids: frozenset[str],
+    duration_s: float,
+    quota: DamageQuota,
+    scope: ProviderRunScope,
+    run_id: str,
+    ctx: SafetyContext,
+) -> QuotaCharge:
+    """Charge one provider step to *ledger*, or refuse it before it is charged.
+
+    The one call Phase 4 was missing: the run path charges a provider step
+    through :func:`~mayhem.providers.participation.charge_provider_blast` —
+    the same ledger call a native step makes, on the caller's own ledger — so
+    a provider step and a native step cannot disagree about what a run costs,
+    and a breach refuses with the ledger's own ``damage_quota.*`` rule ids.
+
+    Fail-closed, in order: (1) no loaded registration declares the fault, so
+    there is nothing to charge it *as* — refused with
+    ``provider.fault_undeclared``; (2) the sandbox profile the declaration
+    earns is not admittable under enforcement, so executing it would run
+    unconfined third-party code — refused before any charge is made (loading
+    unconfined is the loader's opt-in; *executing* unconfined is never
+    admitted here); (3) the action itself is malformed — refused rather than
+    defaulted. A quota breach is returned, not raised: the charge has landed
+    and the caller judges it, exactly as for a native step.
+    """
+    registration = _provider_registration_for_fault(scope, fault_id)
+    if registration is None:
+        dec = _deny_decision(
+            "provider.fault_undeclared",
+            {"fault_id": fault_id},
+            f"{fault_id}: no loaded provider declares this fault, so mayhem will not "
+            "charge, lease or execute it [provider.fault_undeclared]",
+            "load the provider that declares this fault through the provider loader first",
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec)
+    metadata = registration.metadata
+    try:
+        SandboxEnforcer(select_profile(metadata), require_enforced=True).admit()
+    except ProviderError as exc:
+        dec = _deny_decision(
+            "provider.fault_undeclared",
+            {"fault_id": fault_id, "provider_id": metadata.provider_id},
+            f"{fault_id}: provider {metadata.provider_id!r} is not admittable for "
+            f"execution ({exc}); an unconfined third-party runtime may be loaded "
+            "but it may not run [provider.fault_undeclared]",
+            "load the provider without sandbox enforcement only for inspection, "
+            "or declare no permissions so there is nothing to confine",
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec) from exc
+    try:
+        action = ProviderAction(
+            provider_id=metadata.provider_id,
+            fault_id=fault_id,
+            run_id=run_id,
+            owner_agent=scope.owner_agent,
+            node_ids=tuple(sorted(node_ids)),
+            duration_s=duration_s,
+        )
+    except ProviderParticipationError as exc:
+        dec = _deny_decision(
+            "provider.fault_undeclared",
+            {"fault_id": fault_id, "provider_id": metadata.provider_id},
+            f"{fault_id}: {exc} [provider.fault_undeclared]",
+            "supply a non-empty target set, a positive duration, and the run id",
+        )
+        ctx.record(dec)
+        raise SafetyRefusedError("safety.refused", dec.reason, dec) from exc
+    return charge_provider_blast(ledger, action, quota).charge
+
+
 def check_blast_radius(
     graph: TopologyGraph,
     target_node_ids: Iterable[str],
@@ -259,6 +381,8 @@ def check_blast_radius(
     *,
     ctx: SafetyContext,
     ledger: DamageLedger | None = None,
+    provider_scope: ProviderRunScope | None = None,
+    run_id: str = "",
 ) -> dict[str, float]:
     """Enforce every blast-radius limit for one fault step.
 
@@ -388,12 +512,32 @@ def check_blast_radius(
     # Cumulative. The per-step checks above have all passed, so this is the
     # only way a step that is individually tiny can still be refused — which is
     # the entire point of a sequence-level limit.
-    charge = (ledger if ledger is not None else DamageLedger()).charge(
-        fault_id=new_fault_id,
-        duration_s=duration_s,
-        node_ids=affected,
-        quota=ctx.damage_quota,
-    )
+    #
+    # Plan 17 Phase 4: a non-catalog fault id is a provider fault id, and when
+    # the run carries provider admissions it is charged through the
+    # participation API on this same ledger — one ledger, one implementation —
+    # with sandbox admission checked fail-closed before the charge. With no
+    # scope this branch is not reached and the native charge below is
+    # byte-for-byte what it was.
+    active_ledger = ledger if ledger is not None else DamageLedger()
+    if provider_scope is not None and not is_catalog_fault(new_fault_id):
+        charge = _charge_provider_step(
+            ledger=active_ledger,
+            fault_id=new_fault_id,
+            node_ids=affected,
+            duration_s=duration_s,
+            quota=ctx.damage_quota,
+            scope=provider_scope,
+            run_id=run_id,
+            ctx=ctx,
+        )
+    else:
+        charge = active_ledger.charge(
+            fault_id=new_fault_id,
+            duration_s=duration_s,
+            node_ids=affected,
+            quota=ctx.damage_quota,
+        )
     stats.update(_damage_stats(charge))
     if charge.exceeded:
         dec = _deny_decision(charge.rule_id, charge.inputs(), charge.reason, charge.remediation)
@@ -806,6 +950,7 @@ def validate_plan(
     graph: TopologyGraph,
     ctx: SafetyContext,
     adapter: RuntimeAdapter | None = None,
+    provider_scope: ProviderRunScope | None = None,
 ) -> None:
     if plan.policy_id and ctx.policy_id and plan.policy_id != ctx.policy_id:
         dec = _deny_decision(
@@ -889,6 +1034,8 @@ def validate_plan(
             fault.fault_id,
             ctx=ctx,
             ledger=ledger,
+            provider_scope=provider_scope,
+            run_id=plan.run_id,
         )
         seen_faults.append(fault.fault_id)
         if fault.execution_context is not None:

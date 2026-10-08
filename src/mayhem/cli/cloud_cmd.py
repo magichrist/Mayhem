@@ -72,13 +72,13 @@ class _DeadTransport:
     connection.
     """
 
-    def list_resources(self, query: object) -> tuple[object, ...]:
+    def list_resources(self, query: object) -> tuple[Any, ...]:
         raise RuntimeError(_CALLS_REACH_NOTHING)
 
-    def read_resource(self, query: object, resource_id: str) -> object:
+    def read_resource(self, query: object, resource_id: str) -> Any:
         raise RuntimeError(_CALLS_REACH_NOTHING)
 
-    def mutate(self, command: object) -> object:
+    def mutate(self, command: object) -> Any:
         raise RuntimeError(_CALLS_REACH_NOTHING)
 
 
@@ -346,13 +346,13 @@ def capabilities(ctx: click.Context, provider: str, as_json: bool) -> None:
     for name in names:
         adapter_rows = [row for row in rows if row["provider"] == name]
         click.echo(f"{name}: {len(adapter_rows)} declared capabilities")
-        for row in adapter_rows:
-            compensate = row["compensate_operation"] or "-"
+        for payload_row in adapter_rows:
+            compensate = payload_row["compensate_operation"] or "-"
             click.echo(
-                f"  {row['label']:<34} {row['execute_operation']:<36} "
-                f"reversible={str(row['reversible']).lower()} "
+                f"  {payload_row['label']:<34} {payload_row['execute_operation']:<36} "
+                f"reversible={str(payload_row['reversible']).lower()} "
                 f"compensate={compensate} "
-                f"billable_instance_hours={str(row['billable_instance_hours']).lower()} "
+                f"billable_instance_hours={str(payload_row['billable_instance_hours']).lower()} "
                 f"applied=false"
             )
     if irreversible:
@@ -367,7 +367,7 @@ def capabilities(ctx: click.Context, provider: str, as_json: bool) -> None:
 @cloud.command("check-permission")
 @_action_options
 @click.pass_context
-def check_permission(ctx: click.Context, **kwargs: Any) -> None:
+def check_permission(ctx: click.Context, /, **kwargs: Any) -> None:
     """Answer "can this role perform this action?" before a run exists.
 
     Two permission models are asked the same question and must agree: the
@@ -502,7 +502,7 @@ def check_permission(ctx: click.Context, **kwargs: Any) -> None:
     help="Declared cost ceiling in currency micros (0 means none declared).",
 )
 @click.pass_context
-def estimate_cost(ctx: click.Context, **kwargs: Any) -> None:
+def estimate_cost(ctx: click.Context, /, **kwargs: Any) -> None:
     """Project what the action would cost, from countable quantities.
 
     The counts are projected from the capability's own declarations and the
@@ -564,7 +564,7 @@ def estimate_cost(ctx: click.Context, **kwargs: Any) -> None:
         from mayhem.domain.cloud import CloudProvider, CloudProviderRef, CloudResourceClass
         from mayhem.providers.cloud.port import CloudRateCard
 
-        rate_cards = (
+        rate_cards: tuple[CloudRateCard, ...] = (
             CloudRateCard(
                 provider=CloudProviderRef(provider=CloudProvider(provider)),
                 resource_class=CloudResourceClass(resource_class),

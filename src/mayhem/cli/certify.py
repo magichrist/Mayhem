@@ -1724,7 +1724,7 @@ def _first_container(ctx: click.Context, compose: str | None, *, graph: Any) -> 
                 continue
         names = graph.container_names()
         if names:
-            return names[0]
+            return str(names[0])
     if candidates:
         return candidates[0]
     return "mayhem-certify"

@@ -121,6 +121,7 @@ __all__ = [
     "CostCeilingDecision",
     "CostEstimate",
     "IrreversibleCloudAction",
+    "Reversibility",
     "ReversibleCloudAction",
     "check_action_declares_permissions",
     "check_cost_ceiling",
@@ -175,9 +176,7 @@ _WILDCARD_CHARS: Final[frozenset[str]] = frozenset({"*", "?", "%", "[", "]"})
 #: (``domain/provider.py``): lowercase, dotted, no whitespace. Reusing the
 #: convention is what lets a cloud action id and a provider fault id sit in the
 #: same evidence record without a second naming rule.
-_IDENTIFIER_CHARS: Final[frozenset[str]] = frozenset(
-    "abcdefghijklmnopqrstuvwxyz0123456789_-."
-)
+_IDENTIFIER_CHARS: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-.")
 
 _MAX_NAMED_CANDIDATES: Final[int] = 8
 """How many candidate ids an ambiguity refusal names before truncating.
@@ -361,9 +360,7 @@ class CloudSelector(BaseModel):
         # the code and the decision function cannot drift. Raised as ValueError
         # because pydantic is what is calling; the code appears in the message
         # so a caller reading the refusal can still branch on it.
-        specificity = check_selector_is_specific(
-            identifiers=self.identifiers, tags=self.tags
-        )
+        specificity = check_selector_is_specific(identifiers=self.identifiers, tags=self.tags)
         if not specificity.allowed:
             raise ValueError(f"[{specificity.code}] {specificity.reason}")
         if self.kind is CloudSelectorKind.IDENTIFIER:
@@ -395,10 +392,7 @@ class CloudSelector(BaseModel):
             if self.kind is CloudSelectorKind.IDENTIFIER
             else f"tags={sorted(self.tags)}"
         )
-        return (
-            f"{self.resource_class.value} in {self.account}/{self.region} "
-            f"where {criteria}"
-        )
+        return f"{self.resource_class.value} in {self.account}/{self.region} where {criteria}"
 
 
 class CloudSelectorDecision(BaseModel):
@@ -448,9 +442,7 @@ def check_selector_is_specific(
       a plan meant.
     """
     named = tuple(identifiers) + tuple(tags)
-    wildcarded = tuple(
-        sorted({value for value in named if _WILDCARD_CHARS & set(value)})
-    )
+    wildcarded = tuple(sorted({value for value in named if _WILDCARD_CHARS & set(value)}))
     if wildcarded:
         return CloudSelectorDecision(
             allowed=False,
@@ -532,10 +524,7 @@ def check_action_declares_permissions(
         )
     return CloudSelectorDecision(
         allowed=True,
-        reason=(
-            f"action {action_id!r} declares "
-            f"{', '.join(sorted(p.value for p in declared))}"
-        ),
+        reason=(f"action {action_id!r} declares {', '.join(sorted(p.value for p in declared))}"),
     )
 
 
@@ -723,8 +712,7 @@ class CloudAction(BaseModel):
             raise ValueError("cloud action_id must not be empty")
         if not set(value) <= _IDENTIFIER_CHARS:
             raise ValueError(
-                "cloud action_id must be a lowercase dotted identifier, got "
-                f"{value!r}"
+                f"cloud action_id must be a lowercase dotted identifier, got {value!r}"
             )
         return value
 
@@ -742,9 +730,7 @@ class CloudAction(BaseModel):
         # Delegates to the decision function for the same reason
         # CloudSelector._check_exactness does: one rule, so the refusal code in
         # the message and the code the decision function returns cannot drift.
-        declared = check_action_declares_permissions(
-            self.action_id, self.required_permissions
-        )
+        declared = check_action_declares_permissions(self.action_id, self.required_permissions)
         if not declared.allowed:
             raise ValueError(f"[{declared.code}] {declared.reason}")
         return self
@@ -870,9 +856,7 @@ class CloudRoleRef(BaseModel):
         if not value or not value.strip():
             raise ValueError("cloud role_id must not be empty")
         if not set(value) <= _IDENTIFIER_CHARS:
-            raise ValueError(
-                f"cloud role_id must be a lowercase dotted identifier, got {value!r}"
-            )
+            raise ValueError(f"cloud role_id must be a lowercase dotted identifier, got {value!r}")
         return value
 
     @classmethod
@@ -1171,8 +1155,7 @@ def check_cost_ceiling(estimate: CostEstimate, spent: float) -> CostCeilingDecis
         ceiling=estimate.ceiling,
         allowed=True,
         reason=(
-            f"cloud spend {spent:g} {estimate.unit} is within the cost ceiling "
-            f"{estimate.ceiling:g}"
+            f"cloud spend {spent:g} {estimate.unit} is within the cost ceiling {estimate.ceiling:g}"
         ),
     )
 

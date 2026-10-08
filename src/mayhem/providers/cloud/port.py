@@ -121,6 +121,7 @@ __all__ = [
     "CloudOperationCounts",
     "CloudPermissionAnalysis",
     "CloudRateCard",
+    "CloudRoleRef",
     "CloudStep",
     "CloudStepResult",
     "CloudTransport",
@@ -259,10 +260,7 @@ class ResourceQuery(BaseModel):
     service: str = Field(min_length=1)
 
     def describe(self) -> str:
-        return (
-            f"{self.service}/{self.resource_class.value} in "
-            f"{self.account}/{self.region}"
-        )
+        return f"{self.service}/{self.resource_class.value} in {self.account}/{self.region}"
 
 
 class ResourceRecord(BaseModel):
@@ -769,7 +767,7 @@ class CostPreview(BaseModel):
 
 
 class CloudPermissionAnalysis(CloudStepResult):
-    """"Can this role perform this action?", in the existing vocabulary.
+    """ "Can this role perform this action?", in the existing vocabulary.
 
     Two halves, reported together because a role can satisfy one and fail the
     other:
@@ -1008,9 +1006,7 @@ class CloudAdapter(ABC):
 
     def supported_actions(self) -> tuple[tuple[CloudActionKind, CloudResourceClass], ...]:
         """Every supported pair, sorted, for a capability matrix in a report."""
-        return tuple(
-            sorted(self.capabilities, key=lambda pair: (pair[0].value, pair[1].value))
-        )
+        return tuple(sorted(self.capabilities, key=lambda pair: (pair[0].value, pair[1].value)))
 
     def irreversible_actions(self) -> tuple[tuple[CloudActionKind, CloudResourceClass], ...]:
         """The pairs Mayhem cannot roll back, per adapter.
@@ -1116,9 +1112,7 @@ class CloudAdapter(ABC):
         meter = _CallMeter()
         try:
             if request.identifiers or request.tags:
-                ensure_selector_is_specific(
-                    identifiers=request.identifiers, tags=request.tags
-                )
+                ensure_selector_is_specific(identifiers=request.identifiers, tags=request.tags)
             query = self._query_for_request(request)
             records = _narrow(self._list(query), request)
             identities = _identities(records)
@@ -1257,9 +1251,7 @@ class CloudAdapter(ABC):
                 target_outcome=TargetOutcome.FAILED_TO_APPLY,
                 code=CLOUD_ACTION_UNSUPPORTED,
                 reason=self._unsupported_reason(action),
-                counts=CloudOperationCounts(
-                    api_calls=0, instance_hours=0.0, volume_operations=0
-                ),
+                counts=CloudOperationCounts(api_calls=0, instance_hours=0.0, volume_operations=0),
             )
         if capability.billable_instance_hours and action.duration_s is None:
             calls = 4 if isinstance(capability, ReversibleCapability) else 2
@@ -1380,18 +1372,14 @@ class CloudAdapter(ABC):
     def _rate_card(self, action: CloudSpec) -> CloudRateCard | None:
         identity = action.target.identity
         for card in self.rate_cards:
-            if card.covers(
-                identity.provider, action.target.resource_class, identity.region
-            ):
+            if card.covers(identity.provider, action.target.resource_class, identity.region):
                 return card
         return None
 
     # -- analysis: permission --------------------------------------------------
 
-    def analyze_permission(
-        self, role: CloudRoleRef, action: CloudSpec
-    ) -> CloudPermissionAnalysis:
-        """"Can this role perform this action?", in the existing vocabulary.
+    def analyze_permission(self, role: CloudRoleRef, action: CloudSpec) -> CloudPermissionAnalysis:
+        """ "Can this role perform this action?", in the existing vocabulary.
 
         Two halves, two existing models:
 
@@ -1449,12 +1437,8 @@ class CloudAdapter(ABC):
                         f"missing {', '.join(sorted(missing))}"
                     ),
                     details={
-                        "action_required": sorted(
-                            p.value for p in action.required_permissions
-                        ),
-                        "adapter_required": sorted(
-                            p.value for p in self.adapter_permissions
-                        ),
+                        "action_required": sorted(p.value for p in action.required_permissions),
+                        "adapter_required": sorted(p.value for p in self.adapter_permissions),
                         "granted": sorted(p.value for p in role.granted),
                     },
                 )
@@ -1511,9 +1495,7 @@ class CloudAdapter(ABC):
             )
         cost = self.estimate_cost(action, ceiling=ceiling)
         permission = self.analyze_permission(role, action)
-        if isinstance(capability, IrreversibleCapability) and requires_elevated_approval(
-            action
-        ):
+        if isinstance(capability, IrreversibleCapability) and requires_elevated_approval(action):
             return PreflightResult(
                 action_id=action.action_id,
                 allowed=False,
@@ -1554,10 +1536,7 @@ class CloudAdapter(ABC):
             reason=(
                 "permission and cost gates pass"
                 if cost.priced
-                else (
-                    f"permission gate passes; cost is UNPRICED "
-                    f"({cost.counts.describe()})"
-                )
+                else (f"permission gate passes; cost is UNPRICED ({cost.counts.describe()})")
             ),
         )
 
@@ -1671,9 +1650,7 @@ class CloudAdapter(ABC):
             capability = self._required_capability(action)
             if not isinstance(capability, ReversibleCapability):
                 rationale = (
-                    capability.rationale
-                    if isinstance(capability, IrreversibleCapability)
-                    else ""
+                    capability.rationale if isinstance(capability, IrreversibleCapability) else ""
                 )
                 raise CloudAdapterError(
                     code=CLOUD_COMPENSATION_UNAVAILABLE,

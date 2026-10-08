@@ -575,13 +575,23 @@ def capability_rows(capability: CloudCapability, *, provider: str) -> CloudCapab
         summary=capability.summary,
         reversible=reversible,
         compensate_operation=(
-            capability.compensate_operation if reversible else None
+            capability.compensate_operation
+            if isinstance(capability, ReversibleCapability)
+            else None
         ),
         irreversible_rationale=(
             capability.rationale if isinstance(capability, IrreversibleCapability) else ""
         ),
-        apply_verify=capability.apply_verify.describe() if reversible else "",
-        compensate_verify=capability.compensate_verify.describe() if reversible else "",
+        apply_verify=(
+            capability.apply_verify.describe()
+            if isinstance(capability, ReversibleCapability)
+            else ""
+        ),
+        compensate_verify=(
+            capability.compensate_verify.describe()
+            if isinstance(capability, ReversibleCapability)
+            else ""
+        ),
         billable_instance_hours=capability.billable_instance_hours,
         volume_operations=capability.volume_operations,
     )
@@ -794,8 +804,7 @@ def report_payload(report: CloudDecisionReport) -> dict[str, object]:
 def describe_report(report: CloudDecisionReport) -> str:
     """One screen of text: the verdict, the checks, the mechanism, the caveat."""
     lines = [
-        f"{report.subject}: {report.decision.value}"
-        + (f" [{report.code}]" if report.code else "")
+        f"{report.subject}: {report.decision.value}" + (f" [{report.code}]" if report.code else "")
     ]
     if report.reason:
         lines.append(f"  reason: {report.reason}")
@@ -807,7 +816,7 @@ def describe_report(report: CloudDecisionReport) -> str:
         f"{str(report.mechanism_state.witness).lower()}), "
         f"applied={str(report.mechanism_applied).lower()}"
     )
-    if report.observed:
+    if report.observed and report.mechanism_observation is not None:
         observation = report.mechanism_observation
         lines.append(
             "  port claim: "

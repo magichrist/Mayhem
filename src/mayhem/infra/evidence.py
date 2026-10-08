@@ -263,7 +263,8 @@ def _envelope_rows(store: Any, sql: str, params: tuple[object, ...] = ()) -> lis
     is not "no evidence".
     """
     try:
-        return store.query(sql, params)
+        rows: list[Any] = list(store.query(sql, params))
+        return rows
     except Exception as exc:
         if "no such table" in str(exc):
             return []
