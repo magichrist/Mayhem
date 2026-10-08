@@ -18,6 +18,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "completion",
         "discover",
         "doctor",
+        "enterprise",
         "experiment",
         "extend",
         "game-day",
@@ -28,6 +29,7 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "janitor",
         "lowlevel",
         "maniac",
+        "marketplace",
         "pack",
         "policy",
         "prove",
@@ -37,8 +39,11 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
         "recover",
         "risk-preview",
         "run",
+        "sandbox",
         "schedule",
         "stop",
+        "support-bundle",
+        "upgrade",
         "verify",
     }
 )

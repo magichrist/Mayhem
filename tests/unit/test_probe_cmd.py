@@ -120,23 +120,14 @@ class TestEveryDocumentedInvocationResolves:
 
         assert result.exit_code == ExitCode.SUCCESS, result.output
 
-    def test_the_group_is_not_registered_yet(self) -> None:
-        """The registration this lane owes, asserted so it cannot be forgotten quietly.
-
-        If a reviewer registers the command, this test starts failing and they
-        delete it — which is the point: the plan's ledger and this assertion agree.
-        The registry is a ``command_map`` inside ``register_commands``, so the
-        assertion reads the function's own source rather than a module constant that
-        does not exist.
-        """
-        import inspect
-
-        from mayhem.cli.command_registry import register_commands
-
-        source = inspect.getsource(register_commands)
-
-        assert '"probe"' not in source
-        assert "from mayhem.cli.probe_cmd import probe" not in source
+    # -- registration ------------------------------------------------------
+    #
+    # ``test_the_group_is_not_registered_yet`` stood here and asserted that
+    # ``"probe"`` was absent from ``register_commands`` — a reminder the lane
+    # owed the tree a registration. The probe group is registered now (and
+    # documented in the README command table), so per that test's own docstring
+    # it is deleted rather than flipped: whoever registered it deleted it, and
+    # the plan's ledger and the live tree agree.
 
 
 # -- the catalogue --------------------------------------------------------------------
@@ -187,9 +178,7 @@ class TestTheCatalogueNeverImpliesCoverageItDoesNotHave:
             "synthetic",
         }
 
-    def test_the_catalogue_prints_the_unavailable_word_in_its_note(
-        self, runner: CliRunner
-    ) -> None:
+    def test_the_catalogue_prints_the_unavailable_word_in_its_note(self, runner: CliRunner) -> None:
         result = _invoke(runner, ["catalogue"])
 
         assert result.exit_code == 0
@@ -233,17 +222,13 @@ class TestUncoverRefusesToLetSilenceReadAsHealth:
         payload = uncover_payload([ProbeFamily.LOGS, ProbeFamily.REDIS])
 
         by_family = {row["family"]: row for row in payload["families"]}
-        assert (
-            by_family["logs"]["unavailable_reason"] == "connector declared but not bound"
-        )
+        assert by_family["logs"]["unavailable_reason"] == "connector declared but not bound"
         assert by_family["redis"]["unavailable_reason"] == "no shipped connector serves this family"
         assert by_family["logs"]["declared_connectors"] == ["loki", "elastic", "opensearch"]
         assert by_family["redis"]["declared_connectors"] == []
 
     def test_a_bound_connector_is_available_and_names_itself(self) -> None:
-        payload = uncover_payload(
-            [ProbeFamily.PROMETHEUS], bound=[ConnectorId.PROMETHEUS]
-        )
+        payload = uncover_payload([ProbeFamily.PROMETHEUS], bound=[ConnectorId.PROMETHEUS])
 
         row = payload["families"][0]
         assert row["availability"] == ProbeAvailability.AVAILABLE.value
@@ -286,9 +271,7 @@ class TestUncoverRefusesToLetSilenceReadAsHealth:
     def test_a_fully_available_report_says_so_and_warns_about_nothing(
         self, runner: CliRunner
     ) -> None:
-        result = _invoke(
-            runner, ["uncover", "--families", "prometheus", "--bound", "prometheus"]
-        )
+        result = _invoke(runner, ["uncover", "--families", "prometheus", "--bound", "prometheus"])
 
         assert "available" in result.output
         assert "may not report a passing verdict" not in result.output

@@ -420,12 +420,23 @@ def test_every_documented_stop_invocation_resolves_against_the_cli(argv: tuple[s
     assert _release_contract_module()._resolve_invocation(list(argv)) == []
 
 
-def test_stop_is_registered_under_its_own_name_and_no_prefix_shorthand() -> None:
-    """``stop`` must resolve exactly: no sibling command starts with ``s``."""
+def test_stop_is_registered_under_its_own_name_and_unambiguous_prefix() -> None:
+    """``stop`` must resolve exactly, and nothing else may squat on its name.
+
+    The original form of this test demanded that no sibling command start with
+    ``s`` — a prefix-shorthand guarantee. The CLI has since grown ``schedule``,
+    ``secrets``, ``sandbox`` and ``support-bundle``, so single-letter shorthand
+    for ``stop`` is gone no matter what this file asserts. What is still worth
+    pinning is the safety property underneath it: ``stop`` resolves to exactly
+    one command, no other command's name begins with ``stop`` (so typing the
+    word, or any extension of it, can never land anywhere else), and the app's
+    own unique-prefix resolver still sends the documented invocation home.
+    """
     ctx = click.Context(app)
     assert app.get_command(ctx, "stop") is stop_cmd.stop
-    candidates = sorted(name for name in app.commands if name.startswith("s"))
-    assert candidates == ["stop"], f"stop now shares a prefix with {candidates}"
+    squatters = sorted(name for name in app.commands if name.startswith("stop"))
+    assert squatters == ["stop"], f"stop's name is no longer unique: {squatters}"
+    assert _release_contract_module()._resolve_invocation(["stop"]) == []
 
 
 def test_stop_is_one_command_and_not_a_group() -> None:
@@ -558,9 +569,9 @@ def test_environment_wide_stop_is_allowed_with_the_emergency_role(tmp_path: Path
         # The second run holds a settled lease, so it cannot be injecting and the
         # fan-out must not touch it.
         SQLiteLeaseSink(store).save(
-            _lease("l-2", run_id=OTHER_RUN_ID).transition(
-                LeaseState.RELEASING, now=MOMENT
-            ).transition(LeaseState.RELEASED, now=MOMENT)
+            _lease("l-2", run_id=OTHER_RUN_ID)
+            .transition(LeaseState.RELEASING, now=MOMENT)
+            .transition(LeaseState.RELEASED, now=MOMENT)
         )
         _granted(store, "u-ana", "staging", Role.EMERGENCY_STOP)
         outcome = stop_cmd.run_stop(
@@ -643,8 +654,15 @@ def test_the_cli_refuses_an_unauthorized_environment_wide_stop(tmp_path: Path) -
     finally:
         store.close()
     code, _out, err = _run_main(
-        "--db", str(db), "stop", "--environment", "staging", "--reason", REASON,
-        "--principal", "u-ana",
+        "--db",
+        str(db),
+        "stop",
+        "--environment",
+        "staging",
+        "--reason",
+        REASON,
+        "--principal",
+        "u-ana",
     )
     assert code == int(ExitCode.SAFETY_REFUSAL)
     assert "emergency_stop" in err
@@ -660,8 +678,15 @@ def test_the_cli_stops_an_environment_once_the_role_is_granted(tmp_path: Path) -
     finally:
         store.close()
     code, out, err = _run_main(
-        "--db", str(db), "stop", "--environment", "staging", "--reason", REASON,
-        "--principal", "u-ana",
+        "--db",
+        str(db),
+        "stop",
+        "--environment",
+        "staging",
+        "--reason",
+        REASON,
+        "--principal",
+        "u-ana",
     )
     assert code == int(ExitCode.SUCCESS), err
     assert "authorized by roles: emergency_stop" in out
@@ -828,9 +853,7 @@ def test_the_cli_preflight_refusal_is_a_safety_refusal_and_names_every_check(
         SQLiteLeaseSink(store).save(_lease())
     finally:
         store.close()
-    code, _out, err = _run_main(
-        "--db", str(db), "stop", RUN_ID, "--reason", REASON, "--preflight"
-    )
+    code, _out, err = _run_main("--db", str(db), "stop", RUN_ID, "--reason", REASON, "--preflight")
     assert code == int(ExitCode.SAFETY_REFUSAL)
     assert "REFUSED" in err
     assert "UNAVAILABLE" in err
@@ -979,12 +1002,8 @@ def test_a_stalled_stop_reads_unknown_and_names_the_stage_it_stalled_at() -> Non
 
 def test_the_worst_run_decides_the_verdict_of_a_whole_invocation() -> None:
     """One run that did not recover settles the answer for the invocation."""
-    clean = SimpleNamespace(
-        run_id="r-a", verdict=PostflightVerdict.CLEAN, recovered=True
-    )
-    dirty = SimpleNamespace(
-        run_id="r-b", verdict=PostflightVerdict.DIRTY, recovered=False
-    )
+    clean = SimpleNamespace(run_id="r-a", verdict=PostflightVerdict.CLEAN, recovered=True)
+    dirty = SimpleNamespace(run_id="r-b", verdict=PostflightVerdict.DIRTY, recovered=False)
     outcome = stop_cmd.StopOutcome(
         scope=StopScope.ENVIRONMENT,
         command=stop_cmd.build_stop_command(
@@ -1372,9 +1391,9 @@ def _documented_stop_invocations() -> list[str]:
     """Every ``mayhem stop …`` invocation written in prose this lane owns."""
     sources = {
         "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
-        "src/mayhem/cli/stop_cmd.py": (
-            ROOT / "src/mayhem/cli/stop_cmd.py"
-        ).read_text(encoding="utf-8"),
+        "src/mayhem/cli/stop_cmd.py": (ROOT / "src/mayhem/cli/stop_cmd.py").read_text(
+            encoding="utf-8"
+        ),
     }
     found: list[str] = []
     for _label, text in sources.items():

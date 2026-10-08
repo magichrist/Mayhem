@@ -38,6 +38,7 @@ ACTIVE_ROOTS = {
     "completion",
     "discover",
     "doctor",
+    "enterprise",
     "experiment",
     "extend",
     "game-day",
@@ -48,6 +49,7 @@ ACTIVE_ROOTS = {
     "janitor",
     "lowlevel",
     "maniac",
+    "marketplace",
     "pack",
     "policy",
     "prepare",
@@ -56,9 +58,12 @@ ACTIVE_ROOTS = {
     "recover",
     "risk-preview",
     "run",
+    "sandbox",
     "schedule",
     "secrets",
     "stop",
+    "support-bundle",
+    "upgrade",
     "verify",
 }
 
@@ -68,7 +73,10 @@ ACTIVE_ROOTS = {
 #: third spelling of the same act. Its subcommand-less shape is asserted in
 #: `tests/unit/test_stop_surface.py`.
 ACTIVE_GROUP_PATHS = {
-    "bundle": ("build", "show", "verify"),
+    # Plan 12 Phase 3 added the signing surface (keygen/keys/sign/signatures) to
+    # the existing group rather than minting a parallel command tree, so this
+    # pin is updated in the same change that registered them.
+    "bundle": ("build", "show", "verify", "keygen", "keys", "sign", "signatures"),
     "game-day": (
         "create",
         "approve",
@@ -168,6 +176,14 @@ ACTIVE_GROUP_PATHS = {
     # enumerated like every other group, so a fourth verb added later fails
     # here rather than appearing untested.
     "cloud": ("capabilities", "check-permission", "estimate-cost"),
+    # Plan 18 Phase 3's marketplace surface and plan 20 Phase 3's enterprise
+    # admin surface: one row per leaf, like every other group, so a new verb
+    # added later fails here rather than appearing untested.
+    "marketplace": ("inspect", "install", "list", "search"),
+    "enterprise": ("compliance-map", "walkthrough"),
+    "sandbox": ("down", "status", "up"),
+    "support-bundle": ("build",),
+    "upgrade": ("channels", "check"),
 }
 
 REMOVED_ROOTS = {
