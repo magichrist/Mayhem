@@ -129,7 +129,11 @@ def test_bundle_group_now_advertises_only_what_it_can_do() -> None:
     bundle = app.commands["bundle"]
     assert isinstance(bundle, click.Group)
     subcommands = set(bundle.commands or {})
-    assert subcommands == {"build", "show", "verify"}
+    # Plan 12 Phase 3 added the signing surface to this group. The advertised
+    # string stays true: every one of these is a build/verify/attest verb, and
+    # the set is still pinned exactly so a future subcommand forces the help
+    # text to be re-examined in the same change.
+    assert subcommands == {"build", "show", "verify", "keygen", "keys", "sign", "signatures"}
     assert COMMAND_HELP["bundle"] == "Build and verify portable evidence bundles."
     assert bundle.help == "Build and verify portable evidence bundles."
 

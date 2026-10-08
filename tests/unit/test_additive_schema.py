@@ -239,6 +239,15 @@ def test_name_snapshot_is_stable() -> None:
         # 36 is the lower of the two and already published by another lane's
         # tests, so 37 is what moved.
         "ha_promotions",
+        # ``policy_bundles`` (version 38) is plan 07 Phase 3's immutable,
+        # digest-pinned policy-bundle store. Appended per the same procedure;
+        # nothing above is edited, and the migration carries ``down_statements``
+        # like every migration after 16.
+        "policy_bundles",
+        # ``evidence_signatures`` (version 39) is plan 12's offline bundle
+        # signing under a named trust root. Appended per the same procedure;
+        # nothing above is edited.
+        "evidence_signatures",
     ), "migration name sequence drifted from the snapshot — append-only."
 
 
@@ -274,11 +283,7 @@ _TABLE_NAME = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z_0-9
 def _tables_created_by(version: int) -> set[str]:
     """The tables migration ``version`` actually creates, read off its DDL."""
     migration = next(m for m in ALL_MIGRATIONS if m.version == version)
-    return {
-        found
-        for statement in migration.statements
-        for found in _TABLE_NAME.findall(statement)
-    }
+    return {found for statement in migration.statements for found in _TABLE_NAME.findall(statement)}
 
 
 def _live_tables(store: Store) -> set[str]:
