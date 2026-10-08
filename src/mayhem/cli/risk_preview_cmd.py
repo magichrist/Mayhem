@@ -97,13 +97,15 @@ Invocations that resolve against this command::
     mayhem risk-preview nodes --run r-drill-a1b2c3d4
     mayhem risk-preview nodes --run r-drill-a1b2c3d4 --node n-web --json
 
-.. warning::
+.. note::
 
-   **The UI half of the acceptance criterion has not landed.** Plan 08 does not
-   exist, so there is no second renderer to compare against. What exists is the
-   part that makes the two cannot drift when plan 08 arrives: one view-model, two
-   projections off it, and an acceptance test written against the view-model
-   rather than against the strings the CLI happened to print. See the Phase 3
+   **The UI half of the acceptance criterion lands as a projection, not a page.**
+   :func:`mayhem.controller.api_service.risk_preview_payload` builds this same
+   view-model and returns this same payload, so the CLI and the UI project off
+   one structure rather than agreeing today and drifting tomorrow. There is still
+   no plan-08 page to click through — the wiring is the shared projection plus
+   the stored bytes (see :func:`mayhem.controller.prediction_service.seal_prediction`),
+   and the suite asserts the identity at the view-model layer. See the Phase 3
    entry in ``docs/v1.1.0/14_TOPOLOGY_BLAST_RADIUS.md``.
 """
 

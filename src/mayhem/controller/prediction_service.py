@@ -224,6 +224,15 @@ RULE_PREDICTION_BLAST_EXCEEDED = "prediction.blast_exceeded"
 #: :func:`seal_prediction`.
 RULE_PREDICTION_NOT_CITED = "prediction.not_cited"
 
+#: Rule id for a seal refused because the preview payload it was handed is not
+#: a readable presentation structure. See :func:`prediction_seal_event`.
+RULE_PREDICTION_PREVIEW_UNREADABLE = "prediction.preview_unreadable"
+
+#: The seal-event payload key carrying the stored preview. See
+#: :func:`prediction_seal_event` for why the preview travels inside the
+#: prediction's own seal rather than in a second chain.
+PREVIEW_PAYLOAD_KEY = "preview_payload"
+
 #: Rule id naming the admission-wiring debt, for a surface that renders it.
 RULE_PENDING_ADMISSION_WIRING = "prediction.ceiling_admission_pending"
 
@@ -1000,9 +1009,7 @@ def _ceilings(
     )
 
 
-def _policy_verdict(
-    plan: ExecutionPlan, ctx: SafetyContext
-) -> tuple[PolicyGateResult | None, str]:
+def _policy_verdict(plan: ExecutionPlan, ctx: SafetyContext) -> tuple[PolicyGateResult | None, str]:
     """The plan-07 policy verdict, read through its own simulation entry point.
 
     :func:`controller.safety.simulate_plan_policy` is ``simulate_gate`` with
@@ -1066,9 +1073,7 @@ def _facts(
     )
 
 
-def _approval_refusal(
-    report: SimulateReport, *, plan: ExecutionPlan, graph: TopologyGraph
-) -> str:
+def _approval_refusal(report: SimulateReport, *, plan: ExecutionPlan, graph: TopologyGraph) -> str:
     """Every named reason this preview may not back an approval, as one sentence.
 
     Ordered so the most fundamental comes first: an unmeasured or stale prediction
@@ -1420,6 +1425,11 @@ class SealedPrediction:
     signature_reason: str
     chain_verification: ChainVerification
     manifest_verification: ManifestVerification
+    #: The preview presentation structure sealed alongside the prediction, as
+    #: stored — ``None`` when the seal was made without one. What a UI renders
+    #: is this payload, not a re-derivation, so post-run analysis reads what an
+    #: approver was actually shown.
+    preview_payload: dict[str, Any] | None = None
 
     @property
     def signed(self) -> bool:
@@ -1496,8 +1506,7 @@ class PredictionAccuracy:
                 f"{list(self.overstated_node_ids)}"
             )
         return (
-            f"prediction held exactly: {len(self.actual_node_ids)} observed node(s), "
-            f"all predicted"
+            f"prediction held exactly: {len(self.actual_node_ids)} observed node(s), all predicted"
         )
 
 
@@ -1546,9 +1555,7 @@ def score_prediction_accuracy(
     named = predicted_set.intersection(observed_set)
     unpredicted = tuple(sorted(observed_set - predicted_set))
     overstated = tuple(sorted(predicted_set - observed_set))
-    accuracy = (
-        round(len(named) / len(observed_set) * 100.0, 3) if observed_set else None
-    )
+    accuracy = round(len(named) / len(observed_set) * 100.0, 3) if observed_set else None
     finding = ""
     if unpredicted:
         finding = (
@@ -1575,6 +1582,7 @@ def prediction_seal_event(
     run_id: str,
     recorded_at: AttestedTimestamp,
     evidence_ref: str,
+    preview_payload: Mapping[str, Any] | None = None,
 ) -> AttestedEvent:
     """The one event a prediction seal contributes.
 
@@ -1585,10 +1593,24 @@ def prediction_seal_event(
     to be able to reconstruct the *prediction*, and a digest alone would leave it
     needing the prediction to still exist somewhere.
 
+    ``preview_payload`` is the presentation structure sealed alongside the
+    prediction — the ``RiskPreviewView`` payload a UI renders, built by the
+    surface that showed it and handed here as data. It travels inside this same
+    event rather than in a second chain because the acceptance criterion is
+    "preview output stored *with the plan*": one seal, one scope, one manifest
+    to verify. This module never builds it — it has no view-model to build it
+    from — so an unreadable one is refused here, at the boundary, rather than
+    written as a row nobody can render. ``None`` means the seal was made without
+    one, and the key is then omitted rather than stored as null, so seals made
+    before the preview existed read back unchanged.
+
     Raises:
         PredictionSealingError: If ``evidence_ref`` is blank. Refused here rather
             than at write time so the same check guards every path that produces
             an event.
+        PredictionSealingError: If ``preview_payload`` is present but is not a
+            readable presentation structure (not a dict, no schema version, or
+            not JSON-serialisable).
     """
     if not evidence_ref.strip():
         raise PredictionSealingError(
@@ -1599,22 +1621,26 @@ def prediction_seal_event(
             f"cannot back a decision, and an uncited one in the chain cannot be "
             f"read back as a forecast anybody stood behind",
         )
+    sealed_preview = _normalise_preview(preview_payload, run_id=run_id)
+    event_payload: dict[str, Any] = {
+        "prediction_digest": digest_of(_prediction_payload(prediction)),
+        "evidence_ref": evidence_ref,
+        "run_id": run_id,
+        "plan_identity": prediction.plan_identity,
+        "graph_identity": prediction.graph_identity,
+        "schema_version": prediction.schema_version,
+        "predicted_node_ids": list(prediction.affected_node_ids),
+        "predicted_fan_out_depth": prediction.fan_out.max_depth,
+        "prediction": _prediction_payload(prediction),
+    }
+    if sealed_preview is not None:
+        event_payload[PREVIEW_PAYLOAD_KEY] = sealed_preview
     return AttestedEvent(
         event_id=f"{prediction_scope(run_id)}:sealed",
         event_kind=EVENT_PREDICTION_SEALED,
         run_id=prediction_scope(run_id),
         sequence=0,
-        payload={
-            "prediction_digest": digest_of(_prediction_payload(prediction)),
-            "evidence_ref": evidence_ref,
-            "run_id": run_id,
-            "plan_identity": prediction.plan_identity,
-            "graph_identity": prediction.graph_identity,
-            "schema_version": prediction.schema_version,
-            "predicted_node_ids": list(prediction.affected_node_ids),
-            "predicted_fan_out_depth": prediction.fan_out.max_depth,
-            "prediction": _prediction_payload(prediction),
-        },
+        payload=event_payload,
         recorded_at=recorded_at,
     )
 
@@ -1630,6 +1656,7 @@ def seal_prediction(
     manifest_id: str = "",
     previous_manifest_digest: str = GENESIS_DIGEST,
     signer: object | None = None,
+    preview_payload: Mapping[str, Any] | None = None,
 ) -> SealedPrediction:
     """Seal a prediction with its plan, pre-execution, into plan 12's chain machinery.
 
@@ -1661,9 +1688,21 @@ def seal_prediction(
         signer: The Phase 6 signing seam. There is no implementation, and naming
             one is refused for the reason
             :func:`~mayhem.infra.attestation_store.seal_run_evidence` refuses it.
+        preview_payload: The presentation structure sealed alongside the
+            prediction — the ``RiskPreviewView`` payload a surface renders,
+            built by that surface and handed here as data. Sealing writes to the
+            store; it never computes anything, so the stored bytes are the
+            surface's own and a reload is an equality check rather than a
+            re-derivation. ``None`` seals the prediction alone, exactly as
+            before. A read-only preview command must not own a write path, so
+            this parameter is how the half of plan 14's acceptance criterion
+            that says "stored with the plan" is met without giving one to it:
+            the seal-time caller passes what was shown, and the store holds it.
 
     Raises:
         PredictionSealingError: If ``evidence_ref`` is blank. Nothing is written.
+        PredictionSealingError: If ``preview_payload`` is present but unreadable.
+            Nothing is written.
         SigningNotImplementedError: If a signer is supplied.
         InvariantViolationError: If ``run_id`` is blank.
         AttestationError: If the derived chain or manifest fails verification, in
@@ -1685,6 +1724,7 @@ def seal_prediction(
                 run_id=run_id,
                 recorded_at=recorded_at,
                 evidence_ref=evidence_ref,
+                preview_payload=preview_payload,
             )
         ]
     )
@@ -1694,9 +1734,7 @@ def seal_prediction(
         run_id=scope,
         signer_identity="",
         trust_root_ref="",
-        retention_class=(
-            retention_class if retention_class is not None else RetentionClass.HOT
-        ),
+        retention_class=(retention_class if retention_class is not None else RetentionClass.HOT),
         created_at=recorded_at,
         previous_manifest_digest=previous_manifest_digest,
     )
@@ -1715,6 +1753,7 @@ def seal_prediction(
     repository = AttestationRepository(store)
     repository.save_chain(scope, events, sealed_at=recorded_at.wall_clock)
     repository.save_manifest(manifest)
+    stored_preview = events[0].payload.get(PREVIEW_PAYLOAD_KEY)
     return SealedPrediction(
         run_id=run_id,
         scope=scope,
@@ -1727,6 +1766,10 @@ def seal_prediction(
         signature_reason=UNSIGNED_REASON_NO_SIGNING,
         chain_verification=chain_verification,
         manifest_verification=manifest_verification,
+        # Read off the built event rather than normalised a second time, so the
+        # record carries the stored bytes themselves — a second normalisation
+        # could only agree by coincidence.
+        preview_payload=dict(stored_preview) if stored_preview is not None else None,
     )
 
 
@@ -1748,6 +1791,11 @@ class LoadedPrediction:
     prediction: ImpactPrediction
     prediction_digest: str
     evidence_ref: str
+    #: The preview presentation structure read back off stored bytes, or ``None``
+    #: when the seal was made without one. It is the payload a UI renders, not a
+    #: re-derivation of it — which is what makes "rendered identically in CLI and
+    #: UI" a property of stored bytes rather than of two renderers agreeing today.
+    preview_payload: dict[str, Any] | None = None
 
 
 def verify_sealed_prediction(store: Store, run_id: str) -> tuple[LoadedPrediction | None, str]:
@@ -1757,7 +1805,7 @@ def verify_sealed_prediction(store: Store, run_id: str) -> tuple[LoadedPredictio
     named reason, never a bare ``None``, because the caller is a post-run analysis
     deciding whether it has a forecast to score against at all.
 
-    Four things are checked, in that order, and each has its own failure shape:
+    Five things are checked, in that order, and each has its own failure shape:
 
     1. a chain exists under the prediction's scope, and a
        :data:`EVENT_PREDICTION_SEALED` event is in it;
@@ -1771,6 +1819,10 @@ def verify_sealed_prediction(store: Store, run_id: str) -> tuple[LoadedPredictio
        :class:`~mayhem.domain.prediction.ImpactPrediction` whose digest matches the
        one recorded at seal time — which is what catches an event body edited to
        name a prediction it no longer carries.
+    5. the sealed preview payload, when the seal carries one, is a readable
+       presentation structure — a dict with a schema version — so a UI is never
+       handed bytes no renderer can claim to read. A seal made without one reads
+       back as ``None``, not as an error, because seals predate the preview.
 
     A record whose ``evidence_ref`` is blank is not returned: a prediction that
     cites no evidence cannot back a decision, and handing one to
@@ -1791,8 +1843,7 @@ def verify_sealed_prediction(store: Store, run_id: str) -> tuple[LoadedPredictio
         # no forecast here — and distinguishing them would be a distinction the
         # post-run analysis cannot act on differently.
         return None, (
-            f"no {EVENT_PREDICTION_SEALED} event stored for run {run_id!r} "
-            f"(scope {scope!r})"
+            f"no {EVENT_PREDICTION_SEALED} event stored for run {run_id!r} (scope {scope!r})"
         )
     chain_verification = repository.verify_run_chain(scope)
     if not chain_verification.valid:
@@ -1814,12 +1865,13 @@ def _reconstruct_seal(
 ) -> tuple[str, LoadedPrediction | None]:
     """The seal's payload turned back into a :class:`LoadedPrediction`, or why not.
 
-    Three refusals live here: a body this module cannot read field by field, a
-    body whose digest does not match the one recorded beside it, and a body that
-    cites no evidence. The last two are what catch an edited row — a chain whose
-    links still verify can still carry a payload that was swapped after the fact,
-    and a hash chain only guarantees that the *bytes were not edited*, never that
-    the bytes are the right ones.
+    Four refusals live here: a body this module cannot read field by field, a
+    body whose digest does not match the one recorded beside it, a body that
+    cites no evidence, and a preview payload that cannot be rendered. The last
+    three are what catch an edited row — a chain whose links still verify can
+    still carry a payload that was swapped after the fact, and a hash chain only
+    guarantees that the *bytes were not edited*, never that the bytes are the
+    right ones.
 
     Returns ``(reason, None)`` on refusal, ``("", record)`` on success.
     """
@@ -1837,6 +1889,9 @@ def _reconstruct_seal(
     evidence_error, evidence_ref = _cited_evidence(seal.payload, run_id)
     if evidence_error:
         return evidence_error, None
+    preview_error, preview = _sealed_preview(seal.payload, run_id)
+    if preview_error:
+        return preview_error, None
     return (
         "",
         LoadedPrediction(
@@ -1845,8 +1900,91 @@ def _reconstruct_seal(
             prediction=prediction,
             prediction_digest=digest,
             evidence_ref=evidence_ref,
+            preview_payload=preview,
         ),
     )
+
+
+def _normalise_preview(preview: Mapping[str, Any] | None, *, run_id: str) -> dict[str, Any] | None:
+    """A preview payload as storable bytes, or why it cannot be stored.
+
+    ``None`` stays ``None`` — a seal made without a preview is legitimate, and
+    the key is omitted rather than stored as null because a null where a
+    structure belongs reads as "there was nothing to show", which is a different
+    claim from "this seal predates the preview". Anything present must be a dict
+    carrying a ``schema_version`` string: without a version a reader cannot tell
+    which presentation contract the bytes were written under, and a version it
+    cannot name is a row nobody can render. The JSON round trip both proves
+    serialisability and normalises what the store will return — tuples become
+    lists, ints that JSON cannot distinguish stay comparable — so what
+    :func:`verify_sealed_prediction` hands back compares equal to what was
+    sealed rather than to something that merely resembles it.
+
+    Raises:
+        PredictionSealingError: If ``preview`` is present but unreadable.
+    """
+    if preview is None:
+        return None
+    if not isinstance(preview, dict):
+        raise PredictionSealingError(
+            RULE_PREDICTION_PREVIEW_UNREADABLE,
+            f"refusing to seal a preview payload for run {run_id!r}: it is "
+            f"{type(preview).__name__}, not a presentation structure, so nothing "
+            f"stored under {PREVIEW_PAYLOAD_KEY!r} could be rendered back",
+        )
+    version = preview.get("schema_version")
+    if not isinstance(version, str) or not version.strip():
+        raise PredictionSealingError(
+            RULE_PREDICTION_PREVIEW_UNREADABLE,
+            f"refusing to seal a preview payload for run {run_id!r} with no schema "
+            f"version: a stored preview nobody can version is a stored preview "
+            f"nobody can render",
+        )
+    try:
+        round_tripped: dict[str, Any] | None = json.loads(json.dumps(preview))
+        return round_tripped
+    except (TypeError, ValueError) as exc:
+        raise PredictionSealingError(
+            RULE_PREDICTION_PREVIEW_UNREADABLE,
+            f"refusing to seal a preview payload for run {run_id!r} that is not "
+            f"JSON-serialisable ({exc}): a seal that cannot be read back is not a seal",
+        ) from exc
+
+
+def _sealed_preview(
+    payload: Mapping[str, object], run_id: str
+) -> tuple[str, dict[str, Any] | None]:
+    """The seal's preview payload, or the reason it cannot back a rendering.
+
+    Absent (or explicitly null, which old seals never write but a hand-edited
+    row could carry) means the seal was made without one, and reads back as
+    ``None`` rather than as an error — seals predate the preview and must keep
+    reading. Present but unreadable is a refusal, for the same reason a digest
+    mismatch is: the chain proves the bytes were not edited, never that the
+    bytes are the right ones, and a preview that reloads with its version
+    missing would render under a contract nobody named.
+
+    Returns ``(reason, None)`` on refusal, ``("", preview)`` on success.
+    """
+    if PREVIEW_PAYLOAD_KEY not in payload:
+        return "", None
+    raw = payload.get(PREVIEW_PAYLOAD_KEY)
+    if raw is None:
+        return "", None
+    if not isinstance(raw, dict):
+        return (
+            f"the sealed preview for run {run_id!r} is {type(raw).__name__}, not a "
+            f"presentation structure, so it cannot be rendered",
+            None,
+        )
+    version = raw.get("schema_version")
+    if not isinstance(version, str) or not version.strip():
+        return (
+            f"the sealed preview for run {run_id!r} carries no schema version, so no "
+            f"renderer can claim to read it",
+            None,
+        )
+    return "", dict(raw)
 
 
 def _cited_evidence(payload: Mapping[str, object], run_id: str) -> tuple[str, str]:
@@ -2112,8 +2250,7 @@ def _prediction_from_payload(payload: dict[str, Any]) -> ImpactPrediction:
     except (KeyError, TypeError, ValueError) as exc:
         raise PredictionSealingError(
             "prediction_sealing.unreadable_payload",
-            f"the sealed prediction body is not a readable "
-            f"{ImpactPrediction.__name__}: {exc}",
+            f"the sealed prediction body is not a readable {ImpactPrediction.__name__}: {exc}",
         ) from exc
 
 

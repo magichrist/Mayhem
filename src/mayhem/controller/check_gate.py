@@ -195,6 +195,7 @@ from mayhem.domain.safety_proof import ObligationName, ObligationStatus, ProofVe
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from mayhem.cli.proof_cmd import ProofView
     from mayhem.controller.safety import SafetyContext
     from mayhem.domain.certification import CertificationRecord
     from mayhem.domain.coverage import CellState, CoverageCell
@@ -246,6 +247,7 @@ __all__ = [
     "coverage_check",
     "dispatch_chatops",
     "evaluate_pr_checks",
+    "proof_view_for_report",
     "release_gate",
     "required_suites_for",
 ]
@@ -960,6 +962,20 @@ class CheckReport:
         )
 
     @property
+    def proof_verdict(self) -> str:
+        """The compiled proof's own verdict, or ``"UNKNOWN"`` when no gate ran.
+
+        Read off the proof rather than derived from the checks, so a caller that
+        grades proofs instead of checks has one string to read. ``UNKNOWN`` is
+        not a :class:`~mayhem.domain.safety_proof.ProofVerdict`: it is a
+        statement about this report — no compilation, no verdict — and it is
+        spelled that way so it cannot be mistaken for a verdict a gate produced.
+        """
+        if self.compilation is None:
+            return "UNKNOWN"
+        return self.compilation.proof.verdict.value
+
+    @property
     def evidence_refs(self) -> tuple[str, ...]:
         """Every check's citations, de-duplicated, in check order."""
         return tuple(dict.fromkeys(ref for check in self.checks for ref in check.evidence_refs))
@@ -988,11 +1004,14 @@ class CheckReport:
         )
 
     def to_dict(self) -> dict[str, object]:
+        view = proof_view_for_report(self)
         return {
             "control_plane": self.control_plane.value,
             "plan_digest": self.plan_digest,
             "proven": self.proven,
+            "proof_verdict": self.proof_verdict,
             "void_reason": self.void_reason,
+            "proof": None if view is None else view.to_payload(),
             "checks": [check.to_dict() for check in self.checks],
             "claims": [claim.to_dict() for claim in self.claims],
         }
@@ -1047,6 +1066,38 @@ def evaluate_pr_checks(inputs: CheckInputs) -> CheckReport:
         compilation=compilation,
         void_reason=compilation.void_reason,
     )
+
+
+def proof_view_for_report(report: CheckReport, *, run_id: str = "") -> ProofView | None:
+    """The compiled proof as the ``mayhem prove`` view-model, or ``None``.
+
+    Plan 30 Phase 3's PR-check half: this is a read-only projection off
+    :class:`~mayhem.cli.proof_cmd.ProofView` — the same structure
+    ``mayhem prove`` renders and the same payload
+    :func:`~mayhem.controller.api_service.proof_payload` serves — so a PR check
+    cannot render a proof the CLI would render differently. No gate runs here:
+    the view is built from the compilation :func:`evaluate_pr_checks` already
+    produced, and ``None`` is returned exactly when there is no compilation
+    (unreachable control plane), because no gate ran and there is no verdict to
+    project. A missing view is never a passing one; fail-closed means the caller
+    reads :attr:`CheckReport.checks` and sees ``UNKNOWN``s.
+
+    ``run_id`` labels the view. It defaults to the cited run's id, falling back
+    to ``""`` when the evaluation cited none — the label a renderer prints, and
+    nothing any gate reads.
+
+    The import is function-local, not module-level, for the reason
+    :func:`~mayhem.controller.api_service.risk_preview_payload` keeps its own
+    CLI import local: ``cli.ci_cmd`` already imports this module, so a top-level
+    import of the CLI surface would be a cycle. The view-model stays owned by
+    the CLI module; this function is only its second projection.
+    """
+    from mayhem.cli.proof_cmd import build_proof_view
+
+    if report.compilation is None:
+        return None
+    label = run_id or (report.cited_run.run_id if report.cited_run is not None else "")
+    return build_proof_view(report.compilation.proof, run_id=label)
 
 
 #: How much of a catalog refusal may be quoted into a check finding.

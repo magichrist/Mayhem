@@ -149,7 +149,10 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from mayhem.controller.auth_service import AuthService
+    from mayhem.controller.prediction_service import SimulateReport
     from mayhem.domain.faults import FaultDefinition
+    from mayhem.domain.safety_proof import SafetyProof
+    from mayhem.domain.secrets import CredentialRef, SecretGrant
     from mayhem.infra.identity_store import IdentityStore
 
 __all__ = [
@@ -188,6 +191,9 @@ __all__ = [
     "control_kind_for",
     "openapi_document",
     "parameter_controls",
+    "proof_payload",
+    "risk_preview_payload",
+    "secret_grant_explain_payload",
 ]
 
 #: The version prefix every route in this module serves. The plan's rule is
@@ -382,8 +388,7 @@ class Page:
     def to_payload(self) -> dict[str, Any]:
         return {
             "items": [
-                item.to_payload() if hasattr(item, "to_payload") else item
-                for item in self.items
+                item.to_payload() if hasattr(item, "to_payload") else item for item in self.items
             ],
             "total": self.total,
             "limit": self.limit,
@@ -993,8 +998,7 @@ class ApiGateway:
                 "auth.role_missing",
                 decision.describe(),
                 status=403,
-                remediation=f"grant {required.value} to {principal.principal_id} in "
-                f"{environment}",
+                remediation=f"grant {required.value} to {principal.principal_id} in {environment}",
                 detail={"roles": list(decision.evidence()["roles"])},
             )
         return decision.roles
@@ -1106,9 +1110,7 @@ class ApiGateway:
             "envelope": json.loads(str(row["envelope_json"])),
         }
 
-    def _record_replay(
-        self, key: str, fingerprint: str, response: ApiResponse
-    ) -> None:
+    def _record_replay(self, key: str, fingerprint: str, response: ApiResponse) -> None:
         if not key:
             return
         with self._db.write() as conn:
@@ -1369,8 +1371,10 @@ class ApiGateway:
                     "absent_metrics": [metric.value for metric in ExecutiveMetric],
                     "unlinked_runs": [],
                 },
-                ("no run is recorded, so there is nothing to summarise; every number is "
-                 "absent rather than zero",),
+                (
+                    "no run is recorded, so there is nothing to summarise; every number is "
+                    "absent rather than zero",
+                ),
                 (),
             )
         summary = self._store.summarise(run_ids)
@@ -1379,9 +1383,7 @@ class ApiGateway:
         # Phase 1 structure, so a UI cannot render one without it. This assertion
         # is the belt: if a future Phase 1 change let a number through without
         # evidence, the gateway refuses rather than shipping it.
-        unlinked = [
-            number["metric"] for number in payload["numbers"] if not number.get("evidence")
-        ]
+        unlinked = [number["metric"] for number in payload["numbers"] if not number.get("evidence")]
         if unlinked:
             raise ApiRefusedError(
                 "api.dashboard_number_without_evidence",
@@ -1425,6 +1427,106 @@ class ApiGateway:
             ),
             request_id=request_id,
         )
+
+
+# --------------------------------------------------------------------------- #
+# The risk preview projection (plan 14, Phase 3)                              #
+# --------------------------------------------------------------------------- #
+
+
+def risk_preview_payload(report: SimulateReport, *, run_id: str = "") -> dict[str, Any]:
+    """One plan's risk preview as data — what a UI renders.
+
+    Plan 14's acceptance criterion is "preview output stored with the plan and
+    rendered identically in CLI and UI", and the part of it that is easy to fake
+    is the second half. So this is not a second view-model: it builds the *same*
+    :class:`~mayhem.cli.risk_preview_cmd.RiskPreviewView` the CLI projects off
+    and returns the *same* :func:`~mayhem.cli.risk_preview_cmd.preview_payload`
+    of it. ``risk_preview_payload(report) ==
+    preview_payload(build_risk_preview(report))`` is an identity a test asserts
+    rather than an agreement two renderers happen to have reached, which is what
+    makes "rendered identically" a property of the code rather than a claim in a
+    document.
+
+    The import is function-local, not module-level, for the reason
+    :mod:`mayhem.controller.preflight` keeps its own ``cli.services`` imports
+    local: ``cli.api_cmd`` already imports this module, so a top-level import of
+    the CLI surface would be a cycle. The view-model stays owned by the CLI
+    module; this function is only its second projection.
+    """
+    from mayhem.cli.risk_preview_cmd import build_risk_preview, preview_payload
+
+    return preview_payload(build_risk_preview(report, run_id=run_id))
+
+
+def proof_payload(proof: SafetyProof, *, run_id: str = "") -> dict[str, Any]:
+    """One plan's safety proof as data — what a UI renders.
+
+    Plan 30 Phase 3's UI half, by the same mechanism as plan 14's
+    :func:`risk_preview_payload`: this is not a second view-model, it builds the
+    *same* :class:`~mayhem.cli.proof_cmd.ProofView` ``mayhem prove`` projects off
+    and returns the *same* :func:`~mayhem.cli.proof_cmd.proof_payload` of it.
+    ``proof_payload(proof) == proof_payload(build_proof_view(proof))`` is an
+    identity a test asserts rather than an agreement two renderers happen to have
+    reached, which is what makes "rendered identically" a property of the code
+    rather than a claim in a document. A ``VOID`` proof stays ``VOID`` here —
+    this projects the verdict, never softens it — and a stale proof is still
+    rendered ``VOID`` with its diff by the ``--check`` path that owns it, not by
+    this projection.
+
+    The import is function-local for the same cycle reason
+    :func:`risk_preview_payload` states: the CLI surface imports through this
+    module, so a top-level import would close the loop. The view-model stays
+    owned by the CLI module; this function is only its second projection.
+    """
+    from mayhem.cli.proof_cmd import build_proof_view
+    from mayhem.cli.proof_cmd import proof_payload as _cli_proof_payload
+
+    return _cli_proof_payload(build_proof_view(proof, run_id=run_id))
+
+
+def secret_grant_explain_payload(
+    grants: Sequence[SecretGrant],
+    reference: CredentialRef,
+    *,
+    principal: str,
+    environment: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """One grant question answered as data — what a UI renders.
+
+    Plan 29 Phase 3's UI clause, satisfied without a second view-model: this
+    builds the *same* :class:`~mayhem.cli.secrets_cmd.GrantExplanation` the CLI
+    projects off and returns the *same*
+    :func:`~mayhem.cli.secrets_cmd.explain_payload` of it.
+    ``secret_grant_explain_payload(grants, reference, ...) ==
+    explain_payload(build_grant_explanation(grants, reference, ...))`` is an
+    identity a test asserts rather than an agreement two renderers happen to
+    have reached — which is what makes "rendered identically" a property of the
+    code rather than a claim in a document, and what any future UI page
+    (``api_ui`` HTML or otherwise) must project off instead of re-answering.
+
+    The import is function-local, not module-level, for the reason
+    :func:`risk_preview_payload` states above: ``cli`` already imports this
+    module's siblings, so a top-level import of the CLI surface would be a
+    cycle. The view-model stays owned by the CLI module; this function is only
+    its second projection.
+
+    The principal is a declared string here exactly as in the CLI: nothing in
+    this projection authenticates it, and the payload says so.
+    """
+    from mayhem.cli.secrets_cmd import build_grant_explanation, explain_payload
+    from mayhem.domain.common import utc_now
+
+    return explain_payload(
+        build_grant_explanation(
+            grants,
+            reference,
+            principal=principal,
+            environment=environment,
+            now=utc_now() if now is None else now,
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1791,9 +1893,7 @@ def _responses_for(route: Route) -> dict[str, Any]:
     responses = {
         "200": {
             "description": "The Phase 1 envelope.",
-            "content": {
-                "application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}
-            },
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}},
         },
         "401": {"description": "Not authenticated (plan 09 refusal code)."},
         "403": {"description": "Authenticated but the role is not held in the named scope."},

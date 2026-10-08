@@ -20,7 +20,10 @@ exists:
     unreadable plan or topology is reported as an unreachable control plane, so
     the checks come back ``UNKNOWN`` and the command still exits non-zero: "mayhem
     could not ask" is not "nothing to report", and a CI step that exits 0 because
-    it could not reach its own control plane is a gate that fails open.
+    it could not reach its own control plane is a gate that fails open. The
+    compiled safety proof is printed as the ``mayhem prove`` artifact — the same
+    view-model, projected read-only — and the exit refuses a proof that is not a
+    PASS as well as any check that did not pass.
 
     Two consequences of that design are worth stating plainly, because both look
     like defects and neither is:
@@ -78,9 +81,15 @@ import click
 from mayhem.cli import style
 from mayhem.cli.errors import MayhemCliError
 from mayhem.cli.exit_codes import ExitCode
+from mayhem.cli.proof_cmd import render_proof_lines
 from mayhem.cli.resolver import make_group
 from mayhem.config import PolicyCfg
-from mayhem.controller.check_gate import CHECK_ORDER, CheckInputs, evaluate_pr_checks
+from mayhem.controller.check_gate import (
+    CHECK_ORDER,
+    CheckInputs,
+    evaluate_pr_checks,
+    proof_view_for_report,
+)
 from mayhem.controller.ci_surface import (
     CHECKOUT_ACTION,
     SETUP_PYTHON_ACTION,
@@ -146,8 +155,7 @@ def _refuse(
                 message=str(exc),
                 details={"rule": exc.rule},
                 remediation=remediation
-                or "pin the action to a 40-character commit SHA and the image to a "
-                "sha256 digest",
+                or "pin the action to a 40-character commit SHA and the image to a sha256 digest",
             ),
         )
         return
@@ -360,8 +368,7 @@ def _unreachable_reason(plan: object, graph: object, plan_path: str) -> str:
     """
     if plan is None:
         return (
-            f"the plan at {plan_path!r} could not be read, so mayhem compiled no safety "
-            "case for it"
+            f"the plan at {plan_path!r} could not be read, so mayhem compiled no safety case for it"
             if plan_path
             else "no --plan was supplied"
         )
@@ -449,8 +456,13 @@ def _evaluate(
     "the plan's own, which is honest rather than strict: no fingerprint is not a "
     "failed drift check, and this command says which it did.",
 )
-@click.option("--summary", "summary_path", default="", metavar="PATH", help="Write the "
-              "PR-check markdown here (e.g. $GITHUB_STEP_SUMMARY).")
+@click.option(
+    "--summary",
+    "summary_path",
+    default="",
+    metavar="PATH",
+    help="Write the PR-check markdown here (e.g. $GITHUB_STEP_SUMMARY).",
+)
 @click.option("--verdict-out", default="", metavar="PATH", help="Write the verdict JSON here.")
 @click.pass_context
 def check_cmd(
@@ -525,7 +537,20 @@ def check_cmd(
         return
     for line in summary.splitlines():
         click.echo(style.info(line) if line.startswith("|") else line)
-    if report.blocking:
+    proof_view = proof_view_for_report(report)
+    if proof_view is not None:
+        # The safety proof as `mayhem prove` renders it, projected off the same
+        # view-model rather than re-rendered: the compilation above already ran
+        # the gates, so this only reads. Unreachable yields no view and no
+        # claim — the UNKNOWN checks above are the whole answer there.
+        for line in render_proof_lines(proof_view):
+            click.echo(line)
+    # Graded on the checks *and* on the proof they were read from. The second
+    # half is the belt: every non-PASS line already fails its owning check, so
+    # today it never fires alone — but a proof that is not a PASS is the refusal
+    # this gate exists to report, and that must not depend on the attribution
+    # tables staying complete.
+    if report.blocking or not report.proven:
         ctx.exit(int(ExitCode.SAFETY_REFUSAL))
 
 
@@ -606,9 +631,7 @@ def _render(report: Any, change: ChangeLink, reason: str) -> tuple[str, Pipeline
         change=change,
         evidence_refs=(f"plan-digest/unreachable:{change.git_sha[:12]}",),
         checks=report.checks,
-        reasons=(
-            reason or "the checks did not conclude, so no verdict could be graded",
-        ),
+        reasons=(reason or "the checks did not conclude, so no verdict could be graded",),
     )
     return render_check_summary(fallback), None
 
@@ -697,16 +720,12 @@ def status_cmd(ctx: click.Context, from_path: str, context: str) -> None:
     try:
         verdict = _verdict_from(from_path)
         status = status_for(verdict, context=context)
-        publication = publish_commit_status(
-            None, git_sha=verdict.change.git_sha, status=status
-        )
+        publication = publish_commit_status(None, git_sha=verdict.change.git_sha, status=status)
     except MayhemCliError as exc:
         _fail(ctx, exc)
         return
     except (InvariantViolationError, ValueError, OSError) as exc:
-        _refuse(
-            ctx, exc, remediation="write the verdict with `mayhem ci check --verdict-out`"
-        )
+        _refuse(ctx, exc, remediation="write the verdict with `mayhem ci check --verdict-out`")
         return
     click.echo(f"context:   {status.context}")
     click.echo(f"state:     {status.state}")
