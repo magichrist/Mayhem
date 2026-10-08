@@ -312,10 +312,16 @@ class TestTheCheckersBite:
         assert ledger_problems(PLAN) == []
         # Mutate whatever the document currently claims, so this control does
         # not go stale the moment the real count changes -- which is exactly
-        # what happened to the first version of it.
+        # what happened to the first version of it, and again when Phase 3
+        # landed and the real count reached the 6 the old mutation inflated
+        # to. Claiming one more than the ledger holds is an overclaim at any
+        # count, including the maximum.
         current = re.search(r"Overall: (\d) of 6", PLAN)
         assert current is not None
-        inflated = PLAN.replace(f"Overall: {current.group(1)} of 6", "Overall: 6 of 6")
+        inflated = PLAN.replace(
+            f"Overall: {current.group(1)} of 6",
+            f"Overall: {int(current.group(1)) + 1} of 6",
+        )
         assert inflated != PLAN
         assert ledger_problems(inflated)
 
