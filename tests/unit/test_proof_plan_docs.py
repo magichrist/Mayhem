@@ -13,6 +13,10 @@ refuses the claim:
 
 * the per-phase ledger carries one line per phase and the ``Overall:`` count
   equals the number of ``DONE`` lines;
+* no phase is still unfinished while the plan claims to be complete — a gate
+  that only checked arithmetic would pass a document that quietly demoted a
+  finished phase while keeping its count, so ``Overall: 6 of 6`` is asserted
+  exactly, and inflating it is the flattering lie;
 * the four Phase 6 deliverables are present by name;
 * every ``ObligationName``, ``ResiduePredicate`` and ``ProofVerdict`` value is
   named in the document, so a vocabulary the code adds cannot leave the guides
@@ -23,8 +27,9 @@ refuses the claim:
   numbers a reader relies on are not allowed to drift from the code;
 * the document states that signature verification is *not* implemented, and the
   constant it names is `False` in this build;
-* the open phase is named as open, and is the only one — an ``Overall`` count is
-  only honest if the reader can tell which phase is missing;
+* the open phase ledger is empty and the summary says exactly ``6 of 6`` —
+  Phase 3 was the last open one and has since landed, so ``Overall: 6 of 6``
+  is the correct summary and naming an open phase would now be the stale claim;
 * five literal claims are absent, the load-bearing one being that the proof is a
   guarantee, and the document's own *denials* must not match them.
 
@@ -94,11 +99,7 @@ COUNT_PHRASES: Final[dict[str, tuple[re.Pattern[str], int]]] = {
     ),
 }
 
-#: The phase the ledger leaves open. Named here so the document cannot raise its
-#: ``Overall`` count without also saying which phase it is claiming.
-OPEN_PHASE: Final[str] = "Phase 3"
-
-#: Sentences the guides depend on, so an edit cannot quietly drop the reasoning.
+# Sentences the guides depend on, so an edit cannot quietly drop the reasoning.
 REQUIRED_DENIALS: Final[tuple[str, ...]] = (
     "a **record that checks ran**",
     "not a certificate",
@@ -205,14 +206,6 @@ def signature_claims_implemented(document: str) -> list[str]:
     return claims
 
 
-def unnamed_open_phase(document: str) -> str | None:
-    """The ``Overall`` line, when it does not name the phase it leaves open."""
-    for raw in document.split("\n"):
-        if raw.startswith("Overall:"):
-            return None if OPEN_PHASE in raw else raw[:120]
-    return "the document has no Overall: line"
-
-
 def missing_denials(document: str) -> list[str]:
     return [denial for denial in REQUIRED_DENIALS if denial not in document]
 
@@ -232,13 +225,18 @@ def test_the_overall_count_equals_the_number_of_done_lines() -> None:
     assert (done, total) == (done_phase_count(PLAN), len(ledger_lines(PLAN)))
 
 
-def test_exactly_one_phase_is_open_and_it_is_the_named_one() -> None:
-    """A count is only honest if the reader can tell which phase is missing."""
-    assert open_phases(PLAN) == [OPEN_PHASE]
+def test_no_phase_is_open_and_the_summary_says_so() -> None:
+    """All six phases are DONE, and the summary says exactly that.
 
-
-def test_the_open_phase_is_named_rather_than_implied() -> None:
-    assert unnamed_open_phase(PLAN) is None
+    This replaces ``test_exactly_one_phase_is_open_and_it_is_the_named_one``
+    (and the ``unnamed_open_phase`` check beside it) rather than editing them:
+    those pinned Phase 3 as the open one, and their continued presence would
+    imply the plan is still 5 of 6. The promotion to DONE is recorded in the
+    Phase 3 STATUS entry, which names the two projections that landed and the
+    tests that assert each.
+    """
+    assert open_phases(PLAN) == []
+    assert claimed_overall(PLAN) == (6, 6)
 
 
 # ── the Phase 6 deliverables ─────────────────────────────────────────────────
@@ -302,8 +300,8 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         done_phase_count,
     ),
     (
-        "the Overall count inflated",
-        lambda d: d.replace("Overall: 5 of 6", "Overall: 6 of 6", 1),
+        "the Overall count inflated past complete",
+        lambda d: d.replace("Overall: 6 of 6", "Overall: 7 of 6", 1),
         claimed_overall,
     ),
     (
@@ -331,25 +329,9 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: len(signature_claims_implemented(d)),
     ),
     (
-        "the open phase no longer named in the ledger",
-        lambda d: re.sub(
-            r"^- Phase 3 \([^\n]*\): PARTIAL",
-            "- Phase 3: DONE",
-            d,
-            count=1,
-            flags=re.M,
-        ),
+        "a done phase silently demoted to partial",
+        lambda d: d.replace(": DONE", ": PARTIAL", 1),
         open_phases,
-    ),
-    (
-        "the Overall line dropping the open phase",
-        lambda d: re.sub(
-            r"\*\*Phase 3 remains[^.]*\.",
-            "",
-            d,
-            count=1,
-        ),
-        unnamed_open_phase,
     ),
     (
         "the document calling the proof a guarantee",

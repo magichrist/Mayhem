@@ -5,17 +5,19 @@ Same shape as `test_lowlevel_doc_honesty.py`, `test_advisor_plan_docs.py` and
 criterion is a claim *about prose* — "no doc calls a prediction a guarantee" — so
 writing the sentence does not discharge it.
 
-This plan is also the one where the ledger must **not** be inflated. Phase 3 is
-`INCOMPLETE` for stated reasons of ownership, so `Overall: 5 of 6` is the correct
-summary and `6 of 6` would be the flattering lie. The gate therefore checks that
-the summary agrees with the `DONE` lines *and* that a plan carrying an
-`INCOMPLETE` phase does not claim to be finished:
+This plan is also the one where the ledger must **not** be inflated. Phase 3 was
+`INCOMPLETE` for stated reasons of ownership and has since landed — the preview
+payload is sealed with the plan at seal time and the UI projection reads off
+the same view-model — so `Overall: 6 of 6` is the correct summary and `7 of 6`
+would be the flattering lie. The gate therefore checks that the summary agrees
+with the `DONE` lines *and* that no phase is still unfinished while the plan
+claims to be complete:
 
 * one ledger line per phase, and ``Overall:`` equal to the number of ``DONE``
   lines;
-* Phase 3 is still ``INCOMPLETE`` and is *named* as the unfinished one — a gate
-  that only checked arithmetic would pass a document that quietly promoted itself
-  to complete;
+* Phase 3 is `DONE` and no phase is still ``INCOMPLETE`` — a gate
+  that only checked arithmetic would pass a document that quietly demoted a
+  finished phase while keeping its count;
 * the two Phase 6 guides are present by name;
 * the guarantee claim is absent, and each checker bites against a mutated copy.
 """
@@ -123,12 +125,19 @@ def test_the_overall_count_equals_the_number_of_done_lines() -> None:
     assert total == len(ledger_lines(PLAN))
 
 
-def test_phase_three_is_still_named_as_the_unfinished_one() -> None:
-    """The reason this plan is 5 of 6, asserted so it cannot be quietly promoted."""
-    assert incomplete_phases(PLAN) == ["Phase 3"]
+def test_no_phase_is_still_named_as_unfinished() -> None:
+    """All six phases are DONE, and the summary says so.
+
+    This replaces ``test_phase_three_is_still_named_as_the_unfinished_one``
+    rather than editing it: that test pinned Phase 3 as the unfinished one, and
+    its continued presence would imply the plan is still 5 of 6. The promotion
+    to DONE is recorded in the Phase 3 STATUS entry, which names the two halves
+    that landed and the tests that assert each.
+    """
+    assert incomplete_phases(PLAN) == []
     overall = claimed_overall(PLAN)
     assert overall is not None
-    assert overall[0] < overall[1]
+    assert overall == (6, 6)
 
 
 def test_the_document_does_not_inflate_its_own_completion() -> None:
@@ -168,8 +177,8 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         done_phase_count,
     ),
     (
-        "the Overall count inflated to complete",
-        lambda d: d.replace("Overall: 5 of 6", "Overall: 6 of 6", 1),
+        "the Overall count inflated past complete",
+        lambda d: d.replace("Overall: 6 of 6", "Overall: 7 of 6", 1),
         inflates_its_own_completion,
     ),
     (
@@ -183,8 +192,8 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: len(forbidden_claims_found(d)),
     ),
     (
-        "Phase 3 silently promoted to done",
-        lambda d: d.replace(": INCOMPLETE", ": DONE", 1),
+        "a done phase silently demoted to incomplete",
+        lambda d: d.replace(": DONE", ": INCOMPLETE", 1),
         incomplete_phases,
     ),
 )

@@ -28,9 +28,14 @@ one property that is easy to fake:
   shape ``test_prediction_service.py`` uses, because a hard-coded zero in the
   report would satisfy a naive assertion.
 
-One test is about something that did **not** land:
-:func:`test_the_ui_renderer_does_not_exist_yet` pins the absence of plan 08, which
-is why the acceptance criterion is only half met and the STATUS entry says so.
+One test used to be about something that did **not** land:
+:func:`test_the_ui_renderer_does_not_exist_yet` pinned the absence of plan 08, which
+is why the acceptance criterion was only half met. Both halves have since landed —
+the preview payload is sealed with the plan at seal time
+(:func:`~mayhem.controller.prediction_service.seal_prediction`), and the UI
+projection is :func:`~mayhem.controller.api_service.risk_preview_payload` — so
+that test was replaced by the identity assertions below rather than edited: the
+criterion is now asserted as met, at the view-model layer, in both halves.
 
 Timestamps are injected everywhere; nothing here reads a wall clock to decide a
 verdict.
@@ -67,20 +72,25 @@ from mayhem.cli.risk_preview_cmd import (
     render_preview_lines,
     risk_preview,
 )
-from mayhem.domain.policy_gate import MutationSink
 from mayhem.controller.prediction_service import (
+    PREVIEW_PAYLOAD_KEY,
     RULE_PREDICTION_CALMER_THAN_GATE,
+    RULE_PREDICTION_PREVIEW_UNREADABLE,
     RULE_PREDICTION_UNMODELLED_GATE_REFUSAL,
     AgreementState,
     CeilingName,
     CeilingVerdict,
     GateAgreement,
     PredictionConfig,
+    PredictionSealingError,
     PredictionService,
     SimulateReport,
+    seal_prediction,
+    verify_sealed_prediction,
 )
 from mayhem.controller.safety import SafetyContext
 from mayhem.domain.advisor import IncidentFacts
+from mayhem.domain.attestation import AttestedTimestamp
 from mayhem.domain.experiments import (
     BlastRadiusBudget,
     ExecutionPlan,
@@ -91,6 +101,7 @@ from mayhem.domain.experiments import (
     ResolvedTarget,
 )
 from mayhem.domain.identity import RuntimeIdentity, RuntimeMetadata
+from mayhem.domain.policy_gate import MutationSink
 from mayhem.domain.prediction import (
     RULE_MAX_SERVICES_PCT,
     BlastCeilings,
@@ -746,9 +757,7 @@ def test_every_claim_cites_its_own_rule() -> None:
 
 
 def test_an_unresolvable_target_set_renders_a_named_refusal_not_an_empty_preview() -> None:
-    report = _service().simulate_plan(
-        _plan(("net.latency", "n-does-not-exist", STEP_S)), _ctx()
-    )
+    report = _service().simulate_plan(_plan(("net.latency", "n-does-not-exist", STEP_S)), _ctx())
     view = build_risk_preview(report, run_id=RUN_ID)
     assert view.unresolvable is True
     assert view.targets.unresolved == ("n-does-not-exist",)
@@ -764,9 +773,7 @@ def test_an_unresolvable_target_set_renders_a_named_refusal_not_an_empty_preview
 
 def test_the_refusal_reaches_the_payload_a_ui_renders() -> None:
     """The refusal is not a CLI-only concern; the UI gets it too."""
-    report = _service().simulate_plan(
-        _plan(("net.latency", "n-does-not-exist", STEP_S)), _ctx()
-    )
+    report = _service().simulate_plan(_plan(("net.latency", "n-does-not-exist", STEP_S)), _ctx())
     payload = preview_payload(build_risk_preview(report, run_id=RUN_ID))
     assert payload["usable_for_approval"] is False
     assert payload["refusals"]
@@ -870,9 +877,7 @@ def test_the_unmodelled_state_renders_as_unusable_for_approval() -> None:
     view = build_risk_preview(report, run_id=RUN_ID)
     assert view.agreement_state == AgreementState.UNMODELLED.value
     assert view.usable_for_approval is False
-    assert any(
-        RULE_PREDICTION_UNMODELLED_GATE_REFUSAL in refusal for refusal in view.refusals
-    )
+    assert any(RULE_PREDICTION_UNMODELLED_GATE_REFUSAL in refusal for refusal in view.refusals)
     lines = "\n".join(render_preview_lines(view))
     assert RULE_PREDICTION_UNMODELLED_GATE_REFUSAL in lines
     assert "policy.deny_faults" in lines
@@ -955,9 +960,7 @@ def test_an_unpriced_estimate_never_renders_a_currency_or_a_total() -> None:
 def test_a_priced_estimate_carries_its_currency_and_total() -> None:
     """The inverse, so the unpriced assertions are not vacuous."""
     rate = CostRateCard(usd_per_node_hour=0.5, currency="USD", basis="fixture rate card")
-    report = _service(rate_card=rate).simulate_plan(
-        _plan(("net.latency", "n-web", STEP_S)), _ctx()
-    )
+    report = _service(rate_card=rate).simulate_plan(_plan(("net.latency", "n-web", STEP_S)), _ctx())
     view = build_risk_preview(report, run_id=RUN_ID)
     assert view.cost.priced is True
     payload = preview_payload(view)["cost"]
@@ -1073,9 +1076,7 @@ def test_a_preview_against_a_preloaded_mutation_sink_adds_nothing(tmp_path: Path
 
 def test_a_preview_with_no_backend_reports_no_mutations(tmp_path: Path) -> None:
     """The weaker, empty-sink statement — asserted so it is not the only one."""
-    report = _service(backend=None).simulate_plan(
-        _plan(("net.latency", "n-web", STEP_S)), _ctx()
-    )
+    report = _service(backend=None).simulate_plan(_plan(("net.latency", "n-web", STEP_S)), _ctx())
     assert report.mutation.calls == 0
     assert report.mutation.calls_detail == ()
     assert report.mutation.backend_attached is False
@@ -1097,9 +1098,7 @@ def test_the_view_reports_a_loaded_sink_rather_than_claiming_zero(tmp_path: Path
     sink. So the number is the engine's observed length, carried whole.
     """
     sink = MutationSink().record("prior", "another caller's recorded mutation")
-    report = _service(backend=sink).simulate_plan(
-        _plan(("net.latency", "n-web", STEP_S)), _ctx()
-    )
+    report = _service(backend=sink).simulate_plan(_plan(("net.latency", "n-web", STEP_S)), _ctx())
     view = build_risk_preview(report, run_id=RUN_ID)
     assert view.mutation_calls == 1
     assert view.mutation_backend_attached is False
@@ -1456,32 +1455,65 @@ def test_a_node_mayhem_does_not_hold_yields_no_row(seeded_db: Path) -> None:
 # ==============================================================================
 
 
-def test_the_ui_renderer_does_not_exist_yet() -> None:
-    """Plan 08 has not landed, so the acceptance criterion is half met.
+def test_the_ui_renderer_projects_off_the_same_view_model() -> None:
+    """Plan 08's half of the acceptance criterion, asserted as landed.
 
-    What this asserts is the *shape* of what is missing: the module exposes one
-    view-model and exactly two projections of it, both of them in this file. When
-    plan 08 arrives it renders from :func:`preview_payload` and the drift the
-    acceptance criterion warns about becomes impossible rather than unlikely —
-    but until then there is no second renderer to compare against, and this test
-    says so rather than letting the suite imply the criterion is fully met.
+    This replaces ``test_the_ui_renderer_does_not_exist_yet`` rather than
+    editing it: that test pinned the *absence* of a second renderer, and its
+    continued presence would imply the criterion is still half met.
+    :func:`~mayhem.controller.api_service.risk_preview_payload` builds the same
+    :class:`~mayhem.cli.risk_preview_cmd.RiskPreviewView` the CLI projects off
+    and returns the same payload of it, so the identity below is structural —
+    a UI that dropped a claim, or renamed its reason, would fail here.
     """
-    module = risk_preview_cmd
-    assert hasattr(module, "preview_payload")
-    assert hasattr(module, "render_preview_lines")
-    # No third projection is hiding here. If plan 08 adds a renderer, this
-    # assertion is the one to revisit and reword deliberately.
-    projections = [
-        name
-        for name in dir(module)
-        if name.startswith(("render_", "preview_", "node_")) and callable(getattr(module, name))
-    ]
-    assert set(projections) == {
-        "render_node_lines",
-        "render_preview_lines",
-        "preview_payload",
-        "preview_refusal",
-    }
+    from mayhem.controller.api_service import risk_preview_payload as ui_preview_payload
+
+    for report in (_breaching_report(), _clean_report()):
+        view = build_risk_preview(report, run_id=RUN_ID)
+        cli_payload = preview_payload(view)
+        ui_payload = ui_preview_payload(report, run_id=RUN_ID)
+        assert ui_payload == cli_payload
+        assert ui_payload == view.to_payload()
+        for claim in view.claims:
+            assert claim.rule_id in json.dumps(ui_payload), claim.rule_id
+            assert claim.reason in json.dumps(ui_payload), claim.reason
+
+
+def test_the_two_surfaces_cannot_disagree_about_usability() -> None:
+    """The refusal is in the view-model, so both renderers refuse together.
+
+    An unusable preview that the CLI refused but the UI admitted would be the
+    drift the acceptance criterion warns about, in its most dangerous form.
+    """
+    from mayhem.controller.api_service import risk_preview_payload as ui_preview_payload
+
+    for state in (AgreementState.UNMODELLED, AgreementState.DISAGREES):
+        view = build_risk_preview(_report_with_agreement(state), run_id=RUN_ID)
+        assert view.usable_for_approval is False
+        ui_payload = ui_preview_payload(_report_with_agreement(state), run_id=RUN_ID)
+        assert ui_payload["usable_for_approval"] is False
+        assert list(ui_payload["refusals"]) == list(view.refusals)
+        assert ui_payload["agreement_state"] == view.agreement_state
+
+
+def test_the_ui_projection_comes_from_the_cli_view_model_not_a_copy() -> None:
+    """The second renderer is a projection, not a reimplementation.
+
+    If ``api_service`` ever grew its own claim-building, the two could disagree
+    about a stance while every payload-equality test still passed on fixtures
+    that never exercised it. So this asserts the mechanism rather than one more
+    output: the UI entry point delegates to the CLI module's builder and payload
+    function.
+    """
+    import inspect
+
+    from mayhem.controller import api_service
+
+    source = inspect.getsource(api_service.risk_preview_payload)
+    assert "build_risk_preview" in source
+    assert "preview_payload" in source
+    assert "PolicyClaim(" not in source
+    assert "PolicyStance." not in source
 
 
 def test_the_preview_does_not_seal_anything(seeded_db: Path) -> None:
@@ -1501,6 +1533,145 @@ def test_the_preview_does_not_seal_anything(seeded_db: Path) -> None:
         assert store.query("SELECT * FROM attestation_manifests") == []
     finally:
         store.close()
+
+
+def _reading() -> AttestedTimestamp:
+    """A fixed clock. Nothing here reads a real one."""
+    return AttestedTimestamp(
+        wall_clock=MOMENT, monotonic_ns=1_000_000, uncertainty_ms=0.0, source="test"
+    )
+
+
+def _seal(
+    store: Store,
+    report: SimulateReport,
+    *,
+    run_id: str = RUN_ID,
+    preview: Any = "build",
+) -> Any:
+    """Seal one report's prediction, with its preview payload unless told otherwise.
+
+    ``preview="build"`` builds the view-model off the report and seals
+    :func:`~mayhem.cli.risk_preview_cmd.preview_payload` of it — the seam the
+    run path calls between "the preview was shown" and the first fault step.
+    ``preview=None`` seals the prediction alone, exactly as before. Anything
+    else is sealed as-is, so refusals are reachable.
+    """
+    payload = (
+        preview_payload(build_risk_preview(report, run_id=run_id))
+        if preview == "build"
+        else preview
+    )
+    return seal_prediction(
+        store,
+        report.prediction,
+        run_id=run_id,
+        recorded_at=_reading(),
+        evidence_ref="preflight:a1",
+        preview_payload=payload,
+    )
+
+
+def test_the_preview_payload_is_sealed_with_the_plan(tmp_path: Path) -> None:
+    """The acceptance criterion's first half, asserted as landed.
+
+    The seal carries the presentation structure the surface showed — not a
+    re-derivation of it — so post-run analysis reads what an approver was
+    actually shown. The command still writes nothing (see
+    ``test_the_preview_does_not_seal_anything``): the write lives at seal time,
+    alongside ``seal_prediction``, where a read-only preview cannot reach it.
+    """
+    store = _make_store(tmp_path, name="seal.db")
+    try:
+        report = _breaching_report()
+        sealed = _seal(store, report)
+        assert sealed.preview_payload == preview_payload(build_risk_preview(report, run_id=RUN_ID))
+        loaded, reason = verify_sealed_prediction(store, RUN_ID)
+        assert reason == "", reason
+        assert loaded is not None
+        assert loaded.preview_payload == sealed.preview_payload
+        # The UI renders the stored bytes, not a fresh derivation.
+        from mayhem.controller.api_service import risk_preview_payload as ui_preview_payload
+
+        assert loaded.preview_payload == ui_preview_payload(report, run_id=RUN_ID)
+    finally:
+        store.close()
+
+
+def test_a_seal_without_a_preview_still_reads_back(tmp_path: Path) -> None:
+    """Seals made before the preview existed are not errors.
+
+    The key is omitted rather than stored as null, so an old seal reads back
+    with ``preview_payload is None`` instead of failing a check that did not
+    exist when it was written.
+    """
+    store = _make_store(tmp_path, name="seal-legacy.db")
+    try:
+        sealed = _seal(store, _clean_report(), preview=None)
+        assert sealed.preview_payload is None
+        assert PREVIEW_PAYLOAD_KEY not in sealed.events[0].payload
+        loaded, reason = verify_sealed_prediction(store, RUN_ID)
+        assert reason == "", reason
+        assert loaded is not None
+        assert loaded.preview_payload is None
+        # And the prediction itself still round-trips byte-identically.
+        assert loaded.prediction == sealed.prediction
+    finally:
+        store.close()
+
+
+def test_an_unreadable_preview_refuses_the_seal_and_writes_nothing(tmp_path: Path) -> None:
+    """A preview nobody can version, or that cannot be serialised, seals nothing.
+
+    The refusal carries a named rule rather than a bare ``TypeError``, so a
+    caller can branch on it — and nothing is written, because a seal that cannot
+    be read back is not a seal.
+    """
+    store = _make_store(tmp_path, name="seal-refused.db")
+    try:
+        report = _clean_report()
+        with pytest.raises(PredictionSealingError) as excinfo:
+            _seal(store, report, preview={"claims": []})  # type: ignore[dict-item]
+        assert excinfo.value.rule == RULE_PREDICTION_PREVIEW_UNREADABLE
+        assert "schema version" in str(excinfo.value)
+        with pytest.raises(PredictionSealingError) as excinfo:
+            _seal(store, report, preview={"schema_version": "1.0", "now": object()})  # type: ignore[dict-item]
+        assert excinfo.value.rule == RULE_PREDICTION_PREVIEW_UNREADABLE
+        assert store.query("SELECT * FROM attestation_chains") == []
+        assert store.query("SELECT * FROM attestation_events") == []
+    finally:
+        store.close()
+
+
+def test_a_stored_preview_with_no_version_is_refused_on_read_back() -> None:
+    """A preview that lost its version cannot be rendered.
+
+    Tested through the helper rather than by editing a stored row, because
+    editing the row is caught one layer earlier — the chain digest fires, which
+    is the *stronger* answer (see ``test_prediction_evidence.py`` for the
+    convention). The chain proves the bytes were not edited, never that they
+    are the right ones — so the read-back checks the preview's own readability
+    rather than trusting the chain to have done it.
+    """
+    from mayhem.controller.prediction_service import _sealed_preview
+
+    # Absent, or explicitly null, is "sealed without one" — not an error, because
+    # seals predate the preview and must keep reading.
+    assert _sealed_preview({}, RUN_ID) == ("", None)
+    assert _sealed_preview({PREVIEW_PAYLOAD_KEY: None}, RUN_ID) == ("", None)
+    # Present but unreadable is a refusal naming why.
+    reason, preview = _sealed_preview({PREVIEW_PAYLOAD_KEY: {"claims": []}}, RUN_ID)
+    assert preview is None
+    assert "schema version" in reason
+    reason, preview = _sealed_preview({PREVIEW_PAYLOAD_KEY: ["not", "a", "dict"]}, RUN_ID)
+    assert preview is None
+    assert "not a presentation structure" in reason
+    # Present and versioned reads back whole.
+    view = build_risk_preview(_clean_report(), run_id=RUN_ID)
+    stored = preview_payload(view)
+    reason, preview = _sealed_preview({PREVIEW_PAYLOAD_KEY: stored}, RUN_ID)
+    assert reason == ""
+    assert preview == stored
 
 
 def test_the_recorded_run_reader_refuses_an_unknown_run(seeded_db: Path) -> None:
@@ -1544,9 +1715,7 @@ def test_the_view_holds_no_presentation_judgement_of_its_own() -> None:
     be a disagreement the view-model could not prevent.
     """
     view = build_risk_preview(_breaching_report(), run_id=RUN_ID)
-    assert len(view.breaches) == sum(
-        1 for claim in view.claims if claim.stance.is_breach
-    )
+    assert len(view.breaches) == sum(1 for claim in view.claims if claim.stance.is_breach)
     assert preview_payload(view)["breach_count"] == len(view.breaches)
     assert PolicyStance.UNCHECKED.is_breach is False
     assert PolicyStance.INSIDE_POLICY.is_breach is False
@@ -1602,9 +1771,7 @@ def test_a_violated_rule_with_observed_ids_reaches_the_payload() -> None:
     protected = next(c for c in view.breaches if c.rule_id == "blast_radius.protected_node")
     assert protected.observed_ids == ("n-web",)
     payload = next(
-        c
-        for c in preview_payload(view)["claims"]
-        if c["rule_id"] == "blast_radius.protected_node"
+        c for c in preview_payload(view)["claims"] if c["rule_id"] == "blast_radius.protected_node"
     )
     assert payload["observed_ids"] == ["n-web"]
 
@@ -1617,8 +1784,15 @@ def test_an_uncited_violated_rule_is_reachable_only_through_a_hand_built_record(
     ``predict_impact`` never is.
     """
     assert ViolatedRule(
-        rule_id="x", step_id="s0", step_index=0, fault_id="f", observed=None, limit=None,
-        unit="", detail="a real reason", remediation="",
+        rule_id="x",
+        step_id="s0",
+        step_index=0,
+        fault_id="f",
+        observed=None,
+        limit=None,
+        unit="",
+        detail="a real reason",
+        remediation="",
     ).detail
     with pytest.raises(PreviewRenderRefusedError):
         build_risk_preview(_report_with_uncited_claim(), run_id=RUN_ID)

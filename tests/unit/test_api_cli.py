@@ -134,12 +134,12 @@ def test_every_command_is_read_only() -> None:
             if token.startswith("--")
         }
         assert options <= presentation, (
-            f"{name} declares {sorted(options - presentation)}, which is not a "
-            "presentation flag"
+            f"{name} declares {sorted(options - presentation)}, which is not a presentation flag"
         )
-    assert "api" not in {spec.name for spec in COMMAND_SPECS}, (
-        "api is not registered, so nothing in it is reachable through the resolver yet"
-    )
+    # The registration this file once refused has landed: `api` is registered on
+    # the live tree (and in COMMAND_SPECS), so the group is now reachable through
+    # the resolver and the read-only sweep above runs against the real commands.
+    assert "api" in {spec.name for spec in COMMAND_SPECS}
 
 
 def test_help_names_the_four_questions_it_answers() -> None:
@@ -201,9 +201,7 @@ class TestOpenapi:
         assert result.exit_code == 0
         assert json.loads(result.output) == openapi_document()
 
-    def test_it_writes_a_file_that_parses_back_to_the_same_object(
-        self, tmp_path: Path
-    ) -> None:
+    def test_it_writes_a_file_that_parses_back_to_the_same_object(self, tmp_path: Path) -> None:
         out = tmp_path / "openapi.json"
         result = _invoke("openapi", "--out", str(out))
         assert result.exit_code == 0
@@ -261,9 +259,7 @@ class TestParameters:
             (row["fault_id"], row["name"]): row["kind"]
             for row in json.loads(_invoke("parameters", "--json").output)["parameters"]
         }
-        projected = {
-            (row.fault_id, row.name): row.kind.value for row in parameter_controls()
-        }
+        projected = {(row.fault_id, row.name): row.kind.value for row in parameter_controls()}
         assert printed == projected
 
 
@@ -348,9 +344,7 @@ def test_the_module_exports_the_group_under_one_name() -> None:
     assert api_cmd.api is api
 
 
-@pytest.mark.parametrize(
-    "name", ["api", "routes", "openapi", "parameters", "render_ui", "ui"]
-)
+@pytest.mark.parametrize("name", ["api", "routes", "openapi", "parameters", "render_ui", "ui"])
 def test_every_exported_name_resolves(name: str) -> None:
     """Each name in ``__all__`` is something, so the export list cannot rot."""
     assert getattr(api_cmd, name) is not None

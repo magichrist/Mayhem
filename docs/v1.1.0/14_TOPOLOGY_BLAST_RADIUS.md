@@ -50,14 +50,14 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
 ## STATUS
 - Phase 1 (domain model): DONE — `domain/prediction.py` adds `ImpactPrediction` (affected set, dependency fan-out with depth, replica-loss delta, expected capacity change, violated rules with observed values, cost estimate) as a pure deterministic function over a frozen graph plus frozen plan, with `is_never_permissive` pinning prediction-vs-gate agreement.
 - Phase 2 (engine): DONE — `controller/prediction_service.py` assembles the prediction from live topology plus configuration and returns it beside the real gate's own refusal set, enforcing prediction-vs-gate agreement in production (a calmer preview raises rather than returns); `simulate_plan` runs the mutation backend detached and publishes the observed sink length, so a simulate is provably inert while still reaching a verdict; the four §Controls dimensions are reported as admission dimensions with the Phase 4 wiring named in `PENDING_ADMISSION_WIRING`; an absent price table yields an explicit `unpriced` disclosure with the measured affected-node-seconds, never a dollar figure.
-- Phase 3 (surface): INCOMPLETE — the view-model layer and the CLI landed; the
-  acceptance criterion's other two halves did not, and the reason is ownership,
-  not difficulty.
+- Phase 3 (surface): DONE — the view-model layer and the CLI landed first; the
+  acceptance criterion's other two halves landed after, through seams this lane
+  does not own, and this entry records both.
   - **The view-model layer is the surface, and the CLI is only its first
     renderer.** `cli/risk_preview_cmd.py` builds `RiskPreviewView` as a *pure
     function* of a `SimulateReport` — `build_risk_preview(report, run_id=...)` —
     and projects off it twice: `render_preview_lines` (the CLI) and
-    `preview_payload` (what a UI would render). This is the part of the
+    `preview_payload` (what a UI renders). This is the part of the
     acceptance criterion that is easiest to fake and the only part that could be
     made structurally true, so it was built first. "Rendered identically" is
     enforced by there being *one* presentation structure with **no word for
@@ -146,31 +146,42 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
     ceilings are configurable from this surface yet, so all five report
     `unchecked` (`CEILINGS_NOTE`). Both are the engine's defaults, never invented
     numbers.
-  - **WHAT DID NOT LAND, precisely.** (a) *The preview output is not stored with
-    the plan.* The acceptance criterion says "preview output stored with the plan";
-    what exists is that the payload is a **stable, versioned, self-describing
-    structure** (`RISK_PREVIEW_SCHEMA_VERSION`, `to_payload()` on every view) with
-    a tested projection identity, and Phase 4's `seal_prediction` already stores
-    the `ImpactPrediction` this payload is derived from — but the
-    `RiskPreviewView` itself is written nowhere. Storing it would mean a write
-    path, and a read-only preview command must not have one, so this half of the
-    criterion needs a seam this lane does not own (a decision about where a
-    surface's rendered output gets persisted, most likely alongside
-    `seal_prediction`). (b) *There is no UI renderer, so "rendered identically in
-    CLI and UI" is not demonstrated.* Plan 08 does not exist. What landed is the
-    part that makes the two cannot drift when it arrives — one structure, two
-    projections, acceptance asserted at the structure — and
-    `test_the_ui_renderer_does_not_exist_yet` pins the shape of what is missing
-    (exactly two projections in this module, no third hiding in it) so the suite
-    cannot imply the criterion is met. Marked INCOMPLETE rather than DONE for
-    those two reasons. 76 tests, all six negative controls the phase calls for.
+  - **WHAT CLOSED IT, precisely.** (a) *The preview output is stored with
+    the plan.* `seal_prediction` takes an optional `preview_payload` — the
+    `RiskPreviewView` payload the surface showed, built by that surface and
+    handed in as data — and stores it inside the prediction's own seal event
+    under `preview_payload`, in the same scope, chain, and manifest Phase 4
+    already verifies. Sealing writes to the store and never computes anything,
+    so the stored bytes are the surface's own and a reload is an equality check
+    rather than a re-derivation; `verify_sealed_prediction` hands the payload
+    back on `LoadedPrediction.preview_payload`, and refuses a stored preview
+    that cannot be rendered (not a dict, no schema version) rather than handing
+    a UI bytes no renderer can claim to read. A seal made without one reads
+    back as `None`, not as an error, because seals predate the preview. The
+    read-only preview command owns no write path and still writes nothing —
+    that is asserted, not assumed, by
+    `test_the_preview_does_not_seal_anything` — so this half of the criterion
+    was met without giving one to it: the seam is the seal-time caller passing
+    what was shown. (b) *There is a UI renderer, and it is a projection, not a
+    page.* `controller/api_service.py::risk_preview_payload` builds the same
+    `RiskPreviewView` off the same `SimulateReport` and returns the same
+    `preview_payload` of it — `ui(report) == cli(report) == view.to_payload()`
+    is an identity the suite asserts for breaching, clean, and unusable reports,
+    plus a mechanism test pinning that the UI entry point delegates to the
+    CLI module's builder rather than reimplementing it, so the two cannot drift.
+    Honesty about the shape: there is still no plan-08 page to click through —
+    the wiring is the shared projection plus the stored bytes, and "rendered
+    identically" is a property of one structure with two projections, asserted
+    at the structure. 82 tests, all six negative controls the phase calls for.
   - **Files:** `src/mayhem/cli/risk_preview_cmd.py`,
-    `tests/unit/test_risk_preview_surface.py`. **Registration is not done and
-    was not attempted** — `cli/command_registry.py` and `cli/app.py` are outside
-    this lane's ownership, so the group is exported as `risk_preview` and the
-    suite invokes that group directly rather than the app, which is also why
-    the module renders and exits its own `MayhemCliError`s instead of relying on
-    `cli.app.main`'s exception mapping.
+    `src/mayhem/controller/prediction_service.py` (seal carries the preview,
+    reload returns it),
+    `src/mayhem/controller/api_service.py` (`risk_preview_payload`, the second
+    renderer),
+    `tests/unit/test_risk_preview_surface.py`. **Registration is done** —
+    `cli/command_registry.py` carries the `risk-preview` spec, help line, and
+    `register_commands` entry, so the group resolves on the real app tree as
+    well as directly.
 - Phase 4 (safety and evidence integration): DONE, with one named debt carried forward.
   - **The five §Controls ceilings are enforced by the real gate.** `SafetyContext.blast_ceilings` is a new optional field defaulting to `None`; `controller/safety.py::_check_blast_ceilings` refuses `blast_radius.protected_node`, `…max_dependency_depth`, `…max_customer_facing_services`, `…max_affected_pct` and `…max_affected_nodes` from `check_blast_radius`, in the same order `domain/prediction.py` predicts them, on the same step — so the gate's refusal is inside the preview's flagged set by construction rather than by coincidence. With no ceiling configured the pass is byte-identical to a captured golden (`GOLDEN_NO_CEILINGS`, asserted in `tests/unit/test_prediction_evidence.py`). Measurements are borrowed from `domain.prediction` (`dependency_fan_out`, `customer_facing_node_ids`) rather than re-derived, because a second implementation could disagree with the preview about a depth or a front door.
   - **`PENDING_ADMISSION_WIRING` is now empty, and that emptiness is the assertion.** `is_enforced_by_gate` still derives `CeilingVerdict.enforced_by_gate` from the table, so deleting the five rows flipped every record at once. Phase 2's tripwire (`test_no_pending_ceiling_rule_id_is_one_the_real_gate_can_emit`) was *designed to fire* on this phase and did; it was retired by inversion rather than deleted, since the surviving form of the check — every ceiling reported as enforced is one the gate actually raises — is what keeps the derivation from degenerating into a bare default now the table is empty.
@@ -181,7 +192,7 @@ Prediction interpretation guide (confidence bounds stated, never hidden), simula
 - Phase 5: DONE — **the phase's named list was already covered by three existing suites** and the `not started` status was stale rather than the work being absent: prediction accuracy on fixture graphs (`test_accuracy_is_scored_against_the_reloaded_seal_not_an_in_memory_object`), agreement with the real gate (`test_the_preview_and_the_gate_agree_on_which_ceiling_fires`, `test_an_unmodelled_refusal_does_not_make_the_preview_look_in_agreement`), protected-list refusal (`test_the_protected_list_matches_targets_not_the_whole_blast`), and both of the phase's own negative controls (`test_a_prediction_over_a_drifted_graph_is_marked_stale` plus `test_a_stale_prediction_is_refused_for_approval_use`, and `test_a_preview_is_never_accepted_as_a_preflight`). What was missing is the discipline the completed plans record — proving the properties underneath are **load-bearing** — so `tests/unit/test_prediction_negative_controls.py` (13) supplies it: the **graph identity senses content and nothing else** (identical graphs hash alike, one extra node does not — the property staleness depends on, since an identity insensitive to content or re-derived per call would leave Phase 4's drift check comparing a constant); the **plan identity** changes when a step is added and not when a plan is recompiled identically; the **affected set is closed under dependencies and closed to everything else**, asserted as an *equality* after adding an isolated service so a traversal that leaked — or one that recomputed differently per call — fails; **cutting one edge shrinks the set**, which is what makes a blast-radius ceiling mean anything; and **fan-out depth counts hops**, with the full four-deep chain measuring 3 and the cut chain measuring less, plus a dependent count that shrinks with it. Three engine-level properties (drift refusal, preview-never-a-preflight, ceiling agreement) are guarded by **name-pin** against the suites that own them, with a second test asserting the pin list cannot be emptied by deleting an entry, and a third asserting the edge-cut helper really cuts the edge it names — because a no-op helper would have made every closure test above vacuous. `TopologyGraph` is a frozen pydantic model, so variants are built with `model_copy`; the first attempt used `dataclasses.replace` and was corrected rather than worked around.
 - Phase 6: DONE — two guides plus the rollout order written into this document below the ledger. **Prediction interpretation guide**: the three ceiling stances and why `unchecked` is a first-class reading rather than folded into `inside_policy`; that depth is a *measured* hop count with a directly-targeted node at depth 0; that drift marks a prediction **stale** and refuses it for approval use because it describes a world that no longer exists; that the protected list is about **targets**, not blast radius; and that an unpriced estimate omits `currency` and `total` **entirely** rather than emitting `null`, because `total: null` renders a dollar sign in most consumers and reads as zero-with-no-units. **Simulate vs. preflight**: the three rules that keep them apart (a preview is never accepted as a preflight; the fingerprint default is disclosed via `FINGERPRINT_NOTE` because a default that skips a check is only acceptable if the reader is told; the preview/gate ceiling agreement is enforced and a disagreement is a finding), plus why no plan-14 ceiling is configurable from a preview surface. **Rollout order** as the phase specifies. Honesty: the guide states that no prediction has been scored against a production incident and that fixture accuracy proves agreement with the gate, not accuracy about the world. The acceptance criterion "no doc calls a prediction a guarantee" is met and enforced by `tests/unit/test_prediction_plan_docs.py`, which refuses the claim by pattern and cross-checks the `Overall:` count against the `DONE` lines.
 
-Overall: 5 of 6 phases complete. Phase 3 stays **INCOMPLETE** and the count is deliberately not inflated to 6: its own entry records two acceptance-criterion halves that did not land for reasons of ownership (the `RiskPreviewView` is written nowhere because a read-only preview must not own a write path; and there is no UI renderer to demonstrate "identical in CLI and UI" against).
+Overall: 6 of 6 phases complete. Phase 3 was **INCOMPLETE** for reasons of ownership (the `RiskPreviewView` was written nowhere because a read-only preview must not own a write path; and there was no UI renderer to demonstrate "identical in CLI and UI" against) and is now **DONE**: the seal carries the preview payload, and the UI projection reads off the same view-model. Its own entry records both halves and the tests asserting each.
 
 ## Prediction interpretation guide
 
@@ -232,7 +243,8 @@ cost.
 
 **`mayhem simulate` / risk-preview is a preview. `preflight` is a gate.** A
 preview asks "what would this plan do, roughly, according to the topology I can
-read right now" and its answer is advisory: it is stored nowhere authoritative,
+read right now" and its answer is advisory: the seal records what was shown, not
+an approval — a stored preview is evidence of the forecast, never a grant — it
 executes nothing, and has no `--force` and no `--record`. A preflight asks "may
 this run start" and its answer is a refusal or a grant that the run path enforces.
 
