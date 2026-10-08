@@ -1,6 +1,6 @@
 # Plan 27 — Suggested Engineering Backlog
 
-Status: **planning only.** Meta document and the authoritative
+Status: **lanes landed.** Meta document and the authoritative
 sequencing spine for the program (per README decision): lanes open in
 milestone order, and a milestone exits only on its 24 gates.
 
@@ -82,4 +82,20 @@ dependencies' exit gates are already green. Cross-milestone
 dependencies (e.g. M6 fault lanes needing M1 certification cells) are
 satisfied by the earliest milestone that provides them, not redefined.
 
-## STATUS — planning only, 0%
+## STATUS — milestones M1–M8 landed; three phases PARTIAL on live acceptances
+
+The M1–M8 lane order below is still the authoritative sequencing spine, and the
+lanes are built. Per-file `## STATUS` blocks are the record. The honest summary:
+
+* Most milestones are complete across all their lanes.
+* **M1–M8 are gated on certification cells that have not run.** Nothing here
+  certifies a fault live (`certified_faults = 0`; every fault is capped at
+  `verified-unit`), so the cross-cutting zeros remain: no verified-live eBPF (04)
+  or remote probe (11), no live cloud (06), no forge-driven Terraform (16), no
+  soak (23).
+* **Three phases are PARTIAL**, each because it names a live acceptance rather
+  than because code is missing: `02_KUBERNETES_RUNTIME.md` Phases 4 and 5 (no
+  DaemonSet transport, no live-cluster cells) and
+  `20_ENTERPRISE_PRODUCT_HARDENING.md` Phase 4 (live IdP, human approver,
+  container runtime, Helm install).
+* This file's "planning only, 0%" header was stale and has been corrected.

@@ -1,6 +1,8 @@
 # v1.1.0 — production control plane program
 
-Status: **planning only.** No code in this directory has been implemented.
+Status: **implemented and closing out.** The "planning only" line this file used
+to carry was stale; the per-file `## STATUS` blocks below are authoritative and
+describe landed code. See "Implementation status" at the end.
 Research date **2026-09-30**. Branch `v1.1.0`.
 
 ## The one-line thesis
@@ -132,6 +134,25 @@ Wave grouping (trust, platform, reach, intelligence) is descriptive only.
 
 ## Implementation status
 
-All plans: **0% — planning only.** Each file carries a STATUS block;
-the block becomes authoritative once implementation lanes open. Until
-then the prose above each STATUS block is the proposal, not the record.
+**This README's own "planning only" header is stale and says so.** Implementation
+lanes opened some time after this package was written; the per-file `## STATUS`
+blocks are the only authoritative record, and they now describe implemented
+code. Read those, not this file's summary.
+
+Where the program stands (from the 24 per-file STATUS blocks, not from the prose
+above):
+
+* Most feature plans report **6 of 6 phases DONE**.
+* **Three phases are PARTIAL**, all three because they name a *live* acceptance
+  that has not run rather than because code is missing:
+  * `02_KUBERNETES_RUNTIME.md` Phase 4 — no DaemonSet agent transport, no live
+    controller-kill recovery. (Its verifier gap is closed.)
+  * `02_KUBERNETES_RUNTIME.md` Phase 5 — the fake half landed; the first
+    live-cluster cells are plan 01's.
+  * `20_ENTERPRISE_PRODUCT_HARDENING.md` Phase 4 — the walkthrough harness is
+    proven with fakes; live IdP, a human approver, a container runtime, and a
+    live Helm install remain open by construction.
+* Cross-cutting zeros that stay zeros until cells run: `certified_faults = 0`
+  (every fault is capped at `verified-unit`), `verified-live = 0` for eBPF
+  primitives (04) and remote probes (11), no live cloud (06), nothing ever
+  executed against a Terraform forge (16), and no soak run (23).
