@@ -128,12 +128,11 @@ AGENT = "ag-1"
 SECRET = b"s" * 32
 FINGERPRINT = "f" * 64
 
-#: The chain these tests migrate through. ``FAILOVER_MIGRATION`` is defined in
-#: :mod:`mayhem.infra.failover_store` and is **not** in
-#: :data:`mayhem.infra.migrations.ALL_MIGRATIONS` — see
-#: :meth:`TestTheMigrationReservation.test_the_promotion_tables_are_a_reserved_migration`.
-#: When the registering lane adds it, this tuple stops splicing and every fixture
-#: below migrates through the production chain, with no test edited.
+#: The chain these tests migrate through. ``FAILOVER_MIGRATION`` was written as
+#: a reservation outside :data:`mayhem.infra.migrations.ALL_MIGRATIONS`; the
+#: registering lane has since added it (as version 37 — ``probe_seal`` took 36),
+#: so this tuple is the production chain and every fixture below migrates
+#: through it with no splicing.
 MIGRATIONS: tuple = (
     ALL_MIGRATIONS
     if any(m.version == FAILOVER_VERSION for m in ALL_MIGRATIONS)
@@ -156,9 +155,7 @@ class Clock:
 
 
 def fence(*, epoch: int = 1, holder: str = "ctl-a") -> FencingToken:
-    return FencingToken(
-        run_id=RUN_ID, step_id=STEP_ID, holder=holder, epoch=epoch, issued_at=NOW
-    )
+    return FencingToken(run_id=RUN_ID, step_id=STEP_ID, holder=holder, epoch=epoch, issued_at=NOW)
 
 
 def command(*, command_id: str = "fc-1", token: FencingToken) -> FabricCommand:
@@ -301,20 +298,22 @@ class TestTheMigrationReservation:
     def test_the_promotion_tables_are_a_reserved_migration(self) -> None:
         """A literal, on purpose: the honesty of this file depends on it.
 
-        ``FAILOVER_MIGRATION`` (version 36) is defined beside the row models and
-        is *not* in ``ALL_MIGRATIONS`` until the registering lane adds it. Until
-        then a real deployment has no ``control_plane_promotions`` table and every
-        promotion write fails at the first real persist — the same gap plan 03
-        recorded for its own journal. Versions 34 and 35 are reserved by
-        concurrent lanes, which is why this one takes 36 rather than renumbering
-        anything shipped.
+        ``FAILOVER_MIGRATION`` was written as a *reservation*: version 36,
+        defined beside the row models and absent from ``ALL_MIGRATIONS`` until a
+        registering lane added it. The registering lane was this one — plan 19 —
+        but it registered as **37**, because ``probe_seal`` (plan 11) had already
+        published 36 and ``Migration.version`` is the migration id. The chain
+        has since grown past it (``policy_bundles`` 38, ``evidence_signatures``
+        39), so the reservation test now asserts registration at the renumbered
+        version and that the production chain's 37th migration is exactly the
+        failover module's own object — the store the fixtures migrate through is
+        the production chain, with no test-local splicing left.
         """
         registered = {m.version for m in ALL_MIGRATIONS}
-        assert FAILOVER_VERSION == 36
-        assert max(registered) < FAILOVER_VERSION
+        assert FAILOVER_VERSION == 37
+        assert FAILOVER_VERSION in registered
         assert reserved_versions() == (FAILOVER_VERSION,)
-        if FAILOVER_VERSION not in registered:
-            assert MIGRATIONS[-1] is FAILOVER_MIGRATION
+        assert ALL_MIGRATIONS[FAILOVER_VERSION - 1] is FAILOVER_MIGRATION
 
     def test_the_ddl_and_the_down_ddl_are_both_declared(self) -> None:
         assert len(MIGRATION_SQL) == 5
@@ -331,7 +330,8 @@ class TestTheMigrationReservation:
 
         assert {STANDBYS_TABLE, PROMOTIONS_TABLE} <= tables()
         head = store.schema_version
-        assert head == FAILOVER_VERSION
+        assert head >= FAILOVER_VERSION
+        assert head == len(MIGRATIONS)
         store.migrate_down(FAILOVER_VERSION - 1, migrations=MIGRATIONS)
         assert STANDBYS_TABLE not in tables()
         assert PROMOTIONS_TABLE not in tables()

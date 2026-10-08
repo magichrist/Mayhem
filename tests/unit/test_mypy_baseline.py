@@ -18,8 +18,10 @@ Two assertions, deliberately:
 ``unused-ignore`` when an ignore stops being needed, so a stale suppression
 shows up here as a new error rather than disappearing silently.
 
-Measured baseline: 1 error, from 111 at the start of the typing lanes.
-See ``docs/typing-ratchet.md`` for the per-root-cause breakdown.
+Measured baseline: 0 errors. The one pinned entry from the H2 typing lane
+(a dead ``rows[0][0]`` fallback in ``cli/lifecycle.py``) was removed when the
+duplicate of that pattern was simplified away and mypy came back clean over
+all of ``src``.
 """
 
 from __future__ import annotations
@@ -47,17 +49,7 @@ _ERROR_LINE = re.compile(r"^(?P<file>[^:]+):(?P<line>\d+): error: .*\[(?P<code>[
 #: consciously left in place; adding to this table is a review decision, not
 #: a convenience. Raising a number without deleting the corresponding entry
 #: fails :func:`test_baseline_table_is_ordered_and_complete`.
-BASELINE: dict[tuple[str, str], int] = {
-    # cli/lifecycle.py:1604 — a `rows[0][0]` fallback in a `sqlite3.Row`
-    # ternary. `Store.query` is annotated `list[sqlite3.Row]` and
-    # `Store.__init__` sets `row_factory = sqlite3.Row` unconditionally, so
-    # `hasattr(row, "__getitem__")` is always true and the else is provably
-    # dead. Left in place: the `isinstance`/`hasattr` guard is a deliberate
-    # "support dict rows and tuple rows" accommodation, and deleting a
-    # defensive branch in a CLI plan-loading path is a worse trade than one
-    # pinned error. It is dead code, not a defect.
-    ("src/mayhem/cli/lifecycle.py", "unreachable"): 1,
-}
+BASELINE: dict[tuple[str, str], int] = {}
 
 MAX_TOTAL = sum(BASELINE.values())
 
