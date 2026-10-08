@@ -100,10 +100,10 @@ def ledger_lines(document: str) -> dict[str, str]:
         if not in_status:
             continue
         # ``PARTIAL`` is a state word like DONE and not started, so it needs its
-        # own alternative: ``partially`` would not match it. Phase 3 is recorded
-        # that way because the grant-administration half landed and the
-        # reference-syntax half did not, and a line the parser cannot read is a
-        # line nothing can be checked against.
+        # own alternative: ``partially`` would not match it. Every phase of this
+        # plan is DONE, so the alternative exists only to keep a regressed line
+        # parseable — a line the parser cannot read is a line nothing can be
+        # checked against.
         match = re.match(
             r"^- (Phase \d)(.*?):\s*(DONE|PARTIAL|INCOMPLETE|not started|partially)", stripped
         )
@@ -185,8 +185,8 @@ def test_the_overall_count_equals_the_number_of_done_lines() -> None:
     assert overall == (done_phase_count(PLAN), len(ledger_lines(PLAN)))
 
 
-def test_exactly_one_phase_is_open_and_it_is_phase_three() -> None:
-    assert open_phases(PLAN) == ["Phase 3"]
+def test_no_phase_is_open() -> None:
+    assert open_phases(PLAN) == []
 
 
 # ── the Phase 6 deliverables ─────────────────────────────────────────────────
@@ -243,8 +243,8 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         done_phase_count,
     ),
     (
-        "the Overall count inflated",
-        lambda d: d.replace("Overall: 5 of 6", "Overall: 6 of 6", 1),
+        "the Overall count deflated",
+        lambda d: d.replace("Overall: 6 of 6", "Overall: 5 of 6", 1),
         claimed_overall,
     ),
     (
@@ -285,10 +285,10 @@ _MUTATIONS: Final[tuple[tuple[str, Callable[[str], str], Callable[[str], object]
         lambda d: int("never rewrite sealed history" not in d),
     ),
     (
-        "a PARTIAL phase quietly promoted to DONE",
+        "a DONE phase quietly demoted to PARTIAL",
         lambda d: re.sub(
-            r"^(- Phase 3[^\n]*?): PARTIAL",
-            r"- \1: DONE",
+            r"^(- Phase 3[^\n]*?): DONE",
+            r"\1: PARTIAL",
             d,
             count=1,
             flags=re.MULTILINE,
