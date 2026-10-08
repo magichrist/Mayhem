@@ -67,6 +67,19 @@ COMMAND_HELP: dict[str, str] = {
     # present in `--help`, and CliRunner wraps at 80 columns — every entry in
     # this dict fits that width, so this one does too.
     "cloud": "Read cloud capabilities, permissions, and costs before any run.",
+    # Plan 18 Phase 3. One rendered line, for the same reason as every entry
+    # here: the whole string must survive `--help` re-wrapping unwrapped.
+    "marketplace": "Search, inspect, and install catalog artifacts.",
+    # Plan 20 Phase 3: three admin verbs over the sandbox, support-bundle, and
+    # upgrade engines. One rendered line each, for the same reason as every
+    # entry here: the whole string must survive `--help` re-wrapping unwrapped.
+    "sandbox": "Provision and inspect the built-in test environment.",
+    "support-bundle": "Build a redacted support bundle with a manifest.",
+    "upgrade": "List upgrade channels and check whether a move is allowed.",
+    # Plan 20 Phase 4: the acceptance walkthrough plus the sealed-evidence
+    # compliance map. One rendered line, for the same reason as every entry
+    # here: the whole string must survive `--help` re-wrapping unwrapped.
+    "enterprise": "Run the acceptance walkthrough and map sealed evidence.",
 }
 
 
@@ -205,6 +218,33 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     # other pure-analysis groups (`advisor`, `lowlevel`, `prove`) already
     # declare.
     CommandSpec("cloud", "inspect", help_group="inspect"),
+    # Plan 18 Phase 3: `marketplace` is mutating because `install` pins exact
+    # bytes to a provider id — durable state a dispatch gate reads before it
+    # admits anything. `list`, `search`, and `inspect` read (inspect resolves
+    # but records nothing), but one writing verb is enough, the same rule
+    # `policy`, `secrets`, and `agent` are held to. `extend` is the workflow
+    # `pack` already declares: what this group distributes is third-party
+    # provider bytes, and widening the workflow set would split a group that
+    # has a home.
+    CommandSpec("marketplace", "extend", help_group="extension", mutating=True),
+    # Plan 20 Phase 3: `sandbox` provisions and tears down a throwaway stack,
+    # so the group is mutating on the same rule `policy` and `secrets` are
+    # held to (one writing verb is enough). `support-bundle` writes the bytes
+    # its caller named through `--out`, the `api openapi --write` precedent:
+    # a rendered document, not durable mayhem state, so read-only. `upgrade`
+    # moves nothing and pins nothing — two read-only verbs over pure
+    # refusals — so read-only too. All three are `inspect` workflow: operator
+    # administration over a declared artifact, the home the other read-mostly
+    # admin groups already share.
+    CommandSpec("sandbox", "inspect", help_group="inspect", mutating=True),
+    CommandSpec("support-bundle", "inspect", help_group="inspect"),
+    CommandSpec("upgrade", "inspect", help_group="inspect"),
+    # Plan 20 Phase 4: `enterprise walkthrough` provisions and tears down a
+    # throwaway sandbox (mutating on the one-writing-verb rule), while
+    # `enterprise compliance-map` only reads sealed digests against a
+    # template. The group is mutating because one verb is; `inspect` is the
+    # workflow the other admin groups already declare.
+    CommandSpec("enterprise", "inspect", help_group="inspect", mutating=True),
 )
 
 
@@ -220,6 +260,7 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.commands import commands
     from mayhem.cli.completion import completion
     from mayhem.cli.doctor import doctor_cmd
+    from mayhem.cli.enterprise_cmd import enterprise
     from mayhem.cli.experiment import experiment
     from mayhem.cli.failover_cmd import ha
     from mayhem.cli.game_day import game_day
@@ -227,14 +268,18 @@ def register_commands(app: Any) -> None:
     from mayhem.cli.init import init_cmd
     from mayhem.cli.lifecycle import janitor, maniac, recover, run, verify
     from mayhem.cli.lowlevel_cmd import lowlevel
+    from mayhem.cli.marketplace_cmd import marketplace
     from mayhem.cli.pack import pack
     from mayhem.cli.policy_cmd import policy_cmd
     from mayhem.cli.probe_cmd import probe
     from mayhem.cli.proof_cmd import prove
     from mayhem.cli.risk_preview_cmd import risk_preview
+    from mayhem.cli.sandbox_cmd import sandbox
     from mayhem.cli.schedule_cmd import schedule
     from mayhem.cli.secrets_cmd import secrets_cmd
     from mayhem.cli.stop_cmd import stop
+    from mayhem.cli.support_bundle_cmd import support_bundle
+    from mayhem.cli.upgrade_cmd import upgrade
     from mayhem.cli.verify_bundle import bundle_cmd
     from mayhem.cli.workflows import discover, extend, inspect, prepare
 
@@ -274,12 +319,17 @@ def register_commands(app: Any) -> None:
         "risk-preview": risk_preview,
         "api": api,
         "lowlevel": lowlevel,
+        "marketplace": marketplace,
         "probe": probe,
         "schedule": schedule,
         "game-day-step": game_day_step,
         "ha": ha,
         "ci": ci,
         "cloud": cloud,
+        "sandbox": sandbox,
+        "enterprise": enterprise,
+        "support-bundle": support_bundle,
+        "upgrade": upgrade,
     }
     for spec in COMMAND_SPECS:
         command = command_map[spec.name]
