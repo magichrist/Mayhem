@@ -1,0 +1,113 @@
+# Mayhem RBAC (plan 02 Phase 3) — starter roles, least-privilege shaped.
+#
+# Two roles, two trust levels:
+# - `mayhem-controller` (ClusterRole): reconciles MayhemDrill/Experiment/Run
+#   objects, reads workload facts for admission (deployments/statefulsets/
+#   daemonsets/pods), and emits Kubernetes events per run phase. No secret
+#   reads, no mutating access to workloads — the controller never patches
+#   a workload directly; mutation travels through the 03 fabric to node agents.
+# - `mayhem-agent` (Role, per DaemonSet namespace): the node agent's own
+#   reads — its pod's facts and `pods/exec` against targets the controller
+#   dispatched. Namespace-scoped on purpose: an agent never gets cluster reads.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mayhem-controller
+  namespace: mayhem-system
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mayhem-controller
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+rules:
+  # The plan's own objects: full lifecycle on the CRs this phase ships.
+  - apiGroups: ["mayhem.io"]
+    resources: ["mayhemdrills", "mayhemexperiments", "mayhemruns"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["mayhem.io"]
+    resources: ["mayhemdrills/status", "mayhemexperiments/status", "mayhemruns/status"]
+    verbs: ["get", "update", "patch"]
+  # Workload facts for admission (read-only; the gate never mutates).
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Kubernetes events emitted per run phase (plan 02 Phase 4 evidence half).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mayhem-controller
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mayhem-controller
+subjects:
+  - kind: ServiceAccount
+    name: mayhem-controller
+    namespace: mayhem-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mayhem-agent
+  namespace: mayhem-system
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mayhem-agent
+  namespace: mayhem-system
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+rules:
+  # Node agents read their own pod facts and exec into dispatched targets only.
+  # Mutation authority comes from the 03 fabric envelope (lease + fence +
+  # signature), never from RBAC breadth — hence no workload write verbs here.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mayhem-agent
+  namespace: mayhem-system
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mayhem-agent
+subjects:
+  - kind: ServiceAccount
+    name: mayhem-agent
+    namespace: mayhem-system

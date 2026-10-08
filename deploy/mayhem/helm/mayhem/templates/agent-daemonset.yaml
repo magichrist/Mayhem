@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mayhem-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: mayhem-agent
+    app.kubernetes.io/part-of: mayhem
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mayhem-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mayhem-agent
+        app.kubernetes.io/part-of: mayhem
+    spec:
+      serviceAccountName: mayhem-agent
+      hostPID: false
+      containers:
+        - name: agent
+          image: "{{ required "agent.image is required (no :latest default)" .Values.agent.image }}"
+          args:
+            - --log-level={{ .Values.agent.logLevel }}
+          env:
+            # Agents never listen (plan 03: controller-initiated sessions only).
+            - name: MAYHEM_AGENT_LISTEN
+              value: "false"

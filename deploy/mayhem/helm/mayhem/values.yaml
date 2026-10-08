@@ -1,0 +1,26 @@
+# Default values for the mayhem chart (plan 02 Phase 3 stub).
+#
+# Images have no registry default: pass --set controller.image=... and
+# --set agent.image=... at install time. A chart that silently pulls
+# `:latest` from a registry nobody chose would be a supply-chain decision
+# this stub does not get to make.
+namespace: mayhem-system
+
+controller:
+  image: ""
+  replicas: 1
+  logLevel: info
+
+agent:
+  image: ""
+  logLevel: info
+
+rbac:
+  create: true
+
+# Admission defaults mirror controller/k8s_admission.py: the protected
+# namespaces no run may fault without explicit authorization.
+protectedNamespaces:
+  - kube-system
+  - kube-public
+  - kube-node-lease

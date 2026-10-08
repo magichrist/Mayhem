@@ -1,0 +1,18 @@
+apiVersion: v2
+name: mayhem
+description: >-
+  Mayhem chaos controller + node agents (plan 02 Phase 3 stub). Installs the
+  controller Deployment and the mayhem-agent DaemonSet against the RBAC in
+  deploy/mayhem/rbac. CRDs are NOT templated here on purpose — install
+  deploy/mayhem/crds first with kubectl apply so upgrades never wipe stored
+  objects.
+type: application
+version: 0.1.0-stub
+appVersion: 1.1.0-alpha
+keywords:
+  - chaos-engineering
+maintainers:
+  - name: mayhem
+annotations:
+  mayhem.io/phase: 02-phase-3-stub
+  mayhem.io/live-certified: "false"

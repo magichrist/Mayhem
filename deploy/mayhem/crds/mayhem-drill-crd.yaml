@@ -1,0 +1,47 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mayhemdrills.mayhem.io
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+spec:
+  group: mayhem.io
+  scope: Namespaced
+  names:
+    plural: mayhemdrills
+    singular: mayhemdrill
+    kind: MayhemDrill
+    shortNames:
+      - mdrill
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              description: >-
+                A Mayhem drill spec body (the same shape `mayhem run -f`
+                accepts under `targets:`/`execution:`). Semantic validation
+                happens controller-side in
+                `mayhem.controller.k8s_controller.drill_spec_from_cr`;
+                the API schema keeps unknown fields so the CRD never
+                disagrees with the DrillSpec grammar.
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

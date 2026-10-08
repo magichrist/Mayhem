@@ -1,0 +1,49 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mayhemexperiments.mayhem.io
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+spec:
+  group: mayhem.io
+  scope: Namespaced
+  names:
+    plural: mayhemexperiments
+    singular: mayhemexperiment
+    kind: MayhemExperiment
+    shortNames:
+      - mexp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              description: >-
+                A named reusable drill template: `spec.drill` carries the
+                drill spec body (same grammar as MayhemDrill.spec).
+                Compiled controller-side through `plan_drill` only —
+                never a parallel planner.
+              required: [drill]
+              properties:
+                drill:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

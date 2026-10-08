@@ -1,0 +1,42 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mayhem-controller
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+apiRules: []
+# NOTE(stub): the full rule set lives in deploy/mayhem/rbac/roles.yaml.
+# This template only asserts the binding shape; rule text is intentionally
+# not duplicated so the two cannot drift apart.
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mayhem-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: mayhem-controller
+    app.kubernetes.io/part-of: mayhem
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mayhem-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mayhem-controller
+        app.kubernetes.io/part-of: mayhem
+    spec:
+      serviceAccountName: mayhem-controller
+      containers:
+        - name: controller
+          image: "{{ required "controller.image is required (no :latest default)" .Values.controller.image }}"
+          args:
+            - --log-level={{ .Values.controller.logLevel }}
+          env:
+            - name: MAYHEM_PROTECTED_NAMESPACES
+              value: {{ join "," .Values.protectedNamespaces | quote }}

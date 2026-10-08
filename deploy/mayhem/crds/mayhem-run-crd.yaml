@@ -1,0 +1,59 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mayhemruns.mayhem.io
+  labels:
+    app.kubernetes.io/managed-by: mayhem
+    app.kubernetes.io/part-of: mayhem
+spec:
+  group: mayhem.io
+  scope: Namespaced
+  names:
+    plural: mayhemruns
+    singular: mayhemrun
+    kind: MayhemRun
+    shortNames:
+      - mrun
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Run
+          type: string
+          jsonPath: .status.runId
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              description: >-
+                One requested run. Either `spec.drill` (inline drill spec
+                body) or `spec.drillRef` (name of a MayhemDrill in the
+                same namespace). `drillRef` resolution needs a live
+                cluster read and is refused by this phase's controller
+                with a named debt message until the informer lands —
+                see `mayhem.controller.k8s_controller`.
+              properties:
+                drill:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                drillRef:
+                  type: object
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
