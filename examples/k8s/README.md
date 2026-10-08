@@ -37,3 +37,24 @@ For a current compose example, use
 [`../testCase/mayhem.yaml`](../testCase/mayhem.yaml). The Kubernetes files remain
 planning and capability-status fixtures until a caller supplies and validates
 the required external environment.
+
+## v1.1.0 plan 02, phases 3–6: surface exists, still no live claim
+
+Since the layers above were written, the Kubernetes-native surface has landed
+as code (all unit-proven with fakes, none certified against a cluster):
+
+- CRDs (`../../deploy/mayhem/crds/`: `MayhemDrill`/`MayhemExperiment`/`MayhemRun`),
+  a controller compiling CRs through `plan_drill` only
+  (`src/mayhem/controller/k8s_controller.py`), RBAC starter roles
+  (`../../deploy/mayhem/rbac/roles.yaml`), a Helm stub
+  (`../../deploy/mayhem/helm/mayhem`), and a thin `kubectl mayhem` client over
+  the control-plane API (`src/mayhem/cli/k8s_plugin.py`).
+- Node-agent execution wired through the 03 fabric
+  (`src/mayhem/controller/k8s_fabric.py`): leases, fencing, agent-loss
+  orphaning, and startup reconciliation — without a bound verifier or a live
+  agent transport, so nothing here reaches a real cluster.
+
+The phase ledger (`../../docs/v1.1.0/02_KUBERNETES_RUNTIME.md`) records phases
+4 and 5 as PARTIAL: the live-cell acceptances (first certified cells in 01,
+controller-kill recovery with evidence) have not run. This directory's stance
+is unchanged: planning fixtures, not live acceptance.
