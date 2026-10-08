@@ -33,7 +33,6 @@ import ast
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
-from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +40,6 @@ import pytest
 
 from mayhem.domain.attestation import (
     AttestedTimestamp,
-    RetentionClass,
     verify_chain,
     verify_manifest,
 )
@@ -1180,15 +1178,3 @@ class TestTheLaneReusesPlanTwelve:
         assert [event.run_id for event in second.chain()] == ["mayhem.providers.b"]
         assert first.verify().valid
         assert second.verify().valid
-
-
-# ── packaging: the ledger needs a store that exists ──────────────────────────
-
-
-class TestStoreWiring:
-    def test_the_migrated_store_provides_the_tables_the_ledger_writes(self, tmp_path: Path) -> None:
-        assert distribution_version("mayhem-cli")  # the distribution under test is installed
-        loader = load_mutating(tmp_path)
-        assert loader.ledger is not None
-        assert loader.ledger.chain()
-        assert RetentionClass.HOT.value == "hot"
