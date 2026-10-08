@@ -389,18 +389,14 @@ class TestTheGateItself:
 
 
 class TestTheRegistry:
-    def test_the_guard_is_registered_inside_and_gone_outside(
-        self, guard: SecretLeakGuard
-    ) -> None:
+    def test_the_guard_is_registered_inside_and_gone_outside(self, guard: SecretLeakGuard) -> None:
         assert active_guards() == ()
         with guard_evidence_writes(guard) as registered:
             assert registered is guard
             assert active_guards() == (guard,)
         assert active_guards() == ()
 
-    def test_the_guard_is_released_even_when_the_block_raises(
-        self, guard: SecretLeakGuard
-    ) -> None:
+    def test_the_guard_is_released_even_when_the_block_raises(self, guard: SecretLeakGuard) -> None:
         with pytest.raises(RuntimeError), guard_evidence_writes(guard):
             assert active_guards() == (guard,)
             raise RuntimeError("the run blew up mid-write")
@@ -411,9 +407,7 @@ class TestTheRegistry:
             assert active_guards() == (guard,)
         assert active_guards() == ()
 
-    def test_a_worker_thread_write_is_gated_too(
-        self, active_guard: SecretLeakGuard
-    ) -> None:
+    def test_a_worker_thread_write_is_gated_too(self, active_guard: SecretLeakGuard) -> None:
         """Why the registry is a shared set and not a thread-local.
 
         A fault executes on a worker thread and writes its evidence from there. A
@@ -604,9 +598,7 @@ class TestAuditStreamBoundary:
         payload.update(overrides)
         return AuditEntry(**payload)  # type: ignore[arg-type]
 
-    def test_a_secret_classified_field_is_refused_and_no_row_is_left(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_secret_classified_field_is_refused_and_no_row_is_left(self, tmp_path: Path) -> None:
         """The stateless half: refused with no guard registered at all."""
         store = Store.open_migrated(tmp_path / "mayhem.db")
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -662,9 +654,7 @@ class TestAuditStreamBoundary:
         database = tmp_path / "mayhem.db"
         store = Store.open_migrated(database)
         with pytest.raises(InvariantViolationError):
-            self._stream(store).record(
-                self._entry(detail={"note": f"used {SECRET_VALUE}"})
-            )
+            self._stream(store).record(self._entry(detail={"note": f"used {SECRET_VALUE}"}))
         store.close()
         assert SECRET_VALUE.encode() not in database.read_bytes()
 
@@ -781,9 +771,7 @@ def _authorization(detail: tuple[str, ...] = ()) -> RunAuthorization:
             policy_digest="3" * 64,
             facts_digest="4" * 64,
         ),
-        approval_state=ApprovalState(
-            valid=True, approvers=("ana",), required=1, detail=detail
-        ),
+        approval_state=ApprovalState(valid=True, approvers=("ana",), required=1, detail=detail),
         plan_digest=PLAN_DIGEST,
         proof_digest="5" * 64,
     )
@@ -977,9 +965,7 @@ class TestReplayAndCoverageBoundary:
         payload.update(overrides)
         return ReplayCapsule(**payload)
 
-    def test_a_secret_classified_capsule_is_refused_and_leaves_no_row(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_secret_classified_capsule_is_refused_and_leaves_no_row(self, tmp_path: Path) -> None:
         store = Store.open_migrated(tmp_path / "mayhem.db")
         capsule = self._capsule(spec={"resolved_credentials": {"db": "x"}})
         with pytest.raises(InvariantViolationError) as excinfo:
@@ -1010,9 +996,7 @@ class TestReplayAndCoverageBoundary:
         assert loaded.digest() == self._capsule().digest()
         store.close()
 
-    def test_a_secret_classified_coverage_observation_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_secret_classified_coverage_observation_is_refused(self, tmp_path: Path) -> None:
         store = Store.open_migrated(tmp_path / "mayhem.db")
         with pytest.raises(InvariantViolationError) as excinfo:
             SQLiteCoverageRepository(store).record(
@@ -1040,8 +1024,9 @@ class TestReplayAndCoverageBoundary:
         with pytest.raises(InvariantViolationError) as excinfo:
             repository.record(CELL, CellState.FAILED, run_id="run-2", verdict=planted)
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
-        rows = store.query("SELECT run_id, verdict_json FROM m5_coverage WHERE cell_key = ?",
-                           (CELL.key,))
+        rows = store.query(
+            "SELECT run_id, verdict_json FROM m5_coverage WHERE cell_key = ?", (CELL.key,)
+        )
         assert len(rows) == 1
         assert str(rows[0]["run_id"]) == RUN_ID
         store.close()
@@ -1071,9 +1056,7 @@ class TestReplayAndCoverageBoundary:
 
 
 class TestFileWriteBoundary:
-    def test_a_secret_classified_envelope_never_reaches_the_disk(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_secret_classified_envelope_never_reaches_the_disk(self, tmp_path: Path) -> None:
         directory = tmp_path / "evidence"
         with pytest.raises(InvariantViolationError) as excinfo:
             write_evidence_file(graded_envelope(), directory)
@@ -1089,9 +1072,7 @@ class TestFileWriteBoundary:
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
         assert _files(directory) == []
 
-    def test_ordinary_evidence_still_writes_the_file_and_its_reports(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ordinary_evidence_still_writes_the_file_and_its_reports(self, tmp_path: Path) -> None:
         directory = tmp_path / "evidence"
         target = write_evidence_file(ordinary_envelope(), directory)
         assert target.exists()
@@ -1107,9 +1088,7 @@ class TestReportRenderBoundary:
         "renderer",
         [render_report, render_report_markdown, render_report_json, render_report_html],
     )
-    def test_a_secret_classified_envelope_is_refused_by_every_renderer(
-        self, renderer: Any
-    ) -> None:
+    def test_a_secret_classified_envelope_is_refused_by_every_renderer(self, renderer: Any) -> None:
         with pytest.raises(InvariantViolationError) as excinfo:
             renderer(graded_envelope())
         assert excinfo.value.rule == REFUSAL_SECRET_FIELD_PERSISTED
@@ -1145,9 +1124,7 @@ class TestReportRenderBoundary:
             "written the formats that were rendered before it"
         )
 
-    def test_ordinary_evidence_still_writes_every_report_format(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ordinary_evidence_still_writes_every_report_format(self, tmp_path: Path) -> None:
         paths = write_report_artifacts(ordinary_envelope(), artifact_dir=tmp_path / "artifacts")
         assert set(paths) == {"markdown", "json", "html"}
         for path in paths.values():
@@ -1172,9 +1149,7 @@ class TestBundleWriteBoundary:
         assert excinfo.value.rule == REFUSAL_SECRET_BYTES_IN_ARTIFACT
         assert not target.exists(), "the bundle must be gated before the first byte"
 
-    def test_a_secret_classified_artifact_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_secret_classified_artifact_is_refused(self, tmp_path: Path) -> None:
         bundle = build_bundle(
             evidence={"run_id": RUN_ID, "step_reports": [{"secret_value": SECRET_VALUE}]},
             created_at=NOW.isoformat(),
@@ -1200,9 +1175,7 @@ class TestBundleWriteBoundary:
 
 
 class TestLogBoundary:
-    def test_a_log_line_carrying_a_value_is_refused(
-        self, active_guard: SecretLeakGuard
-    ) -> None:
+    def test_a_log_line_carrying_a_value_is_refused(self, active_guard: SecretLeakGuard) -> None:
         line = f"event=step_completed step=inject-db detail=resolved {SECRET_VALUE}"
         with pytest.raises(InvariantViolationError) as excinfo:
             require_clean_log_line(line, event="step_completed")
@@ -1461,9 +1434,7 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
     # game-day caller would have left ``record_tick`` outside the boundary while
     # the table claimed to cover ``save_observation``. Two rows for two callers
     # would have been the dishonest granularity — one is what the code is.
-    ("mayhem.infra.store", "Store.save_observation"): frozenset(
-        {"require_persistable_document"}
-    ),
+    ("mayhem.infra.store", "Store.save_observation"): frozenset({"require_persistable_document"}),
     # Plan 23 Phase 4's benchmark and metering records. A published benchmark and
     # a run's metering series are both caller-authored documents destined for
     # storage and for comparison across releases, which is the same argument that
@@ -1476,6 +1447,26 @@ BOUNDARY_CALL_SITES: dict[tuple[str, str], frozenset[str]] = {
     # than passing on a partially registered module.
     ("mayhem.infra.metering", "_require_bound_digest"): frozenset(
         {"require_persistable_document", "require_clean_artifact"}
+    ),
+    # Plan 12's signature rows. A signature record is the one artifact that
+    # *travels* — it is what makes a manifest acceptable to somebody outside the
+    # control plane — so a signed artifact is if anything more attractive to leak
+    # than an unsigned one, and it is exported and read back by exactly the
+    # retention and export machinery that bound every row above. It is inside
+    # that boundary for the same reason as the audit stream, not beside it.
+    #
+    # One row, and it is ``save_signature`` specifically. ``record_unsigned_reason``
+    # also writes ``attestation_manifests``, but it is a *reason* — a fixed
+    # explanatory string about why nothing was minted, never caller-supplied
+    # evidence — so it is not the document boundary this table describes. The
+    # signature record is: it is derived from a caller-chosen trust root id, key
+    # id and fingerprint, persisted, exported, and read back by
+    # ``bundle verify``. ``sign_manifest`` is a caller but not a gate caller: it
+    # routes through ``save_signature``, which is what calls the gate, so
+    # registering both would describe a call graph the code does not have and the
+    # guard would report the real function as unregistered.
+    ("mayhem.infra.evidence_signing", "SignatureRepository.save_signature"): frozenset(
+        {"require_persistable_document"}
     ),
 }
 
@@ -1570,9 +1561,7 @@ def _calls_a_boundary_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool
     return bool(_called_names(node) & set(BOUNDARY_FUNCTIONS))
 
 
-def _enclosing_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module
-) -> str:
+def _enclosing_names(node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -> str:
     """``name`` for a module function, ``Class.name`` for a direct method.
 
     The same spelling :data:`BOUNDARY_CALL_SITES` and :func:`_function_node` use,
@@ -1604,8 +1593,7 @@ class TestTheGateCannotBeDeleted:
     @pytest.mark.parametrize(
         ("module_name", "function_name", "required"),
         sorted(
-            (module, function, gates)
-            for (module, function), gates in BOUNDARY_CALL_SITES.items()
+            (module, function, gates) for (module, function), gates in BOUNDARY_CALL_SITES.items()
         ),
     )
     def test_every_write_entry_point_calls_the_gate(
@@ -1714,8 +1702,7 @@ class TestTheGateCannotBeDeleted:
 
 def _table_names(store: Store) -> set[str]:
     return {
-        str(row["name"])
-        for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
+        str(row["name"]) for row in store.query("SELECT name FROM sqlite_master WHERE type='table'")
     }
 
 
@@ -1741,9 +1728,7 @@ def _attestation_manifest_rows(store: Store) -> list[dict[str, object]]:
 
 def _fixed_reading() -> AttestedTimestamp:
     """A deterministic reading, so an audit assertion is not wall-clock sensitive."""
-    return AttestedTimestamp(
-        wall_clock=NOW, monotonic_ns=0, uncertainty_ms=0.0, source="test"
-    )
+    return AttestedTimestamp(wall_clock=NOW, monotonic_ns=0, uncertainty_ms=0.0, source="test")
 
 
 def _marked_envelope() -> EvidenceEnvelope:
@@ -1753,9 +1738,7 @@ def _marked_envelope() -> EvidenceEnvelope:
     an envelope with no marker is refused by ``_redaction_policy``, which is a
     different gate and not the one under test.
     """
-    return redact_envelope(
-        ordinary_envelope().model_copy(update={"plan_hash": PLAN_DIGEST})
-    )
+    return redact_envelope(ordinary_envelope().model_copy(update={"plan_hash": PLAN_DIGEST}))
 
 
 def _mutating_envelope() -> EvidenceEnvelope:

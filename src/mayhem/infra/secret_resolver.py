@@ -97,6 +97,7 @@ from mayhem.domain.common import utc_now
 from mayhem.domain.errors import InvariantViolationError
 from mayhem.domain.evidence import require_persistable_envelope
 from mayhem.domain.secrets import (
+    DEVELOPMENT_ONLY_PROVIDERS,
     EVIDENCE_FIELD_CLASSIFICATIONS,
     CredentialRef,
     FieldClassifications,
@@ -667,6 +668,31 @@ class SecretResolver:
         """Metadata for every resolution so far. Never a value."""
         return tuple(self._receipts)
 
+    def development_marker(self) -> dict[str, Any]:
+        """The per-run development-only marker as sealable metadata. Read-only.
+
+        Plan 29 Phase 3 requires the explicit per-run marker to be *sealed into
+        evidence*, not just held in memory: a run that resolved a development-only
+        credential left its :class:`ResolutionReceipt`\\ s in
+        :attr:`receipts` only, which die with the process. This is the payload
+        :mod:`mayhem.controller.secret_evidence` seals — the run-wide flag plus
+        the development-only receipts' own :meth:`ResolutionReceipt.to_dict`
+        (provider, canonical key, purpose, scope, principal, environment, grant
+        pattern, timestamps), which is already evidence-safe because it never
+        carries a value. Non-development receipts are counted, not carried: the
+        marker is about the development-only path, and the full receipt set stays
+        queryable on the resolver for the run's lifetime.
+        """
+        dev_only = tuple(
+            receipt for receipt in self._receipts if receipt.provider in DEVELOPMENT_ONLY_PROVIDERS
+        )
+        return {
+            "allow_development_only": self._allow_development_only,
+            "development_only_providers": sorted({receipt.provider.value for receipt in dev_only}),
+            "development_only_receipts": [receipt.to_dict() for receipt in dev_only],
+            "receipt_count": len(self._receipts),
+        }
+
     def register_provider(self, provider: SecretProvider, adapter: SecretProviderPort) -> None:
         self._providers[provider] = adapter
 
@@ -765,6 +791,20 @@ class SecretResolver:
         if self._guard is not None:
             self._guard.register(secret)
         return secret
+
+
+def development_marker_is_sealable(marker: Mapping[str, Any]) -> bool:
+    """True when a development marker says anything worth sealing.
+
+    A resolver that never set the per-run flag and resolved nothing
+    development-only produces an all-default marker; sealing that would write a
+    row that proves nothing, which is noise a later reader has to rule out.
+    Anything else — the flag set, or at least one development-only receipt —
+    is a fact about the run worth attesting.
+    """
+    return bool(marker.get("allow_development_only")) or bool(
+        marker.get("development_only_receipts")
+    )
 
 
 # --- Authoring-time gates ------------------------------------------------------
