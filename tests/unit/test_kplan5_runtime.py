@@ -429,7 +429,7 @@ class TestEngineK8sNodeStep:
         )
         store = Store.open_migrated(tmp_path / "rk5.db")
         client = FakeClusterClient(K8sNodeInfo(name="w1", uid="n-1", ready=True))
-        engine, events = _engine(store, client)
+        engine, _ = _engine(store, client)
         result = engine.execute(_plan_node())
         assert result.steps[0].ok is False
         lease = _all_leases(store)[0]
