@@ -195,7 +195,7 @@ def run_walkthrough(
     directory: Path,
     *,
     name: str = "mayhem-acceptance",
-    policy: NetworkPolicy = NetworkPolicy(),
+    policy: NetworkPolicy | None = None,
     model: DeploymentModel = DeploymentModel.LOCAL,
     transport: EgressTransport | None = None,
 ) -> WalkthroughReport:
@@ -204,14 +204,21 @@ def run_walkthrough(
     The runner answers compose commands, the transport answers egress, and the
     directory holds the rendered compose document — everything else (admission,
     simulation, verification, redaction) is the production path.
+
+    ``policy`` defaults to a fresh :class:`NetworkPolicy` built per call rather
+    than a shared instance evaluated once at import: the type is frozen today so
+    the shared default would be harmless, but a default that is only safe
+    because of a property of the type is one refactor away from cross-run
+    contamination.
     """
+    effective_policy = policy if policy is not None else NetworkPolicy()
     steps: list[WalkthroughStep] = []
     live: list[str] = []
 
     # deploy — the model descriptor and its agreement with the network policy.
     try:
         profile = deployment_profile(model)
-        disagreement = air_gap_refusal(model, policy)
+        disagreement = air_gap_refusal(model, effective_policy)
         if disagreement:
             raise SandboxRefusedError("deployment_model.disagreement", disagreement)
         steps.append(
@@ -240,7 +247,7 @@ def run_walkthrough(
     )
 
     # policy — resolve the declared network policy through the real guard.
-    guard = NetworkPolicyGuard.build(policy, model=model, transport=transport)
+    guard = NetworkPolicyGuard.build(effective_policy, model=model, transport=transport)
     if guard.ready:
         steps.append(
             WalkthroughStep(
@@ -291,7 +298,9 @@ def run_walkthrough(
     evidence: DemoRunEvidence | None = None
     try:
         environment = provisioner.provision(
-            SandboxRequest(name=name, directory=directory, policy=policy, model=model)
+            SandboxRequest(
+                name=name, directory=directory, policy=effective_policy, model=model
+            )
         )
         from mayhem.controller.sandbox_service import (
             DemoRunRequest,
@@ -353,7 +362,9 @@ def run_walkthrough(
     # recover — the environment comes back: re-provision after teardown.
     try:
         recovered = provisioner.provision(
-            SandboxRequest(name=name, directory=directory, policy=policy, model=model)
+            SandboxRequest(
+                name=name, directory=directory, policy=effective_policy, model=model
+            )
         )
         steps.append(
             WalkthroughStep(
