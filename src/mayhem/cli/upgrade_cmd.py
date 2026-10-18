@@ -73,9 +73,8 @@ def channels_cmd(ctx: click.Context, as_json: bool) -> None:
         ctx.exit(int(ExitCode.SUCCESS))
     for descriptor in UPGRADE_CHANNELS:
         click.echo(f"{descriptor.channel.value}: {descriptor.summary} ({descriptor.cadence})")
-        click.echo(
-            f"  air-gapped: {'yes' if descriptor.supports_air_gapped else 'no — offline bundles only'}"
-        )
+        air_gapped = "yes" if descriptor.supports_air_gapped else "no, offline bundles only"
+        click.echo(f"  air-gapped: {air_gapped}")
     ctx.exit(int(ExitCode.SUCCESS))
 
 
