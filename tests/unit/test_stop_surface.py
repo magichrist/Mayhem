@@ -450,6 +450,32 @@ def test_stop_is_one_command_and_not_a_group() -> None:
     assert not isinstance(stop_cmd.stop, click.Group)
 
 
+def _arguments_carrying_help(text: str) -> list[int]:
+    """1-based line numbers of every ``click.Argument(...)`` call passing ``help=``.
+
+    Parenthesis-matched rather than grepped, so an unrelated ``help=`` later in
+    the file cannot produce a false accusation and a ``help=`` belonging to a
+    neighbouring ``click.Option(`` cannot hide one.
+    """
+    offenders: list[int] = []
+    for match in re.finditer(r"click\.Argument\(", text):
+        depth = 0
+        index = match.end() - 1
+        start = index
+        while index < len(text):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        body = text[start : index + 1]
+        if re.search(r"\bhelp\s*=", body):
+            offenders.append(text[:start].count("\n") + 1)
+    return offenders
+
+
 def test_stop_help_advertises_both_scopes_and_the_required_options() -> None:
     result = CliRunner().invoke(app, ["stop", "--help"])
     assert result.exit_code == 0
@@ -464,6 +490,83 @@ def test_stop_help_advertises_both_scopes_and_the_required_options() -> None:
     ):
         assert expected in result.output, expected
     assert "emergency_stop" in result.output
+
+
+class TestTheSurfaceStaysOnTheDeclaredClickFloor:
+    """No CLI module may use a ``click`` API newer than the declared minimum.
+
+    This exists because of a real breakage: ``stop_cmd.py`` passed ``help=`` to
+    ``click.Argument``, which only ``Argument`` accepted from click 8.5.0
+    (pallets/click#3473). On 8.1-8.4 that raises
+    ``TypeError: Parameter.__init__() got an unexpected keyword argument
+    'help'`` **at command-registration time**, so importing ``mayhem.cli`` fails
+    and *every* command dies — not just ``stop``. It surfaced as an unrelated
+    test erroring in ``test_chatops.py``, because that suite was the first to
+    import the CLI.
+
+    The failure mode is nasty in a way that makes a version pin insufficient:
+    ``pyproject.toml`` says ``click>=8.1``, so the code was correct against the
+    floor in the author's environment and broken on install everywhere below
+    8.5. Pinning the floor upward would have "fixed" the test without fixing the
+    packaging promise, so the floor stays and the API use goes.
+
+    What is asserted is the invariant, not today's list: no ``click.Argument`` is
+    constructed with ``help=``. The checker below was proved to bite by
+    temporarily reintroducing the offending keyword (see the note in the test).
+    """
+
+    #: Anything this project declares support for. ``Argument`` gained ``help``
+    #: in 8.5.0, which is *above* this line — that gap is the whole bug.
+    DECLARED_FLOOR = (8, 1)
+
+    def test_the_decared_floor_is_still_what_pyproject_says(self) -> None:
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        match = re.search(r'"click>=\s*([0-9]+)\.([0-9]+)', text)
+        assert match is not None, "the click dependency declaration moved; update this test"
+        declared = (int(match.group(1)), int(match.group(2)))
+        assert declared == self.DECLARED_FLOOR, (
+            f"pyproject declares click>={declared[0]}.{declared[1]} but this guard "
+            f"asserts the floor is {self.DECLARED_FLOOR[0]}.{self.DECLARED_FLOOR[1]}. "
+            f"Raise both together, and re-audit the CLI for APIs newer than the floor."
+        )
+
+    def test_no_click_argument_is_constructed_with_help(self) -> None:
+        offenders: list[str] = []
+        cli_dir = Path(stop_cmd.__file__).resolve().parent
+        for module_path in sorted(cli_dir.glob("*.py")):
+            for line in _arguments_carrying_help(module_path.read_text(encoding="utf-8")):
+                offenders.append(f"{module_path.name}:{line}")
+        assert offenders == [], (
+            "click.Argument(help=...) requires click >= 8.5.0 but this project "
+            "declares click>=8.1, and the failure lands at import time taking the "
+            f"whole CLI with it: {offenders}. Put the operator-facing text in the "
+            "command's docstring instead."
+        )
+
+    def test_the_checker_above_actually_bites(self) -> None:
+        """The guard is a source scan; prove the scan fires."""
+        sample = 'click.Argument(\n    ["run_id"],\n    help="text",\n)'
+        assert _arguments_carrying_help(sample) == [1], (
+            "the checker missed a `help=` inside a click.Argument, so the guard "
+            "above would pass while the breakage returned"
+        )
+        # And the paired case: a `help=` belonging to a neighbouring Option must
+        # not be misattributed to an Argument.
+        paired = (
+            'click.Argument(\n    ["run_id"],\n),\n'
+            'click.Option(\n    ["--x"],\n    help="fine",\n),\n'
+        )
+        assert _arguments_carrying_help(paired) == []
+
+    def test_the_operator_facing_sentence_survived_in_the_epilog(self) -> None:
+        # The `help=` removal must not have silently dropped what the operator
+        # needs: omitting RUN_ID and passing --environment is the second scope.
+        # The epilog specifically, because `register_commands` overwrites
+        # `command.help` from `COMMAND_HELP`, so the docstring never renders.
+        epilog = stop_cmd.stop.epilog or ""
+        assert "[RUN_ID]" in epilog
+        assert "--environment" in epilog
 
 
 @pytest.mark.parametrize(
