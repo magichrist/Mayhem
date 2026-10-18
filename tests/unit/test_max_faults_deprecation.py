@@ -18,7 +18,7 @@ Two properties matter more than the warning itself:
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterator  # noqa: TC003 - used at runtime by pydantic
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -249,3 +249,93 @@ class TestStillNotEnforcing:
         # neither belongs to nor influences.
         assert "max_faults" not in BlastRadiusBudget.model_fields
         assert BlastRadiusBudget().max_concurrent_faults == 3
+
+
+# ---------------------------------------------------------------------------
+# 6. Round-trips: the warning fires on AUTHORING, not on machine re-reads
+# ---------------------------------------------------------------------------
+
+
+class TestSilentOnARoundTrip:
+    """A store re-reading its own bytes must not warn an operator who never typed it.
+
+    This is the defect the serializer fix closed. ``mayhem.infra.api_store``
+    persists ``resource_json`` and re-validates it on every ``load_experiment``,
+    which turns a dump back into a dict — so the ``mode="before"`` validator
+    saw ``max_faults`` again and warned. Seven of this repository's own tests
+    emitted the warning that way. The real symptom is worse than noisy output: a
+    *load* advertising a deprecation to somebody who never authored the key.
+
+    The properties below are two-sided. Silencing every round-trip would be just
+    as wrong as never silencing one, so the non-default case is asserted to keep
+    warning — that key really is still there, and hiding it would be the
+    overclaim this whole file exists to prevent.
+    """
+
+    def test_a_default_valued_dump_omits_the_key(self) -> None:
+        with _records():  # the authoring load warns by design
+            config = DrillConfig.model_validate({"max_faults": 1})
+        # Losslessness rests on this: the field default IS 1, so a payload
+        # without the key validates back to the same value.
+        default = DrillConfig.model_fields["max_faults"].default
+        assert default == 1
+        assert "max_faults" not in config.model_dump()
+
+    def test_revalidating_a_default_valued_dump_is_silent_and_value_identical(self) -> None:
+        with _records():
+            original = DrillConfig.model_validate({"max_faults": 1})
+        dumped = original.model_dump()
+        with _records() as caught:
+            reloaded = DrillConfig.model_validate(dumped)
+        assert _deprecations(caught) == [], (
+            "a machine round-trip warned an operator who never authored the key"
+        )
+        assert reloaded.max_faults == original.max_faults
+
+    def test_the_json_path_the_store_actually_takes_is_silent(self) -> None:
+        # Not the in-memory dump: `model_dump(mode="json")` -> json -> dict is
+        # what `ApiStore.save_experiment` / `load_experiment` do, and it is the
+        # path that produced the seven spurious warnings.
+        import json
+
+        with _records():
+            original = DrillConfig.model_validate({"max_faults": 1})
+        wire = json.loads(json.dumps(original.model_dump(mode="json")))
+        with _records() as caught:
+            reloaded = DrillConfig.model_validate(wire)
+        assert _deprecations(caught) == []
+        assert reloaded.max_faults == 1
+
+    def test_a_non_default_value_survives_the_round_trip_and_keeps_warning(self) -> None:
+        with _records():  # the seeding load warns by design; keep it off the stream
+            original = DrillConfig.model_validate({"max_faults": 5})
+        dumped = original.model_dump()
+        assert "max_faults" in dumped, (
+            "a non-default must be serialized or it would be silently lost"
+        )
+        with _records() as caught:
+            reloaded = DrillConfig.model_validate(dumped)
+        assert len(_deprecations(caught)) == 1, (
+            "a key that really is still present must keep warning"
+        )
+        assert reloaded.max_faults == 5
+
+    def test_the_warning_still_fires_on_the_authoring_event_itself(self) -> None:
+        # The control for the four above: if this ever stops warning, the whole
+        # class is vacuous and the deprecation has gone silent.
+        with _records() as caught:
+            DrillConfig.model_validate({"max_faults": 1})
+        assert len(_deprecations(caught)) == 1
+
+    def test_a_spec_round_tripped_through_json_is_silent_end_to_end(self) -> None:
+        import json
+
+        with _records():
+            spec = parse_drill({**_MINIMAL_SPEC, "config": {"max_faults": 1}})
+        wire = json.loads(json.dumps(spec.model_dump(mode="json")))
+        with _records() as caught:
+            reloaded = parse_drill(wire)
+        assert _deprecations(caught) == [], (
+            "the whole-document path the API store uses still warned"
+        )
+        assert reloaded.config.max_faults == 1
