@@ -98,7 +98,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from mayhem.domain.certification import CertificationRecord, CertificationState
 from mayhem.domain.errors import DomainError, InvariantViolationError
+from mayhem.domain.experiments import DrillSpec
 from mayhem.domain.provider import ProviderPermission
+from mayhem.domain.secrets import require_no_literal_credentials
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -1682,7 +1684,30 @@ def template_parameters(template: ExperimentTemplate) -> tuple[str, ...]:
     return tuple(param.name for param in template.parameters)
 
 
-def _substitute(node: object, values: Mapping[str, Any], where: str) -> object:
+def _substitute_string(node: str, values: Mapping[str, Any]) -> object:
+    """The string arm of :func:`_substitute`, kept separate so the type contract reads.
+
+    Returns ``object`` rather than ``str`` on purpose: a whole-placeholder string
+    is replaced by the caller's value *with that value's own type*, so an integer
+    slot stays an integer and a mapping slot stays a mapping.
+    """
+    whole = _PLACEHOLDER_RE.fullmatch(node)
+    if whole is not None:
+        # An unknown name is returned untouched; the caller is the one that
+        # refuses, and it can name the slot in a message this cannot.
+        return values.get(whole.group(1), node)
+    if "{{" not in node and "}}" not in node:
+        return node
+    interpolated = node
+    for name in unfilled_placeholders(node):
+        if name in values:
+            rendered = str(values[name])
+            interpolated = interpolated.replace("{{ " + name + " }}", rendered)
+            interpolated = interpolated.replace("{{" + name + "}}", rendered)
+    return interpolated
+
+
+def _substitute(node: object, values: Mapping[str, Any]) -> object:
     """Recursively replace placeholders inside one node of the document.
 
     Two substitution rules, and the difference matters:
@@ -1697,28 +1722,13 @@ def _substitute(node: object, values: Mapping[str, Any], where: str) -> object:
     substitution is refused by the caller rather than silently blanked.
     """
     if isinstance(node, str):
-        whole = _PLACEHOLDER_RE.fullmatch(node)
-        if whole is not None:
-            name = whole.group(1)
-            if name not in values:
-                return node
-            return values[name]
-        if "{{" not in node and "}}" not in node:
-            return node
-        for name in unfilled_placeholders(node):
-            if name in values:
-                node = node.replace("{{ " + name + " }}", str(values[name]))
-                node = node.replace("{{" + name + "}}", str(values[name]))
-        return node
+        return _substitute_string(node, values)
     if isinstance(node, Mapping):
-        return {
-            _substitute(key, values, where): _substitute(value, values, where)
-            for key, value in node.items()
-        }
+        return {_substitute(k, values): _substitute(v, values) for k, v in node.items()}
     if isinstance(node, list):
-        return [_substitute(item, values, where) for item in node]
+        return [_substitute(item, values) for item in node]
     if isinstance(node, tuple):
-        return tuple(_substitute(item, values, where) for item in node)
+        return tuple(_substitute(item, values) for item in node)
     return node
 
 
@@ -1777,7 +1787,7 @@ def render_template(template: ExperimentTemplate, values: Mapping[str, Any]) -> 
             )
         effective[param.name] = value
 
-    rendered = _substitute(template.drill_template, effective, template.ref)
+    rendered = _substitute(template.drill_template, effective)
     if not isinstance(rendered, dict):  # pragma: no cover - the field type forbids it
         raise TemplateInstantiationError(
             "template.not_a_document",
@@ -1815,13 +1825,10 @@ def instantiate_spec(template: ExperimentTemplate, values: Mapping[str, Any]) ->
     publisher of the template — not the operator who instantiated it — is the
     party who put the value in the artefact.
 
-    Returned as ``Any`` rather than annotated ``DrillSpec`` to keep this module
-    importable without pulling the whole experiments vocabulary in at module
-    scope; the runtime value is a ``DrillSpec``, and a test asserts the type.
+    Returned as ``Any`` rather than annotated ``DrillSpec`` so the annotation
+    stays a documentation of intent rather than a claim the checker enforces;
+    the runtime value is a ``DrillSpec``, and a test asserts the type.
     """
-    from mayhem.domain.experiments import DrillSpec
-    from mayhem.domain.secrets import require_no_literal_credentials
-
     rendered = render_template(template, values)
     require_no_literal_credentials(rendered, path=f"template[{template.ref}]")
     return DrillSpec.model_validate(rendered)
