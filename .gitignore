@@ -15,3 +15,8 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+
+# Coverage artifacts are build output, never source.
+.coverage
+.coverage.*
+htmlcov/
