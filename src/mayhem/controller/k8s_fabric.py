@@ -224,7 +224,7 @@ def k8s_step_spec(step_id: str, *, issued_at: datetime | None = None) -> StepSpe
 # these bytes — symmetric, not X.509, no handshake, no chain.
 
 
-class K8sVerifierUnavailable(DomainError):
+class K8sVerifierUnavailableError(DomainError):
     """The k8s lane could not bind a verifier and refused to fake one."""
 
 
@@ -257,13 +257,13 @@ def build_k8s_verifier(
             that has deliberately turned certificate recording off.
 
     Raises:
-        K8sVerifierUnavailable: When a key id in ``require_key_ids`` does not
+        K8sVerifierUnavailableError: When a key id in ``require_key_ids`` does not
             resolve. Fail closed at construction, never substituted with an
             empty secret.
     """
     unresolved = sorted(key_id for key_id in require_key_ids if keys.lookup(key_id) is None)
     if unresolved:
-        raise K8sVerifierUnavailable(
+        raise K8sVerifierUnavailableError(
             f"no key material resolves for agent key id(s) {', '.join(unresolved)}; "
             f"refusing to construct a verifier that would refuse every command at "
             f"dispatch. Bind the keys, or pass verifier=None deliberately to keep the "
