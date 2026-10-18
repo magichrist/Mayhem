@@ -26,6 +26,7 @@ Pure: no clock, no file, no store. The CLI writes the bytes.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -70,7 +71,11 @@ class SupportSection:
 
     name: str
     fields: Mapping[str, Any]
-    grades: FieldClassifications = FieldClassifications()
+    # ``default_factory`` rather than a shared instance: ``FieldClassifications``
+    # is frozen today, so the shared default would be harmless — but a default
+    # that only works because of a property of the type is one refactor away from
+    # cross-section contamination, and ``default_factory`` costs nothing.
+    grades: FieldClassifications = dataclasses.field(default_factory=FieldClassifications)
 
 
 @dataclass(frozen=True, slots=True)
