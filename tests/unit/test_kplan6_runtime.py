@@ -10,7 +10,7 @@ catalog-only refusal path.
 from __future__ import annotations
 
 import json as _json
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -138,7 +138,9 @@ class _FakeKube:
         self.stdin: list[str | None] = []
         self.fail_on = set(fail_on)
 
-    def _run(self, argv: tuple[str, ...], **kwargs: Any) -> ToolResult:
+    def _run(  # noqa: PLR0911 - a command dispatcher; the branches ARE the behaviour
+        self, argv: tuple[str, ...], **kwargs: Any
+    ) -> ToolResult:
         self.calls.append(argv)
         self.stdin.append(kwargs.get("stdin_data"))
         joined = " ".join(argv)
@@ -192,7 +194,7 @@ class _FakeKube:
         except (ValueError, IndexError):
             return "default"
 
-    _KIND_ALIASES = {
+    _KIND_ALIASES: ClassVar[dict[str, str]] = {
         "svc": "Service",
         "cm": "ConfigMap",
         "rs": "ReplicaSet",
@@ -442,14 +444,14 @@ class TestRegisters:
             assert fid in K8S_MUTATION_FAULTS, fid
 
     def test_all_mutation_faults_are_reversible_except_pod_lifecycle(self) -> None:
-        IRREVERSIBLE = {
+        irreversible = {
             "k8s.pod_kill",
             "k8s.pod_evict",
             "k8s.pod_oom",
             "k8s.pod_delete_uncontrolled",
         }
         for fid in K8S_MUTATION_FAULTS:
-            if fid not in IRREVERSIBLE:
+            if fid not in irreversible:
                 assert fid in K8S_REVERSIBLE_FAULTS, fid
 
     def test_cordon_lives_in_node_faults(self) -> None:
@@ -655,7 +657,7 @@ class TestServiceExecutor:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5b. HPA executor (k-plan-2 §14–§15)
+# 5b. HPA executor (k-plan-2 §14-§15)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _HPA_OBJECTS = (*_DEFAULT_OBJECTS, _hpa())
