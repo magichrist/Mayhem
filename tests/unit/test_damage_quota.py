@@ -417,7 +417,6 @@ def test_damage_spans_the_dependents_closure_not_just_the_target():
 def test_a_dangerous_fault_costs_more_than_a_gentle_one_of_the_same_duration():
     """The ladder is load-bearing: at equal duration, HIGH/CRITICAL faults burn
     the budget faster, which is what makes the quota catch a nasty drill."""
-    graph = _graph()
     gentle = DamageLedger()
     harsh = DamageLedger()
     quota = DamageQuota(budget_s=10_000.0)
