@@ -82,12 +82,12 @@ def _test_prepared():
 
 
 def _test_candidate(**overrides) -> ExperimentCandidate:
-    defaults = dict(
-        target="testcase-api",
-        fault_kinds=("proc.pause",),
-        execution_context="container",
-        expected_effect="process pause test",
-    )
+    defaults: dict[str, object] = {
+        "target": "testcase-api",
+        "fault_kinds": ("proc.pause",),
+        "execution_context": "container",
+        "expected_effect": "process pause test",
+    }
     defaults.update(overrides)
     return ExperimentCandidate(**defaults)
 
