@@ -37,7 +37,7 @@ import pytest
 
 from mayhem.controller import k8s_fabric
 from mayhem.controller.k8s_fabric import (
-    K8sVerifierUnavailable,
+    K8sVerifierUnavailableError,
     build_k8s_signer,
     build_k8s_verifier,
 )
@@ -174,7 +174,7 @@ class TestTheBindingIsFailClosed:
         assert verifier.requires_nonce_recording is True
 
     def test_an_unresolvable_key_id_is_refused_at_construction(self, store: Store) -> None:
-        with pytest.raises(K8sVerifierUnavailable) as exc:
+        with pytest.raises(K8sVerifierUnavailableError) as exc:
             build_k8s_verifier(
                 store, keys=keys(), controller_id=CONTROLLER, require_key_ids=("nope",)
             )
@@ -187,7 +187,7 @@ class TestTheBindingIsFailClosed:
         assert verifier is not None
 
     def test_the_refusal_names_the_key_and_the_deliberate_alternative(self, store: Store) -> None:
-        with pytest.raises(K8sVerifierUnavailable) as exc:
+        with pytest.raises(K8sVerifierUnavailableError) as exc:
             build_k8s_verifier(
                 store, keys=keys(), controller_id=CONTROLLER, require_key_ids=("nope",)
             )
@@ -198,7 +198,7 @@ class TestTheBindingIsFailClosed:
         assert "verifier=None" in message
 
     def test_an_empty_key_map_is_never_silently_accepted(self, store: Store) -> None:
-        with pytest.raises(K8sVerifierUnavailable):
+        with pytest.raises(K8sVerifierUnavailableError):
             build_k8s_verifier(
                 store,
                 keys=StaticKeyMaterial(),
@@ -207,7 +207,7 @@ class TestTheBindingIsFailClosed:
             )
 
     def test_the_refusal_is_a_domain_error(self) -> None:
-        assert issubclass(K8sVerifierUnavailable, DomainError)
+        assert issubclass(K8sVerifierUnavailableError, DomainError)
 
 
 class TestTheSignatureIsNowAProof:
