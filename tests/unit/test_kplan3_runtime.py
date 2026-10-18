@@ -243,7 +243,7 @@ def _engine(
         store,
         SQLiteLeaseSink(store),
         sleeper=lambda _seconds: None,
-        live_graph=lambda: _graph(),
+        live_graph=_graph,
         on_event=events.append,
         k8s_resolver=resolver or KubernetesRuntimeResolver(client=client),
         recovery_grace=recovery_grace,
@@ -307,7 +307,7 @@ class TestK8sRuntimeAdapter:
         )
 
     def test_preferred_pod_from_graph_none_without_match(self) -> None:
-        assert preferred_pod_from_graph(lambda: _graph(), frozenset({"nope"})) is None
+        assert preferred_pod_from_graph(_graph, frozenset({"nope"})) is None
 
     def test_make_k8s_resolver_passes_injected_resolver_through(self) -> None:
         resolver = KubernetesRuntimeResolver(client=None)
@@ -331,7 +331,7 @@ class TestEngineK8sStep:
             store,
             SQLiteLeaseSink(store),
             sleeper=lambda _s: None,
-            live_graph=lambda: _graph(),
+            live_graph=_graph,
             on_event=events.append,
             k8s_resolver=KubernetesRuntimeResolver(client=client),
         )
@@ -558,8 +558,9 @@ class TestEngineK8sStep:
         result = engine.execute(plan)
         assert result.steps[0].ok is True
         leases = _all_leases(store)
-        assert {l.resolved_target.pod for l in leases} == {"checkout-abc123", "checkout-def456"}
-        assert {l.state for l in leases} == {LeaseState.RELEASED}
+        pods = {lease.resolved_target.pod for lease in leases}
+        assert pods == {"checkout-abc123", "checkout-def456"}
+        assert {lease.state for lease in leases} == {LeaseState.RELEASED}
         deletes = [
             argv for argv in tool_calls if argv[:2] == ("kubectl", "delete") and "pod" in argv
         ]
