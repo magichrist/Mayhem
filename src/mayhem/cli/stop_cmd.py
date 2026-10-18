@@ -1241,13 +1241,27 @@ def _principal_for(principal_id: str) -> Principal:
 
 @click.command(
     "stop",
+    # The short help is overwritten at registration from `COMMAND_HELP`
+    # (`command_registry.register_commands` assigns `command.help`), so the
+    # long-form help a reader gets from the docstring never reaches `--help`.
+    # The epilog is not overwritten, so the positional argument's own meaning
+    # lives here.
+    epilog=(
+        "[RUN_ID] names the one run to stop. Omit it, and pass --environment, to stop "
+        "every live run in an environment."
+    ),
     params=[
+        # NOTE: no ``help=`` here. `Argument` only gained a `help` parameter in
+        # click 8.5.0 (pallets/click#3473); on 8.1-8.4 passing it raises
+        # ``TypeError: Parameter.__init__() got an unexpected keyword argument
+        # 'help'`` at *registration* time, which takes down the whole CLI rather
+        # than this one command, and this project declares ``click>=8.1``. The
+        # operator-facing sentence that used to live here is now in the epilog
+        # below, which every click version renders.
         click.Argument(
             ["run_id"],
             required=False,
             metavar="[RUN_ID]",
-            help="The one run to stop. Omit it, and pass --environment, to stop every "
-            "live run in an environment.",
         ),
         click.Option(
             ["--environment", "environment"],
@@ -1305,6 +1319,9 @@ def stop(
     as_json: bool,
 ) -> None:
     """Stop one run, or every live run in an environment.
+
+    ``[RUN_ID]`` names the one run to stop. Omit it, and pass ``--environment``,
+    to stop every live run in an environment.
 
     Naming the command is the approval, as it is for ``mayhem recover execute``:
     the request to stop *is* the explicit act, and the real control on the
