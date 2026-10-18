@@ -308,11 +308,7 @@ class TestNoLiveCloud:
         from pathlib import Path
 
         package = Path(__file__).resolve().parents[2] / "src" / "mayhem" / "providers" / "cloud"
-        sources = [
-            path.read_text()
-            for path in sorted(package.glob("*.py"))
-            if path.name != "__init__.py" or True
-        ]
+        sources = [path.read_text() for path in sorted(package.glob("*.py"))]
         for source in sources:
             assert "import socket" not in source
             assert "import boto3" not in source
