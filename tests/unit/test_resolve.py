@@ -19,7 +19,7 @@ from mayhem.topology.resolve import (
 )
 
 
-class _Raised(Exception):
+class _RaisedError(Exception):
     """Marker for a mocked subprocess returncode failure."""
 
 
@@ -142,7 +142,12 @@ class TestResolveProcessIdentity:
         # session, tty, tpgid, flags, minflt, cminflt, majflt, cmajflt, utime,
         # stime, cutime, cstime, priority, nice, num_threads, itrealvalue,
         # starttime (field 22 -> index 19 after the ')' split) = 9001.
-        stat = "42 (python) R 1 42 42 0 -1 4194304 0 0 0 0 10 3 0 0 20 0 1 0 9001 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        # A full /proc/1/stat line: pid, comm, state, ppid, pgrp, session,
+        # tty, tpgid, flags, minflt, cminflt, majflt, cmajflt, utime, stime, ...
+        stat = (
+            "42 (python) R 1 42 42 0 -1 4194304 0 0 0 0 10 3 0 0 20 0 1 0 9001 "
+            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        )
 
         class _FakeStat:
             def read_text(self) -> str:
