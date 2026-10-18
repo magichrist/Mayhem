@@ -181,7 +181,7 @@ def test_bundle_round_trips_through_disk(tmp_path) -> None:
 
 def test_loading_a_directory_without_a_manifest_raises(tmp_path) -> None:
     (tmp_path / "empty").mkdir()
-    with pytest.raises(BundleVerificationError, match="no manifest.json"):
+    with pytest.raises(BundleVerificationError, match=r"no manifest\.json"):
         load_bundle(tmp_path / "empty")
 
 
