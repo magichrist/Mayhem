@@ -18,7 +18,6 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mayhem.cli.services import Prepared, engine_for
 from mayhem.controller.planner import plan_drill, synthesize_candidate_spec
 from mayhem.domain.coverage import CellState
 from mayhem.domain.execution_intent import intent_for_plan
@@ -141,6 +140,16 @@ class CellRunner:
             candidate, candidate.target, name=f"explore-{uuid.uuid4().hex[:8]}"
         )
         run_id = f"cell-{uuid.uuid4().hex[:12]}"
+
+        # Imported here, not at module scope: `cli.services` pulls in the whole
+        # command registry, and `cli.explore` imports this module back, so a
+        # module-level edge made `import mayhem.controller.cell_runner` fail
+        # outright whenever it was the first mayhem import of the process. This
+        # is the `controller -> cli` inversion recorded in pyproject's
+        # import-linter contract; the real fix is to move `Prepared` and
+        # `engine_for` down into controller/, and this line is the stopgap that
+        # keeps the cycle from being import-order-dependent.
+        from mayhem.cli.services import Prepared, engine_for
 
         assert isinstance(self._prepared, Prepared)
         plan = plan_drill(
