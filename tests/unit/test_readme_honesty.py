@@ -699,19 +699,30 @@ def _doc_invocations(text: str) -> Iterator[tuple[int, list[str]]]:
                     yield lineno, words[1:]
 
 
-def test_stranded_doc_invocation_generator_would_raise_on_first_use() -> None:
-    """Pin the defect this file exists partly to report.
+def test_doc_invocation_generator_yields_cleanly_to_completion() -> None:
+    """The defect this file existed partly to report has been fixed.
 
-    The generator in ``test_release_contract.py`` yields correctly and then
-    falls into an orphaned block naming ``documented``, ``executable``, and
-    ``active`` — none of which is defined anywhere in that module. Because it is
-    a generator the block only runs on iteration, and because nothing iterates
-    it, the CLI-doc-parity check has never run. The moment anything iterates it,
-    it raises instead of checking anything.
+    History, because the shape of the fix is not obvious from the code: the
+    generator in ``test_release_contract.py`` yielded correctly and then fell
+    into an orphaned block naming ``documented``, ``executable``, and ``active``
+    — none of which is defined anywhere in that module. Because it was a
+    generator the block only ran on iteration, and because nothing iterated it,
+    the CLI-doc-parity check it was meant to perform never ran. The moment
+    anything did iterate it, it raised ``NameError`` instead of checking
+    anything, and this test asserted that ``NameError`` as a pinned defect.
+
+    The orphaned block has now been deleted rather than repaired: the parity
+    check it wanted is performed by
+    :func:`test_every_documented_mayhem_command_resolves_against_the_cli` below,
+    so keeping a second copy inside a generator was keeping a broken one. This
+    test now asserts the positive property instead of the defect — the helper
+    runs to completion and yields every invocation — so a re-introduced orphan
+    fails here as an error rather than being absorbed by a pinned expectation.
     """
     contract = _release_contract_module()
-    with pytest.raises(NameError, match="documented"):
-        list(contract._iter_doc_invocations("```bash\nmayhem run mayhem.yaml\n```\n"))
+    found = list(contract._iter_doc_invocations("```bash\nmayhem run mayhem.yaml\n```\n"))
+    assert found, "the helper yielded nothing for a doc containing a mayhem invocation"
+    assert all(argv for _lineno, argv in found), f"yielded an empty argv: {found}"
 
 
 def test_every_documented_mayhem_command_resolves_against_the_cli() -> None:
