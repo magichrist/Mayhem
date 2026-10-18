@@ -242,7 +242,7 @@ def test_missing_mayhem_yaml_is_not_an_error(tmp_path: Path):
 
 def test_mayhem_yaml_error_messages_name_the_source(tmp_path: Path):
     path = _write_yaml(tmp_path / "mayhem.yaml", {"targets": {"dev": {"engine": "nope"}}})
-    with pytest.raises(SchemaValidationError, match="mayhem.yaml"):
+    with pytest.raises(SchemaValidationError, match=r"mayhem\.yaml"):
         load_profiles_from_mayhem_yaml(path)
 
 
