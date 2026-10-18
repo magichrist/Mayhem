@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+from pathlib import Path
 
 from mayhem.controller.compensation import _payload_source, _payload_undo_ops, template_for
 from mayhem.domain.errors import InvariantViolationError
@@ -380,11 +381,11 @@ def test_tool_clock_skew_inject_script_expands_target() -> None:
     script = inject[-1]
 
     with tempfile.TemporaryDirectory() as td:
-        bindir = os.path.join(td, "bin")
-        os.makedirs(bindir)
-        capture = os.path.join(td, "captured-s-arg")
-        fake_date = os.path.join(bindir, "date")
-        with open(fake_date, "w", encoding="utf-8") as fh:
+        bindir = Path(td) / "bin"
+        bindir.mkdir()
+        capture = Path(td) / "captured-s-arg"
+        fake_date = bindir / "date"
+        with fake_date.open("w", encoding="utf-8") as fh:
             fh.write(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = '-u' ] && [ \"$2\" = '-s' ]; then\n"
@@ -394,9 +395,11 @@ def test_tool_clock_skew_inject_script_expands_target() -> None:
                 "  echo 1700000000\n"
                 "fi\n"
             )
-        os.chmod(fake_date, 0o755)
+        fake_date.chmod(0o755)
         env = dict(
-            os.environ, PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}", CAPTURE=capture
+            os.environ,
+            PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+            CAPTURE=str(capture),
         )
         proc = subprocess.run(
             ["sh", "-c", script],
@@ -406,7 +409,7 @@ def test_tool_clock_skew_inject_script_expands_target() -> None:
             timeout=30,
         )
         assert proc.returncode == 0, proc.stderr
-        with open(capture, encoding="utf-8") as fh:
+        with capture.open(encoding="utf-8") as fh:
             seen = fh.read().strip()
         # base 1700000000 + offset 60000 => 1700060000 (passed to date as
         # GNU epoch-syntax @1700060000); the regression would hand date the
