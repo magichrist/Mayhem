@@ -194,7 +194,7 @@ def test_loader_refuses_an_unsigned_pack_unless_development_only_is_allowed() ->
     unsigned = _pack(signature="", signer="").model_dump(mode="json")
     with pytest.raises(PackValidationError, match="local development only"):
         PackLoader(grants=grants).load(unsigned)
-    pack, report = PackLoader(grants=grants, allow_development_only=True).load(unsigned)
+    _, report = PackLoader(grants=grants, allow_development_only=True).load(unsigned)
     assert report["development_only"] is True
 
 
