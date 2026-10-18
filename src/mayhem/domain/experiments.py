@@ -19,6 +19,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -257,6 +258,22 @@ class DrillConfig(BaseModel):
         Runs once per ``DrillConfig`` construction — a model validator is not
         re-entered on attribute access, ``model_dump``, or
         ``model_copy`` — so the warning is one-per-load, not one-per-read.
+
+        **…except across a JSON round-trip, which this class used to get wrong.**
+        A store that persists a spec (``mayhem.infra.api_store`` writes
+        ``resource_json`` and re-validates it on every ``load_experiment``) turns
+        a dump back into a dict, so the ``mode="before"`` validator sees
+        ``max_faults`` again and warns — for an operator who never typed it.
+        Seven of this repository's own tests emitted the warning that way, and
+        the real symptom is worse than noisy output: a load operation
+        advertising a deprecation to somebody who never authored the key.
+
+        :meth:`_omit_default_max_faults` is the other half of that fix. The
+        warning fires on *authoring* (key present in an incoming mapping) and
+        the serializer drops the key when it holds the field default, so a
+        round-trip is silent and value-identical. A non-default value is kept,
+        so a genuine ``max_faults: 5`` still round-trips and still warns on
+        every load, which is correct: it really is still there.
         """
         if not isinstance(data, dict) or "max_faults" not in data:
             return data
@@ -270,6 +287,28 @@ class DrillConfig(BaseModel):
             MaxFaultsNotEnforced,
             stacklevel=2,
         )
+        return data
+
+    @model_serializer(mode="wrap")
+    def _omit_default_max_faults(
+        self, handler: Any, info: Any = None
+    ) -> Any:
+        """Drop ``max_faults`` from the wire form when it is only the default.
+
+        Losslessness: the field default *is* ``1``, so a payload without the key
+        validates back to exactly the same value. Only a non-default is
+        serialized, which is the case where the difference would be real.
+
+        Why the serializer rather than a warning filter: filtering would need
+        process-global warning state, and a ``catch_warnings()`` block in a
+        WSGI/threaded server is a race that can silence another thread's warning.
+        This changes the bytes instead, deterministically and per-object.
+        """
+        data = handler(self)
+        if isinstance(data, dict) and data.get("max_faults") == self.max_faults:
+            default = type(self).model_fields["max_faults"].default
+            if data["max_faults"] == default:
+                data.pop("max_faults", None)
         return data
 
 
