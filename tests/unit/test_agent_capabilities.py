@@ -117,7 +117,7 @@ class TestAgentIdentity:
                 allowed_faults=("net.latency",),
             ),
         )
-        with pytest.raises(InvariantViolationError, match="agent.capability.denied"):
+        with pytest.raises(InvariantViolationError, match=r"agent\.capability\.denied"):
             identity.validate_fault_dispatch("cpu.stress")
 
     def test_validate_undo_denied(self) -> None:
@@ -127,7 +127,7 @@ class TestAgentIdentity:
                 capabilities=(CapabilityKind.FAULT_INJECT,),
             ),
         )
-        with pytest.raises(InvariantViolationError, match="agent.capability.denied"):
+        with pytest.raises(InvariantViolationError, match=r"agent\.capability\.denied"):
             identity.validate_fault_dispatch("net.latency", is_undo=True)
 
     def test_validate_undo_ok(self) -> None:
