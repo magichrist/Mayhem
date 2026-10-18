@@ -778,7 +778,7 @@ def test_a_grant_to_one_provider_never_widens_another(tmp_path: Path) -> None:
     loader.grant("acme.packs", ProviderPermissionSet.from_names("acme.packs", MUTATING))
 
     assert loader.load_file(mine).pack.faults
-    with pytest.raises(PackValidationError, match="other.packs") as excinfo:
+    with pytest.raises(PackValidationError, match=r"other\.packs") as excinfo:
         loader.load_file(other)
     assert "target:mutate" in str(excinfo.value)
 
