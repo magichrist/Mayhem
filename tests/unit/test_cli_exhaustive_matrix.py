@@ -167,7 +167,7 @@ ACTIVE_GROUP_PATHS = {
     ),
     "game-day-step": ("hold", "inject", "note", "release", "steps"),
     "ha": ("cert", "promote", "rotate", "update"),
-    "ci": ("check", "status", "summary", "workflow"),
+    "ci": ("check", "status", "summary", "suite", "workflow"),
     # Plan 03 Phase 3's enrollment surface: one row per leaf, like every other
     # group in this table, so `list` and `show` are enumerated rather than
     # assumed to exist next to the two writing verbs.

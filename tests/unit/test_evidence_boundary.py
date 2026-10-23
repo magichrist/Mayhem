@@ -1772,3 +1772,49 @@ def _files(directory: Path) -> list[Path]:
     if not directory.exists():
         return []
     return sorted(path for path in directory.rglob("*") if path.is_file())
+
+
+# --------------------------------------------------------------------------- #
+# L2: the run-close seam's coverage is by delegation, not by its own gate call
+# --------------------------------------------------------------------------- #
+
+
+def test_the_run_close_seam_reaches_the_gated_sealer_by_delegation() -> None:
+    """``seal_run_evidence_at_run_close`` has no gate call of its own.
+
+    A ``BOUNDARY_CALL_SITES`` row for it was tried and the two-directional check
+    refused it — "a row that no longer describes a gate-calling function", which
+    is the check working: the row would have claimed direct coverage that does
+    not exist. The real coverage is that it delegates to
+    :func:`~mayhem.infra.attestation_store.seal_run_evidence`, which *is* in the
+    table. So the property is asserted positively here instead, by reading the
+    delegation out of the source, because "it is gated somewhere underneath" is
+    not something a caller can check by reading the table.
+    """
+    import ast
+
+    from mayhem.infra import audit_stream
+
+    source = inspect.getsource(audit_stream)
+    tree = ast.parse(source)
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "seal_run_evidence_at_run_close":
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                func = inner.func
+                if isinstance(func, ast.Name):
+                    called.add(func.id)
+                elif isinstance(func, ast.Attribute):
+                    called.add(func.attr)
+
+    assert "seal_run_evidence" in called, (
+        "seal_run_evidence_at_run_close no longer delegates to the gated "
+        f"seal_run_evidence; it calls {sorted(called) or 'nothing'}. Either the "
+        "delegation was removed — which leaves the run close ungated — or a "
+        "second sealer was introduced, which is the duplication plan 12 exists "
+        "to remove."
+    )
+    # And the thing it delegates to is the one the table gates.
+    assert ("mayhem.infra.attestation_store", "seal_run_evidence") in BOUNDARY_CALL_SITES

@@ -605,9 +605,9 @@ def test_breaking_change_checks_fail_when_the_facts_are_deleted() -> None:
 # ── gate 5: intra-document anchors resolve ──────────────────────────────────
 
 
-def _dangling_anchors() -> list[str]:
+def _dangling_anchors(documents: list[Path] | None = None) -> list[str]:
     dangling: list[str] = []
-    for document in DOCUMENTS:
+    for document in DOCUMENTS if documents is None else documents:
         for target in _link_targets(document.read_text(encoding="utf-8")):
             parsed = urlsplit(target)
             if not parsed.fragment or parsed.scheme or parsed.netloc:
@@ -621,7 +621,15 @@ def _dangling_anchors() -> list[str]:
                 if not destination.exists() or destination.suffix != ".md":
                     continue
             if parsed.fragment.lower() not in _heading_slugs(destination):
-                dangling.append(f"{document.relative_to(ROOT)} -> {target}")
+                # ``relative_to(ROOT)`` only for tracked documents; the negative
+                # control plants its copy outside the repository, and a reporting
+                # path must never be the thing that raises.
+                label = (
+                    str(document.relative_to(ROOT))
+                    if document.is_relative_to(ROOT)
+                    else str(document)
+                )
+                dangling.append(f"{label} -> {target}")
     return dangling
 
 
@@ -637,16 +645,34 @@ def test_every_intra_document_anchor_resolves() -> None:
     assert not dangling, "intra-document anchors do not resolve:\n" + "\n".join(dangling)
 
 
-def test_anchor_check_fails_on_a_dangling_fragment() -> None:
-    """Negative control: the anchor check is a real check."""
-    path = ROOT / "docs" / "README.md"
-    original = path.read_text(encoding="utf-8")
-    try:
-        path.write_text(original + "\n\n[dangling](#no-such-heading)\n", encoding="utf-8")
-        assert _dangling_anchors(), "an injected dangling anchor was not detected"
-    finally:
-        path.write_text(original, encoding="utf-8")
-    assert not _dangling_anchors(), "the injected anchor was not cleaned up"
+def test_anchor_check_fails_on_a_dangling_fragment(tmp_path: Path) -> None:
+    """Negative control: the anchor check is a real check.
+
+    Plants the dangling anchor in a **copy** under ``tmp_path``, not in the
+    tracked document. The previous version wrote the defect into the real
+    ``docs/README.md`` and restored it in a ``finally``, which is a race under
+    ``pytest -n``: the sibling ``test_every_intra_document_anchor_resolves``
+    runs concurrently in another worker, reads the file mid-plant, and fails on
+    an anchor that does not exist in the repository. It reproduced roughly one
+    run in three.
+
+    Mutating a tracked file to prove a checker works is only acceptable when the
+    mutation is invisible to every other test. A copy makes it invisible by
+    construction rather than by timing.
+    """
+    source = ROOT / "docs" / "README.md"
+    planted = tmp_path / "README.md"
+    planted.write_text(
+        source.read_text(encoding="utf-8") + "\n\n[dangling](#no-such-heading)\n",
+        encoding="utf-8",
+    )
+    assert _dangling_anchors([planted]), "an injected dangling anchor was not detected"
+    # And the copy is clean again once the anchor is removed, so the checker is
+    # shown to be reading the content rather than always returning the same list.
+    planted.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    assert not _dangling_anchors([planted]), "the anchor was not cleared from the copy"
+    # The tracked document was never touched by this test at all.
+    assert "no-such-heading" not in source.read_text(encoding="utf-8")
 
 
 # ── gate 5b: the command-parity check that never ran ────────────────────────

@@ -56,6 +56,57 @@ def test_equivalent_plans_produce_equivalent_preflight():
     assert pf1.environment_fingerprint == pf2.environment_fingerprint
 
 
+def test_a_preflight_with_no_gate_carries_no_verdicts_and_dumps_identically():
+    """L2's carrier is additive all the way down.
+
+    Two claims, and the second is the one that would be expensive to get wrong:
+    the new verdicts are absent from ``to_dict`` because that dict is the CLI's
+    ``--json`` rendering, so admitting them would move existing output bytes for
+    every caller. The key count is asserted exactly rather than by spot check,
+    so a future field added to ``to_dict`` without a reason fails here too.
+    """
+    from mayhem.domain.preflight import Preflight
+
+    pf = Preflight(
+        resolved_target="t",
+        config_snapshot_id="c",
+        topology_snapshot_id="g",
+        environment_fingerprint="f",
+        plan=object(),
+        safety_decisions=("d",),
+    )
+    assert pf.policy_verdict is None
+    assert pf.approval_verdict is None
+
+    dumped = pf.to_dict()
+    assert "policy_verdict" not in dumped
+    assert "approval_verdict" not in dumped
+    # Every key that existed before L2 is still there, and no key was added.
+    for key in (
+        "resolved_target",
+        "config_snapshot_id",
+        "topology_snapshot_id",
+        "environment_fingerprint",
+        "plan",
+        "safety_decisions",
+        "blocked_items",
+        "warnings",
+        "target_profile",
+        "engine",
+        "blast_radius",
+        "compensation_status",
+        "expected_evidence",
+        "plan_hash",
+        "plan_id",
+        "target_identity",
+        "runtime_context",
+    ):
+        assert key in dumped, key
+    # `runtime_context` is the last key to_dict wrote before L2.
+    assert len(dumped) == 27, sorted(dumped)
+    assert list(dumped)[-1] == "runtime_context", "to_dict gained or reordered a key"
+
+
 def test_preflight_contains_required_fields():
     p = _plan()
     pf = build_preflight(

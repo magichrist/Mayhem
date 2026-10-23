@@ -27,7 +27,7 @@ from mayhem.cli.app import app
 from mayhem.cli.ci_cmd import ci
 from mayhem.cli.command_registry import COMMAND_HELP, COMMAND_SPECS
 
-SUBCOMMANDS = ("check", "status", "summary", "workflow")
+SUBCOMMANDS = ("check", "status", "summary", "suite", "workflow")
 
 
 def _run(*args: str) -> Any:
