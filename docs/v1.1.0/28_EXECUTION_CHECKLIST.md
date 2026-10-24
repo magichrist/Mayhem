@@ -1,6 +1,6 @@
 # Plan 28 — Production Experiment Execution Checklist
 
-Status: **planning only.** Meta document: the operator spine for every
+Status: **checklist live.** Meta document: the operator spine for every
 production run. Each item names its owning plan; an unchecked item
 blocks execution, and a check without cited evidence is a defect in the
 check, not a pass.
@@ -45,5 +45,23 @@ After execution:
 - [ ] coverage/regression data updated (22 cells plus comparisons)
 - [ ] resource locks released (07 ledger closeout)
 
-## STATUS — planning only, 0%
-Checklist defined; items become enforceable as their owning plans land.
+## STATUS — checklist live; every item's owning plan has landed, and two items are now enforced by tests rather than by review
+
+Every item's owning plan is in `docs/v1.1.0/` and each carries its own `## STATUS`
+block, which is the authoritative per-item state. Items become enforceable as
+their owning plans land — they have.
+
+Two are enforced mechanically today, not by review:
+
+- the plan-document honesty gates, `tests/unit/test_*_plan_docs.py` (eight
+  suites) plus `tests/unit/test_plan_doc_status_blocks.py` over the whole
+  directory;
+- the evidence-boundary completeness guard,
+  `tests/unit/test_evidence_boundary.py`, which compares `(module, function)`
+  pairs in both directions so a new gated write path cannot drift out of the
+  table.
+
+Items still open are the live ones: the Kubernetes DaemonSet transport and the
+live-cluster cells (`02_KUBERNETES_RUNTIME.md` Phases 4–5), and the enterprise
+walkthrough's live-site clause (`20_ENTERPRISE_PRODUCT_HARDENING.md` Phase 4).
+Each needs a cluster, an IdP or a human, not missing code.

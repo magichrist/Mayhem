@@ -369,12 +369,24 @@ integration proves more than its provenance states":
 - **The endpoint templates are placeholders.** They are vendor documentation shapes
   with a `{base}` a deployment substitutes, and none of them is anybody's
   production address — asserted, so shipping one fails a test.
-- **Migration 36 is registered but not applied.** `PROBE_SEAL_MIGRATION` is defined in
+- ~~**Migration 36 is registered but not applied.** `PROBE_SEAL_MIGRATION` is defined in
   `infra/probe_seal_store.py` and is **not** in
   `infra.migrations.ALL_MIGRATIONS`, because this work item does not own that file.
   Until it is, the seal table exists only where a caller splices the migration in —
   which is what `tests/unit/test_probe_evidence.py` does, against a real migrated
-  in-memory database. The claim under test is *this module's* schema, not production's.
-- **`mayhem probe` is not registered.** It is absent from
+  in-memory database. The claim under test is *this module's* schema, not production's.~~
+  **Corrected — migration 36 is now registered.** `PROBE_SEAL_MIGRATION` is appended to
+  `infra.migrations.ALL_MIGRATIONS` at version 36, so the seal table is present in
+  every migrated deployment, not only where a caller splices it in. ("Registered"
+  is what this bullet's title claimed and what was false; whether a *particular*
+  field database has applied it is still a question about that database's next
+  migration run.)
+- ~~**`mayhem probe` is not registered.** It is absent from
   `cli/command_registry.py`, so the one-line registration it owes is recorded in the
-  plan's ledger and asserted absent by a test, rather than being quietly added.
+  plan's ledger and asserted absent by a test, rather than being quietly added.~~
+  **Corrected — `mayhem probe` is registered.** `cli/command_registry.py` carries
+  `COMMAND_HELP["probe"]`, the `CommandSpec("probe", "inspect")` row, and
+  `command_map["probe"] = probe`, so every invocation in this catalogue resolves
+  from the root command. The test that asserted its absence was deleted when the
+  registration landed, and `test_readme_honesty.py`'s command-resolution check now
+  runs over this document's invocations instead.

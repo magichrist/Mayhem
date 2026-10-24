@@ -139,7 +139,9 @@ lanes opened some time after this package was written; the per-file `## STATUS`
 blocks are the only authoritative record, and they now describe implemented
 code. Read those, not this file's summary.
 
-Where the program stands (from the 24 per-file STATUS blocks, not from the prose
+Where the program stands (from the per-file STATUS blocks — 31 top-level
+documents in this directory carry one: 25 feature plans (01–23, 29, 30) and the
+6 meta documents (00, 24, 25, 26, 27, 28) — not from the prose
 above):
 
 * Most feature plans report **6 of 6 phases DONE**.

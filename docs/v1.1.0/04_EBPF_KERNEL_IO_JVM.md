@@ -372,11 +372,22 @@ containers:
 
 ### Known limitations of Phase 3
 
-- **`mayhem lowlevel` is not registered.** `cli/command_registry.py` and
+- ~~**`mayhem lowlevel` is not registered.** `cli/command_registry.py` and
   `cli/app.py` are outside this lane's ownership, so the group is exported and
   invoked directly through `CliRunner`. Its absence from `mayhem --help` is a
   known gap, not an oversight, and the suite asserts the absence so the
-  integration pass's row is expected rather than surprising.
+  integration pass's row is expected rather than surprising.~~ **Closed —
+  `mayhem lowlevel` is registered.** `cli/command_registry.py` carries
+  `COMMAND_HELP["lowlevel"]`, the `CommandSpec("lowlevel", "inspect")` row, and
+  `command_map["lowlevel"] = lowlevel`, and the group resolves on the live
+  command table. One warning for whoever next trusts the old guard:
+  `tests/unit/test_lowlevel_surface.py::TestSurface::test_the_group_is_not_registered_yet`
+  still exists and still *passes* — but vacuously: it asserts
+  `"lowlevel" not in command_registry.COMMAND_SPECS`, `COMMAND_SPECS` is a tuple
+  of `CommandSpec` records, and a bare string is equal to none of them, so the
+  assertion guards nothing now that the registration has landed. It should be
+  deleted (the way plan 11's equivalent test was) rather than believed; this
+  document does not own that file.
 - **The `jvm.*` grammar has no fault id to travel in.** It is fully specified and
   fully checkable, and `mayhem lowlevel` prints it, but a drill spec cannot carry
   it until a prefix is registered. That remains a naming decision, not a

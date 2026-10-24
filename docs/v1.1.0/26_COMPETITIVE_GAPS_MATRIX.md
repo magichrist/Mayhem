@@ -34,6 +34,11 @@ Cells marked "Requires sourcing" are known unknowns: no lane may cite
 them in prose, docs, or UI until a sourced reading replaces the marker.
 A matrix cell that cannot name its evidence is a rumor with a border.
 
-## STATUS — planning only, 0%
-Matrix opened; Mayhem-column states advance only via 01 records and
-24 gates, never by editing this file optimistically.
+## STATUS — matrix live; the Mayhem column still reads zero on every live-verification row
+
+The matrix is tracked, not aspirational. Mayhem-column states advance only via
+plan 01 certification records and plan 24 gates, never by editing this file
+optimistically — and because `certified_faults = 0`, **every row whose claim is
+live verification still reads unfilled**. That is the correct state, not a gap in
+the matrix. A matrix cell that cannot name its evidence is a rumor with a border,
+and today no cell can name one.

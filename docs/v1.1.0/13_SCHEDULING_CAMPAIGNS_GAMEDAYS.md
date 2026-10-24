@@ -199,7 +199,11 @@ this report, not about the system."*
 Items (1), (3) and (4) are still edits to files other lanes own, and none is
 worked around. Item (2) was reported here rather than assumed safe, and has since
 been closed by a later wave — recorded below rather than deleted, because the
-report was the honest state at the time this lane shipped.
+report was the honest state at the time this lane shipped. *(Update: items (1)
+and (3) have since been closed by that same integration pass, and each is
+corrected in place below; item (4) is corrected too — its read half landed in
+plan 10, while the settlement half stays deliberately unwired, as plan 10's own
+ledger records.)*
 
 1. **`cli/app.py` + `cli/command_registry.py`** — both groups need a
    `CommandSpec` row and a `command_map` entry before `mayhem schedule --help`
@@ -209,7 +213,17 @@ report was the honest state at the time this lane shipped.
    `command_map["schedule"] = schedule` from `mayhem.cli.schedule_cmd` and
    `command_map["game-day-step"] = game_day_step` from
    `mayhem.cli.game_day_step_cmd`. `help_group` and `mutating` are guesses and
-   belong to whoever owns the inventory. **Not wired.**
+   belong to whoever owns the inventory. ~~**Not wired.**~~ **Wired, after this
+   lane shipped — recorded here rather than deleted.** The integration pass
+   registered both groups in `cli/command_registry.py`: `COMMAND_HELP["schedule"]`
+   and `COMMAND_HELP["game-day-step"]`, `CommandSpec("schedule", "run",
+   help_group="experiments", mutating=True)` and `CommandSpec("game-day-step",
+   "run", help_group="experiments", mutating=True)`, and both `command_map`
+   entries from the modules this entry named. The shape is what was suggested;
+   the verb and the help group are the inventory owner's calls, taken as
+   `"run"` and `"experiments"` rather than this lane's guesses of
+   `"campaign"`/`"game-day"`. Both `--help` paths resolve from the root
+   command.
 2. **`tests/unit/test_evidence_boundary.py::BOUNDARY_CALL_SITES`** — **RESOLVED,
    after this lane shipped.** As reported at the time:
    `controller/game_day_evidence.py::record_artifact` writes through
@@ -243,7 +257,9 @@ report was the honest state at the time this lane shipped.
    the *secret* boundary only.
 3. **`tests/unit/test_command_inventory.py`** and the two sibling CLI matrix
    suites — they enumerate `COMMAND_SPECS`, so they gain rows only once (1) lands.
-   **Not wired.**
+   ~~**Not wired.**~~ **Closed with (1):** the suites derive from `COMMAND_SPECS`,
+   so both groups' rows arrived with the registration itself; the inventory suite
+   and the exhaustive-matrix suite pass over the registry as it now stands.
 4. **Plan 10's emergency stop** — a running scheduled campaign is reachable by run
    id, and `mayhem stop RUN_ID` already reaches a run by id, so the surface needs
    no change; what it *does* need is the reverse direction. Nothing tells the stop
@@ -251,8 +267,17 @@ report was the honest state at the time this lane shipped.
    dispatch leaves the claim ledger holding `claimed` rows with no settlement.
    The seam is `StopExecution` in `controller/stop_engine.py` (not this lane's);
    the scheduler already refuses to retry such a slot, so the failure mode is a
-   stale ledger rather than a double fire, and an operator resolves it. **Not
-   wired.**
+   stale ledger rather than a double fire, and an operator resolves it.
+   ~~**Not wired.**~~ **The read half is wired; the write half is not, and plan
+   10's ledger says that is deliberate.** Plan 10's Phase 3 record: `StopEngine`
+   now takes an optional `claims:` ledger, `_stage_reconcile` turns every open
+   claim with no settlement into a `claim_unsettled` residue finding (which keeps
+   the postflight `DIRTY`), and `stop_cmd.FabricJournalClaims` reads plan 03's
+   `FabricJournalTable` — so the "stale ledger an operator must notice" this entry
+   feared is now *reported by the stop itself*. What remains unwired is settlement
+   (`FabricEngine.settle_claim`), deliberately: only the dispatcher may assert
+   what an effect became, and plan 10 pins the fail-closed direction in
+   `tests/unit/test_stop_safety.py::test_an_open_dispatch_claim_keeps_the_run_dirty`.
 
 ### What was deliberately not done
 

@@ -93,15 +93,27 @@ belongs to this work item.
 
 ### Two integration dependencies other lanes must satisfy
 
-1. **`cli/command_registry.py` registration.** `mayhem.api` is a complete Click
+*(Both were real when this lane shipped and **both are now closed** — each item
+below is retracted visibly rather than deleted, with what replaced it.)*
+
+1. ~~**`cli/command_registry.py` registration.** `mayhem.api` is a complete Click
    group and is **not registered**: add a `CommandSpec("api", "inspect")` plus
    `api` in `command_map` and `COMMAND_HELP`. Until then it is reachable only
    through `CliRunner`, which is what `tests/unit/test_api_cli.py` does, and
    `test_command_inventory.py` / `test_cli_exhaustive_matrix.py` will not see it.
    Note that `docs/api-control-plane.md` deliberately documents no `mayhem api …`
    invocation, because `test_readme_honesty.py`'s command-resolution check runs
-   over published documents.
-2. **`infra/migrations.py` — two reservations, in order.** Append
+   over published documents.~~ **Closed — `mayhem api` is registered.**
+   `cli/command_registry.py` carries `COMMAND_HELP["api"]`, the
+   `CommandSpec("api", "inspect")` row, and `command_map["api"] = api`, so
+   `mayhem api …` resolves from the root command and `test_command_inventory.py`
+   / `test_cli_exhaustive_matrix.py` see it. The note's *reasoning* still holds
+   in the opposite direction: `docs/api-control-plane.md` now documents
+   `mayhem api …` invocations openly (`api serve`, `api routes`, `api openapi`,
+   `api ui`), and that is safe precisely because `test_readme_honesty.py`'s
+   command-resolution check runs over published documents and every one of them
+   resolves.
+2. ~~**`infra/migrations.py` — two reservations, in order.** Append
    `API_GATEWAY_MIGRATION` (version **34**, `api_gateway`, table
    `api_idempotency`, from `controller/api_service.py`) and then
    `API_SAFETY_MIGRATION` (version **35**, `api_safety`, table
@@ -112,7 +124,17 @@ belongs to this work item.
    database and the mutation receipt is reported as `recorded: false` with the
    reason naming the migration — never silently dropped. Each module's test asserts
    its own version is above the registered head, so a collision is reported rather
-   than silently duplicated.
+   than silently duplicated.~~ **Closed — both are appended, in order, at their
+   reserved versions.** `infra/migrations.py::ALL_MIGRATIONS` carries
+   `API_GATEWAY_MIGRATION` (34) and then `API_SAFETY_MIGRATION` (35); the chain
+   head has since moved past them (39), so a migrated deployment has both the
+   `api_idempotency` table and the `api_mutation_receipts` table and neither is a
+   caller-spliced fixture any more. One detail differs from what this entry
+   proposed: the SQL moved *down* out of `controller/api_service.py` /
+   `controller/api_safety.py` into `infra`, because the layering contract
+   forbids `infra` importing `controller`; both controller modules re-export the
+   same migration objects unchanged, so every existing import site still
+   resolves to the very objects the chain migrates.
 
 No `OBLIGATION_FOR_RULE` or `RULE_CHECK` mapping is required and none is being
 requested: the two modules whose rules must be mappable are `controller/safety.py`

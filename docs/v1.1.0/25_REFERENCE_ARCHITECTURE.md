@@ -1,6 +1,6 @@
 # Plan 25 — Target Reference Architecture
 
-Status: **planning only.** Meta document: the target architecture the
+Status: **describes landed architecture.** Meta document: the target architecture the
 feature plans build toward, with the build order that keeps it honest.
 
 ```text
@@ -75,4 +75,23 @@ marketplace before certification, a UI before the API contract). The
 milestone exit criteria in 00 plus the gates in 24 exist to catch
 exactly that inversion.
 
-## STATUS — planning only, 0%
+## STATUS — reference document, no phase ledger
+
+This file is architecture, not a feature lane, so it carries no `Overall:` count
+and no phase ledger; the six-phase convention in `../README.md` applies to
+feature plans. Its sections describe the shape the code landed in. Where it
+disagrees with `src/`, `src/` is current — see `docs/README.md` §"Source
+authority".
+
+Known divergence, stated rather than hidden: ~~the run-close evidence seal
+(`controller/policy_evidence.seal_policy_decision`) has no production caller,
+so a mutating run seals an INCOMPLETE chain today.~~ **Closed by
+`docs/v1.1.0/LAST/L2_RUN_CLOSE_AUTHORIZATION.md`** — `cli/lifecycle.py`'s
+`_write_evidence_after_run` calls `seal_policy_decision` between
+`write_evidence` and `write_evidence_file`, sealing the run's attestation
+events. What is still true: the seal is conditional on both admission gates
+having been configured and both allowed — a policy gate with no approval gate
+still seals nothing, both inputs being required — and a deployment that
+configures neither, which is every deployment in this repository (no CLI path
+sets `policy_gate=`), still seals an INCOMPLETE chain whose
+`chain_completeness` reads "missing policy.decided, approval.evaluated".
