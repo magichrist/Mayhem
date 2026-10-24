@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from mayhem.controller.approval_gate import (
     RULE_APPROVAL_ALLOW,
@@ -18,6 +18,7 @@ from mayhem.domain.policy_gate import (
     RULE_APPROVAL_REQUIRED,
     RULE_BUNDLE_ALLOW,
     PolicyGateInputs,
+    PolicyGateResult,
     RequiredApproval,
     _risk_of,
     capability_requirements_for,
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
     from mayhem.config import PolicyCfg
     from mayhem.controller.k8s_admission import K8sAdmissionInput
     from mayhem.domain.experiments import BlastRadiusBudget, ExecutionPlan, PlannedFault
-    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.prediction import BlastCeilings
     from mayhem.domain.topology import NodeKind, TargetSelector, TopologyGraph
 
@@ -158,12 +158,55 @@ class SafetyContext:
     # bundle configured the gate speaks *in addition*, so configuring one can
     # add a refusal but can never lose a refusal the config-policy half would
     # have made.
+    # L2: the gate verdicts themselves, retained so a later caller can bind a
+    # decision to evidence rather than re-running the gate and hoping the inputs
+    # still agree. Empty — the default — means this context never ran a gate,
+    # and every path below is behind the existing ``is not None`` test, so
+    # admission is byte-for-byte what it was before this field existed.
+    #
+    # A mapping rather than two optional fields because this dataclass is
+    # **frozen**: a field cannot be assigned after construction, and unfreezing
+    # it would change the hashability and the construction contract every caller
+    # in the tree relies on. A mutable mapping is the idiom ``decisions`` and
+    # ``warnings`` already use here — :meth:`record` appends to a list on a
+    # frozen dataclass, and this is no different.
+    #
+    # The values are *results*, not decisions: a refused plan raises out of
+    # ``validate_plan`` and never reaches anywhere that reads them, so what
+    # survives is an allowed run — and only an allowed run has an authorization
+    # to seal. The approval value is the whole ``ApprovalGateResult`` rather than
+    # only its ``state``, because it also carries the ``plan_digest``,
+    # ``policy_digest`` and ``proof_digest`` the approval was decided against,
+    # and plan 12's sealer wants all three.
+    #
+    # The keys are :data:`GATE_VERDICT_POLICY` and :data:`GATE_VERDICT_APPROVAL`,
+    # named so a caller cannot misspell one into a silent miss.
+    gate_verdicts: dict[str, object] = field(default_factory=dict)
     policy_gate: PolicyGateInputs | None = None
 
     def record(self, decision: SafetyDecision) -> None:
         self.decisions.append(decision)
         if decision.severity == SafetySeverity.warning:
             self.warnings.append(decision.reason)
+
+
+#: Keys into :attr:`SafetyContext.gate_verdicts`. Named rather than inlined so a
+#: misspelling at a read site is a ``KeyError`` with this name, not a silent
+#: ``None`` that reads as "no gate was configured".
+GATE_VERDICT_POLICY: Final[str] = "policy"
+GATE_VERDICT_APPROVAL: Final[str] = "approval"
+
+
+def policy_verdict(ctx: SafetyContext) -> PolicyGateResult | None:
+    """The policy verdict ``ctx`` reached, or ``None`` if it ran no policy gate."""
+    found = ctx.gate_verdicts.get(GATE_VERDICT_POLICY)
+    return found if isinstance(found, PolicyGateResult) else None
+
+
+def approval_verdict(ctx: SafetyContext) -> ApprovalGateResult | None:
+    """The approval verdict ``ctx`` reached, or ``None`` if it ran no approval gate."""
+    found = ctx.gate_verdicts.get(GATE_VERDICT_APPROVAL)
+    return found if isinstance(found, ApprovalGateResult) else None
 
 
 DEFAULT_DENY = frozenset({"node.reboot"})
@@ -1052,7 +1095,14 @@ def _apply_policy_result(result: PolicyGateResult, ctx: SafetyContext) -> None:
     :func:`validate_plan` runs immediately after this one and feeds the
     outstanding levels through. The split is deliberate: this half says what
     would change the verdict, that half requires the answer.
+
+    L2: the result is retained on ``ctx`` so plan 12's run-close sealer can bind
+    this decision to the run's evidence instead of re-running the gate and
+    hoping the inputs still agree. Recording is unchanged — a decision nobody
+    reads at run close is still a decision worth recording here. Set before any
+    recording so the value survives even if a later statement raises.
     """
+    ctx.gate_verdicts[GATE_VERDICT_POLICY] = result
     for approval in result.required_approvals:
         ctx.record(
             SafetyDecision(
@@ -1106,7 +1156,13 @@ def _apply_approval_result(result: ApprovalGateResult, ctx: SafetyContext) -> No
     text, so a run that executed under an override is never mistakable for a run
     that was approved outright once the decision reaches the evidence envelope's
     ``safety_decisions``.
+
+    L2: the result is retained on ``ctx`` for the same reason the policy
+    half's is. The whole ``ApprovalGateResult`` rather than only its ``state``,
+    because it also carries the ``plan_digest``, ``policy_digest`` and
+    ``proof_digest`` this approval was decided against.
     """
+    ctx.gate_verdicts[GATE_VERDICT_APPROVAL] = result
     evidence = result.evidence()
     if result.refusal is not None:
         dec = _deny_decision(

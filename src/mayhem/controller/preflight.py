@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING, Any
 from mayhem.controller.safety import (
     SafetyContext,
     SafetyRefusedError,
+    approval_verdict,
     check_blast_radius,
     environment_fingerprint,
+    policy_verdict,
     validate_plan,
 )
 from mayhem.domain.preflight import Preflight, plan_hash_for
@@ -472,6 +474,15 @@ def build_preflight(
         k8s_compensation=k8s_compensation,
         k8s_wait_strategy=k8s_wait_strategy,
         k8s_recovery_guidance=k8s_recovery_guidance,
+        # L2: `validate_plan(plan, graph, safety)` above has already populated
+        # these on a configured context, so the verdicts ride out on the
+        # preflight rather than being re-derived at run close. Read through the
+        # module's accessors rather than the raw mapping, and through ``getattr``
+        # because ``safety`` is typed ``SafetyContext | None`` and is ``None`` on
+        # every path that ran no gate — a direct access would raise on exactly
+        # the path this must leave alone.
+        policy_verdict=policy_verdict(safety) if safety is not None else None,
+        approval_verdict=approval_verdict(safety) if safety is not None else None,
         k8s_drift_status=k8s_drift_status,
         runtime_context=runtime,
     )

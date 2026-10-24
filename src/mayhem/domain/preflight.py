@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict
 from mayhem.domain.hashing import canonical_json
 
 if TYPE_CHECKING:
+    from mayhem.controller.approval_gate import ApprovalGateResult
+    from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.runtime_context import RuntimeContext
 
 
@@ -62,6 +64,21 @@ class Preflight:
     # The runtime resolved once by the application (v0.9.0); None for callers
     # that have not resolved one yet.
     runtime_context: RuntimeContext | None = None
+    # L2: the admission verdicts, carried to the run close so plan 12's sealer
+    # has a real ``PolicyGateResult`` and ``ApprovalGateResult`` to bind rather
+    # than none. ``None`` — the default — is the case for every deployment that
+    # configures no policy gate, and it seals nothing.
+    #
+    # Deliberately *absent* from ``to_dict``. That dict is the CLI's ``--json``
+    # rendering, and a ``PolicyGateResult`` carries lock verdicts, pending budget
+    # charges and compatibility outcomes — far more than a render needs, and
+    # some of it belongs in the sealed chain rather than in a stdout projection.
+    # The run-close path reads the attribute, not the dict, which is the same
+    # ``getattr`` idiom ``cli/lifecycle.py`` already uses throughout
+    # ``_write_evidence_after_run``. Leaving ``to_dict`` alone is what keeps this
+    # change from moving a single byte of existing JSON output.
+    policy_verdict: PolicyGateResult | None = None
+    approval_verdict: ApprovalGateResult | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {

@@ -1124,6 +1124,58 @@ def _write_evidence_after_run(
                     ),
                 }
             )
+        # L2: bind the policy decision and the approval state to this run's
+        # evidence chain, so a mutating run stops sealing an INCOMPLETE chain.
+        #
+        # Placement is load-bearing and is plan 12's: the envelope row must exist
+        # before the chain references its digest, and the artifact is written
+        # from the envelope as it was admitted. Both verdicts ride in on
+        # ``preflight``, carried by the admission pass that produced them — the
+        # gate is never re-run here, so the decision sealed is the decision that
+        # was enforced.
+        #
+        # ``plan_digest`` is read off the envelope rather than off ``preflight``
+        # on purpose: ``RunAuthorization`` compares it against the envelope's
+        # own ``plan_hash`` at seal time, so taking it from the envelope is what
+        # makes a disagreement impossible rather than merely unlikely. The
+        # approval gate's own ``plan_digest`` is a second, independent source —
+        # ``test_the_envelope_digest_and_the_approval_digest_agree`` pins that
+        # the two name the same plan.
+        #
+        # Three outcomes, all non-raising, matching the sibling secret-marker
+        # seal above: no gate configured seals nothing; a configured gate that
+        # denies has already refused the run before this function is reached; a
+        # configured gate that allows seals. A seal failure degrades to a
+        # remediation note, because losing the whole envelope because an
+        # *additional* record failed is the wrong trade — ``chain_completeness``
+        # still reports the truth, and this run would otherwise look complete
+        # when it is not.
+        try:
+            from mayhem.controller.policy_evidence import seal_policy_decision
+
+            _policy = getattr(preflight, "policy_verdict", None)
+            _approval = getattr(preflight, "approval_verdict", None)
+            if _policy is not None and _approval is not None:
+                seal_policy_decision(
+                    store,
+                    _policy,
+                    envelope,
+                    approval_state=_approval.state,
+                    plan_digest=envelope.plan_hash,
+                    run_status=str(getattr(result, "status", "") or ""),
+                    verdict=verdict,
+                    proof_digest=str(getattr(_approval, "proof_digest", "") or ""),
+                )
+        except Exception as exc:
+            envelope = envelope.model_copy(
+                update={
+                    "remediation": (
+                        *envelope.remediation,
+                        f"policy authorization not sealed into the evidence chain: "
+                        f"{type(exc).__name__}",
+                    ),
+                }
+            )
         if evidence_dir:
             try:
                 write_evidence_file(envelope, evidence_dir)
