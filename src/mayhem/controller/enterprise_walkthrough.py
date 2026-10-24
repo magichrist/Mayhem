@@ -298,9 +298,7 @@ def run_walkthrough(
     evidence: DemoRunEvidence | None = None
     try:
         environment = provisioner.provision(
-            SandboxRequest(
-                name=name, directory=directory, policy=effective_policy, model=model
-            )
+            SandboxRequest(name=name, directory=directory, policy=effective_policy, model=model)
         )
         from mayhem.controller.sandbox_service import (
             DemoRunRequest,
@@ -362,9 +360,7 @@ def run_walkthrough(
     # recover — the environment comes back: re-provision after teardown.
     try:
         recovered = provisioner.provision(
-            SandboxRequest(
-                name=name, directory=directory, policy=effective_policy, model=model
-            )
+            SandboxRequest(name=name, directory=directory, policy=effective_policy, model=model)
         )
         steps.append(
             WalkthroughStep(

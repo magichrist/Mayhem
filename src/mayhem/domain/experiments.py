@@ -290,9 +290,7 @@ class DrillConfig(BaseModel):
         return data
 
     @model_serializer(mode="wrap")
-    def _omit_default_max_faults(
-        self, handler: Any, info: Any = None
-    ) -> Any:
+    def _omit_default_max_faults(self, handler: Any, info: Any = None) -> Any:
         """Drop ``max_faults`` from the wire form when it is only the default.
 
         Losslessness: the field default *is* ``1``, so a payload without the key

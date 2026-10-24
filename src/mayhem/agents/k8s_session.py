@@ -125,7 +125,5 @@ async def _serve_one_line(
     await _send_response(connection, response)
 
 
-async def _send_response(
-    connection: AgentSessionConnection, response: rpc.RpcResponse
-) -> None:
+async def _send_response(connection: AgentSessionConnection, response: rpc.RpcResponse) -> None:
     await connection.send(rpc.encode(response).decode("utf-8"))
