@@ -468,6 +468,15 @@ can only block, and a finding still has no close state, so "open" means every
 stored finding. `--run` lifts the first limitation; it does not make the flag
 safe to leave on.
 
+The Phase 3 honesty checker this plan shipped refused every gate-allow
+assertion — correct when the limitation above was absolute, so that form could
+never be said honestly. The closure makes it conditional, and a bare regex
+cannot tell the two apart; the checker now refuses only the *unqualified*
+claim: an allow-assertion whose sentence never names `--run` or the cited run
+that makes it true. The bites test keeps both halves — one fabricated
+over-claim that shares every keyword with the honest sentence is still caught,
+and the honest sentence still passes.
+
 The allow *branch* itself is proven at the fixture level in
 `tests/unit/test_ci_pipeline_gates.py`, where a genuinely passing verdict and a
 passing suite reach `opens_release == True`. Driving a full allow through the CLI

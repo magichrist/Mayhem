@@ -11,14 +11,13 @@ machinery around it. The checks below pin the difference:
   members, not just modules;
 * ``release_gate`` really is reachable from ``check_cmd``, and the document no
   longer claims it has no caller;
-* the document claims no capability the build lacks: the gate cannot allow a
-  release from this surface, there is no suite runner, and ``--release-gate`` is
-  opt-in rather than a required CI check;
-* the known limitation is stated: ``check_cmd`` never supplies a ``cited_run``,
-  so ``blocking_reasons`` always contains "no run is cited" and the gate invoked
-  from this surface can only ever block and never allow — asserted against the
-  source as well as the prose, because this is the claim a reader would most
-  want to be true;
+* the document claims no capability the build lacks: no sentence asserts the
+  gate can allow without naming its ``--run`` condition, there is no suite
+  runner, and ``--release-gate`` is opt-in rather than a required CI check;
+* the known limitation is stated in its conditional shape: without ``--run``
+  the gate invoked from this surface can only ever block, with it a cited run
+  lifts the "no run is cited" reason — asserted against the source as well as
+  the prose, because this is the claim a reader would most want to be true;
 * ``ResilienceSuite.__post_init__`` still owns the three refusals and the CLI
   still does not re-implement them;
 * the recorded gaps are still open: no suite runner produces suite files, and a
@@ -79,30 +78,47 @@ CITED_SYMBOLS: Final[tuple[tuple[str, str], ...]] = (
     ("mayhem.cli.ci_cmd", "_apply_release_gate"),
 )
 
-#: Claims this plan must never make. The first three are FALSE in this build;
+#: Claims this plan must never make. All three are FALSE in this build;
 #: the last two keep L2's signature refusal alive in a document that does not
 #: discuss signatures at all — until it does, incorrectly.
 FORBIDDEN_CLAIMS: Final[tuple[str, ...]] = (
-    r"\b(?:the )?gate (?:can|may|could|will) allow",
     r"there (?:is|now is)\s+(?:a\s+)?suite runner",
     r"--release-gate (?:is|becomes|will be)\s+(?:now\s+)?(?:a\s+)?(?:required|mandatory)",
     r"signature verification is implemented",
     r"proves authorship",
 )
 
+#: The allow-claim this plan may never make *unqualified*. When the first
+#: version of this checker was written, the limitation was absolute —
+#: ``check_cmd`` supplied no ``cited_run``, so "the gate can allow" was false
+#: without qualification and a bare regex refused every occurrence. The
+#: limitation is now conditional: ``--run PATH`` lets a cited run lift the
+#: "no run is cited" reason, and the gate then *can* allow. So the rot this
+#: checker must still catch is the unqualified claim — an allow-assertion whose
+#: sentence never names the condition that makes it true. Handled as sentence
+#: logic rather than one regex, because the honest sentence and the over-claim
+#: share every keyword.
+ALLOW_WORDING: Final = re.compile(r"\b(?:the )?gate (?:can|may|could|will) allow", re.I)
+ALLOW_CONDITION: Final = re.compile(r"--run\b|cited(?:_run)?\s+run|\bpin\b", re.I)
+
 #: The refusal-of-signature subset, for the dedicated L2-pattern check.
-SIGNATURE_CLAIMS: Final[tuple[str, ...]] = (FORBIDDEN_CLAIMS[3], FORBIDDEN_CLAIMS[4])
+SIGNATURE_CLAIMS: Final[tuple[str, ...]] = (FORBIDDEN_CLAIMS[2], FORBIDDEN_CLAIMS[3])
 
 #: One plausible over-claim per forbidden pattern, so each checker's *positive*
 #: half is proven to bite. A checker that is only ever run against the real
 #: document has never been shown to catch the thing it exists to catch.
 _OVERCLAIMS: Final[dict[str, str]] = {
-    FORBIDDEN_CLAIMS[0]: "The gate can allow a release once every suite passes.",
-    FORBIDDEN_CLAIMS[1]: "There is a suite runner in this build now.",
-    FORBIDDEN_CLAIMS[2]: "--release-gate is a required CI check on every pipeline.",
-    FORBIDDEN_CLAIMS[3]: "Signature verification is implemented for this release.",
-    FORBIDDEN_CLAIMS[4]: "The seal proves authorship of the run.",
+    FORBIDDEN_CLAIMS[0]: "There is a suite runner in this build now.",
+    FORBIDDEN_CLAIMS[1]: "--release-gate is a required CI check on every pipeline.",
+    FORBIDDEN_CLAIMS[2]: "Signature verification is implemented for this release.",
+    FORBIDDEN_CLAIMS[3]: "The seal proves authorship of the run.",
 }
+
+#: The unqualified over-claim for the allow-claim checker above, kept beside the
+#: structurally identical honest sentence so the checker must reject one and
+#: accept the other.
+ALLOW_OVERCLAIM: Final = "The gate can allow a release once every suite passes."
+ALLOW_HONEST: Final = "With a cited run (--run PATH), the gate can allow."
 
 
 def _phases() -> dict[int, str]:
@@ -126,6 +142,23 @@ def _states_cited_run_limitation(text: str) -> bool:
         and re.search(r"never allow|can(?:not)? allow|only(?:\s+ever)?\s+block", text, re.I)
         is not None
     )
+
+
+def _unqualified_allow_claims(text: str) -> list[str]:
+    """Sentences asserting the gate can allow without naming their condition.
+
+    An allow-assertion is honest only where its sentence names ``--run``/the
+    cited run that lifts the "no run is cited" reason. Markdown emphasis is
+    stripped before the condition check so backticked flags count.
+    """
+    unqualified = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if not ALLOW_WORDING.search(sentence):
+            continue
+        bare = re.sub(r"[`*_~]", "", sentence)
+        if not ALLOW_CONDITION.search(bare):
+            unqualified.append(sentence.strip())
+    return unqualified
 
 
 # --- check 1: the ledger ---------------------------------------------------- #
@@ -216,6 +249,10 @@ def test_the_document_no_longer_claims_release_gate_has_no_caller() -> None:
 def test_the_document_claims_no_capability_it_lacks() -> None:
     found = [pattern for pattern in FORBIDDEN_CLAIMS if re.search(pattern, PLAN, re.I)]
     assert found == [], f"L3 over-claims something false: {found}"
+    unqualified = _unqualified_allow_claims(PLAN)
+    assert unqualified == [], (
+        f"L3 claims the gate can allow without naming its --run condition: {unqualified}"
+    )
     assert "not a required CI check" in PLAN, (
         "the document no longer records that --release-gate is opt-in"
     )
@@ -274,11 +311,12 @@ def test_the_cited_run_limitation_is_opt_in_not_absolute() -> None:
 
 
 def test_the_document_states_the_cited_run_limitation() -> None:
-    """The most load-bearing sentence in the document.
+    """The most load-bearing sentence in the document, in its conditional shape.
 
-    A reader must know that the gate invoked from ``mayhem ci check`` can only
-    ever block and never allow: ``check_cmd`` never supplies a ``cited_run``, so
-    ``blocking_reasons`` always contains "no run is cited".
+    A reader must know how the gate invoked from ``mayhem ci check`` behaves on
+    both sides of ``--run``: without the flag ``blocking_reasons`` always
+    contains "no run is cited", so the gate can only ever block; with a cited
+    run that reason is lifted and the gate can allow.
     """
     assert _states_cited_run_limitation(PLAN), (
         "the document never states that check_cmd supplies no cited_run, so the "
@@ -411,6 +449,15 @@ def test_the_forbidden_claim_checker_bites() -> None:
             f"the checker for {pattern!r} does not bite on {_OVERCLAIMS[pattern]!r}"
         )
         assert re.search(pattern, PLAN, re.I) is None
+    # The allow-claim checker bites on an unqualified over-claim whose sentence
+    # shares every keyword with the honest conditional sentence — which is
+    # exactly why it is sentence logic and not one bare regex.
+    assert _unqualified_allow_claims(ALLOW_OVERCLAIM) == [ALLOW_OVERCLAIM], (
+        "the allow-claim checker did not bite on the unqualified over-claim"
+    )
+    assert _unqualified_allow_claims(ALLOW_HONEST) == [], (
+        "the allow-claim checker refuses the honest conditional sentence"
+    )
 
 
 def test_the_no_caller_checker_bites() -> None:
