@@ -724,7 +724,7 @@ class RunEngine:
         """Attach this run's refusing preflight gate; returns the engine.
 
         The additive attach point, and the same shape
-        :meth:`with_budget_guard` already has: ``build_run_engine`` is shared by
+        :meth:`with_budget_guard` already has: ``engine_for`` is shared by
         every CLI surface, so requiring each one to thread a keyword through would
         make preflight a per-surface decision. There is deliberately no sibling
         that removes it — no ``without_preflight_gate``, no ``skip_preflight``
@@ -804,7 +804,7 @@ PreflightRefusedError`, which carries both the report and the stop trigger.
 
         The additive attach point for callers that build a :class:`RunEngine`
         through a factory rather than by keyword — ``mayhem.cli.services``'s
-        ``build_run_engine`` is one, and the CLI's run path builds through it.
+        ``engine_for`` is one, and the CLI's run path builds through it.
         Configuring budgets must not require editing a constructor signature
         every caller shares, and it must not require a *global* either: there is
         no default guard, so a run nobody budgeted is unaffected.

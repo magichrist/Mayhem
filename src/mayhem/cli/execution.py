@@ -366,7 +366,7 @@ def resource_budget_guard(
     ``mayhem.cli.lifecycle`` executes a compiled plan at
     ``result = run_engine.execute(compiled.plan)``. Build the guard there and
     :func:`attach_resource_budget` it onto the engine it just built from
-    ``mayhem.cli.services.build_run_engine``; the admission check then runs
+    ``mayhem.cli.services.engine_for``; the admission check then runs
     inside ``execute`` before the run row is opened.
     """
     from mayhem.infra.budget_enforcement import RunBudgetGuard
@@ -388,7 +388,7 @@ def resource_budget_guard(
 def attach_resource_budget(engine: RunEngine, guard: RunBudgetGuard) -> RunEngine:
     """Attach ``guard`` to ``engine``; returns the engine.
 
-    The additive attach point. ``build_run_engine`` is shared by every CLI
+    The additive attach point. ``engine_for`` is shared by every CLI
     surface, so requiring each of them to thread a budget keyword through would
     make budgeting a per-surface decision; attaching after construction keeps it
     one decision at one place and leaves every surface that does not attach one

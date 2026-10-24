@@ -291,6 +291,85 @@ absorb the caller's ambient `MAYHEM_*` values. Commands that prepare a run also
 currently pin the environment layer's `log_level` to `INFO`; the other
 allowlisted values are not supplied by the current CLI path.
 
+## Bindings outside `mayhem.yaml`
+
+Two environment variables bind objects a run consults that no YAML file
+declares:
+
+| Variable | Binds | Read by |
+|----------|-------|---------|
+| `MAYHEM_GATE_WITNESSES` | The preflight gate's port witnesses | `mayhem.cli.app.run_gate` |
+| `MAYHEM_BUDGET_GUARD` | The run's resource budget guard | `mayhem.cli.app.run_budget_guard` |
+
+Both are read once at the CLI edge by
+[`src/mayhem/cli/app.py`](../src/mayhem/cli/app.py) — by nothing else, and in
+particular **not** by [`src/mayhem/config.py`](../src/mayhem/config.py). That is
+exactly why they appear here rather than in the reference above: this file is
+the authoritative checked-in summary of that loader (see [`README.md`](README.md)),
+the loader never reads these two names, and listing them among the allowlisted
+variables it does read would be wrong. `mayhem doctor` reports each variable's
+binding state — unset, or the spec it names and whether that spec resolves.
+
+Each variable holds an import spec of the form `module:attribute`, naming an
+attribute of an importable module. Both are unset by default: mayhem owns no
+incident manager, deployment feed, backup system, or replication peer, so it
+binds none of the five witnesses and no guard, and the run path is unchanged
+from before either binding existed.
+
+`MAYHEM_GATE_WITNESSES` accepts four shapes for the attribute:
+
+1. A `PreflightGate`, returned verbatim — a gate a deployment configured
+   itself is never rebuilt or widened.
+2. A `PreflightPorts` — the five ports `cluster`, `incident`, `deployment`,
+   `backup`, and `replication`.
+3. A mapping of witness name to witness, checked against those same five names
+   so a typo in a witness name is refused by name.
+4. A zero-argument callable returning any of the above.
+
+`MAYHEM_BUDGET_GUARD` accepts a `RunBudgetGuard`, or a callable taking this
+run's `run_id` and returning one:
+
+```bash
+MAYHEM_BUDGET_GUARD=your.module:budget_for_run
+```
+
+The factory receives the `run_id` — the run about to execute — rather than
+declaring one, because its budgets are scoped to the run it guards.
+
+Three promises govern both bindings; the full argument is the design block in
+[`src/mayhem/cli/execution.py`](../src/mayhem/cli/execution.py):
+
+1. **Binding is explicit, and it can only add.** Either variable can produce a
+   gate or a guard; neither can remove one a deployment bound in-process, narrow
+   one away, or switch off what a binding installed, and there is no second
+   spelling that gets past what a binding installed.
+2. **An empty binding is no gate, not a refusing one.** An attribute resolving
+   to `None`, or to a `PreflightPorts` with nothing bound, is the
+   *unconfigured* state: no gate is attached and the run behaves exactly as it
+   did before this lane existed. Attaching a gate over it instead would refuse
+   every run for five systems nobody can answer for.
+3. **A binding that cannot be loaded is refused loudly**, never degraded into
+   "no gate". A malformed spec, an unimportable module, a missing attribute, a
+   factory that raises, or an attribute of the wrong shape raises
+   `InvariantViolationError` before any store is touched — an operator who asked
+   for gating and silently got none would be told the safe thing is on when it
+   is off.
+
+[`src/mayhem/cli/witnesses.py`](../src/mayhem/cli/witnesses.py) is the shipped
+example. The starting point for an operator is the empty binding:
+
+```bash
+MAYHEM_GATE_WITNESSES=mayhem.cli.witnesses:empty_ports
+```
+
+`empty_ports` binds nothing and resolves to *no gate at all* — the
+unconfigured state — and is the right first binding to grow from: bind the
+ports you have real witnesses for and leave the rest unbound.
+**`unavailable_ports` refuses every run it is attached to**, by design and
+without exception; it is the shape to copy, not a configuration to deploy.
+Copy the module into your own package and replace each port with a witness for
+a system you actually own.
+
 ## Drill-spec projection
 
 A file with a top-level `kind: drill` is recognized as a drill spec, not a
