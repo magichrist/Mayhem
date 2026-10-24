@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from mayhem.domain.hashing import canonical_json
 
 if TYPE_CHECKING:
-    from mayhem.controller.approval_gate import ApprovalGateResult
+    from mayhem.domain.approval_gate_result import ApprovalGateResult
     from mayhem.domain.policy_gate import PolicyGateResult
     from mayhem.domain.runtime_context import RuntimeContext
 

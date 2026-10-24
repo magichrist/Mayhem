@@ -343,6 +343,13 @@ def test_fallback_version_is_a_dev_pin_not_a_release_pin(pyproject: dict) -> Non
 #:   cross-layer capability view moved from ``infra/catalog_report.py`` to
 #:   ``controller/catalog_report.py``, the only layer allowed to see the
 #:   executor, compensation, and k8s-runtime registries at once.
+#: * *Re-broken by the L2 run-close work and closed the same way* —
+#:   ``domain.preflight``'s ``approval_verdict`` annotation pulled
+#:   ``ApprovalGateResult`` up from ``controller.approval_gate``. The four
+#:   verdict value types moved down into ``mayhem.domain.approval_gate_result``
+#:   (a domain evidence carrier cannot annotate itself with a controller
+#:   type); the gate re-exports them under their historical names, so every
+#:   existing citation still resolves.
 #:
 #: The baseline stays so that a *new* violation fails loudly and a *fixed*
 #: contract asks you to acknowledge the change here.

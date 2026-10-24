@@ -353,7 +353,11 @@ def _install_compile_fakes(monkeypatch: pytest.MonkeyPatch, plan: Any) -> None:
             config_snapshot_id="cfg-abc",
             topology_snapshot_id="topo-abc",
             fingerprint="fp-123",
-            safety=SimpleNamespace(allow_critical_cli=True),
+            # Shaped like the real ``SafetyContext`` L2 built: the run-close
+            # verdicts the production ``build_preflight`` reads ride on this
+            # object, so a fake without ``gate_verdicts`` would raise
+            # `AttributeError` on exactly the field it exists to fake.
+            safety=SimpleNamespace(allow_critical_cli=True, gate_verdicts={}),
             recovery_grace=300.0,
         ),
     )
