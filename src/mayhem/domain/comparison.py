@@ -47,10 +47,11 @@ enforces politely; it is a value that cannot be constructed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -309,6 +310,26 @@ class RunPin(BaseModel):
         payload["label"] = self.label
         return payload
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> RunPin:
+        """Rebuild a pin from a stored payload.
+
+        ``label`` is derived from the pin's own fields, so it is dropped before
+        validation: the model forbids extra keys, and re-feeding a pin its own
+        label would reject the pin's own serialization. Everything else —
+        schema version, digest shape, field lengths — stays pydantic's to
+        enforce, once. The digest in particular is refused by the model itself;
+        a second check here would only be a second place for the rule to drift.
+
+        Honest limit: a malformed row surfaces as pydantic's ``ValidationError``,
+        not as a domain rule. A reader that must name the row it rejected reads
+        findings through :meth:`RegressionFinding.from_dict`, which does that
+        translation.
+        """
+        data = dict(payload)
+        data.pop("label", None)
+        return cls.model_validate(data)
+
 
 def equivalent_pins(baseline: RunPin, candidate: RunPin) -> bool:
     """True when two runs are comparable at all.
@@ -451,6 +472,34 @@ class MetricDelta:
             "reason": self.reason,
         }
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> MetricDelta:
+        """Rebuild one delta from a stored payload.
+
+        ``graded`` is a property, not a field, so it is dropped and recomputed:
+        a row asserting ``graded: true`` beside ``worse: null`` claims a
+        contradiction this class could never hold, and reading the claim back
+        would let the store have the last word on whether anything was graded.
+
+        Honest limit: a delta carries no validator, so this method trusts the
+        payload's types. It inverts :meth:`to_dict`; it does not audit the row.
+        """
+        return cls(
+            metric=payload["metric"],
+            kind=MetricKind(payload["kind"]),
+            unit=payload["unit"],
+            baseline=payload["baseline"],
+            candidate=payload["candidate"],
+            delta=payload["delta"],
+            delta_pct=payload["delta_pct"],
+            worse=payload["worse"],
+            improved=payload["improved"],
+            within_tolerance=payload["within_tolerance"],
+            tolerance_pct=payload["tolerance_pct"],
+            required_samples=payload["required_samples"],
+            reason=payload["reason"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DeltaReport:
@@ -536,6 +585,29 @@ class DeltaReport:
             "deltas": [delta.to_dict() for delta in self.deltas],
             "reasons": list(self.reasons),
         }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> DeltaReport:
+        """Rebuild a report from a stored payload.
+
+        ``scored`` and ``cited_runs`` are derived — from the outcome and from
+        the two pins — so they are dropped rather than read: a row asserting
+        ``scored: true`` for an ``incomparable`` outcome would carry a verdict
+        this class refuses to construct, and recomputing both leaves one source
+        of truth for them.
+
+        Honest limit: an outcome this build does not know raises ``ValueError``
+        from the enum, and a malformed pin raises pydantic's error; neither is
+        converted here. :meth:`RegressionFinding.from_dict` translates them
+        into a refusal that names the stored row instead.
+        """
+        return cls(
+            outcome=ComparisonOutcome(payload["outcome"]),
+            baseline=RunPin.from_dict(payload["baseline"]),
+            candidate=RunPin.from_dict(payload["candidate"]),
+            deltas=tuple(MetricDelta.from_dict(item) for item in payload["deltas"]),
+            reasons=tuple(payload["reasons"]),
+        )
 
 
 def compare(
@@ -770,3 +842,68 @@ class RegressionFinding:
             "regressed_metrics": list(self.regressed_metrics),
             "report": self.report.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> RegressionFinding:
+        """Rebuild a finding the store wrote, refusing a row that claims the impossible.
+
+        The outcome is judged here rather than left to ``__post_init__``
+        because the refusal is about *the stored row*: a row whose report says
+        ``unchanged`` was not mis-constructed by a caller, it is a persistence
+        defect, and the message has to say which row claimed what. Derived keys
+        — ``cited_runs`` and ``regressed_metrics`` — are not read at all; they
+        are re-derived from the report, so a row that disagrees with itself
+        cannot smuggle the disagreement back in.
+
+        Honest limit: the report is parsed twice — once to judge the row's own
+        claim, once to build it — and a wrong *shape* (missing keys, bad field
+        types) surfaces as ``comparison.finding_unreadable``, while a blank id
+        or summary keeps the constructor's own rules.
+        """
+        finding_id = payload.get("finding_id")
+        stored = payload.get("report")
+        if not isinstance(stored, Mapping):
+            raise InvariantViolationError(
+                "comparison.finding_unreadable",
+                f"stored finding {finding_id!r} carries no readable report: a finding "
+                "without the comparison it was opened from is a regression claim with "
+                "nothing to re-derive, check, or disprove",
+            )
+        raw_outcome = stored.get("outcome")
+        if not isinstance(raw_outcome, str):
+            raise InvariantViolationError(
+                "comparison.finding_unreadable",
+                f"stored finding {finding_id!r} carries outcome {raw_outcome!r}, "
+                "which is not the string this build writes: the vocabulary is "
+                "fixed, so a row written against a different one is refused "
+                "rather than guessed at",
+            )
+        try:
+            outcome = ComparisonOutcome(raw_outcome)
+        except ValueError as exc:
+            raise InvariantViolationError(
+                "comparison.finding_unreadable",
+                f"stored finding {finding_id!r} names outcome {raw_outcome!r}, which "
+                "this build cannot read: the vocabulary is fixed, so a row written "
+                "against a different one is refused rather than guessed at",
+            ) from exc
+        if outcome is not ComparisonOutcome.REGRESSED:
+            raise InvariantViolationError(
+                "comparison.finding_without_regression",
+                f"the stored row for finding {finding_id!r} claims outcome "
+                f"{outcome.value!r}: a finding is opened only from a regression, so a "
+                "row saying otherwise is a persistence defect and a false alarm the "
+                "triage queue would then have to disprove",
+            )
+        try:
+            return cls(
+                finding_id=payload["finding_id"],
+                report=DeltaReport.from_dict(stored),
+                summary=payload["summary"],
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise InvariantViolationError(
+                "comparison.finding_unreadable",
+                f"stored finding {finding_id!r} does not read back ({exc!r}): a row "
+                "must invert to the finding that was written, and this one does not",
+            ) from exc

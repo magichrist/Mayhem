@@ -90,6 +90,7 @@ weaker would let a lapsed claim be re-earned by asserting it.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -1287,6 +1288,52 @@ class ComparisonService:
             (finding_id,),
         )
         return dict(rows[0]) if rows else None
+
+    def finding_objects(self) -> tuple[RegressionFinding, ...]:
+        """Every stored finding rebuilt as the :class:`RegressionFinding` that wrote it.
+
+        Reads through :meth:`findings` rather than repeating its query, so the
+        ordering a reviewer reads in the table is the ordering the release gate
+        judges in, and exactly one place in this file knows the shape of
+        ``regression_findings``.
+
+        **The two accessors fail differently, and that is deliberate.**
+        :meth:`findings` is the *display* path: it hands the stored row to a
+        human inspecting the table, and a corrupt row is evidence there — it is
+        how you learn the persistence layer is broken. :meth:`finding_objects`
+        is the *decision* path: these objects are about to be weighed by
+        ``check_gate.release_gate``, and a row that cannot be rebuilt cannot be
+        weighed, so it is refused rather than skipped. The refusal is the
+        :class:`~mayhem.domain.errors.InvariantViolationError` that
+        :meth:`RegressionFinding.from_dict` raises, naming the offending row,
+        and the release stops. Skipping it would be the dangerous reading: a
+        row dropped quietly is a row the gate never saw, so the gate would pass a
+        release over a store it could not read.
+
+        Honest limits. It rebuilds from ``finding_json`` alone and does not
+        re-run the citation check :meth:`record_finding` makes on the way in, so
+        a finding whose runs were deleted since still reads back; re-deriving
+        that here would be a second rule and a second place for it to drift. And
+        the ``str``/``bytes``/``dict`` handling below tolerates drivers that
+        differ in whether they decode a JSON column for us — it is not a repair:
+        a body that is not a JSON object is refused by name, never coerced.
+        """
+        rebuilt: list[RegressionFinding] = []
+        for row in self.findings():
+            record = dict(row)
+            raw = record["finding_json"]
+            payload = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+            if not isinstance(payload, Mapping):
+                raise InvariantViolationError(
+                    "comparison_service.unreadable_finding_row",
+                    f"stored finding {record['finding_id']!r} holds a finding body of "
+                    f"type {type(payload).__name__} rather than a JSON object: a row "
+                    "that cannot be read back cannot be weighed by a release gate, "
+                    "and dropping it would judge a release over a store this reader "
+                    "could not read",
+                )
+            rebuilt.append(RegressionFinding.from_dict(payload))
+        return tuple(rebuilt)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
