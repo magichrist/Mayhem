@@ -46,6 +46,7 @@ checks compatibility only when its caller supplies a cell.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import click
@@ -96,6 +97,8 @@ def _refusal(ctx: click.Context, exc: Exception, payload: dict[str, Any] | None)
     if isinstance(exc, (MarketplaceError, TrustLabelError)):
         code = getattr(exc, "code", "marketplace.refused")
         message = f"refused [{code}]: {exc}"
+        if payload is not None:
+            payload = {**payload, "refusal_code": code, "refusal_message": str(exc)}
         if payload is not None and echo_machine(payload, as_json=True):
             ctx.exit(int(ExitCode.SAFETY_REFUSAL))
         click.echo(message, err=True)
@@ -487,4 +490,205 @@ def install_cmd(
     )
     click.echo("  integrity   observed bytes hash to the published digest")
     click.echo(f"  NOTE: {SIGNATURE_TRUST_NOTICE}")
+    ctx.exit(int(ExitCode.SUCCESS))
+
+
+# -- experiment templates (plan 18 Phase 3) -----------------------------------
+# ``template`` distributes versioned drill templates through the same catalogue
+# the artifacts use. Its rule is one line: a template's digest is the sha256 of
+# the canonical JSON of its ``drill_template`` (see
+# :func:`mayhem.domain.marketplace.template_content_digest`). The commands below
+# never plan, admit or run anything. ``instantiate`` prints the rendered drill
+# document; that document still goes through ``mayhem plan`` like an authored one.
+
+
+@marketplace.group("template")
+def template_group() -> None:
+    """Publish, list, and instantiate experiment templates."""
+
+
+def _load_template_file(path: str) -> Any:
+    """A template document from a YAML or JSON file, parsed but not yet validated."""
+    import yaml
+
+    from mayhem.domain.errors import DomainError
+
+    try:
+        with Path(path).open(encoding="utf-8") as handle:
+            return yaml.safe_load(handle)
+    except OSError as exc:
+        raise DomainError(f"cannot read template file {path!r}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise DomainError(f"template file {path!r} is not valid YAML or JSON: {exc}") from exc
+
+
+@template_group.command("digest")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def template_digest_cmd(ctx: click.Context, path: str, as_json: bool) -> None:
+    """Print the digest a template file's ``drill_template`` must declare."""
+    from mayhem.domain.marketplace import template_content_digest
+
+    document = _load_template_file(path)
+    body = document.get("drill_template") if isinstance(document, dict) else None
+    if not isinstance(body, dict):
+        _fail(ctx, f"{path}: no drill_template mapping to digest")
+        return
+    digest = template_content_digest(body)
+    payload = {"path": path, "digest": digest, "rule": "sha256(canonical_json(drill_template))"}
+    if _echo(payload, as_json):
+        ctx.exit(int(ExitCode.SUCCESS))
+    click.echo(digest)
+    ctx.exit(int(ExitCode.SUCCESS))
+
+
+@template_group.command("publish")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def template_publish_cmd(ctx: click.Context, path: str, db_opt: str | None, as_json: bool) -> None:
+    """Publish one template version. The declared digest must match its body."""
+    from mayhem.cli.services import open_store
+    from mayhem.domain.errors import DomainError
+    from mayhem.domain.marketplace import ExperimentTemplate
+    from mayhem.infra.marketplace_store import MarketplaceStore
+
+    try:
+        template = ExperimentTemplate.model_validate(_load_template_file(path))
+    except (DomainError, ValueError) as exc:
+        _refusal(ctx, exc, {"path": path, "refusal_message": str(exc)})
+        return
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        published = MarketplaceStore(store).publish_template(template)
+    except Exception as exc:
+        store.close()
+        payload = {
+            "template_id": template.template_id,
+            "version": template.version,
+            "digest": template.digest,
+            "signature_verification_implemented": False,
+            "notice": SIGNATURE_TRUST_NOTICE,
+        }
+        _refusal(ctx, exc, payload)
+        return
+    store.close()
+    payload = {
+        "template_id": published.template_id,
+        "version": published.version,
+        "digest": published.digest,
+        "registry_id": published.registry.registry_id,
+        "publisher_id": published.publisher.publisher_id,
+        "publisher_is_declared_only": True,
+        "signature_verification_implemented": False,
+        "notice": SIGNATURE_TRUST_NOTICE,
+    }
+    if _echo(payload, as_json):
+        ctx.exit(int(ExitCode.SUCCESS))
+    click.echo(f"published {published.template_id}@{published.version} digest {published.digest}")
+    click.echo(f"  NOTE: {SIGNATURE_TRUST_NOTICE}")
+    ctx.exit(int(ExitCode.SUCCESS))
+
+
+@template_group.command("list")
+@click.option("--template-id", default="", help="Only this template id.")
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def template_list_cmd(
+    ctx: click.Context, template_id: str, db_opt: str | None, as_json: bool
+) -> None:
+    """List published template versions, each re-verified against its digest."""
+    from mayhem.cli.services import open_store
+    from mayhem.infra.marketplace_store import MarketplaceError, MarketplaceStore
+
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        found = MarketplaceStore(store).templates(template_id=template_id)
+    except MarketplaceError as exc:
+        store.close()
+        _refusal(ctx, exc, None)
+        return
+    store.close()
+    rows = [
+        {
+            "template_id": item.template_id,
+            "version": item.version,
+            "digest": item.digest,
+            "registry_id": item.registry.registry_id,
+            "parameters": [p.name for p in item.parameters],
+        }
+        for item in found
+    ]
+    payload = {"templates": rows, "signature_verification_implemented": False}
+    if _echo(payload, as_json):
+        ctx.exit(int(ExitCode.SUCCESS))
+    if not rows:
+        click.echo("no templates published")
+    for row in rows:
+        click.echo(
+            f"{row['template_id']}@{row['version']}  {row['digest'][:12]}  {row['registry_id']}"
+        )
+    ctx.exit(int(ExitCode.SUCCESS))
+
+
+@template_group.command("instantiate")
+@click.argument("template_id")
+@click.option("--version", "version", required=True, help="Exact version; never floats.")
+@click.option(
+    "--set", "settings", multiple=True, metavar="NAME=VALUE", help="Fill one declared slot."
+)
+@click.option("--db", "db_opt", default=None, help="SQLite database path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def template_instantiate_cmd(
+    ctx: click.Context,
+    template_id: str,
+    version: str,
+    settings: tuple[str, ...],
+    db_opt: str | None,
+    as_json: bool,
+) -> None:
+    """Render one template version to a drill document (run it through ``mayhem plan``)."""
+    from mayhem.cli.services import open_store
+    from mayhem.domain.marketplace import render_template
+    from mayhem.infra.marketplace_store import MarketplaceError, MarketplaceStore
+
+    values: dict[str, str] = {}
+    for item in settings:
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            _fail(ctx, f"--set expects NAME=VALUE, got {item!r}")
+        values[name] = value
+    store = open_store(db_opt or _ctx(ctx).db)
+    try:
+        template = MarketplaceStore(store).template(template_id, version)
+    except MarketplaceError as exc:
+        store.close()
+        _refusal(ctx, exc, None)
+        return
+    store.close()
+    if template is None:
+        _fail(ctx, f"no template {template_id}@{version} is published")
+        return
+    try:
+        document = render_template(template, values)
+    except Exception as exc:
+        _refusal(ctx, exc, {"template_id": template_id, "version": version})
+        return
+    payload = {
+        "template_id": template_id,
+        "version": version,
+        "digest": template.digest,
+        "document": document,
+        "note": "a rendered document, not a plan: run it through mayhem plan",
+        "signature_verification_implemented": False,
+    }
+    if _echo(payload, as_json):
+        ctx.exit(int(ExitCode.SUCCESS))
+    import json as _json
+
+    click.echo(_json.dumps(document, indent=2, sort_keys=True))
     ctx.exit(int(ExitCode.SUCCESS))
