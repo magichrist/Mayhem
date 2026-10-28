@@ -71,6 +71,18 @@ scaffolding, not feature lanes.
 | 29_SECRETS_MANAGEMENT.md | feature | 13 | P0 |
 | 30_SAFETY_PROOF.md | feature | 27, 65 | P0 |
 
+Supporting guides (operator and author documents, not feature plans, and not
+counted in the phase arithmetic). Each is referenced by a plan above:
+
+| File | Kind | Companion to |
+| ---- | ---- | ------------ |
+| 09_identity_guide.md | operator guide | 09_IDENTITY_RBAC_APPROVALS.md |
+| 11_probe_catalogue.md | reference | 11_OBSERVABILITY_PROBES_STOP_CONDITIONS.md |
+| 16_ci_cookbook.md | operator guide | 16_CI_GITOPS_INTEGRATIONS.md |
+| 16_gitops_reference.md | reference | 16_CI_GITOPS_INTEGRATIONS.md |
+| 18_trust_labels.md | reference | 18_MARKETPLACE_CATALOG.md |
+| 20_ENTERPRISE_GUIDES.md | operator guide | 20_ENTERPRISE_PRODUCT_HARDENING.md |
+
 ## The absolute P0 list
 
 Before Mayhem is positioned as a production-market competitor:
@@ -145,12 +157,21 @@ documents in this directory carry one: 25 feature plans (01–23, 29, 30) and th
 above):
 
 * Most feature plans report **6 of 6 phases DONE**.
-* **Three phases are PARTIAL**, all three because they name a *live* acceptance
-  that has not run rather than because code is missing:
+* **Five phases are PARTIAL** after the release review. Most are a *live*
+  acceptance that has not run; the release review also found three that were
+  marked DONE while the code they describe is not reached by production:
+  * `02_KUBERNETES_RUNTIME.md` Phase 3 — the CRD translation library and the
+    kubectl client landed, but no controller process runs and the Helm chart is
+    a stub.
   * `02_KUBERNETES_RUNTIME.md` Phase 4 — no DaemonSet agent transport, no live
     controller-kill recovery. (Its verifier gap is closed.)
   * `02_KUBERNETES_RUNTIME.md` Phase 5 — the fake half landed; the first
     live-cluster cells are plan 01's.
+  * `17_EXTENSION_SDK_PROVIDER_PROTOCOL.md` Phase 4 — the provider charge seam
+    exists, but no production run constructs it and lease persistence is not
+    wired.
+  * `18_MARKETPLACE_CATALOG.md` Phase 3 — template and scenario-pack
+    distribution has not landed.
   * `20_ENTERPRISE_PRODUCT_HARDENING.md` Phase 4 — the walkthrough harness is
     proven with fakes; live IdP, a human approver, a container runtime, and a
     live Helm install remain open by construction.
