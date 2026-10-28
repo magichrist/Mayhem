@@ -2642,6 +2642,41 @@ M0038_POLICY_BUNDLES = Migration(
 )
 
 
+M0040_MARKETPLACE_TEMPLATES = Migration(
+    version=40,
+    name="marketplace_templates",
+    statements=(
+        # Plan 18 Phase 3's template distribution. One row per template version,
+        # keyed by ``(template_id, version)``: a second publish of the same version
+        # with different bytes is an IntegrityError, never a silent replacement,
+        # so a version that was ever pinned keeps naming the bytes it named.
+        # ``digest`` is the sha256 of the canonical JSON of ``drill_template``
+        # (:func:`mayhem.domain.marketplace.template_content_digest`), checked as a
+        # shape here and as a value on every read.
+        """
+        CREATE TABLE marketplace_templates (
+            template_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            digest TEXT NOT NULL CHECK (
+                length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*'
+            ),
+            registry_id TEXT NOT NULL,
+            publisher_id TEXT NOT NULL,
+            template_json TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            PRIMARY KEY (template_id, version),
+            CHECK (instr(template_id, char(31)) = 0)
+        )
+        """,
+        "CREATE INDEX marketplace_templates_by_digest ON marketplace_templates (digest)",
+    ),
+    down_statements=(
+        "DROP INDEX marketplace_templates_by_digest",
+        "DROP TABLE marketplace_templates",
+    ),
+)
+
+
 ALL_MIGRATIONS: tuple[Migration, ...] = (
     M0001_INITIAL,
     M0002_LEASE_CONTEXT,
@@ -2774,4 +2809,5 @@ ALL_MIGRATIONS: tuple[Migration, ...] = (
     # and are written by this lane; the two agree through a single transaction
     # in ``infra/evidence_signing.py::SignatureRepository``.
     M0039_EVIDENCE_SIGNATURES,
+    M0040_MARKETPLACE_TEMPLATES,
 )
