@@ -9,7 +9,8 @@ against `grep -l "^## STATUS" docs/v1.1.0/*.md`.)*
 
 ## What this package is, and is not
 
-The v1.1.0 program reports ~~22 of 24~~ **23 of 25** plans at 6 of 6 phases.
+The v1.1.0 program reports ~~22 of 24~~ ~~23 of 25~~ **21 of 25** plans at 6 of 6 phases.
+*(Corrected in the release review: 02, 17, 18 and 20 are no longer at 6 of 6.)*
 *(Corrected — the counts this sentence first carried were written when fewer
 plans existed; the plan set is now the 25 feature plans (01–23, 29, 30) and each
 plan's own `Overall:` line is the arithmetic, enforced by
