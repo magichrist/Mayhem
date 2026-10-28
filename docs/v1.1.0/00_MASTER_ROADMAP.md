@@ -109,8 +109,12 @@ open is the part a unit test cannot reach.
   (including the experiment template type), CI/GitOps integrations, topology and
   resilience analytics, and coverage/regression.
 
-**Open, precisely:** `02_KUBERNETES_RUNTIME.md` Phases 4 and 5,
-`20_ENTERPRISE_PRODUCT_HARDENING.md` Phase 4 — every one of them waiting on a
-cluster, an IdP, a human, or a container runtime, not on missing code.
+**Open, precisely:** `02_KUBERNETES_RUNTIME.md` Phases 3, 4 and 5,
+`17_EXTENSION_SDK_PROVIDER_PROTOCOL.md` Phase 4,
+`18_MARKETPLACE_CATALOG.md` Phase 3, and `20_ENTERPRISE_PRODUCT_HARDENING.md`
+Phase 4. The 02 Phase 4 and 5 and 20 Phase 4 items wait on a cluster, an IdP, a
+human, or a container runtime. The 02 Phase 3, 17 Phase 4 and 18 Phase 3 items are
+code that exists but is not reached by production: the controller process, the
+provider run-path wiring and lease persistence, and template distribution.
 Program scaffolding. Becomes authoritative as feature lanes open and
 each file's STATUS block starts moving.
