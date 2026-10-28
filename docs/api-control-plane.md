@@ -35,7 +35,7 @@ Stated first, because the omissions are the ones a reader would otherwise assume
 | TLS, HSTS, CORS | A WSGI callable is an application protocol, not a security control. Terminate TLS in front of it. CORS is **default-deny**: no `Access-Control-Allow-Origin` is emitted. |
 | A browser bundle or an SPA | No Node, no bundler, no lockfile in this repository. Server-rendered HTML is the whole UI, and it is a real, runnable, tested UI. |
 | An approval *write* endpoint | There is no `mayhem approve` command in the single inventory for one to map to. Approvals are readable over HTTP and writable nowhere over HTTP. |
-| `mayhem api serve` on the CLI | The function exists and works (`mayhem.controller.api_http.serve`); binding a network listener is a deployment action with a security surface, and putting it behind a one-word flag next to a command that prints a route table is how it gets bound by accident. |
+| `mayhem api serve` is loopback-only | `mayhem api serve` binds `127.0.0.1`, `::1` or `localhost` only, and refuses any other host by name. It requires `MAYHEM_AUTH_PEPPER` (no default). The server is single-threaded, speaks HTTP/1.0 and has no TLS or rate limit, so it is a development server. Remote exposure needs a reverse proxy with TLS, which this build does not provide. |
 | Signature verification | `mayhem.providers.pack.SIGNATURE_VERIFICATION_IMPLEMENTED` is `False`. A sealed evidence envelope proves **which bytes were sealed**, never **who sealed them**. Nothing in plan 08 changes that. |
 
 ## The authorization model
