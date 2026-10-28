@@ -200,6 +200,7 @@ from mayhem.domain.marketplace import (
     ArtifactClass,
     DeprecationNotice,
     DigestCheckState,
+    ExperimentTemplate,
     RegistryFederation,
     RegistryRef,
     Revocation,
@@ -214,6 +215,7 @@ from mayhem.domain.marketplace import (
     matching_certifications,
     pending_revocations,
     require_trust_label,
+    template_content_digest,
     trust_label,
 )
 from mayhem.domain.provider import ProviderError
@@ -298,6 +300,7 @@ ACTIVITY_INSTALL_REFUSED = "marketplace.install.refused"
 ACTIVITY_ARTIFACT_REVOKED = "marketplace.artifact.revoked"
 ACTIVITY_TRUST_PUBLISHER = "marketplace.trust.publisher"
 ACTIVITY_FEDERATION_CLOSED = "marketplace.federation.closed"
+ACTIVITY_TEMPLATE_PUBLISHED = "marketplace.template.published"
 
 MARKETPLACE_ACTIVITY_KINDS: Final[tuple[str, ...]] = (
     ACTIVITY_ARTIFACT_PUBLISHED,
@@ -309,6 +312,7 @@ MARKETPLACE_ACTIVITY_KINDS: Final[tuple[str, ...]] = (
     ACTIVITY_ARTIFACT_REVOKED,
     ACTIVITY_TRUST_PUBLISHER,
     ACTIVITY_FEDERATION_CLOSED,
+    ACTIVITY_TEMPLATE_PUBLISHED,
 )
 
 #: Prefix on every marketplace activity id and manifest id. One namespace in
@@ -1287,6 +1291,129 @@ class MarketplaceStore:
             (artifact_id,),
         )
         return tuple(str(row[0]) for row in rows)
+
+    # -- experiment templates (plan 18 Phase 3) -------------------------------
+
+    def publish_template(
+        self,
+        template: ExperimentTemplate,
+        *,
+        now: datetime | None = None,
+        principal: str = "",
+    ) -> ExperimentTemplate:
+        """Distribute one template version. Idempotent for identical bytes.
+
+        The declared digest must equal the digest of the template's own
+        ``drill_template``; a mismatch is refused before any write. Republishing a
+        version with the same bytes is a no-op that seals nothing new. Republishing
+        it with *different* bytes is refused, because a version that was ever
+        published keeps naming the bytes it named.
+        """
+        actual = template_content_digest(template.drill_template)
+        if actual != template.digest:
+            raise MarketplaceError(
+                "marketplace.template.digest_mismatch",
+                f"{template.template_id}@{template.version} declares digest "
+                f"{template.digest} but its drill_template hashes to {actual}; "
+                "the template was edited after its digest was computed",
+            )
+        stamp = _stamp(now)
+        with self._store.write() as conn:
+            existing = conn.execute(
+                "SELECT digest FROM marketplace_templates WHERE template_id = ? AND version = ?",
+                (template.template_id, template.version),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) == template.digest:
+                    return template
+                raise MarketplaceError(
+                    "marketplace.template.version_conflict",
+                    f"{template.template_id}@{template.version} is already published with "
+                    f"digest {existing[0]}; publish a new version rather than replacing "
+                    "the bytes a version names",
+                )
+            conn.execute(
+                "INSERT INTO marketplace_registries "
+                "(registry_id, display_name, scope, organization, federates_with_json, "
+                " registry_json, created_at) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(registry_id) DO NOTHING",
+                _registry_row(template.registry, stamp),
+            )
+            conn.execute(
+                "INSERT INTO marketplace_templates "
+                "(template_id, version, digest, registry_id, publisher_id, template_json, "
+                " published_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    template.template_id,
+                    template.version,
+                    template.digest,
+                    template.registry.registry_id,
+                    template.publisher.publisher_id,
+                    template.model_dump_json(),
+                    stamp,
+                ),
+            )
+        self.seal_activity(
+            ACTIVITY_TEMPLATE_PUBLISHED,
+            subject=f"{template.template_id}@{template.version}",
+            payload={
+                "template_id": template.template_id,
+                "version": template.version,
+                "digest": template.digest,
+                "registry_id": template.registry.registry_id,
+                "publisher_id": template.publisher.publisher_id,
+                "publisher_is_declared_only": True,
+                "signature_verification_implemented": False,
+                "notice": SIGNATURE_TRUST_NOTICE,
+                "principal": principal,
+            },
+            now=now,
+        )
+        return template
+
+    def template(self, template_id: str, version: str) -> ExperimentTemplate | None:
+        """One published template version, re-verified against its digest on read.
+
+        The stored bytes are re-hashed here. A row whose ``drill_template`` no
+        longer hashes to its recorded digest is refused by name: a template that
+        was altered in the store must not be instantiated as if it were the one
+        published.
+        """
+        rows = self._store.query(
+            "SELECT template_json FROM marketplace_templates WHERE template_id = ? AND version = ?",
+            (template_id, version),
+        )
+        if not rows:
+            return None
+        template = ExperimentTemplate.model_validate_json(str(rows[0][0]))
+        actual = template_content_digest(template.drill_template)
+        if actual != template.digest:
+            raise MarketplaceError(
+                "marketplace.template.digest_mismatch",
+                f"stored {template_id}@{version} hashes to {actual}, not its recorded "
+                f"digest {template.digest}; the stored template was altered",
+            )
+        return template
+
+    def templates(self, *, template_id: str = "") -> tuple[ExperimentTemplate, ...]:
+        """Every published template version, optionally narrowed to one id."""
+        if template_id:
+            rows = self._store.query(
+                "SELECT template_id, version FROM marketplace_templates "
+                "WHERE template_id = ? ORDER BY template_id, version",
+                (template_id,),
+            )
+        else:
+            rows = self._store.query(
+                "SELECT template_id, version FROM marketplace_templates "
+                "ORDER BY template_id, version",
+            )
+        found: list[ExperimentTemplate] = []
+        for row in rows:
+            loaded = self.template(str(row[0]), str(row[1]))
+            if loaded is not None:
+                found.append(loaded)
+        return tuple(found)
 
     # -- certifications -------------------------------------------------------
 
