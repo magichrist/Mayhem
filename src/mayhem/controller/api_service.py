@@ -767,12 +767,14 @@ class ApiGateway:
         mutation: MutationPort | None = None,
         routes: Sequence[Route] = ROUTES,
         request_id: Callable[[], str] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
         self._db = store.store
         self._auth = auth
         self._identity = identity
         self._now = now
+        self._clock = clock
         self._mutation = mutation
         self._routes = tuple(routes)
         self._request_id = request_id or (lambda: "")
@@ -892,6 +894,10 @@ class ApiGateway:
     def dispatch(self, request: ApiRequest) -> ApiResponse:
         """Answer one request.
 
+        A gateway built with ``clock`` reads a fresh instant for every request,
+        so a long-running server does not freeze its session expiry at startup.
+        A gateway built with a fixed ``now`` keeps it, which is what tests rely on.
+
         The order below is the contract and is not rearranged for convenience:
         resolve, authenticate, authorize, then parse. Everything after
         authorization is unreachable for a principal that does not hold the
@@ -903,6 +909,8 @@ class ApiGateway:
         discloses nothing that the public reference does not already say.
         """
         request_id = self._request_id()
+        if self._clock is not None:
+            self._now = self._clock()
         try:
             route, params = self._resolve(request)
             if route.required_role is None:
