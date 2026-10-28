@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 mayhem = "mayhem.cli.app:main"
 mayhem-agent = "mayhem.agent.cli:app"
+kubectl-mayhem = "mayhem.cli.k8s_plugin:main"
 
 [dependency-groups]
 dev = [
