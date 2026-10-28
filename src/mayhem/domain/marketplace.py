@@ -96,9 +96,11 @@ from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mayhem.domain.attestation import canonical_event_json
 from mayhem.domain.certification import CertificationRecord, CertificationState
 from mayhem.domain.errors import DomainError, InvariantViolationError
 from mayhem.domain.experiments import DrillSpec
+from mayhem.domain.hashing import sha256_hex
 from mayhem.domain.provider import ProviderPermission
 from mayhem.domain.secrets import require_no_literal_credentials
 
@@ -1677,6 +1679,20 @@ def unfilled_placeholders(document: object) -> tuple[str, ...]:
         for item in document:
             found.extend(name for name in unfilled_placeholders(item) if name not in found)
     return tuple(found)
+
+
+def template_content_digest(drill_template: Mapping[str, Any]) -> str:
+    """The digest a template's bytes are held to: sha256 of its canonical JSON.
+
+    The bytes are the ``drill_template`` document and nothing else. The declared
+    parameters, publisher, licence and changelog are metadata about the template
+    and are deliberately outside the digest, so a republished changelog cannot
+    change what a pinned digest verifies. The canonical form is the one plan 12
+    seals events with (:func:`~mayhem.domain.attestation.canonical_event_json`):
+    sorted keys, no whitespace, NFC-normalised, and a NaN or infinity raises rather
+    than hashing a value nobody can reproduce.
+    """
+    return sha256_hex(canonical_event_json(dict(drill_template)))
 
 
 def template_parameters(template: ExperimentTemplate) -> tuple[str, ...]:
