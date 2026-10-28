@@ -150,7 +150,7 @@ ACTIVE_GROUP_PATHS = {
     "advisor": ("dashboard", "replay", "scenario", "submit"),
     "boundary": ("report", "review"),
     "risk-preview": ("nodes", "plan"),
-    "api": ("openapi", "pages", "parameters", "routes", "ui"),
+    "api": ("openapi", "pages", "parameters", "routes", "serve", "ui"),
     "lowlevel": ("admit", "explain", "primitives"),
     "probe": ("build", "catalogue", "condition", "connectors", "tolerances", "uncover"),
     "schedule": (
@@ -179,7 +179,7 @@ ACTIVE_GROUP_PATHS = {
     # Plan 18 Phase 3's marketplace surface and plan 20 Phase 3's enterprise
     # admin surface: one row per leaf, like every other group, so a new verb
     # added later fails here rather than appearing untested.
-    "marketplace": ("inspect", "install", "list", "search"),
+    "marketplace": ("inspect", "install", "list", "search", "template"),
     "enterprise": ("compliance-map", "walkthrough"),
     "sandbox": ("down", "status", "up"),
     "support-bundle": ("build",),
