@@ -100,7 +100,7 @@ def test_the_group_is_one_group_of_read_only_commands() -> None:
     import click
 
     assert isinstance(api, click.Group)
-    assert sorted(api.commands) == ["openapi", "pages", "parameters", "routes", "ui"]
+    assert sorted(api.commands) == ["openapi", "pages", "parameters", "routes", "serve", "ui"]
 
 
 def test_every_command_is_read_only() -> None:
@@ -133,6 +133,10 @@ def test_every_command_is_read_only() -> None:
             for token in (*param.opts, *param.secondary_opts)
             if token.startswith("--")
         }
+        if name == "serve":
+            # The one exception, and it is named: ``serve`` binds a loopback socket
+            # and reads the database. Its transport options cannot write a record.
+            presentation |= {"--host", "--port", "--db"}
         assert options <= presentation, (
             f"{name} declares {sorted(options - presentation)}, which is not a presentation flag"
         )
