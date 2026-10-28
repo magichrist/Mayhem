@@ -24,22 +24,19 @@ somewhere else in the repository:
   rendered from the command line, and it is also how a reviewer looks at a page
   without standing up a server.
 
-Not here
---------
+``serve``
+-----------
 
-``mayhem api serve`` is **not** in this module's command list, and that is
-deliberate. :func:`mayhem.controller.api_http.serve` exists and works — the
-end-to-end test drives a real socket through it — but binding a network listener
-is a deployment action with a security surface (no TLS, no rate limit, no
-threading, as that function's own docstring says), and putting it behind a
-one-word CLI flag in the same command that prints a route table is how it gets
-bound by accident. Wiring it up is the CLI inventory owner's change; the exact
-call is one line and the function is public.
+``mayhem api serve`` binds :func:`mayhem.controller.api_http.serve` on a loopback
+address only (``127.0.0.1``, ``::1``, ``localhost``). Any other host is refused
+by name, because this build's server has no TLS, no rate limit and one thread.
+The credential pepper is read from ``MAYHEM_AUTH_PEPPER`` and is required; there
+is no default. The gateway is built with a per-request clock so session expiry
+is not frozen at startup.
 
-Nothing in this module mutates a control-plane record. Every subcommand is a read
-or a renderer. ``serve`` is absent for the same reason the plan's rollout puts
-mutations behind approval gates: a surface that only reads is a surface whose
-worst mistake is a wrong sentence.
+Nothing in this module mutates a control-plane record. Every subcommand except
+``serve`` is a read or a renderer. ``serve`` only answers requests the existing
+authorization model already gates.
 """
 
 from __future__ import annotations
@@ -47,7 +44,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import click
 
@@ -239,3 +236,73 @@ def ui() -> None:
 
     for entry in ui_pages():
         click.echo(f"  {entry['page']:<18} {entry['summary']}")
+
+
+#: Hosts ``api serve`` will bind. Anything else is refused by name: this build's
+#: server has no TLS, no rate limit and one thread, so it is a loopback tool.
+LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"127.0.0.1", "::1", "localhost"})
+
+#: The environment variable the credential pepper is read from. There is no
+#: default pepper: a default would be a shared secret in the source tree.
+PEPPER_ENV: Final = "MAYHEM_AUTH_PEPPER"
+
+
+@api.command("serve")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Loopback address only.")
+@click.option("--port", default=8787, show_default=True, type=click.IntRange(1, 65535))
+@click.option(
+    "--db", "db_opt", default=None, help="Control-plane database (default: the root --db)."
+)
+@click.pass_context
+def serve(ctx: click.Context, host: str, port: int, db_opt: str | None) -> None:
+    """Serve the /api/v1 control plane on a loopback address.
+
+    A development server: single-threaded, no TLS, no rate limit. The pepper that
+    verifies local credentials is read from ``MAYHEM_AUTH_PEPPER`` and is required.
+    """
+    import os
+
+    from mayhem.cli.context import CliContext
+    from mayhem.cli.services import open_store
+    from mayhem.controller.api_http import serve as http_serve
+    from mayhem.controller.api_service import ApiGateway
+    from mayhem.controller.auth_service import AuthService
+    from mayhem.domain.common import utc_now
+    from mayhem.infra.api_store import ApiStore
+    from mayhem.infra.identity_store import IdentityStore
+
+    if host not in LOOPBACK_HOSTS:
+        raise click.UsageError(
+            f"refusing to bind {host!r}: api serve binds loopback only in this build "
+            f"({', '.join(sorted(LOOPBACK_HOSTS))})"
+        )
+    pepper = os.environ.get(PEPPER_ENV, "")
+    if not pepper:
+        raise click.UsageError(
+            f"{PEPPER_ENV} is not set: api serve needs a credential pepper and has no default"
+        )
+    obj = ctx.obj
+    db = db_opt or (obj.db if isinstance(obj, CliContext) else "mayhem.db")
+    store = open_store(db)
+    try:
+        identities = IdentityStore(store)
+        auth = AuthService(identities, pepper=pepper.encode("utf-8"), clock=utc_now)
+        gateway = ApiGateway(
+            store=ApiStore(store),
+            auth=auth,
+            identity=identities,
+            now=utc_now(),
+            clock=utc_now,
+        )
+        server = http_serve(gateway, host=host, port=port)
+        click.echo(
+            f"serving /api/v1 on http://{host}:{port} (loopback, development server, no TLS)"
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            click.echo("stopped")
+        finally:
+            server.server_close()
+    finally:
+        store.close()
