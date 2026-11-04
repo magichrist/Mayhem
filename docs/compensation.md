@@ -45,42 +45,64 @@ drive undo, recovery, and verification.
 
 ## Template table (wired in `_TEMPLATES`)
 
-| fault id                   | undo strategy                                        | verify strategy                    |
-|----------------------------|------------------------------------------------------|------------------------------------|
-| `net.packet_loss`          | `tc qdisc del` leaving the target intact             | tc chain absent                    |
-| `net.bandwidth`            | `tc qdisc del`                                       | tc chain absent                    |
-| `net.partition`            | container engine network disconnect                  | connectivity restored              |
-| `net.load`                 | host k6 SIGKILL + `rm` of marker script/pid         | host markers absent                |
-| `http.latency`             | proxy kill + nat REDIRECT delete + marker removal    | pidfile absent + rule absent       |
-| `http.error_injection`     | probability <100: iptables REJECT rule delete; else proxy tear-down | rule absent / pidfile absent |
-| `mem.exhaust`              | payload SIGKILL (marker pid)                         | pidfile absent                     |
-| `mem.leak`                 | payload SIGKILL (marker pid)                         | pidfile absent                     |
-| `cpu.saturate`             | payload SIGKILL (marker pid)                         | pidfile absent                     |
-| `cpu.throttle`             | engine `update --cpus` restore                       | engine state restored              |
-| `fs.fill`                  | payload SIGKILL + `rm` of all marker siblings        | pidfile + siblings absent          |
-| `fs.inode_exhaust`         | payload SIGKILL + `rm` of all marker siblings        | pidfile + siblings absent          |
-| `fs.io_stress`             | payload SIGKILL + `rm` of all marker siblings        | pidfile + siblings absent          |
-| `fd.exhaust`               | payload SIGKILL (marker pid)                         | pidfile absent                     |
-| `db.connection_exhaust`    | proxy kill + REDIRECT delete (native proxy to host)  | pidfile absent + rule absent       |
-| `db.query_error`           | `iptables` REJECT delete (connectivity shell today)  | rule absent                        |
-| `db.slow_query`            | `iptables` DROP delete (connectivity shell today)    | rule absent                        |
-| `dns.timeout`              | pulsing rule removal (marker-suffixed)               | iptables rule absent               |
-| `dns.servfail`             | pulsing REJECT removal                              | iptables rule absent               |
-| `dns.nxdomain`             | resolv.conf restore (file revert)                    | file restored                      |
-| `tls.certificate_expired`  | ca-certificates file revert                          | file restored                      |
-| `tls.handshake_failure`    | REJECT rule delete                                   | rule absent                        |
-| `clock.skew`               | engine clock restore                                 | engine state restored              |
-| `dependency.block`         | iptables DROP delete                                 | rule absent                        |
-| `dependency.timeout`       | tc netem delay delete                                | tc chain absent                    |
-| `dependency.flap`          | pulsing REJECT rule removal (marker-suffixed)        | iptables rule absent               |
-| `dependency.rate_limit`    | proxy kill + REDIRECT delete + marker removal        | pidfile absent + rule absent       |
-| `dependency.connection_refuse` | iptables REJECT delete (`icmp-port-unreachable`) | rule absent                         |
-| `net.connection_reset`        | iptables REJECT delete (`tcp-reset`)              | rule absent                         |
-| `net.connection_refuse`       | iptables REJECT delete (`icmp-port-unreachable`)  | rule absent                         |
-| `net.reorder`                 | `tc qdisc del` (netem reorder)                    | tc chain absent                     |
-| `net.duplicate`               | `tc qdisc del` (netem duplicate)                  | tc chain absent                     |
-| `fs.read_only`                | `mount -o remount,rw` restore                     | write-probe succeeds                |
-| `process.crash_loop`          | engine `start` restore                            | engine state restored               |
+| fault id | undo strategy | verify strategy |
+|---|---|---|
+| `proc.pause` | `signal.cont` on the live pid | `ps -p <pid>` — process must be present |
+| `process.stop` | no-op (pid is gone) | process probe, `expect_present=false` — pid must be gone |
+| `process.kill` | no-op (pid is gone) | process probe, `expect_present=false` — pid must be gone |
+| `net.packet_loss` | `tc qdisc del` (netem loss) | tc chain absent |
+| `net.bandwidth` | `tc qdisc del` (tbf) | tc chain absent |
+| `net.partition` | `tc qdisc add dev eth0 root netem loss 100%`; undo deletes the root qdisc | tc chain absent |
+| `net.load` | host k6 SIGKILL + `rm` of marker script/pid | host exec: marker script and k6 pidfile absent |
+| `http.latency` | in-container proxy kill + nat REDIRECT delete + marker removal | pidfile + port marker + nat rule absent |
+| `http.error_injection` | `probability < 1.0`: iptables REJECT rule delete; `probability >= 1.0`: proxy tear-down | rule absent / pidfile absent |
+| `http.upstream_timeout` | proxy kill + nat REDIRECT delete + marker removal | pidfile + rule absent |
+| `app.response_5xx` | same as `http.error_injection` (delegates to it) | same as `http.error_injection` |
+| `mem.exhaust` | payload SIGKILL (marker pid) + `rm` of marker | marker pidfile absent |
+| `mem.leak` | payload SIGKILL (marker pid) + `rm` of marker | marker pidfile absent |
+| `cpu.saturate` | payload SIGKILL (marker pid) + `rm` of marker | marker pidfile absent |
+| `cpu.throttle` | engine `update --cpus` restore (cap lifted to unlimited) | engine exec `true` (no container check) |
+| `fs.fill` | payload SIGKILL (marker pid) + `rm` of all `marker.*` siblings | marker pidfile absent |
+| `fs.inode_exhaust` | payload SIGKILL (marker pid) + `rm` of all `marker.*` siblings | marker pidfile absent |
+| `fs.io_stress` | payload SIGKILL (marker pid) + `rm` of all `marker.*` siblings | marker pidfile absent |
+| `fs.quota` | payload SIGKILL (marker pid) + `rm` of all `marker.*` siblings | marker pidfile absent |
+| `fs.write_delay` | payload SIGKILL (marker pid) + `rm` of all `marker.*` siblings | marker pidfile absent |
+| `fd.exhaust` | payload SIGKILL (marker pid) | marker pidfile absent |
+| `process.thread_exhaust` | payload SIGKILL (marker pid) | marker pidfile absent |
+| `process.child_exhaust` | payload SIGKILL (marker pid) | marker pidfile absent |
+| `net.conn_exhaust` | payload SIGKILL (marker pid) + `rm` of marker + `.src` | marker pid + `.src` absent |
+| `load.spike` | payload SIGKILL (marker pid) | marker pidfile absent |
+| `fuzz.protocol_abuse` | payload SIGKILL (marker pid) | marker pidfile absent |
+| `db.connection_exhaust` | payload SIGKILL (marker pid) + `rm` of marker + `.src` | marker pid + `.src` absent |
+| `db.query_error` | iptables REJECT/DROP delete (mode-dependent) or pulsing rule removal | iptables rule absent / pulse pid + rule absent |
+| `db.slow_query` | tc port netem delay delete or iptables DROP delete | tc chain absent / iptables rule absent |
+| `dns.resolve_delay` | `/etc/resolv.conf` restore from backup marker | backup marker absent |
+| `dns.nxdomain` | `/etc/hosts` restore from backup marker (appends `<address> <domain>`, restores original on undo) | backup marker absent |
+| `dns.timeout` | pulsing iptables DROP rule removal (udp/53) | pulse pidfile absent + iptables rule absent |
+| `dns.servfail` | pulsing iptables REJECT rule removal (udp/53) | pulse pidfile absent + iptables rule absent |
+| `tls.certificate_expired` | `/etc/ssl/certs/ca-certificates.crt` restore from backup | backup marker absent |
+| `tls.handshake_failure` | iptables REJECT rule delete (tcp-reset, port 443) | iptables rule absent |
+| `clock.skew` | `date` restore from epoch marker | marker file absent |
+| `dependency.block` | iptables DROP rule delete | iptables rule absent |
+| `dependency.timeout` | `tc qdisc del` (netem delay) | tc chain absent |
+| `dependency.flap` | pulsing iptables DROP rule removal | pulse pidfile absent + iptables rule absent |
+| `dependency.rate_limit` | proxy kill + nat REDIRECT delete + marker removal | pidfile + rule absent |
+| `dependency.connection_refuse` | iptables REJECT rule delete (icmp-port-unreachable) | iptables rule absent |
+| `net.connection_reset` | iptables REJECT rule delete (tcp-reset) | iptables rule absent |
+| `net.connection_refuse` | iptables REJECT rule delete (icmp-port-unreachable) | iptables rule absent |
+| `net.reorder` | `tc qdisc del` (netem reorder) | tc chain absent |
+| `net.duplicate` | `tc qdisc del` (netem duplicate) | tc chain absent |
+| `net.interface_down` | `ip link set dev <device> up` + prove `state UP` | `ip link show` reports `state UP` |
+| `net.mtu_mismatch` | MTU restored from marker file + marker removed | MTU marker absent |
+| `net.tcp_half_open` | iptables rule delete (SYN/ACK DROP) | iptables rule absent |
+| `fs.read_only` | `mount -o remount,rw` + write-probe touch/rm | write-probe succeeds (touch + rm marker) |
+| `fs.corrupt` | original file restored from `<path>.mayhem-orig` backup | backup marker absent |
+| `process.crash_loop` | engine `start` (restores container to running) | engine exec `true` (no container check) |
+| `process.restart_delay` | engine `start` | engine exec `true` (no container check) |
+| `container.kill` | engine `start` | engine exec `true` (no container check) |
+| `container.restart` | engine `start` | engine exec `true` (no container check) |
+| `container.pause` | engine `unpause` | engine exec `true` (no container check) |
+| `node.service_stop` | engine `start` | engine exec `true` (no container check) |
 
 ## Routing overrides keep argv-pair faults off the payload track
 
@@ -97,15 +119,15 @@ lease round-trip.
 ## `http.error_injection` dual personality at plan time
 
 `http.error_injection` is parameterized by `probability`. At plan time the
-template picks one of two implementations on the same marker conventions:
+template picks one of two implementations:
 
-- `probability < 100` → legacy iptables `REJECT` on `OUTPUT` (synchronous,
-  no proxy); undo deletes the rule.
-- `probability == 100` (default) → in-container python proxy + `nat OUTPUT
-  REDIRECT`; undo kills the proxy pid, deletes the rule, removes markers.
+- `probability < 1.0` (default is `0.0`) → legacy iptables `REJECT` with
+  `tcp-reset` on `OUTPUT` (synchronous, no proxy); undo deletes the rule.
+- `probability >= 1.0` → in-container python proxy + `nat OUTPUT REDIRECT`;
+  undo kills the proxy pid, deletes the rule, removes markers.
 
-Both branches share the same verify helper, which mirrors the selection so the
-wrong strategy can never pass verification.
+Both branches share verify logic appropriate to their strategy so the wrong
+strategy can never pass verification.
 
 ## Lifecycle
 

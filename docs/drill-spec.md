@@ -102,7 +102,7 @@ lifecycle commands.
 | `execution`     | list<[ExecutionStep](#execution)>  | yes      | —               | Ordering of fault rounds. At least one step required. |
 | `success`       | [SuccessCriteria](#success-criteria)        | no       | —               | Machine verdict criteria. |
 | `observability` | [ObservabilityConfig](#observability) | no    | —               | Evidence sources collected into the record. |
-| `slo`          | list<[SloCriterion](#slo-criteria-v090)> | no | —          | Provider-neutral SLO thresholds with explicit units, windows, and failure semantics (v0.9.0). |
+| `slo`          | tuple of plain dicts       | no | —          | Provider-neutral SLO thresholds with explicit units, windows, and failure semantics (v0.9.0). Criteria are plain dictionaries — the domain owns the shape, the criterion vocabulary owns the values. See [SLO criteria](#slo-criteria-v090). |
 
 `apiVersion: mayhem/v1` is tolerated and ignored — the drill spec is versioned by
 its own schema freeze, not by `apiVersion`.
@@ -400,7 +400,7 @@ the action to take. Steps run left to right, top to bottom.
 |-------------|-------------------------------------|---------|
 | `parallel`  | list of names                       | Inject this step's fault on all named targets concurrently (subject to the `blast_radius.max_concurrent_faults` budget, which counts fault steps rather than concurrency — see [Fault budgets](#fault-budgets)). For `containers:` specs these are `container_name:` values; for `targets:` specs they are the logical target names. |
 | `sequential`| list of names                       | Run this step's faults against each target one after another (same name contract as `parallel`). |
-| `wait`      | `{duration}` (or `{until_check_passes, timeout}`) | Wait before the next step. |
+| `wait`      | `<duration>` (seconds string, e.g. `5s`) | Wait before the next step. Scalar duration only — `until_check_passes` and `timeout` are compiled-plan fields, not authored YAML syntax. |
 | `check`     | list of inline probes               | Inline health probe(s) evaluated between rounds (legacy shorthand; prefer `check_spec` for new drills). |
 | `check_spec`| list of [locus-aware checks](#checks-and-check_spec) | Fully-declared checks with an explicit or inferred execution locus. |
 
@@ -424,6 +424,8 @@ execution:
           expected_status: 200
         execution: service
         target: testcase-api
+        expect:
+          status_eq: 200
 ```
 
 Fault steps in a plan are counted, not scheduled, against
@@ -438,7 +440,7 @@ Each entry is a probe:
 | Field    | Type                  | Description |
 |----------|-----------------------|-------------|
 | `http`   | string (URL)          | Probe this endpoint between rounds. |
-| `expect` | `{status: <int>}`     | Expected HTTP status (defaults to `200` when omitted). |
+| `expect` | `{status: <int>}`     | Expected HTTP status (defaults to `200` when omitted). This `status` field belongs to inline `check:` probes only. |
 
 ```yaml
 - check:
@@ -455,7 +457,8 @@ Each entry is a probe:
 |-------------|---------------------------------|-------------|
 | `id`        | string                          | Check id; becomes an observation source (`<id>.status`, `<id>.latency_ms`, …) usable in `success` criteria. |
 | `probe`     | discriminated probe (see below) | What to probe and with what expectation. |
-| `execution` | `host` / `container` / `service` / `process` | Where the check is evaluated. |
+| `execution` | `host` / `container` / `service` / `process` | Where the check is evaluated. `None` → infer from the fault target. |
+| `expect`    | `{status_eq: <int>}`            | Expected HTTP status (defaults to `200` when omitted). Note: `status_eq`, not `status` — `status` is the inline `check:` probe field. |
 | `target`    | container name                  | The fault target used to infer the locus when `execution` is omitted. |
 
 A bare check without `execution` keeps pre-0.3.0 behavior: the executor infers
@@ -516,21 +519,23 @@ success:
 ## SLO criteria (v0.9.0)
 
 An optional `slo:` block states thresholds a provider-neutral observation is
-judged against. Every criterion carries an explicit **unit**, **window**, and
-**operator**, so nothing is compared across an implicit default.
+judged against. Criteria are authored as plain dictionaries
+(`tuple[dict[str, Any], ...]` on the model — the domain owns the shape but the
+criterion vocabulary owns the values), so the exact field set is whatever the
+provider recognizes. The commonly used keys are:
 
-| Field      | Type   | Default | Description |
-|------------|--------|---------|-------------|
-| `metric`   | string | —       | Metric name a provider returns. Required. |
+| Key      | Type   | Common default | Meaning |
+|----------|--------|----------------|---------|
+| `metric`   | string | —              | Metric name a provider returns. |
 | `kind`     | `latency` / `error_budget` / `recovery_time` / `saturation` / `absence` | `latency` | What the criterion means. |
 | `operator` | `lt` / `lte` / `gt` / `gte` / `eq` | `lte` | How the observation is compared to `threshold`. |
-| `threshold`| number | `0`     | The value compared against. |
-| `unit`     | string | `ms`    | Unit of both the observation and the threshold. |
-| `window_s` | number | `60`    | Window the observation must cover. |
-| `name`     | string | derived | Stable criterion id recorded in evidence. |
-| `target`   | string | `""`    | Optional locator passed to the provider (e.g. an HTTP URL). |
+| `threshold`| number | `0`            | The value compared against. |
+| `unit`     | string | `ms`           | Unit of both the observation and the threshold. |
+| `window_s` | number | `60`           | Window the observation must cover. |
+| `name`     | string | derived        | Stable criterion id recorded in evidence. |
+| `target`   | string | `""`           | Optional locator passed to the provider (e.g. an HTTP URL). |
 
-**A missing observation fails the criterion.** If no provider returns the metric,
+A missing observation fails the criterion. If no provider returns the metric,
 or a provider errors, the criterion evaluates to `false` with the reason
 `observation unavailable (missing|error)` — an unreachable metrics endpoint is
 never mistaken for a healthy system.
@@ -748,7 +753,7 @@ writing — the catalog implementation is authoritative and is what
 | `net.duplicate` | network | medium | 300s | container, service | net_admin | `percent` (percent, min 1, max 100); `direction` (string, default `egress`) |
 | `net.interface_down` | network | high | 300s | process, container, service | net_admin | `device` (string, default `eth0`) |
 | `net.latency` | network | medium | 300s | container, service | net_admin | `seconds` (duration); `jitter_ms` (integer, default `0`); `direction` (string, default `egress`) |
-| `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default container `ip:port`); `script` (string) |
+| `net.load` | network | medium | 600s | container, service | — | `users` (integer, min 1); `url` (string, default derived from the target's first TCP binding — loopback bindings use `http://localhost:<host-port>/`, otherwise `http://<container-ip>:<container-port>/`); `script` (string) |
 | `net.mtu_mismatch` | network | medium | 300s | process, container, service | net_admin | `device` (string, default `eth0`); `mtu` (integer, min 576, max 9216, default `1400`) |
 | `net.packet_loss` | network | medium | 300s | container, service | net_admin | `percent` (percent, max 100); `direction` (string, default `egress`) |
 | `net.partition` | network | high | 120s | container, service | net_admin | — |
