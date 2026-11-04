@@ -18,22 +18,121 @@ The command line should expose complete user workflows, not every internal servi
 
 ### Public command count
 
-The proposed normal CLI has **9 top-level commands**:
+The reorganized CLI exposes **10 namespaces** (workspace, environment, drill, runs, orchestration, governance, evidence, platform, extensions, developer) under the root `mayhem` group. All 40 existing command names remain available at root as compatibility aliases that invoke the same handler as their canonical namespace path.
 
 ```text
-mayhem
-├── init
-├── doctor
-├── discover
-├── prepare
-├── run
-├── runs
-├── recover
-├── config
-└── evidence
+mayhem [GLOBAL OPTIONS] <NAMESPACE> <COMMAND> [COMMAND OPTIONS] [ARGS]
+│
+├── workspace                  Initialize projects and manage the local installation.
+│   ├── init [PROJECT PATH]
+│   ├── doctor [--json] [--quiet] [--category CATEGORY]
+│   ├── config
+│   │   ├── show
+│   │   └── validate
+│   ├── support
+│   │   └── bundle
+│   └── upgrade
+│
+├── environment                Discover topology, faults, capabilities and diagnostics.
+│   ├── discover
+│   │   ├── topology [--compose PATH]
+│   │   ├── faults [-e | --explain FAULT_ID]
+│   │   ├── capabilities [--runtime docker|podman|kubernetes]
+│   │   └── engines
+│   ├── boundary
+│   ├── advisor
+│   └── probe
+│
+├── drill                      Prepare, plan and execute chaos experiments.
+│   ├── prepare
+│   │   ├── validate SPEC [--compose PATH]
+│   │   ├── plan SPEC [--compose PATH] [--explain]
+│   │   ├── config
+│   │   ├── dependencies
+│   │   └── check
+│   ├── experiment
+│   ├── run [EXPERIMENT] [--compose PATH] [--execute] [--allow-critical]
+│   ├── maniac
+│   └── risk-preview
+│
+├── runs                       Inspect, control and recover runs.
+│   ├── inspect
+│   │   ├── run RUN_ID
+│   │   ├── leases
+│   │   ├── residual RUN_ID
+│   │   ├── graph
+│   │   ├── coverage-diff
+│   │   ├── runs
+│   │   ├── history
+│   │   ├── coverage
+│   │   ├── expert
+│   │   ├── next
+│   │   ├── doctor
+│   │   └── replay
+│   │       ├── export RUN_ID [--output PATH]
+│   │       └── validate CAPSULE_PATH
+│   ├── stop RUN_ID --execute
+│   ├── extend RUN_ID --duration DURATION --execute
+│   ├── recover RUN_ID --execute
+│   └── janitor [--orphans] --execute
+│
+├── orchestration              Manage campaigns, schedules and game days.
+│   ├── campaign
+│   ├── schedule
+│   └── game-day
+│       └── step
+│
+├── governance                 Manage policy, secrets and certification.
+│   ├── policy
+│   ├── secrets
+│   └── certify
+│       ├── run
+│       ├── matrix
+│       └── regress
+│
+├── evidence                   Export, verify and inspect evidence and proofs.
+│   ├── bundle
+│   │   ├── build
+│   │   ├── show
+│   │   ├── verify
+│   │   ├── keygen
+│   │   ├── keys
+│   │   ├── sign
+│   │   └── signatures
+│   ├── verify
+│   └── prove
+│
+├── platform                   Manage agents and platform integrations.
+│   ├── agent
+│   │   ├── enroll
+│   │   ├── list
+│   │   ├── revoke
+│   │   └── show
+│   ├── ci
+│   ├── cloud
+│   ├── ha
+│   └── enterprise
+│
+├── extensions                 Manage packs, marketplace and sandbox features.
+│   ├── pack
+│   │   ├── validate
+│   │   └── load
+│   ├── marketplace
+│   └── sandbox
+│
+└── developer                  API, low-level, command registry and shell completion tools.
+    ├── api
+    │   ├── openapi
+    │   ├── pages
+    │   ├── parameters
+│   │   ├── routes
+    │   └── serve
+    ├── lowlevel
+    ├── commands
+    └── completion
 ```
 
-Advanced orchestration, extension management, development diagnostics, and future platform integrations are intentionally not part of the default command surface.
+Each namespace is registered once under its canonical path; every old root path (e.g. `mayhem doctor`, `mayhem run`, `mayhem inspect`) still resolves to the same handler and produces equivalent output.
 
 ---
 
@@ -149,7 +248,7 @@ Expected behavior:
 ### 4.2 `doctor` — Check the local environment
 
 ```text
-mayhem doctor [--verbose] [--check CHECK_NAME]
+mayhem workspace doctor [--json] [--quiet] [--category CATEGORY]
 ```
 
 Purpose:
@@ -166,7 +265,7 @@ Detailed diagnostics should be part of `doctor` output rather than separate top-
 #### Topology
 
 ```text
-mayhem discover topology [--compose PATH]
+mayhem environment discover topology [--compose PATH]
 ```
 
 Purpose:
@@ -181,7 +280,7 @@ Known Compose behavior:
 #### Fault catalog
 
 ```text
-mayhem discover faults [-e | --explain FAULT_ID]
+mayhem environment discover faults [-e | --explain FAULT_ID]
 ```
 
 Purpose:
@@ -193,7 +292,7 @@ Catalog discovery must not imply that every catalog entry is executable. `catalo
 #### Capabilities
 
 ```text
-mayhem discover capabilities [--runtime docker|podman|kubernetes]
+mayhem environment discover capabilities [--runtime docker|podman|kubernetes]
 ```
 
 Purpose:
@@ -208,7 +307,7 @@ The `--runtime` spelling is a proposal. Runtime selection may instead be read ex
 #### Validate
 
 ```text
-mayhem prepare validate SPEC [--compose PATH]
+mayhem drill prepare validate SPEC [--compose PATH]
 ```
 
 Purpose:
@@ -222,7 +321,7 @@ Validation is non-mutating. It must not inject a fault or create an execution le
 #### Plan
 
 ```text
-mayhem prepare plan SPEC [--compose PATH] [--explain]
+mayhem drill prepare plan SPEC [--compose PATH] [--explain]
 ```
 
 Purpose:
@@ -237,7 +336,7 @@ Planning is non-mutating. It must not inject a fault or create an execution leas
 ### 4.5 `run` — Execute a drill
 
 ```text
-mayhem run SPEC [--compose PATH] [--execute] [--allow-critical]
+mayhem drill run [EXPERIMENT] [--compose PATH] [--execute] [--allow-critical]
 ```
 
 Purpose:
@@ -268,7 +367,7 @@ Purpose:
 #### Show
 
 ```text
-mayhem runs show RUN_ID
+mayhem runs inspect run RUN_ID
 ```
 
 Purpose:
@@ -301,8 +400,8 @@ The exact duration syntax and whether extension is supported for every fault typ
 ### 4.7 `recover` — Recover incomplete runs and orphaned leases
 
 ```text
-mayhem recover RUN_ID --execute
-mayhem recover --orphans --execute
+mayhem runs recover RUN_ID --execute
+mayhem runs janitor --orphans --execute
 ```
 
 Purpose:
@@ -320,7 +419,7 @@ Recovery must report partial or failed recovery honestly. It must not convert a 
 #### Show
 
 ```text
-mayhem config show
+mayhem workspace config show
 ```
 
 Purpose:
@@ -330,7 +429,7 @@ Purpose:
 #### Validate
 
 ```text
-mayhem config validate
+mayhem workspace config validate
 ```
 
 Purpose:
@@ -354,7 +453,7 @@ Configuration is distinct from a `kind: drill` specification. `mayhem.yaml` rema
 #### Export a run bundle
 
 ```text
-mayhem evidence export RUN_ID [--output PATH]
+mayhem evidence bundle build RUN_ID [--output PATH]
 ```
 
 Purpose:
@@ -378,14 +477,14 @@ The currently documented pack/bundle signing limitations must not be obscured: a
 #### Replay capsules
 
 ```text
-mayhem evidence replay export RUN_ID [--output PATH]
-mayhem evidence replay validate CAPSULE_PATH
+mayhem runs inspect replay export RUN_ID [--output PATH]
+mayhem runs inspect replay validate CAPSULE_PATH
 ```
 
 Purpose:
 - Export a versioned, digest-checked replay capsule for a run.
 - Validate a capsule offline.
-- Keep replay operations under the evidence domain instead of exposing a separate generic `inspect replay` command group.
+- Replay operations live under `runs inspect replay`.
 
 ---
 
@@ -395,15 +494,15 @@ The following capabilities should normally appear as sections in existing comman
 
 | Information | Where it should appear |
 |---|---|
-| Risk assessment | `prepare plan` and `run` preview |
-| Blast-radius boundary | `prepare plan` and `run` preview |
-| Capability gaps | `discover capabilities`, `prepare validate`, and `prepare plan` |
-| Safety proof and gate obligations | `prepare plan` and `runs show` |
-| Probe observations | `runs show` |
-| Fault maturity and refusal explanation | `discover faults` and plan/validation output |
-| Recommendations | `doctor` or a contextual explanation after a refusal |
-| Low-level diagnostic details | `doctor --verbose` or debug logs |
-| Run history and evidence | `runs list`, `runs show`, and `evidence` |
+| Risk assessment | `drill prepare plan` and `drill run` preview |
+| Blast-radius boundary | `drill prepare plan` and `drill run` preview |
+| Capability gaps | `environment discover capabilities`, `drill prepare validate`, and `drill prepare plan` |
+| Safety proof and gate obligations | `drill prepare plan` and `runs inspect` |
+| Probe observations | `runs inspect` |
+| Fault maturity and refusal explanation | `environment discover faults` and plan/validation output |
+| Recommendations | `workspace doctor` or a contextual explanation after a refusal |
+| Low-level diagnostic details | `workspace doctor --verbose` or debug logs |
+| Run history and evidence | `runs list`, `runs inspect`, and `evidence bundle` |
 
 A standalone command is justified only when it performs a distinct operation that users need to invoke independently—not simply because an internal service can render a report.
 
@@ -413,37 +512,37 @@ A standalone command is justified only when it performs a distinct operation tha
 
 | Previous command or group | Proposed destination | Treatment |
 |---|---|---|
-| `init` | `init` | Keep. |
-| `doctor` | `doctor` | Keep; absorb useful diagnostics and contextual guidance. |
-| `discover` | `discover` | Keep; focus on topology, faults, and capabilities. |
-| `prepare` | `prepare` | Keep; expose `validate` and `plan`. |
-| `prepare config show` | `config show` | Move configuration management to its own concise group. |
-| `prepare config validate` | `config validate` | Move configuration management to its own concise group. |
-| `run` | `run` | Keep as the primary execution interface. |
-| `experiment`, `maniac` | `run` modes or drill configuration | Consolidate; no separate root command. |
-| `inspect` | `runs show` | Merge run inspection into the run resource. |
+| `init` | `workspace init` | Keep; available at root and under `workspace`. |
+| `doctor` | `workspace doctor` | Keep; available at root and under `workspace`. |
+| `discover` | `environment discover` | Keep; available at root and under `environment`. |
+| `prepare` | `drill prepare` | Keep; expose `validate` and `plan`. |
+| `prepare config show` | `workspace config show` | Configuration management under `workspace config`. |
+| `prepare config validate` | `workspace config validate` | Configuration management under `workspace config`. |
+| `run` | `drill run` | Keep as the primary execution interface. |
+| `experiment`, `maniac` | `drill experiment`, `drill maniac` | Consolidate under `drill`. |
+| `inspect` | `runs inspect` | Merge run inspection under `runs`. |
 | `stop` | `runs stop` | Move under run lifecycle. |
 | `extend` | `runs extend` | Move under run lifecycle; expose only where safe. |
-| `recover` | `recover` | Keep and simplify. |
-| `janitor` | `recover --orphans` | Merge orphan cleanup into recovery. |
-| `bundle`, `verify` | `evidence export`, `evidence verify` | Consolidate evidence operations. |
-| `prove` | `prepare plan`, `runs show` | Render proof details in planning and run evidence. Keep a dedicated machine interface only if automation requires it. |
-| `inspect replay` | `evidence replay` | Group replay with evidence. |
-| `policy` | `config` | Policy is part of the resolved runtime configuration. |
-| `risk-preview`, `boundary` | `prepare plan` | Include risk and boundary in the plan explanation. |
-| `advisor` | `doctor` or contextual guidance | Remove as a standalone command. |
-| `probe` | `runs show` | Present probe data alongside the run timeline. |
-| `campaign`, `schedule`, `game-day`, `game-day-step` | Future `campaign` capability | Defer from the default public CLI until the complete workflow is production-ready. |
-| `pack` | Future `extensions` capability | Defer or keep as an advanced extension-management interface. |
-| `secrets` | Configuration/secret integration | Defer until there is a complete, clearly documented secret lifecycle. |
-| `certify` | Future evidence-based certification workflow | Defer until its claims can be supported by meaningful acceptance evidence. |
-| `agent` | Internal/advanced agent management | Hide from normal help unless users must operate agents directly. |
-| `api`, `lowlevel` | Internal developer interface | Keep out of normal user-facing help. |
-| `ci` | Normal commands in automation | CI should call `prepare`, `run`, `runs`, and `evidence`, not require a separate workflow. |
-| `cloud`, `marketplace`, `enterprise`, `ha`, `sandbox` | Future platform/enterprise features | Defer until complete and supported. |
-| `support-bundle`, `upgrade` | Future `support` or package-manager workflows | Defer or expose only when implemented and useful. |
-| `commands` | `mayhem --help` | Remove; duplicate of root help. |
-| `completion` | Shell completion integration | Keep as CLI infrastructure, not a normal workflow command. |
+| `recover` | `runs recover` | Keep and simplify. |
+| `janitor` | `runs janitor` | Merge orphan cleanup into recovery. |
+| `bundle`, `verify` | `evidence bundle`, `evidence verify` | Consolidate evidence operations. |
+| `prove` | `drill prepare plan`, `runs inspect` | Render proof details in planning and run evidence. |
+| `inspect replay` | `runs inspect replay` | Group replay under `runs inspect`. |
+| `policy` | `governance policy` | Policy under `governance`. |
+| `risk-preview`, `boundary` | `drill prepare plan` | Include risk and boundary in the plan explanation. |
+| `advisor` | `environment advisor` | Keep under `environment`. |
+| `probe` | `environment probe` | Present probe data under `environment`. |
+| `campaign`, `schedule`, `game-day`, `game-day-step` | `orchestration campaign`, `orchestration schedule`, `orchestration game-day`, `orchestration game-day step` | Orchestration commands under `orchestration`. |
+| `pack` | `extensions pack` | Pack management under `extensions`. |
+| `secrets` | `governance secrets` | Secrets under `governance`. |
+| `certify` | `governance certify` | Certification under `governance`. |
+| `agent` | `platform agent` | Agent management under `platform`. |
+| `api`, `lowlevel` | `developer api`, `developer lowlevel` | Developer interface under `developer`. |
+| `ci` | `platform ci` | CI under `platform`. |
+| `cloud`, `marketplace`, `enterprise`, `ha`, `sandbox` | `platform cloud`, `extensions marketplace`, `enterprise`, `platform ha`, `extensions sandbox` | Platform/extension commands under their namespaces. |
+| `support-bundle`, `upgrade` | `workspace support bundle`, `workspace upgrade` | Support/package workflows under `workspace`. |
+| `commands` | `developer commands` | Command registry under `developer`. |
+| `completion` | `developer completion` | Shell completion under `developer`. |
 
 ---
 

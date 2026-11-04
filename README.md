@@ -12,7 +12,7 @@ Mayhem compiles a declarative `kind: drill` YAML into a frozen, safety-gated pla
 | **How it injects** | Userspace only: `tc`/netem, toxiproxy, container-engine cgroup knobs, userspace allocation and file writes, and the Kubernetes API |
 | **How it recovers** | Reversible faults run their declared inverse; irreversible faults are followed by workload reconciliation |
 | **Where evidence lives** | SQLite — every step, probe sample, criteria evaluation, and decision is recorded per run |
-| **Shortest path** | `mayhem discover topology --compose docker-compose.yml` → `mayhem prepare validate` → `mayhem run --execute` |
+| **Shortest path** | `mayhem environment discover topology --compose docker-compose.yml` → `mayhem drill prepare validate` → `mayhem drill run --execute` |
 | **Console commands** | `mayhem`, `mayhem-agent`, `kubectl-mayhem` |
 | **Python** | 3.12+ |
 | **License** | Proprietary |
@@ -41,14 +41,14 @@ A complete six-service stack lives in `examples/testCase/`:
 ```bash
 cd examples/testCase
 docker compose up -d                          # 1. bring the stack up
-mayhem discover topology --compose docker-compose.yml   # 2. blueprint → live graph
-mayhem prepare validate mayhem.yaml --compose docker-compose.yml   # 3. compile + safety gates (injects nothing)
-mayhem run mayhem.yaml --compose docker-compose.yml --execute  # 4. inject → observe → recover → verdict
+mayhem environment discover topology --compose docker-compose.yml   # 2. blueprint → live graph
+mayhem drill prepare validate mayhem.yaml --compose docker-compose.yml   # 3. compile + safety gates (injects nothing)
+mayhem drill run mayhem.yaml --compose docker-compose.yml --execute  # 4. inject → observe → recover → verdict
 ```
 
 Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or `compose.yml`) in the current directory.
 
-`validate` and `plan` compile from the compose blueprint and do not inject a fault. `run` applies its impact gate and records the actual execution outcome — and `run` requires the explicit `--execute` approval; without it, Mayhem stops at a preview and no lease is ever created.
+`validate` and `plan` compile from the compose blueprint and do not inject a fault. `drill run` applies its impact gate and records the actual execution outcome — and `drill run` requires the explicit `--execute` approval; without it, Mayhem stops at a preview and no lease is ever created.
 
 ## ✦ Features
 
@@ -62,15 +62,15 @@ Omit `--compose` and Mayhem auto-detects `docker-compose.yml` (or `compose.yml`)
 
 **Critical opt-in** — `critical`-risk faults (e.g. `k8s.node_drain`) need a triple opt-in: `policy.allow_critical: true`, a per-fault ack in `policy.critical_fault_acks`, and the `--allow-critical` CLI flag.
 
-**Lease hygiene** — fault rounds hold leases with a TTL; `mayhem janitor` sweeps orphaned leases and `mayhem recover` repairs a run's orphans on demand.
+**Lease hygiene** — fault rounds hold leases with a TTL; `mayhem runs janitor` sweeps orphaned leases and `mayhem runs recover` repairs a run's orphans on demand.
 
 **Campaigns** — group drill-spec paths and run them sequentially with a single policy and window. Draft → approve → start → run → pause/resume → archive/abort, with durable checkpoints so a verified experiment is never repeated without `--retry-verified`.
 
 **Evidence bundles** — hash-chained, offline-verifiable bundles of a run's evidence, signable under a named trust root with a local HMAC-SHA256 key. `bundle verify` re-derives every hash from the bytes on disk and touches no database.
 
-**Replay capsules** — versioned, digest-checked capsules per run; export and validate offline with `mayhem inspect replay export|validate RUN_ID`.
+**Replay capsules** — versioned, digest-checked capsules per run; export and validate offline with `mayhem runs inspect replay export|validate RUN_ID`.
 
-**Safety proofs** — `mayhem prove` renders a recorded plan's safety proof, one line per obligation, each citing the gate output and digest behind it. `--check PROOF_JSON` recompiles against the plan recorded now: a plan that moved renders the submitted proof VOID with the diff that voided it.
+**Safety proofs** — `mayhem evidence prove` renders a recorded plan's safety proof, one line per obligation, each citing the gate output and digest behind it. `--check PROOF_JSON` recompiles against the plan recorded now: a plan that moved renders the submitted proof VOID with the diff that voided it.
 
 ## ⟡ How it works
 
@@ -80,9 +80,9 @@ The pipeline is staged so everything expensive is done up front and execution st
 2. **Prepare** — layered configuration (defaults → selected YAML → profile overlay → allowlisted environment values → programmatic overrides), plus topology drift detection and target revalidation.
 3. **Compile & plan** — the drill spec becomes a frozen `ExecutionPlan` with step sequences, per-fault compensations, success criteria, and observability sources. Fault, target, capability, and duration inputs are validated against the current models before anything runs.
 4. **Execute** — supported runtimes execute inject → hold → compensate rounds and record evidence. Kubernetes planner/executor presence does not by itself establish a reachable cluster or an available capability.
-5. **Recover & report** — `mayhem janitor` sweeps orphaned leases; `mayhem recover` repairs run orphans; `mayhem inspect` replays recorded evidence.
+5. **Recover & report** — `mayhem runs janitor` sweeps orphaned leases; `mayhem runs recover` repairs run orphans; `mayhem runs inspect` replays recorded evidence.
 
-CLI command groups: `discover`, `pack`, `prepare`, `experiment`, `run` / `maniac`, `inspect`, `recover` / `janitor`, `stop`, `extend`, `game-day`, `bundle`, `policy`, `secrets`, `certify`, `advisor`, `boundary`, `risk-preview`, `prove`, `api`, `lowlevel`, `probe`, `schedule`, `game-day-step`, `ha`, `agent`, `ci`, `cloud`, `marketplace`, `sandbox`, `support-bundle`, `upgrade`, `enterprise`, plus `campaign`, `commands`, `init`, `doctor`, `verify`, `completion`.
+CLI namespaces: `workspace`, `environment`, `drill`, `runs`, `orchestration`, `governance`, `evidence`, `platform`, `extensions`, `developer`. All 40 commands remain available at root as compatibility aliases (for example `mayhem doctor` and `mayhem run`), and each command is registered once under its canonical namespace path.
 
 ## ☾ Configuration
 
@@ -99,7 +99,7 @@ Key sections:
 - `kubernetes` — `context`, `namespace`
 - `recovery_grace`, `log_level`, `maniac` (level, run_level, seed for randomized rounds)
 
-`mayhem prepare config show` prints the resolved configuration and provenance; `mayhem prepare config validate` refuses unknown keys, a missing or wrong `apiVersion`, and out-of-range sections before anything runs.
+`mayhem workspace config show` prints the resolved configuration and provenance; `mayhem workspace config validate` refuses unknown keys, a missing or wrong `apiVersion`, and out-of-range sections before anything runs.
 
 ## ◈ Architecture
 
@@ -151,7 +151,7 @@ If your failure model lives below the syscall boundary — a specific `write` re
 
 **Fault-pack signatures are integrity-checked, not signed.** The pack format carries a `signature: str` and a `signer: str` with no public key, no key id, no algorithm identifier, and no trust store. Mayhem cannot verify a pack signature. What the field holds is an assertion of authorship — the same trust a comment carries. Every pack verdict reports `signature NOT VERIFIED`. What a pack can prove is integrity: `declared_digest` is a SHA-256 over the canonical pack document, checked against the bytes on disk. That detects tampering; it says nothing about who wrote the pack.
 
-**Seventeen catalog entries are `catalog_only`** — defined and planned but refused before mutation, with refusal text naming the missing mechanism (e.g. `app.deadlock`, `clock.freeze`, `fs.read_error`, `mem.oom_kill`, `k8s.image_pull_slow`). They are discoverable rather than hidden: `mayhem discover faults -e FAULT_ID` prints the refusal and the suggested alternative.
+**Seventeen catalog entries are `catalog_only`** — defined and planned but refused before mutation, with refusal text naming the missing mechanism (e.g. `app.deadlock`, `clock.freeze`, `fs.read_error`, `mem.oom_kill`, `k8s.image_pull_slow`). They are discoverable rather than hidden: `mayhem environment discover faults -e FAULT_ID` prints the refusal and the suggested alternative.
 
 **Kubernetes support is layered, not collapsed.** Manifest planning, planner support, executor support, and live resolution are separate states. The legacy `KubernetesAdapter` remains unavailable (a compatibility seam only, `is_available() == False`). Catalog-only Kubernetes faults are not executable merely because they are defined. Possessing one Kubernetes state does not imply the next.
 
@@ -163,11 +163,11 @@ If your failure model lives below the syscall boundary — a specific `write` re
 
 | Symptom | Likely cause | Next step |
 |---|---|---|
-| `mayhem run` refuses before injecting | A safety gate (risk ceiling, concurrency budget, capability gap, missing `--execute`) | Run `mayhem prepare validate` first; read the refusal reason; add `--execute` only when you intend to inject |
-| Fault id not found in catalog | Typo or unknown prefix | Use `mayhem discover faults` to list known ids; check the prefix maps to a real category |
+| `mayhem drill run` refuses before injecting | A safety gate (risk ceiling, concurrency budget, capability gap, missing `--execute`) | Run `mayhem drill prepare validate` first; read the refusal reason; add `--execute` only when you intend to inject |
+| Fault id not found in catalog | Typo or unknown prefix | Use `mayhem environment discover faults` to list known ids; check the prefix maps to a real category |
 | `--compose` not detected | No `docker-compose.yml`/`compose.yml` in cwd | Pass `--compose <path>` explicitly |
 | `critical` fault refused at plan time | Missing triple opt-in | Set `policy.allow_critical: true`, add the fault to `policy.critical_fault_acks`, and pass `--allow-critical` |
-| Run leaves `DIRTY` state | A compensation/undo failed or lease wasn't released | Run `mayhem recover execute <run-id>` or `mayhem janitor` to sweep orphaned leases |
+| Run leaves `DIRTY` state | A compensation/undo failed or lease wasn't released | Run `mayhem runs recover execute <run-id>` or `mayhem runs janitor` to sweep orphaned leases |
 | `signature NOT VERIFIED` on a pack | Pack format has no trust store | This is expected — verify integrity via `declared_digest` (SHA-256); treat `signature` as an unverified authorship claim |
 
 ## License
