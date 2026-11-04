@@ -248,6 +248,115 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 )
 
 
+# ── Namespace specifications ──────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NamespaceSpec:
+    name: str
+    help_text: str
+
+
+NAMESPACE_SPECS: tuple[NamespaceSpec, ...] = (
+    NamespaceSpec("workspace", "Initialize projects and manage the local installation."),
+    NamespaceSpec("environment", "Discover topology, faults, capabilities and diagnostics."),
+    NamespaceSpec("drill", "Prepare, plan and execute chaos experiments."),
+    NamespaceSpec("runs", "Inspect, control and recover runs."),
+    NamespaceSpec("orchestration", "Manage campaigns, schedules and game days."),
+    NamespaceSpec("governance", "Manage policy, secrets and certification."),
+    NamespaceSpec("evidence", "Export, verify and inspect evidence and proofs."),
+    NamespaceSpec("platform", "Manage agents and platform integrations."),
+    NamespaceSpec("extensions", "Manage packs, marketplace and sandbox features."),
+    NamespaceSpec("developer", "API, low-level, command registry and shell completion tools."),
+)
+
+
+# Mapping from old root path to new canonical path, for compatibility aliases.
+# Each entry: old_path (space-separated) -> new_path (space-separated).
+OLD_TO_NEW_PATH: dict[str, str] = {
+    "init": "workspace init",
+    "doctor": "workspace doctor",
+    "config": "workspace config",
+    "support-bundle": "workspace support bundle",
+    "upgrade": "workspace upgrade",
+    "discover": "environment discover",
+    "boundary": "environment boundary",
+    "advisor": "environment advisor",
+    "probe": "environment probe",
+    "prepare": "drill prepare",
+    "experiment": "drill experiment",
+    "run": "drill run",
+    "maniac": "drill maniac",
+    "risk-preview": "drill risk-preview",
+    "inspect": "runs inspect",
+    "stop": "runs stop",
+    "extend": "runs extend",
+    "recover": "runs recover",
+    "janitor": "runs janitor",
+    "campaign": "orchestration campaign",
+    "schedule": "orchestration schedule",
+    "game-day": "orchestration game-day",
+    "game-day-step": "orchestration game-day step",
+    "policy": "governance policy",
+    "secrets": "governance secrets",
+    "certify": "governance certify",
+    "bundle": "evidence bundle",
+    "verify": "evidence verify",
+    "prove": "evidence prove",
+    "agent": "platform agent",
+    "ci": "platform ci",
+    "cloud": "platform cloud",
+    "ha": "platform ha",
+    "enterprise": "platform enterprise",
+    "pack": "extensions pack",
+    "marketplace": "extensions marketplace",
+    "sandbox": "extensions sandbox",
+    "api": "developer api",
+    "lowlevel": "developer lowlevel",
+    "commands": "developer commands",
+    "completion": "developer completion",
+}
+
+
+def register_namespaces(app: click.Group) -> None:
+    """Register the ten namespace groups under the root app.
+
+    Each existing command handler is registered exactly once under its
+    new namespace. Root-level compatibility aliases are then added that
+    point to the same handler objects.
+    """
+    from mayhem.cli.namespaces import (
+        developer,
+        drill,
+        environment,
+        evidence,
+        extensions,
+        governance,
+        orchestration,
+        platform,
+        runs,
+        workspace,
+    )
+
+    namespace_map = {
+        "developer": developer,
+        "drill": drill,
+        "environment": environment,
+        "evidence": evidence,
+        "extensions": extensions,
+        "governance": governance,
+        "orchestration": orchestration,
+        "platform": platform,
+        "runs": runs,
+        "workspace": workspace,
+    }
+
+    for spec in NAMESPACE_SPECS:
+        ns = namespace_map[spec.name]
+        ns.help = spec.help_text
+        app.add_command(ns)
+
+
 def register_commands(app: Any) -> None:
     from mayhem.cli.advisor_cmd import advisor
     from mayhem.cli.agent_cmd import agent
@@ -335,3 +444,5 @@ def register_commands(app: Any) -> None:
         command = command_map[spec.name]
         command.help = COMMAND_HELP[spec.name]
         app.add_command(command)
+
+    register_namespaces(app)
