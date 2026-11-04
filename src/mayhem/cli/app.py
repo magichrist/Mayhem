@@ -164,7 +164,15 @@ from mayhem.cli.command_registry import OLD_TO_NEW_PATH
 # Register root-level compatibility aliases. Each old path resolves to
 # the same handler object as its new namespace path, so behavior is
 # identical and no duplicate implementation exists.
+#
+# Commands already registered at root by ``register_commands`` are left
+# untouched: their Group structure (subcommands, options) must be
+# preserved. Aliases are only added for names not already present at
+# root (e.g. ``config``, which was removed from the active command set).
 for old_path, new_path in OLD_TO_NEW_PATH.items():
+    if old_path in app.commands:
+        # Already registered at root; alias is redundant.
+        continue
     new_parts = new_path.split()
     # Navigate to the namespace group, then find the target command.
     target = app

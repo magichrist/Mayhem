@@ -48,9 +48,24 @@ ACTIVE_COMMANDS = {
     "upgrade",
     "verify",
 }
+NAMESPACES = {
+    "workspace",
+    "environment",
+    "drill",
+    "runs",
+    "orchestration",
+    "governance",
+    "evidence",
+    "platform",
+    "extensions",
+    "developer",
+}
+# ``config`` is a compatibility alias for ``workspace config``. It was removed
+# from the active command set but re-added at root as an alias, so it is part
+# of ``app.commands`` but not of ``ACTIVE_COMMANDS`` or ``NAMESPACES``.
+ALL_COMMANDS = ACTIVE_COMMANDS | NAMESPACES | {"config"}
 REMOVED_COMMANDS = {
     "cfg",
-    "config",
     "coverage",
     "dependency",
     "expert",
@@ -66,7 +81,7 @@ REMOVED_COMMANDS = {
 
 
 def test_cli_surface_contains_only_active_commands() -> None:
-    assert set(app.commands) == ACTIVE_COMMANDS
+    assert set(app.commands) == ALL_COMMANDS
     assert not ACTIVE_COMMANDS & REMOVED_COMMANDS
 
 
