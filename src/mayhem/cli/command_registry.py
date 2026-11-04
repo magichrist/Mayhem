@@ -356,6 +356,12 @@ def register_namespaces(app: click.Group) -> None:
         ns.help = spec.help_text
         app.add_command(ns)
 
+    # Hide old root command names from help so ``mayhem --help`` shows only
+    # the ten namespace groups. Old paths remain fully functional as
+    # compatibility aliases — they are hidden from listing only, not removed.
+    for old_name in OLD_TO_NEW_PATH:
+        app.hide_command(old_name)
+
 
 def register_commands(app: Any) -> None:
     from mayhem.cli.advisor_cmd import advisor
