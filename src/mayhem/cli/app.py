@@ -159,6 +159,28 @@ def app(
 
 register_commands(app)
 
+from mayhem.cli.command_registry import OLD_TO_NEW_PATH
+
+# Register root-level compatibility aliases. Each old path resolves to
+# the same handler object as its new namespace path, so behavior is
+# identical and no duplicate implementation exists.
+for old_path, new_path in OLD_TO_NEW_PATH.items():
+    new_parts = new_path.split()
+    # Navigate to the namespace group, then find the target command.
+    target = app
+    for part in new_parts:
+        target = target.get_command(click.Context(target), part)
+    if target is not None:
+        # Register the old path as an alias command pointing to the same handler.
+        alias = click.Command(
+            name=old_path,
+            callback=target.callback,
+            params=target.params,
+            help=target.help,
+            epilog=target.epilog,
+        )
+        app.add_command(alias)
+
 
 def _fail(message: str, code: int) -> int:
     click.echo(f"{style.danger('error:')} {message}", err=True)
