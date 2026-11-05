@@ -22,6 +22,7 @@ Mayhem compiles a declarative `kind: drill` YAML into a frozen, safety-gated pla
 ### Prerequisites
 
 - Python 3.12+
+- Bash 4.4+ (for shell completion; macOS ships bash 3.2)
 - Docker with Compose v2, or Podman selected with `--podman`
 
 The Kubernetes client ships as a default dependency, but live cluster acceptance is not claimed anywhere in this repository — manifest planning is supported as an offline input.

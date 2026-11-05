@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
-from mayhem.cli.init import init_cmd
-from mayhem.cli.doctor import doctor_cmd
 from mayhem.cli.config_cmd import config
+from mayhem.cli.doctor import doctor_cmd
+from mayhem.cli.init import init_cmd
+from mayhem.cli.resolver import make_group
 from mayhem.cli.support_bundle_cmd import support_bundle
 from mayhem.cli.upgrade_cmd import upgrade
-
 
 workspace = make_group(
     "workspace",

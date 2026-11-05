@@ -263,7 +263,7 @@ def test_the_option_is_declared_on_run_and_nowhere_else() -> None:
             for param in sub.params:
                 if "--baseline-from" in getattr(param, "opts", ()):
                     declared.append(f"{name} {sub.name}")
-    assert declared == ["run"]
+    assert declared == ["run", "drill run"]
 
 
 # -- the flag threads through -----------------------------------------------------

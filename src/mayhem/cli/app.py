@@ -175,9 +175,12 @@ for old_path, new_path in OLD_TO_NEW_PATH.items():
         continue
     new_parts = new_path.split()
     # Navigate to the namespace group, then find the target command.
-    target = app
+    target: click.Group | None = app
     for part in new_parts:
-        target = target.get_command(click.Context(target), part)
+        if target is None:
+            break
+        next_target = target.get_command(click.Context(target), part)
+        target = next_target if isinstance(next_target, click.Group) else None
     if target is not None:
         # Register the old path as an alias command pointing to the same handler.
         alias = click.Command(

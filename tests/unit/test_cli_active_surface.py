@@ -60,10 +60,9 @@ NAMESPACES = {
     "extensions",
     "developer",
 }
-# ``config`` is a compatibility alias for ``workspace config``. It was removed
-# from the active command set but re-added at root as an alias, so it is part
-# of ``app.commands`` but not of ``ACTIVE_COMMANDS`` or ``NAMESPACES``.
-ALL_COMMANDS = ACTIVE_COMMANDS | NAMESPACES | {"config"}
+# ``config`` is a subcommand of ``prepare`` (``prepare config show|validate``),
+# not a root command. It is intentionally absent from ``app.commands``.
+ALL_COMMANDS = ACTIVE_COMMANDS | NAMESPACES
 REMOVED_COMMANDS = {
     "cfg",
     "coverage",

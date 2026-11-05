@@ -48,7 +48,20 @@ ALLOWLIST_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-ALLOWLIST_TOP_LEVEL = ALLOWLIST_COMMANDS
+ALLOWLIST_TOP_LEVEL = ALLOWLIST_COMMANDS | frozenset(
+    {
+        "developer",
+        "drill",
+        "environment",
+        "evidence",
+        "extensions",
+        "governance",
+        "orchestration",
+        "platform",
+        "runs",
+        "workspace",
+    }
+)
 
 ALLOWLIST_EXIT_CODES: frozenset[str] = frozenset(
     {

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
-from mayhem.cli.verify_bundle import bundle_cmd
 from mayhem.cli.lifecycle import verify as verify_cmd
 from mayhem.cli.proof_cmd import prove
-
+from mayhem.cli.resolver import make_group
+from mayhem.cli.verify_bundle import bundle_cmd
 
 evidence = make_group(
     "evidence",

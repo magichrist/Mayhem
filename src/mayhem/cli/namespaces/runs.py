@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
 from mayhem.cli.inspect import inspect as inspect_cmd
+from mayhem.cli.lifecycle import janitor, recover
+from mayhem.cli.resolver import make_group
 from mayhem.cli.stop_cmd import stop
 from mayhem.cli.workflows import extend as extend_cmd
-from mayhem.cli.lifecycle import recover, janitor
-
 
 runs = make_group(
     "runs",

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
-from mayhem.cli.pack import pack
 from mayhem.cli.marketplace_cmd import marketplace
+from mayhem.cli.pack import pack
+from mayhem.cli.resolver import make_group
 from mayhem.cli.sandbox_cmd import sandbox
-
 
 extensions = make_group(
     "extensions",

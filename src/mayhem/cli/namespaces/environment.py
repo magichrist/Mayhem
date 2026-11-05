@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import click
-
+from mayhem.cli.advisor_cmd import advisor
+from mayhem.cli.boundary_report_cmd import boundary
+from mayhem.cli.probe_cmd import probe
 from mayhem.cli.resolver import make_group
 from mayhem.cli.workflows import discover
-from mayhem.cli.boundary_report_cmd import boundary
-from mayhem.cli.advisor_cmd import advisor
-from mayhem.cli.probe_cmd import probe
-
 
 environment = make_group(
     "environment",

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
 from mayhem.cli.api_cmd import api
-from mayhem.cli.lowlevel_cmd import lowlevel
 from mayhem.cli.commands import commands
 from mayhem.cli.completion import completion
-
+from mayhem.cli.lowlevel_cmd import lowlevel
+from mayhem.cli.resolver import make_group
 
 developer = make_group(
     "developer",

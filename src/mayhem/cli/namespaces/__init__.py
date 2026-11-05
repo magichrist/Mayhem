@@ -24,14 +24,14 @@ from mayhem.cli.namespaces.runs import runs as runs
 from mayhem.cli.namespaces.workspace import workspace as workspace
 
 __all__ = [
-    "workspace",
-    "environment",
-    "drill",
-    "runs",
-    "orchestration",
-    "governance",
-    "evidence",
-    "platform",
-    "extensions",
     "developer",
+    "drill",
+    "environment",
+    "evidence",
+    "extensions",
+    "governance",
+    "orchestration",
+    "platform",
+    "runs",
+    "workspace",
 ]

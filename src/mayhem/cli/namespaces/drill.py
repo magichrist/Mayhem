@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
-from mayhem.cli.workflows import prepare
 from mayhem.cli.experiment import experiment
-from mayhem.cli.lifecycle import run as run_cmd, maniac as maniac_cmd
+from mayhem.cli.lifecycle import maniac as maniac_cmd
+from mayhem.cli.lifecycle import run as run_cmd
+from mayhem.cli.resolver import make_group
 from mayhem.cli.risk_preview_cmd import risk_preview
-
+from mayhem.cli.workflows import prepare
 
 drill = make_group(
     "drill",

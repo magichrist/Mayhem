@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import click
-
-from mayhem.cli.resolver import make_group
-from mayhem.cli.policy_cmd import policy_cmd
-from mayhem.cli.secrets_cmd import secrets_cmd
 from mayhem.cli.certify import certify
-
+from mayhem.cli.policy_cmd import policy_cmd
+from mayhem.cli.resolver import make_group
+from mayhem.cli.secrets_cmd import secrets_cmd
 
 governance = make_group(
     "governance",

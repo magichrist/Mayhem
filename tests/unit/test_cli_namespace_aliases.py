@@ -41,8 +41,8 @@ def test_old_path_invocation_equals_new_path_invocation() -> None:
     """Invoking --help through old and new paths produces equivalent exit codes."""
     runner = CliRunner()
     for old_path, new_path in OLD_TO_NEW_PATH.items():
-        old_result = runner.invoke(app, old_path.split() + ["--help"])
-        new_result = runner.invoke(app, new_path.split() + ["--help"])
+        old_result = runner.invoke(app, [*old_path.split(), "--help"])
+        new_result = runner.invoke(app, [*new_path.split(), "--help"])
         assert old_result.exit_code == new_result.exit_code, (
             f"exit code mismatch: {old_path!r} vs {new_path!r}"
         )

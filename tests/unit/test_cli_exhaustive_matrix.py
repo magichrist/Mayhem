@@ -36,13 +36,19 @@ ACTIVE_ROOTS = {
     "cloud",
     "commands",
     "completion",
+    "developer",
     "discover",
     "doctor",
+    "drill",
     "enterprise",
+    "environment",
+    "evidence",
     "experiment",
     "extend",
     "game-day",
     "game-day-step",
+    "extensions",
+    "governance",
     "ha",
     "init",
     "inspect",
@@ -50,11 +56,14 @@ ACTIVE_ROOTS = {
     "lowlevel",
     "maniac",
     "marketplace",
+    "orchestration",
     "pack",
+    "platform",
     "policy",
     "prepare",
     "probe",
     "prove",
+    "runs",
     "recover",
     "risk-preview",
     "run",
@@ -65,6 +74,7 @@ ACTIVE_ROOTS = {
     "support-bundle",
     "upgrade",
     "verify",
+    "workspace",
 }
 
 #: `stop` is deliberately absent from `ACTIVE_GROUP_PATHS`: the plan's surface is
@@ -85,6 +95,7 @@ ACTIVE_GROUP_PATHS = {
         "start",
         "pause",
         "complete",
+        "step",
     ),
     "campaign": (
         "list",
@@ -188,7 +199,6 @@ ACTIVE_GROUP_PATHS = {
 
 REMOVED_ROOTS = {
     "cfg",
-    "config",
     "coverage",
     "dependency",
     "expert",
@@ -275,8 +285,13 @@ def _install_compile_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_root_inventory_and_concise_metadata_are_exact() -> None:
+    # ACTIVE_ROOTS includes the 10 namespaces; COMMAND_SPECS has the 40 original
+    # commands only. Namespaces are registered via NAMESPACE_SPECS, not COMMAND_SPECS.
     assert set(app.commands) == ACTIVE_ROOTS
-    assert {spec.name for spec in COMMAND_SPECS} == ACTIVE_ROOTS
+    assert {spec.name for spec in COMMAND_SPECS} == ACTIVE_ROOTS - {
+        "developer", "drill", "environment", "evidence", "extensions",
+        "governance", "orchestration", "platform", "runs", "workspace",
+    }
     for spec in COMMAND_SPECS:
         command = app.commands[spec.name]
         assert command.help == COMMAND_HELP[spec.name]
@@ -292,7 +307,9 @@ def test_every_active_root_parses_help(name: str) -> None:
     result = _run(name, "--help")
     assert result.exit_code == 0
     assert "Usage:" in result.output
-    assert COMMAND_HELP[name] in result.output
+    # Namespaces get their help text from NAMESPACE_SPECS, not COMMAND_HELP.
+    if name in COMMAND_HELP:
+        assert COMMAND_HELP[name] in result.output
 
 
 @pytest.mark.parametrize("path", _all_group_paths())
@@ -348,7 +365,7 @@ def test_command_map_has_only_active_rows_and_stable_formats() -> None:
     rows = json.loads(json_result.output)
     assert json.loads(format_json_result.output) == rows
     assert yaml.safe_load(yaml_result.output) == rows
-    assert {row["command"] for row in rows} == ACTIVE_ROOTS
+    assert {row["command"] for row in rows} == {spec.name for spec in COMMAND_SPECS}
     assert all("deprecated" not in row for row in rows)
     assert all("replacement" not in row for row in rows)
     assert all(
@@ -362,7 +379,7 @@ def test_command_map_has_only_active_rows_and_stable_formats() -> None:
         }
         for row in rows
     )
-    assert all(name in text_result.output for name in ACTIVE_ROOTS)
+    assert all(name in text_result.output for name in {spec.name for spec in COMMAND_SPECS})
 
 
 def test_unique_prefixes_resolve_at_each_level() -> None:

@@ -276,7 +276,6 @@ NAMESPACE_SPECS: tuple[NamespaceSpec, ...] = (
 OLD_TO_NEW_PATH: dict[str, str] = {
     "init": "workspace init",
     "doctor": "workspace doctor",
-    "config": "workspace config",
     "support-bundle": "workspace support bundle",
     "upgrade": "workspace upgrade",
     "discover": "environment discover",
@@ -318,7 +317,7 @@ OLD_TO_NEW_PATH: dict[str, str] = {
 }
 
 
-def register_namespaces(app: click.Group) -> None:
+def register_namespaces(app: Any) -> None:
     """Register the ten namespace groups under the root app.
 
     Each existing command handler is registered exactly once under its
@@ -355,12 +354,6 @@ def register_namespaces(app: click.Group) -> None:
         ns = namespace_map[spec.name]
         ns.help = spec.help_text
         app.add_command(ns)
-
-    # Hide old root command names from help so ``mayhem --help`` shows only
-    # the ten namespace groups. Old paths remain fully functional as
-    # compatibility aliases — they are hidden from listing only, not removed.
-    for old_name in OLD_TO_NEW_PATH:
-        app.hide_command(old_name)
 
 
 def register_commands(app: Any) -> None:
