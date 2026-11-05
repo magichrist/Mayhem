@@ -248,6 +248,11 @@ def test_name_snapshot_is_stable() -> None:
         # signing under a named trust root. Appended per the same procedure;
         # nothing above is edited.
         "evidence_signatures",
+        # ``marketplace_templates`` (version 40) is plan 18 Phase 3's template
+        # distribution store. Appended per the same procedure; nothing above is
+        # edited, and the migration carries ``down_statements`` like every
+        # migration after 16.
+        "marketplace_templates",
     ), "migration name sequence drifted from the snapshot — append-only."
 
 
